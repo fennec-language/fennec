@@ -525,7 +525,7 @@ fn moved(
 }
 
 /// Changes every span in some statements through `moved`, the types they write among them.
-fn every_span(body: &mut [Stmt], moved: &mut dyn FnMut(Span) -> Span) {
+pub(crate) fn every_span(body: &mut [Stmt], moved: &mut dyn FnMut(Span) -> Span) {
     fennec_syntax::visit::written_types_in(body, &mut |ty| type_spans(ty, moved));
     fennec_syntax::visit::respan_stmts(body, moved);
 }

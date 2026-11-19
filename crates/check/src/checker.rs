@@ -2062,9 +2062,10 @@ fn written_inside(
     nested
 }
 
-/// Whether `at` overlaps `edited`: a span covering nothing does where it is.
+/// Whether `at` overlaps `edited`, or ends where it starts: an edit there can make the token
+/// ending there longer. A span covering nothing does where it is.
 fn overlaps(at: Span, edited: Span) -> bool {
-    at.start < edited.end && edited.start < at.end.max(at.start.saturating_add(1))
+    at.start < edited.end && edited.start <= at.end
 }
 
 /// The outermost function `key` is written inside, by way of `nested`, which holds the functions

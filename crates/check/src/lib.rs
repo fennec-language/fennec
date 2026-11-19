@@ -55,6 +55,7 @@ mod lock_lowering;
 mod loops;
 mod lost;
 mod messages;
+mod moved;
 mod named;
 mod once;
 mod parallel;
@@ -652,10 +653,25 @@ pub fn check_to_build_saying(module: &mut Module) -> Result<(Signatures, bool), 
 /// and what the program declared besides its functions.
 pub struct KeptCheck {
     first: Checked,
-    declared: Vec<Declared>,
+    declared: Vec<Item>,
     /// How many functions and tests the check that kept this could carry over from the build
     /// before it.
     carriable: usize,
+    /// The module as that check saw it, when it carried anything over, for checking it all again
+    /// later and comparing (`take_module`, `differs_from`).
+    module: Option<Module>,
+}
+
+/// A check of all of a program, as a build's first check finds it, keeping nothing apart: what a
+/// kept check that carried anything over is compared with (`KeptCheck::differs_from`).
+pub struct WholeCheck(Result<Checked, Vec<Diagnostic>>);
+
+/// Checks all of `module`, as a build's first check of it does, keeping nothing apart. `module` is
+/// as a check saw it (`KeptCheck::take_module`).
+#[must_use]
+pub fn check_whole(module: &Module) -> WholeCheck {
+    lend_lowering::start_program();
+    WholeCheck(checker::Checker::new(module).run(checker::Scope::Building))
 }
 
 impl KeptCheck {
@@ -666,18 +682,45 @@ impl KeptCheck {
     pub fn carried_over(&self) -> usize {
         self.carriable
     }
+
+    /// The module as the check that kept this saw it, when it carried anything over: given once,
+    /// to check it all again (`check_whole`).
+    pub fn take_module(&mut self) -> Option<Module> {
+        self.module.take()
+    }
+
+    /// Where checking it all again, `whole`, disagrees with what the check that kept this found:
+    /// whether it passes, its signatures, typed bodies or what it found to write in. Nothing when
+    /// they agree, which is found without copying either.
+    #[must_use]
+    pub fn differs_from(&self, whole: &WholeCheck) -> Option<String> {
+        let Ok(whole) = &whole.0 else {
+            return Some(
+                "whether it passes: checking it all again doesn't, and carrying over did".to_owned(),
+            );
+        };
+        let carried = &self.first;
+        if whole.signatures == carried.signatures
+            && whole.types == carried.types
+            && differing_table(whole, carried) == "something else"
+        {
+            return None;
+        }
+        // Two checks that agree can number their open type variables apart.
+        differs_from_checked_again_given(Ok(whole.clone()), &Ok(carried.clone()))
+    }
 }
 
 /// What an edit changed in a program since a build kept a check of it (`check_to_build_keeping`),
 /// as the build reads the files' texts. The build gives it only when the program has the same files,
 /// in the same order, each where it was: an edit to one file moves no other file's spans.
-pub struct Edit<'a> {
+pub struct Edit {
     /// The spans of the kept check's program whose text changed or moved: in each changed file,
-    /// from its first changed byte to its last when its length is the same, or else to its end.
+    /// from its first changed byte to its last when its length is the same, or else to the end of
+    /// the file's slots, where the next file starts.
     pub dirty: Vec<Span>,
-    /// Whether the kept check's program's text at the first span reads as this program's text at
-    /// the second.
-    pub same_text: &'a dyn Fn(Span, Span) -> bool,
+    /// The span each file covers, the same before the edit and after.
+    pub files: Vec<Span>,
 }
 
 /// `check_to_build_saying`, keeping what the first check finds for a build after an edit, and
@@ -698,7 +741,7 @@ pub struct Edit<'a> {
 /// What the checker finds wrong with it, then nothing's kept.
 pub fn check_to_build_keeping(
     module: &mut Module,
-    (kept, edit): (Option<KeptCheck>, Option<&Edit<'_>>),
+    (kept, edit): (Option<KeptCheck>, Option<&Edit>),
     compare: bool,
 ) -> Result<(Signatures, bool, KeptCheck), Vec<Diagnostic>> {
     library_parses()?;
@@ -708,7 +751,7 @@ pub fn check_to_build_keeping(
     let declared = declarations(module);
     let usable = kept.filter(|kept| match edit {
         Some(edit) => same_declarations(&kept.declared, &declared, edit),
-        None => kept.declared.iter().map(|before| &before.item).eq(declared.iter().map(|now| &now.item)),
+        None => kept.declared == declared,
     });
     let dirty = edit.map_or(&[][..], |edit| edit.dirty.as_slice());
     let first_check = match usable {
@@ -726,12 +769,13 @@ pub fn check_to_build_keeping(
     let checked = found.map_err(|problems| as_written(problems, &names))?;
     refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     // The rounds only read the first check, and hand it back for the next build to carry over from.
+    let checked_module = (carriable > 0 && !compare).then(|| module.clone());
     let seen = module.clone();
     let (signatures, as_left, _, first) =
         resolved_from(module, checked, checker::Scope::Building, (MOST_ROUNDS, Some(seen)), true)?;
     // It's always handed back: an empty one would carry nothing over.
     let first = first.unwrap_or_default();
-    Ok((signatures, as_left, KeptCheck { first, declared, carriable }))
+    Ok((signatures, as_left, KeptCheck { first, declared, carriable, module: checked_module }))
 }
 
 /// Whether a dev build whose inputs hash to `inputs` compares a check that carried anything over
@@ -959,71 +1003,61 @@ fn resolved_from(
     unreachable!("the rounds go on until one returns")
 }
 
-/// One thing a module declares besides its functions and tests: the item without its methods,
-/// which are functions, and the stretches of its text that aren't a method's.
-#[derive(Clone, Debug, PartialEq)]
-struct Declared {
-    item: Item,
-    text: Vec<Span>,
-}
-
 /// What a module declares besides its functions and tests: its types and extensions without
-/// their methods, and its interfaces, aliases, constants and imports.
-fn declarations(module: &Module) -> Vec<Declared> {
+/// their methods, which are functions, and its interfaces, aliases, constants and imports.
+fn declarations(module: &Module) -> Vec<Item> {
     use fennec_syntax::{Extension, TypeDef};
     let without = |def: &TypeDef| TypeDef { methods: Vec::new(), ..def.clone() };
     module
         .items
         .iter()
-        .filter_map(|item| {
-            let (item, span, methods) = match item {
-                Item::Function(_) | Item::Test(_) | Item::Stmt(_) => return None,
-                Item::Struct(def) => (Item::Struct(without(def)), def.span, def.methods.as_slice()),
-                Item::Enum(def) => (Item::Enum(without(def)), def.span, def.methods.as_slice()),
-                Item::Error(def) => (Item::Error(without(def)), def.span, def.methods.as_slice()),
-                Item::Extend(extension) => (
-                    Item::Extend(Extension { methods: Vec::new(), ..extension.clone() }),
-                    extension.span,
-                    extension.methods.as_slice(),
-                ),
-                Item::Interface(interface) => (item.clone(), interface.span, &[][..]),
-                Item::TypeAlias { span, .. } | Item::Const { span, .. } => (item.clone(), *span, &[][..]),
-                Item::Import(import) => (item.clone(), import.span, &[][..]),
-            };
-            Some(Declared { item, text: around_methods(span, methods) })
+        .filter_map(|item| match item {
+            Item::Function(_) | Item::Test(_) | Item::Stmt(_) => None,
+            Item::Struct(def) => Some(Item::Struct(without(def))),
+            Item::Enum(def) => Some(Item::Enum(without(def))),
+            Item::Error(def) => Some(Item::Error(without(def))),
+            Item::Extend(extension) => {
+                Some(Item::Extend(Extension { methods: Vec::new(), ..extension.clone() }))
+            }
+            other => Some(other.clone()),
         })
         .collect()
 }
 
-/// The stretches of `span`'s text that no method of `methods` covers, in order: none for an item
-/// the compiler wrote in, with no text.
-fn around_methods(span: Span, methods: &[fennec_syntax::FnDef]) -> Vec<Span> {
-    if span == Span::default() {
-        return Vec::new();
+/// Where a declaration starts.
+fn declared_at(item: &Item) -> Span {
+    match item {
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.span,
+        Item::Interface(interface) => interface.span,
+        Item::Extend(extension) => extension.span,
+        Item::TypeAlias { span, .. } | Item::Const { span, .. } => *span,
+        Item::Import(import) => import.span,
+        Item::Function(def) => def.span,
+        Item::Test(test) => test.span,
+        Item::Stmt(stmt) => stmt.span,
     }
-    let mut covered: Vec<Span> = methods.iter().map(|method| method.span).collect();
-    covered.sort_by_key(|method| method.start);
-    let mut stretches = Vec::new();
-    let mut from = span.start;
-    for method in covered {
-        stretches.push(Span { start: from, end: method.start.max(from) });
-        from = method.end.max(from);
-    }
-    stretches.push(Span { start: from, end: span.end.max(from) });
-    stretches
 }
 
-/// Whether a program declares what it did before `edit`, item by item in the same order: each
-/// one's text, its methods' aside, reads the same, wherever it is now, or an item with no text is
-/// the same. The same text parses the same, but for where it is.
-fn same_declarations(before: &[Declared], now: &[Declared], edit: &Edit<'_>) -> bool {
+/// Whether a program declares what it did before `edit`, item by item in the same order, as values:
+/// each as it was, or one the edit moved, in the same file as before, the same once each of its spans
+/// is moved by as much as it moved. The value is what's compared, not the text: the module the
+/// checker reads isn't only its parse, as each file's imports rewrite names in it.
+fn same_declarations(before: &[Item], now: &[Item], edit: &Edit) -> bool {
+    // A file's slots end where the next file's start, so a span there is the next file's.
+    let file =
+        |span: Span| edit.files.iter().position(|file| file.start <= span.start && span.start < file.end);
     before.len() == now.len()
-        && before.iter().zip(now).all(|(before, now)| {
-            if before.text.is_empty() || now.text.is_empty() {
-                return before.item == now.item;
+        && before.iter().zip(now).all(|(was, is)| {
+            if was == is {
+                return true;
             }
-            before.text.len() == now.text.len()
-                && before.text.iter().zip(&now.text).all(|(was, is)| (edit.same_text)(*was, *is))
+            let (from, to) = (declared_at(was), declared_at(is));
+            if file(from).is_none() || file(from) != file(to) {
+                return false;
+            }
+            let by = i64::from(to.start) - i64::from(from.start);
+            let shift = |at: u32| u32::try_from(i64::from(at) + by).unwrap_or(at);
+            moved::moved_item(was, &mut |span| Span { start: shift(span.start), end: shift(span.end) }) == *is
         })
 }
 
@@ -1097,7 +1131,14 @@ fn differs_from_checked_again(
     scope: checker::Scope,
     carried: &Result<Checked, Vec<Diagnostic>>,
 ) -> Option<String> {
-    let whole = checker::Checker::new(module).run(scope);
+    differs_from_checked_again_given(checker::Checker::new(module).run(scope), carried)
+}
+
+/// `differs_from_checked_again`, given what checking it all again found, `whole`.
+fn differs_from_checked_again_given(
+    whole: Result<Checked, Vec<Diagnostic>>,
+    carried: &Result<Checked, Vec<Diagnostic>>,
+) -> Option<String> {
     let (whole, carried) = match (whole, carried) {
         (Ok(whole), Ok(carried)) => (whole, carried.clone()),
         (Err(whole), Err(carried)) => {

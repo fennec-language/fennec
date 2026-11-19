@@ -752,6 +752,15 @@ mod unix {
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         state.sessions = state.sessions.saturating_sub(1);
         state.last_work = Instant::now();
+        drop(state);
+        // A build that carried over what the kit's last check found is checked all again, off the
+        // build's way, once it's answered.
+        if crate::kept::pending() {
+            let home = home.clone();
+            let _ = std::thread::Builder::new()
+                .stack_size(crate::STACK_BYTES)
+                .spawn(move || crate::kept::verify_pending(&home));
+        }
         outcome
     }
 

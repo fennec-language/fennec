@@ -49,7 +49,7 @@ fn kept_build(source: &str, kept: Option<KeptCheck>) -> (Built, Option<KeptCheck
 fn kept_build_after(
     source: &str,
     kept: Option<KeptCheck>,
-    edit: Option<&Edit<'_>>,
+    edit: Option<&Edit>,
 ) -> (Built, Option<KeptCheck>) {
     let mut module = match parsed(source) {
         Ok(module) => module,
@@ -89,9 +89,26 @@ fn dirty_between(before: &str, after: &str) -> Vec<Span> {
     let room = before.len().min(after.len()) - prefix;
     let suffix =
         before.bytes().rev().zip(after.bytes().rev()).take_while(|(was, is)| was == is).count().min(room);
-    let end = if before.len() == after.len() { before.len() - suffix } else { before.len() + 1 };
-    let at = |offset: usize| u32::try_from(offset).unwrap_or(u32::MAX);
+    let end = if before.len() == after.len() { before.len() - suffix } else { slot_end(before, after) };
     vec![Span { start: at(prefix), end: at(end) }]
+}
+
+/// An offset as a span's.
+fn at(offset: usize) -> u32 {
+    u32::try_from(offset).unwrap_or(u32::MAX)
+}
+
+/// Where a one-file program's slot ends, before an edit and after: its slots are 256 KiB each.
+fn slot_end(before: &str, after: &str) -> usize {
+    (before.len().max(after.len()) + 1).next_multiple_of(1 << 18)
+}
+
+/// What an edit from `before` to `after` of a one-file program changed, as a build tells a check.
+fn edit_between(before: &str, after: &str) -> Edit {
+    Edit {
+        dirty: dirty_between(before, after),
+        files: vec![Span { start: 0, end: at(slot_end(before, after)) }],
+    }
 }
 
 /// Builds `before`, keeping its check, then `after`, carrying over from it as a build told what the
@@ -101,17 +118,7 @@ fn dirty_between(before: &str, after: &str) -> Vec<Span> {
 fn edited_moving(before: &str, after: &str) -> (Option<usize>, Vec<String>) {
     let (first, kept) = kept_build(before, None);
     assert!(first.is_ok(), "{first:?}");
-    let text = |source: &str, span: Span| {
-        source
-            .get(
-                usize::try_from(span.start).unwrap_or(usize::MAX)
-                    ..usize::try_from(span.end).unwrap_or(usize::MAX),
-            )
-            .map(str::to_owned)
-    };
-    let same_text = |was: Span, is: Span| text(before, was).is_some_and(|was| text(after, is) == Some(was));
-    let edit = Edit { dirty: dirty_between(before, after), same_text: &same_text };
-    let (found, kept) = kept_build_after(after, kept, Some(&edit));
+    let (found, kept) = kept_build_after(after, kept, Some(&edit_between(before, after)));
     assert_eq!(found, cold_build(after));
     (kept.map(|kept| kept.carried_over()), found.err().unwrap_or_default())
 }
@@ -166,6 +173,20 @@ fn a_declarations_text_decides_whether_anything_is_carried_over() {
     let (carried, problems) = edited_moving(before, &method);
     assert!(problems.is_empty(), "{problems:?}");
     assert!(carried.is_some_and(|carried| carried >= 1), "{carried:?}");
+}
+
+/// A field's type changed under an edit that moved the type: its first line reads the same, but
+/// the type isn't the same, so nothing's carried over and what reads the field is refused, as a
+/// whole check refuses it.
+#[test]
+fn a_field_whose_type_changed_carries_nothing_over() {
+    let before = "def main(stdout: Stdout):\n    stdout.print(1)\n\n\
+                  def next(dot: Dot) -> int:\n    return dot.x + 1\n\n\
+                  struct Dot:\n    x: int\n";
+    let after =
+        before.replace("    return dot.x + 1\n", "    return dot.x + 1\n\n").replace("x: int", "x: str");
+    let (carried, problems) = edited_moving(before, &after);
+    assert_eq!((carried, problems.len()), (None, 1), "{problems:?}");
 }
 
 /// A change to one function's body that leaves what it gives back as it was carries over every
@@ -309,14 +330,7 @@ fn every_program_built_again_after_an_edit_finds_what_a_whole_check_finds() {
         // Then a line put in near the top, which moves most of the file.
         let Some(kept) = kept else { continue };
         let Some(lined) = with_a_line_put_in(&edited) else { continue };
-        let text = |source: &str, span: Span| {
-            let at = |offset: u32| usize::try_from(offset).unwrap_or(usize::MAX);
-            source.get(at(span.start)..at(span.end)).map(str::to_owned)
-        };
-        let same_text =
-            |was: Span, is: Span| text(&edited, was).is_some_and(|was| text(&lined, is) == Some(was));
-        let edit = Edit { dirty: dirty_between(&edited, &lined), same_text: &same_text };
-        let (found, _) = kept_build_after(&lined, Some(kept), Some(&edit));
+        let (found, _) = kept_build_after(&lined, Some(kept), Some(&edit_between(&edited, &lined)));
         assert_eq!(found, cold_build(&lined), "{shown}, with a line put in");
         moves += 1;
     }

@@ -81,8 +81,8 @@ use fennec_layout::{ListItem, Written, generator_definition};
 use fennec_rt::embed::dicts::Word;
 
 pub use build::{
-    Built, Object, Tools, USED_AGAIN_OBJECT_GONE, audited, compile, compile_again, compile_whole, has_object,
-    huge_functions, output_switches, sanitize_flag,
+    Built, Object, STOPPED, Tools, USED_AGAIN_OBJECT_GONE, audited, compile, compile_again, compile_whole,
+    has_object, huge_functions, output_switches, sanitize_flag,
 };
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use copies_made::{CopyMade, Why as CopyWhy, changed_in_place, copies_made};

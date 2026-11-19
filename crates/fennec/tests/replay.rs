@@ -1018,6 +1018,19 @@ fn two_rounds_serving_servers_of_their_own_replay_as_they_ran() -> std::io::Resu
     )
 }
 
+/// A round that prints a line and then makes way at its ticks replays its lines as they ran. Its
+/// worker wrote what it printed after it parked, with no task running, and a recording logged that
+/// as `main`'s: replays of a 4-thread recording put the round's lines among `main`'s, or tore one in
+/// two, every time (#2033). From Fable 5.2's review of #2028.
+#[test]
+fn a_round_that_prints_then_makes_way_replays_its_lines_as_they_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "prints-then-makes-way",
+        "a round that prints, then makes way",
+        include_str!("fixtures/round_prints_then_makes_way.fen"),
+    )
+}
+
 /// `source`, recorded at 1 and 4 threads, replays as it ran twice at 1, 4 and 16, with nothing said
 /// on its standard error.
 fn replays_as_it_ran(folder_name: &str, name: &str, source: &str) -> std::io::Result<()> {

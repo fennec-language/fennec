@@ -23,6 +23,10 @@ type WriteBack = (Place, LocalId, Option<(Vec<LocalId>, BlockId)>);
 /// A `shared` handle whose lock a call takes, and whether it takes it to write.
 type Lock = (Operand, bool);
 
+/// A field changed in place that's read after a call's arguments: the local it's reached from,
+/// and the block, the instruction and the count of changes noted where it would have been read.
+type ReadLater = (LocalId, (BlockId, usize, usize));
+
 /// The standard library's functions a program's calls reach, which aren't lowered yet.
 pub(super) fn external(program: &Program) -> Vec<String> {
     let mut unlowered = Unlowered::default();
@@ -795,29 +799,18 @@ impl Lowering<'_> {
         // An index may be one of the arguments changed, and the place stays where it was.
         let index_changes = args.iter().any(|arg| arg.is_mut);
         let mut later = None;
+        // What it's called on is read first, then its arguments, left to right: if one of them
+        // changes the local it was read from, it's read as it was.
+        let mut reads = super::order::Reads::default();
         if let Some(object) = object {
-            let handle = self.object_type(object).is_some_and(|ty| self.context.is_handle(&ty));
             let changed = signature.params.first().is_some_and(|param| param.is_mut);
-            // A field changed in place is read after the arguments when that's the same, as for
-            // a builtin's: so nothing worked out for them holds it meanwhile.
-            let after = if changed && !handle { self.read_after_arguments(object) } else { None };
-            if let Some(root) = after {
-                later = Some((object, root, (self.current, self.next_inst(), self.changed.len())));
-            } else {
-                let value = if changed && !handle {
-                    self.place(object, (index_changes, false), write_backs, span)?
-                } else {
-                    self.expr(object)?
-                };
-                if handle && !self.locked_already(&value) {
-                    lock = Some((value.clone(), changed));
-                }
-                if let Some(slot) = values.first_mut() {
-                    *slot = Some(value);
-                }
-            }
+            let held = (&mut reads, &mut *write_backs);
+            let (after, locks) = self.read_receiver(object, (changed, index_changes), held, span)?;
+            later = after.map(|(root, before)| (object, root, before));
+            lock = locks;
         }
-        self.direct_args((&key, own, first), &signature.params, args, (&mut values, write_backs), span)?;
+        let receiver = (key.as_str(), own, first, reads);
+        self.direct_args(receiver, &signature.params, args, (&mut values, write_backs), span)?;
         if let Some((object, root, before)) = later {
             let value = self.read_place_after(object, root, before, write_backs, span)?;
             if let Some(slot) = values.first_mut() {
@@ -828,10 +821,45 @@ impl Lowering<'_> {
         Ok((function, values.ok_or("a parameter has no argument")?, lock))
     }
 
-    /// A plain call's arguments, in the order they're written, each put where its parameter is.
+    /// What a method is called on, read before its arguments into `reads`, which copies it back
+    /// where it was read if an argument changes its local. A field changed in place is read after
+    /// them instead when that's the same, and what it's reached from is given back, with where it
+    /// would have been read. So is the handle a `shared` value's method locks, and whether it writes.
+    fn read_receiver(
+        &mut self,
+        object: &Expr,
+        (changed, index_changes): (bool, bool),
+        (reads, write_backs): (&mut super::order::Reads, &mut Vec<WriteBack>),
+        span: Span,
+    ) -> Lowered<(Option<ReadLater>, Option<Lock>)> {
+        let handle = self.object_type(object).is_some_and(|ty| self.context.is_handle(&ty));
+        // A field changed in place is read after the arguments when that's the same, as for a
+        // builtin's: so nothing worked out for them holds it meanwhile.
+        let after = if changed && !handle { self.read_after_arguments(object) } else { None };
+        if let Some(root) = after {
+            return Ok((Some((root, (self.current, self.next_inst(), self.changed.len()))), None));
+        }
+        if changed && !handle {
+            let place = self.place(object, (index_changes, false), write_backs, span)?;
+            reads.add_place(place);
+            return Ok((None, None));
+        }
+        let value = self.expr(object)?;
+        let lock = (handle && !self.locked_already(&value)).then(|| (value.clone(), changed));
+        // A handle names the same value whenever it's read, and it's the one locked.
+        if handle {
+            reads.add_place(value);
+        } else {
+            reads.add(self, value);
+        }
+        Ok((None, lock))
+    }
+
+    /// A plain call's arguments, in the order they're written, each put where its parameter is,
+    /// after what the call is made on when `reads` holds that.
     fn direct_args(
         &mut self,
-        (key, own, first): (&str, bool, usize),
+        (key, own, first, mut reads): (&str, bool, usize, super::order::Reads),
         params: &[fennec_check::ParamType],
         args: &[Arg],
         (values, write_backs): (&mut [Option<Operand>], &mut Vec<WriteBack>),
@@ -840,8 +868,7 @@ impl Lowering<'_> {
         // An index may be one of the arguments changed, and the place stays where it was.
         let index_changes = args.iter().any(|arg| arg.is_mut);
         // Arguments run in the order they're written, and each lands in its parameter.
-        let mut reads = super::order::Reads::default();
-        let mut slots = Vec::with_capacity(args.len());
+        let mut slots: Vec<Option<usize>> = (0..reads.len()).map(Some).collect();
         // Fields changed in place, read once the rest are worked out, with where each was written.
         let mut later = Vec::new();
         for (position, arg) in args.iter().enumerate() {

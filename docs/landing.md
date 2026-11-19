@@ -97,13 +97,17 @@ The coverage lane reads the ledger nightly.
 
 ## When CI on `main` fails
 
-1. Find the failed job in the Actions tab, under the workflow "CI" or "CodeQL".
+1. Find the failed job in the Actions tab, under the workflow "CI", "CI macOS" or "CodeQL".
 2. If your change caused it, open a fix straight away, or a revert of your change if the fix will
    take a while.
 3. If a check fails only now and then, say so to the coordinator, and fix the check that day.
 
 A run that's going is never cancelled by a newer push. The newest push takes the place of one that's
 still waiting, and since each commit holds the ones before it, nothing goes unchecked.
+
+The macOS jobs run in a workflow of their own, "CI macOS", the same way: GitHub has few macOS
+runners, and a job can wait an hour for one, so "CI" checks Linux and Windows without waiting on
+them. `.github/scripts/main-ci.sh` says whether each is green.
 
 ## Outside contributions
 

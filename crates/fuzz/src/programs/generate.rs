@@ -26,6 +26,7 @@ use super::ast::{
 };
 use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
+use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
 /// from a source or failing partway (`ZipSumming`): the loop owns it since #2041.
@@ -49,6 +50,12 @@ const PARALLEL_STREAMS: bool = true;
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
 /// code and the oracle both read a receiver before its arguments (#546).
 const EVALUATION_ORDER: bool = true;
+
+/// Whether random programs change values of types with their own `def []` through it (`Owned`):
+/// the plain form beside a `def []=`, nested, failing partway and given by `ref`, every built-in
+/// method that changes a list or only reads it, and the `ref` form's places reached by `=`, `ref`
+/// and `for ref`. On since the oracle writes back every change through it (#2192).
+const OWN_INDEXES: bool = true;
 
 /// Whether random programs make copies of collections and their parts, change each through every
 /// way of writing in place, and print them all: the shape that shows an in-place write reaching a
@@ -705,6 +712,7 @@ impl Writer<'_> {
             27 if CRASH_WAKES && !self.threadless && self.choice(4) == 0 => self.wakes(body),
             27 if EVERY_LISTENER && !self.threadless && self.choice(4) == 0 => self.listens(body),
             27 if NARROWED_UNIONS && self.choice(4) == 0 => self.narrows(body),
+            27 if OWN_INDEXES && self.choice(4) == 0 => self.own_indexes(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1404,6 +1412,24 @@ impl Writer<'_> {
             steps.push(Alias::Written { to: from, how, at, n });
         }
         body.push(Stmt::Aliased(Aliasing { id, base, steps }));
+    }
+
+    /// An `Owned` statement: 3 to 10 steps, each at a position from 0 to 2 and with what it adds,
+    /// from 0 to 9. A program without threads loops over the slots plainly where it would over
+    /// `parallel`.
+    fn own_indexes(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 10);
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let mut step = OWN_STEPS.get(self.choice(OWN_STEPS.len())).copied().unwrap_or(OwnStep::Plus);
+            if step == OwnStep::ParallelRef && self.threadless {
+                step = OwnStep::ForRef;
+            }
+            steps.push((step, self.choice(3), i64::from(self.byte() % 10)));
+        }
+        body.push(Stmt::Owned(OwnIndexing { id, base, steps }));
     }
 
     /// An `Ordered` statement: 3 to 10 steps, each with what its call adds, from 0 to 9.

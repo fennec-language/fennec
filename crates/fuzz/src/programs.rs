@@ -928,6 +928,42 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every step of an `Owned` statement checks, and the evaluator prints what the oracle prints:
+    /// each change through a type's own `def []` written back once through its `def []=`, nested,
+    /// failing partway and given by `ref`, the built-in methods that change a list and those that
+    /// only read it, and the `ref` form's places reached by `=`, `ref`, `for ref` and `parallel`.
+    #[test]
+    fn the_own_index_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{OWN_STEPS, OwnIndexing, Program, Stmt};
+        let body = (0..3_i64)
+            .map(|round| {
+                let steps = OWN_STEPS.iter().enumerate().map(|(at, step)| {
+                    let at = i64::try_from(at).unwrap_or(0);
+                    (*step, usize::try_from((at + round) % 3).unwrap_or(0), (at + round * 4) % 10)
+                });
+                OwnIndexing {
+                    id: usize::try_from(round).unwrap_or(0) + 1,
+                    base: round * 3,
+                    steps: steps.collect(),
+                }
+            })
+            .map(Stmt::Owned)
+            .collect();
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("failed 9\n"), "{printed}");
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
     /// Every step of an `Ordered` statement checks, and the evaluator prints what the oracle
     /// prints, each line read left to right: a receiver, a field's receiver, a list's and a dict's
     /// method, an index's base, arguments, operators, a list, a text, and writes, each changed by

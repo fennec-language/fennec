@@ -147,8 +147,12 @@ says they are, at the version the workspace pins.
   the last `size`: a listener that hadn't read the one let go falls behind, and its next receive
   fails as a crash does, or with `when_behind=.DropOldest` goes on from the oldest kept. The
   `with` ends as the task does, with its failure, or `Crashed(why="the task crashed")` for a crash.
-  Refused: two tasks taking from one channel to one receiver at once, where neither had heard of
-  the other's last take; several senders to a listener whose
+  A listener started beside sends, neither before nor after them, is tried at each place it could
+  start among them, as racing senders are. A timed wait that times out is taken to come after
+  every other task got as far as it could, its listeners started included: one that exists then
+  started before what's sent after.
+  Refused: two tasks taking from one channel to one receiver, or from one listener, at once, where
+  neither had heard of the other's last take; several senders to a listener whose
   next messages differ; a channel to every listener letting go of a message a listener read, the
   read not before the send, or a listener finding one gone, its receive not after the send that let
   it go; a send waiting for room
@@ -157,7 +161,14 @@ says they are, at the version the workspace pins.
   which cuts its task short at once, unless it's a send failing with `Closed` to a task that's
   failed, whose failure the block ends with; waiting inside a `lock`; `stop_after=`; and every task
   waiting on another, which hangs. A wait given a timeout times out only when nothing else can go
-  on. A task that ends with messages left in its inbox that its block sent as it ran: whether each
+  on, however short its time, even `1ns`: only a wait of no time, `0ms`, looks once, as the
+  runtime's does. That one is refused unless nothing else holding an end of its channel could still
+  send, take or close, a task waiting for room behind a send beside its own counting as one that
+  could, and a task that doesn't know the channel was made, by a launch or a message, holding none;
+  what it finds, a
+  message, room, the messages filling it or the close, was there before it; and it isn't in a
+  `parallel` round beside others, which could use any channel, one the round made included. A task that ends with messages left in its inbox that its block sent as it
+  ran: whether each
   send came before the task ended or after, and failed with `Closed`, hangs on time, so a later run
   tries the task going on first at that send, and the runs have to end the same.
 - `std.json`'s `dumps` and `loads[T]` are written here on their own, by the type the checker gave

@@ -5711,6 +5711,38 @@ def main(stdout: Stdout):
     stdout.print(h)
 "#;
 
+/// Lists and `Table`s a loop changes are made alone once, on the way into the loop, when nothing in
+/// it can give them another owner, and not checked again inside it. Shared before the loop, copied
+/// in it, given to a closure in it, written anew in it, changed by `Id`, and held by a task in it:
+/// each prints what the reference evaluator prints, with nothing left, built either way and built
+/// checking proofs, which checks each value is still alone where the check was left out.
+#[test]
+fn a_value_a_loop_gives_no_owner_is_made_alone_once_on_the_way_in() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/alone_in_loops.fen");
+    let wanted = include_str!("fixtures/alone_in_loops.out");
+    prints_in_both_builds("alone_in_loops", source, wanted)?;
+    assert!(counts_of("alone_in_loops_counts", source)?.ends_with(" live 0"));
+    let dir = folder("alone_in_loops_proofs")?;
+    let (program, executable) = (dir.join("alone.fen"), dir.join("alone"));
+    std::fs::write(&program, source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_CHECK_PROOFS", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
 /// A `for mut` item is taken out for the whole of the body, so what it holds changes in place.
 /// What's shared, and a body that reads the list, see what they should.
 #[test]
@@ -9205,9 +9237,15 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
 
 /// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
 /// threads, wanting what it prints, what it says and its exit code every time.
-fn deadlock_fixture_runs_as(
+fn deadlock_fixture_runs_as(name: &str, runs: usize, wanted: (&str, &str, i32)) -> std::io::Result<()> {
+    deadlock_fixture_runs_with(name, runs, &[], wanted)
+}
+
+/// `deadlock_fixture_runs_as`, with `env` set for each run.
+fn deadlock_fixture_runs_with(
     name: &str,
     runs: usize,
+    env: &[(&str, &str)],
     (out, err, code): (&str, &str, i32),
 ) -> std::io::Result<()> {
     let dir = folder(&format!("deadlocks-{name}"))?;
@@ -9222,7 +9260,10 @@ fn deadlock_fixture_runs_as(
     assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
     for threads in ["1", "4", "16"] {
         for _ in 0..runs {
-            let ran = Command::new(&executable).env("FENNEC_THREADS", threads).output_within()?;
+            let ran = Command::new(&executable)
+                .env("FENNEC_THREADS", threads)
+                .envs(env.iter().copied())
+                .output_within()?;
             let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
             assert_eq!(
                 (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
@@ -9272,6 +9313,89 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
         deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
     }
     Ok(())
+}
+
+/// A waiting `parallel` call's join is a stuck wait too, so a deadlock through its ranges stops the
+/// program and says each range, by its call and where it starts: four ranges receiving on a channel
+/// nobody sends to, from `main` and from a launched task; a range whose call of its own runs its
+/// ranges in it, there being no other worker to give them to; three ranges in a ring of channels;
+/// and a range waiting on one that failed or crashed first, which the join's line says: the lowest,
+/// when two have.
+#[test]
+fn a_deadlock_through_a_parallel_calls_ranges_says_each_range() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let error = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
+    let receives = |ranges: std::ops::Range<u32>, call: &str| -> String {
+        ranges.fold(String::new(), |mut lines, range| {
+            let _ = writeln!(
+                lines,
+                "  range {range} of {call}'s `parallel` call is waiting to receive on a channel that's empty"
+            );
+            lines
+        })
+    };
+    let joins = "  main is waiting for the ranges of its `parallel` call";
+    let in_task = format!(
+        "  main is waiting at the end of a `with launch` block, for task 1\n  \
+         task 1 is waiting for the ranges of its `parallel` call\n{}",
+        receives(0..4, "task 1")
+    );
+    let cases = [
+        ("stuck_ranges", "", format!("{joins}\n{}", receives(0..4, "main"))),
+        ("stuck_ranges_in_task", "", in_task),
+        ("nested_call", "", format!("{joins}\n{}", receives(1..2, "main"))),
+        ("ring", "made the ring\n", format!("{joins}\n{}", receives(0..3, "main"))),
+        ("sibling_fails", "", format!("{joins}, whose range 1 failed\n{}", receives(0..1, "main"))),
+        ("two_fail", "", format!("{joins}, whose range 1 failed\n{}", receives(0..1, "main"))),
+        (
+            "sibling_crashes",
+            "",
+            format!("{joins}, whose range 1 crashed: division by zero\n{}", receives(0..1, "main")),
+        ),
+    ];
+    for (name, printed, lines) in cases {
+        deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
+    }
+    Ok(())
+}
+
+/// A waiting `parallel` call's join is never taken for a deadlock while something can still end
+/// it: later ranges still queued that send to earlier ones waiting, from `main` and from a task;
+/// ranges waiting on a task that sends after a nap; a reduction whose ranges pass a token round; a
+/// task's call stopped while its ranges wait; ranges waiting when a task their caller launched
+/// crashes; and calls one after another, each a quick hand-off,
+/// the workers asleep as each call's first job is pushed. Napping before each call, each woken
+/// worker is held 20 ms before it says it's awake (`FENNEC_TEST_SLOW_WAKE_MS`, which only a debug
+/// build reads), so the check finds every worker asleep while the call's job is queued: its look
+/// at the queues is what keeps it from a report then. (From Fable 5.2's review of the design.)
+#[test]
+fn a_parallel_call_that_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let refused = "Refused(why=\"leaving this way stops the task\")\n".repeat(5);
+    let cases = [
+        ("queued", "4600\n"),
+        ("task_queued", "4600\n"),
+        ("late_sender", "490\n"),
+        ("reduce_waiting", "24600\n"),
+        ("stopped_partway", &refused),
+        ("two_calls", "2100\n"),
+    ];
+    for (name, printed) in cases {
+        deadlock_fixture_runs_as(name, 5, (printed, "", 0))?;
+    }
+    // A crash of a task main launched, while a call's ranges wait, cuts their waits short: the call
+    // ends, and the block's end says the crash.
+    let mut crashed = String::new();
+    for turn in 0..8 {
+        let _ = writeln!(crashed, "{turn} it crashed");
+    }
+    let said = "error: index 5 is out of range for length 2\n".repeat(8);
+    deadlock_fixture_runs_as("crash_under_join", 5, (&crashed, &said, 0))?;
+    deadlock_fixture_runs_with("two_calls_napping", 5, &[("FENNEC_TEST_SLOW_WAKE_MS", "20")], ("42\n", "", 0))
 }
 
 /// A wait that something can still end is never taken for a deadlock: a receive with a time limit;
@@ -12268,6 +12392,61 @@ def main(stdout: Stdout):
     mut aa = "a"
     mut ab = [aa]
     stdout.print(ab, ab.pop(), aa)
+"#,
+    )
+}
+
+/// What a method is called on is read before its arguments, and a closure before its own: an
+/// argument that changes it, like `tally.show(tally.grow())`, leaves the call made on it as it was.
+#[test]
+fn a_call_reads_what_it_is_made_on_before_its_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "receiver_first",
+        r#"struct Box:
+    items: list[int]
+    count: int
+
+    def show(self, given: int) -> str:
+        return f"{self.items} {self.count} {given}"
+
+    def grow(ref self) -> int:
+        self.items.append(9)
+        self.count += 1
+        return self.count
+
+    def again(ref self) -> str:
+        return self.show(self.grow())
+
+struct Pair:
+    left: Box
+    right: int
+
+    def shown(self, given: int) -> str:
+        return f"{self.left.count} {self.right} {given}"
+
+def swap(ref called: (int) -> int) -> int:
+    first = called(0)
+    called = (x) => x * 10
+    return first
+
+def main(stdout: Stdout):
+    mut tally = Box(items=[1], count=0)
+    stdout.print(tally.show(tally.grow()))
+    stdout.print(tally.show(given=tally.grow()))
+    stdout.print(tally.again(), tally.count)
+    stdout.print(tally.show(0) + " " + tally.show(tally.grow()))
+    stdout.print(tally.show(tally.grow()).upper(), tally.count)
+    mut pair = Pair(left=Box(items=[], count=0), right=7)
+    stdout.print(pair.shown(pair.left.grow()))
+    stdout.print(pair.left.show(pair.left.grow()))
+    mut boxes = [Box(items=[], count=0)]
+    stdout.print(boxes[0].show(boxes[0].grow()))
+    mut called: (int) -> int = (x) => x + 1
+    stdout.print(called(swap(ref called)), called(1))
+    return
 "#,
     )
 }
@@ -27533,6 +27712,46 @@ fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
         assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
     }
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An item read out of a `Table` once and put back by its `Id` in a loop that comes round to the
+/// put-back again with no read between, as `while True:` with its way out after the put-back
+/// makes. Each put-back looks the `Id` up again: one whose item was removed between the turns
+/// stops the program there, on its line, and one after the item changed in place, or after the
+/// `Table` grew past its room, puts back what was read. It prints what the reference evaluator
+/// prints, built either way, with nothing left.
+#[test]
+fn an_item_put_back_twice_from_one_read_looks_it_up_each_time() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/put_back_twice.fen");
+    prints_in_both_builds("put_back_twice", source, include_str!("fixtures/put_back_twice.out"))?;
+    assert!(counts_of("put_back_twice_counts", source)?.ends_with(" live 0"));
+    // The coverage lane's loop shapes: list items and dict values as well, changed in place, their
+    // list popped and appended to, or their dict's key removed between the turns.
+    let loops = include_str!("fixtures/put_back_loops.fen");
+    prints_in_both_builds("put_back_loops", loops, include_str!("fixtures/put_back_loops.out"))?;
+    assert!(counts_of("put_back_loops_counts", loops)?.ends_with(" live 0"));
+    let removed = "from std.collections import Id, Table\n\nstruct Unit:\n    health: int\n\ndef twice(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.health -= 1\n    mut turn = 0\n    while True:\n        units[id] = unit\n        turn += 1\n        if turn == 2:\n            break\n        _ = units.remove(id)\n    return\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    id = units.add(Unit(health=5))\n    twice(ref units, id)\n    stdout.print(\"not reached\")\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("put_back_twice_removed")?;
+        let (at, executable) = (dir.join("twice.fen"), dir.join("twice"));
+        std::fs::write(&at, removed)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([at.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        let why = "this Id refers to something that's been removed";
+        assert!(said.contains(why) && said.contains("twice.fen:11:"), "{how:?}: {said}");
+    }
     Ok(())
 }
 

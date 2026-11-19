@@ -53,6 +53,10 @@ steps by hand in one command: a failed merge or gate goes unnoticed that way, an
   running in, and that have nothing uncommitted. It keeps their branches. It never touches a
   `-keep`, `-base` or `-gate` worktree, or a session's own. Run it weekly, or with `--dry-run` to see
   what it would do.
+- **Every two hours on this Mac**, the tooling lane runs `.github/scripts/sweep-builds.sh --hours 2`,
+  which deletes the `target/` of each worktree that nothing has built in for two hours and nothing
+  is running in. It leaves the same worktrees alone as `sweep-worktrees.sh`. A gate that finds
+  under 40 GB free runs the same sweep before it builds.
 
 ## The Linux VM
 
@@ -93,13 +97,17 @@ The coverage lane reads the ledger nightly.
 
 ## When CI on `main` fails
 
-1. Find the failed job in the Actions tab, under the workflow "CI" or "CodeQL".
+1. Find the failed job in the Actions tab, under the workflow "CI", "CI macOS" or "CodeQL".
 2. If your change caused it, open a fix straight away, or a revert of your change if the fix will
    take a while.
 3. If a check fails only now and then, say so to the coordinator, and fix the check that day.
 
 A run that's going is never cancelled by a newer push. The newest push takes the place of one that's
 still waiting, and since each commit holds the ones before it, nothing goes unchecked.
+
+The macOS jobs run in a workflow of their own, "CI macOS", the same way: GitHub has few macOS
+runners, and a job can wait an hour for one, so "CI" checks Linux and Windows without waiting on
+them. `.github/scripts/main-ci.sh` says whether each is green.
 
 ## Outside contributions
 

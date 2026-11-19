@@ -23,6 +23,17 @@ const PLACES: usize = 1 << (PAGE_BITS - PLACE_BITS);
 /// are on.
 const PAGES_BEFORE_LOOKING: usize = 64;
 
+/// The same, for a worker going to sleep with nothing to do (`look_while_idle`).
+///
+/// A server's tables make pages slowly once it's warm, as its blocks wander through the
+/// allocator's memory, so with 64 a table's first look came half an hour into a soak, and each
+/// heap held up to 4 MB of empty 64 KB pages until then: `web_backend`'s memory rose for 25
+/// minutes, past the soak's warm-up, and held at that high-water mark. A worker that's idle has
+/// time to look sooner. A busy one keeps 64, which some programs reuse: `pathfind`, never idle,
+/// ran 6.7% more instructions with 8 for every table, making pages again that it had given back.
+#[cfg(any(test, feature = "threads"))]
+const PAGES_BEFORE_LOOKING_IDLE: usize = 8;
+
 /// The shortest block, in words, that has a page's place to itself.
 const PLACED_WORDS: usize = 2;
 
@@ -48,6 +59,10 @@ pub(super) struct Table {
     /// pages back the table would grow by a page for each place they'd ever been.
     made: usize,
     kept: usize,
+    /// Every page it has, by its region's number and its place among the region's pages, for a
+    /// look to read: a region has room for 65,536 pages, and reading them all for each look cost
+    /// more than the pages it made.
+    made_pages: Vec<(usize, usize)>,
 }
 
 /// What taking an owner off a block found.
@@ -307,17 +322,19 @@ impl Table {
     #[cold]
     #[inline(never)]
     fn insert_in_new_page(&mut self, block: Box<[u64]>) {
-        let (region, page, place) = split(at(&block));
+        let (region, at_page, place) = split(at(&block));
         if pages_of(&self.regions, region).is_none() {
             let Some(pages) = empty() else { return };
             self.regions.push((region, pages));
         }
-        let Some(page) = pages_of_mut(&mut self.regions, region).and_then(|pages| pages.get_mut(page)) else {
+        let Some(page) = pages_of_mut(&mut self.regions, region).and_then(|pages| pages.get_mut(at_page))
+        else {
             return;
         };
         if page.is_none() {
             *page = empty();
             self.made += 1;
+            self.made_pages.push((region, at_page));
         }
         if let Some(slot) = page.as_mut().and_then(|page| page.get_mut(place)) {
             if slot.is_some() {
@@ -331,21 +348,32 @@ impl Table {
         }
     }
 
-    /// Lets go of every page with no block on it.
+    /// Looks for empty pages to give back, as `insert_in_new_page` does, for a worker going to sleep
+    /// with nothing to do: once it's made a few pages, not 64. Each look still costs about a page's
+    /// reading for each page made since the last.
+    #[cfg(any(test, feature = "threads"))]
+    pub(super) fn look_while_idle(&mut self) {
+        if self.made >= self.kept.max(PAGES_BEFORE_LOOKING_IDLE) {
+            self.give_back_empty_pages();
+        }
+    }
+
+    /// Lets go of every page with no block on it, reading only the pages it has.
     #[cold]
     #[inline(never)]
     fn give_back_empty_pages(&mut self) {
-        let mut kept = 0;
-        for (_, pages) in &mut self.regions {
-            for page in pages.iter_mut().filter(|page| page.is_some()) {
-                if page.as_ref().is_some_and(|places| places.iter().all(Option::is_none)) {
-                    *page = None;
-                } else {
-                    kept += 1;
-                }
+        let regions = &mut self.regions;
+        self.made_pages.retain(|&(region, at_page)| {
+            let Some(page) = pages_of_mut(regions, region).and_then(|pages| pages.get_mut(at_page)) else {
+                return false;
+            };
+            if page.as_ref().is_none_or(|places| places.iter().all(Option::is_none)) {
+                *page = None;
+                return false;
             }
-        }
-        self.kept = kept;
+            true
+        });
+        self.kept = self.made_pages.len();
         self.made = 0;
     }
 
@@ -478,6 +506,32 @@ mod tests {
         assert_eq!(table.len(), 0);
         assert!(table.get(placed_at).is_none() && table.get(short_at).is_none());
         assert!(table.take_if(placed_at, |_| true).is_none(), "a block's taken once");
+    }
+
+    /// A table of few blocks, looked at as its worker goes idle, holds few empty pages: it looks for
+    /// them once it's made a few, so a server's tables, making pages slowly as their blocks wander,
+    /// give them back within minutes rather than the half hour 64 took.
+    #[test]
+    fn a_table_of_few_blocks_holds_few_empty_pages_when_looked_at_idle() {
+        let mut table = Table::default();
+        // Kept outside the table, so each block lands where no earlier one did.
+        let mut elsewhere = Vec::new();
+        // One block that lives all along, as a server's own state does.
+        table.insert(vec![1; 1 << 13].into());
+        for _ in 0..100 {
+            // 64 KB each, so each starts on a page of its own.
+            let block: Box<[u64]> = vec![1; 1 << 13].into();
+            let address = at(&block);
+            table.insert(block);
+            elsewhere.extend(table.remove(address));
+            table.look_while_idle();
+            assert!(
+                table.pages() <= 2 + PAGES_BEFORE_LOOKING_IDLE,
+                "{} pages kept for one block",
+                table.pages()
+            );
+        }
+        assert_eq!(table.len(), 1);
     }
 
     #[test]

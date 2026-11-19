@@ -1324,6 +1324,13 @@ impl Io {
         let outer = RESUMED.replace(Some(task));
         let step = resume(self);
         RESUMED.set(outer);
+        // In a recording or a replay, what the task printed goes out under its own name before its
+        // name is put away: a task that makes way at a tick, or ends, parks without writing it, and
+        // written after, with no task running here, it was logged as `main`'s, so a replay could
+        // put it among `main`'s own lines or tear a line in two (#2033).
+        if crate::replay::active() {
+            super::write_kept_output();
+        }
         super::swap_temporaries(&mut own);
         if !matches!(step, Step::Parked(_)) {
             // A replayed round its recording says a stop or a cancel cut short ends quietly, as a

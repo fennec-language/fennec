@@ -43,8 +43,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools
-        run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtime libraries and the fuzzer
         run: |
@@ -194,9 +192,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools, and the nightly compiler ThreadSanitizer needs
+      - name: Install the nightly compiler ThreadSanitizer needs
         run: |
-          rustup component add llvm-tools-preview
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec and the fuzzer, and the runtime libraries with ThreadSanitizer
@@ -254,8 +251,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools
-        run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec and its runtimes
         run: |
@@ -293,9 +288,8 @@ jobs:
         with:
           persist-credentials: false
       # GNU's `time` reads the most memory each step's processes held.
-      - name: Install LLVM's tools and GNU's time
+      - name: Install GNU's time
         run: |
-          rustup component add llvm-tools-preview
           .github/scripts/apt.sh time
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtimes, their bitcode and the bench

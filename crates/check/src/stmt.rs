@@ -184,6 +184,7 @@ impl FnCx<'_> {
         };
         if let Some(value) = value {
             self.passes_up_unmarked(value, &ty);
+            self.lent_not_given(value, &ty, "gives back");
         }
         // A function that says `fails E` returns nothing without an arrow, or fails.
         let checked = self.declared.clone().or_else(|| self.fails.as_ref().map(|_| Type::Unit));
@@ -212,6 +213,7 @@ impl FnCx<'_> {
             "work out the items under the lock, then yield them after the block",
         );
         let ty = self.expr(value);
+        self.lent_not_given(value, &ty, "yields");
         // `-> Iterator[T]` says what each item it yields is.
         if let Some(Type::Iterator(item, _) | Type::List(item)) = self.declared.clone()
             && !self.checker.fits(&item, &ty)
@@ -432,6 +434,7 @@ impl FnCx<'_> {
             self.set_apart();
         }
         self.bind_names(names, &item, is_mut, (iter.span, span));
+        self.lent_loop(names, iter);
         self.stmts(body, false);
         self.pop();
         let after = self.snapshot();

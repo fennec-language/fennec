@@ -11,7 +11,7 @@ const [x86, arm] = suite.machines;
 
 const program = `def fib(n: int) -> int:
     if n < 2: return n
-    fib(n - 1) + fib(n - 2)
+    return fib(n - 1) + fib(n - 2)
 
 test "fib":
     assert fib(10) == 55
@@ -70,8 +70,8 @@ if shape is Circle:
     title: 'Errors you can see',
     status: 'Mostly built',
     code: `score = load_score(path)?
-score = load_score(path) else 0`,
-    body: 'No exceptions. `fails Name` in the signature says how a function can fail, and `?` marks every line it can leave from. A failure is handled at the call, with `?`, `else` or `else as`.',
+score = load_score(path) except Missing(): 0`,
+    body: 'No exceptions. `fails Name` in the signature says how a function can fail, and `?` marks every line it can leave from. A failure is passed up with `?` or handled at the call with `except`, and `else` is only for a value that may be missing.',
   },
   {
     title: 'Lazy streams',
@@ -152,8 +152,8 @@ back = json.loads[World](text)?`,
         <a class="button" href={`${base}tour/`}>Take the tour</a>
       </div>
       <div class="install">
-        <span>No release yet. Build from source:</span>
-        <code>git clone https://github.com/fennec-language/fennec &amp;&amp; cd fennec &amp;&amp; cargo build --release -p fennec -p fennec-runtime</code>
+        <span>No release yet. Build and install it from source, with Rust installed:</span>
+        <code>git clone https://github.com/fennec-language/fennec &amp;&amp; cd fennec &amp;&amp; .github/scripts/install.sh</code>
       </div>
     </div>
 

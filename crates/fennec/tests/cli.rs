@@ -700,6 +700,18 @@ fn unknown_commands_show_usage() {
     assert!(text(&output.stderr).starts_with("usage:"));
 }
 
+/// Help asked for is the answer, on standard output, and no failure: a newcomer's first
+/// `fennec --help` shouldn't read as a mistake to a script or an editor.
+#[test]
+fn help_asked_for_shows_usage_and_succeeds() {
+    for asked in ["--help", "-h", "help"] {
+        let output = fennec(&[asked], "").unwrap();
+        assert!(output.status.success(), "{asked}");
+        assert!(text(&output.stdout).starts_with("usage:"), "{asked}");
+        assert!(output.stderr.is_empty(), "{asked}");
+    }
+}
+
 /// A fresh empty folder for one test.
 fn scratch(name: &str) -> std::io::Result<fennec_temp::Temp> {
     let dir =
@@ -1521,6 +1533,114 @@ fn every_tour_sample_not_marked_planned_compiles() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(checked > 30, "found only {checked} samples in the tour");
+}
+
+/// The front page's program is the first Fennec most visitors read, and each other page of the
+/// site shows samples too: each compiles as it's shown, as the tour's do, unless marked planned.
+#[test]
+fn the_sites_front_page_program_and_every_pages_sample_compile() {
+    let pages = repo().join("site/src/pages");
+    let front = std::fs::read_to_string(pages.join("index.astro")).unwrap();
+    let program = front
+        .split("const program = `")
+        .nth(1)
+        .and_then(|rest| rest.split("`;").next())
+        .expect("the front page has its program in `const program`");
+    let mut samples = vec![("index.astro".to_owned(), program.to_owned())];
+    let mut names: Vec<String> = std::fs::read_dir(&pages)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            Path::new(name).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+                && name != "tour.md"
+        })
+        .collect();
+    names.sort();
+    for name in names {
+        let page = std::fs::read_to_string(pages.join(&name)).unwrap();
+        let mut lines = page.lines().enumerate();
+        while let Some((at, line)) = lines.next() {
+            let Some(info) = line.strip_prefix("```fennec") else { continue };
+            let sample: Vec<&str> =
+                lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+            if !info.contains("planned") {
+                samples.push((format!("{name} at line {}", at + 2), sample.join("\n")));
+            }
+        }
+    }
+    let dir = scratch("site").unwrap();
+    for (at, (shown, sample)) in samples.iter().enumerate() {
+        let name = format!("sample_{at}.fen");
+        std::fs::write(dir.join(&name), format!("{sample}\n")).unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the site's sample in {shown} doesn't compile:\n{}",
+            text(&output.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(samples.len() > 3, "found only {} samples on the site", samples.len());
+}
+
+/// The guide says every sample compiles and passes its tests on main. Each whole program is
+/// checked as it's shown. One whose fence names a file, as ```` ```fennec src/store.fen ````, is
+/// that file of Hoard, the kit the guide builds: they're put together, in order, as the kit, which
+/// is checked, and tested where LLVM is here. A fence marked `fragment` or `planned` is left out.
+#[test]
+fn the_guides_samples_compile_and_its_kit_passes_its_tests() {
+    let guide = std::fs::read_to_string(repo().join("docs/guide.md")).unwrap();
+    let dir = scratch("guide").unwrap();
+    let mut kit_files: Vec<(String, String)> = Vec::new();
+    let mut checked = 0;
+    let mut lines = guide.lines().enumerate();
+    while let Some((at, line)) = lines.next() {
+        let Some(info) = line.strip_prefix("```fennec") else { continue };
+        let sample: Vec<&str> =
+            lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+        let info = info.trim();
+        if info == "fragment" || info == "planned" {
+            continue;
+        }
+        if !info.is_empty() {
+            match kit_files.iter_mut().find(|(file, _)| file == info) {
+                Some((_, text)) => {
+                    text.push('\n');
+                    text.push_str(&sample.join("\n"));
+                    text.push('\n');
+                }
+                None => kit_files.push((info.to_owned(), sample.join("\n") + "\n")),
+            }
+            continue;
+        }
+        let name = format!("line_{}.fen", at + 2);
+        std::fs::write(dir.join(&name), sample.join("\n") + "\n").unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the guide's sample at line {} doesn't compile:\n{}",
+            at + 2,
+            text(&output.stderr)
+        );
+        checked += 1;
+    }
+    assert!(checked >= 8, "found only {checked} whole programs in the guide");
+    let names: Vec<&str> = kit_files.iter().map(|(file, _)| file.as_str()).collect();
+    assert_eq!(names, ["src/store.fen", "src/index.fen", "src/main.fen"], "the guide's kit has other files");
+    assert!(fennec_in(&dir, &["new", "hoard"], "").unwrap().status.success());
+    let kit = dir.join("hoard");
+    std::fs::remove_file(kit.join("src/greeting.fen")).unwrap();
+    for (file, source) in &kit_files {
+        std::fs::write(kit.join(file), source).unwrap();
+    }
+    let checked = fennec_in(&kit, &["check"], "").unwrap();
+    assert!(checked.status.success(), "the guide's kit doesn't compile:\n{}", text(&checked.stderr));
+    if crate::llvm::ready() {
+        let tested = fennec_in(&kit, &["test"], "").unwrap();
+        assert!(tested.status.success(), "the guide's kit fails its tests:\n{}", text(&tested.stderr));
+        assert!(text(&tested.stdout).contains("3 passed, 0 failed"), "{}", text(&tested.stdout));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

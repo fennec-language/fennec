@@ -704,20 +704,7 @@ impl Checker {
             return next;
         }
         let mut carried = left_as_they_were(&previous, &next.program);
-        // A function written inside one carried over goes with it: its key sorts after the one
-        // it's in, so what's inside that goes too.
-        let mut nested: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for key in previous.defs.keys() {
-            if next.program.functions.contains_key(key) || !previous.signatures.functions.contains_key(key) {
-                continue;
-            }
-            if let Some((outer, _)) = key.rsplit_once('.')
-                && carried.contains(outer)
-            {
-                nested.entry(outer.to_owned()).or_default().push(key.clone());
-                carried.insert(key.clone());
-            }
-        }
+        let mut nested = written_inside(&previous, &next.program, &mut carried);
         // What the check before found is taken, not copied: it's done with once this is made.
         let mut locals: BTreeMap<String, Vec<(String, Type)>> = BTreeMap::new();
         for (local, ty) in std::mem::take(&mut previous.signatures.locals) {
@@ -2050,6 +2037,29 @@ fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
 /// Whether `functions` holds `entry` under `key`, as it was.
 fn self_same(functions: &BTreeMap<String, FnEntry>, key: &str, entry: &FnEntry) -> bool {
     functions.get(key).is_some_and(|now| now == entry)
+}
+
+/// The functions written inside each of `carried`, by its key, which go with it, each added to
+/// `carried` too. Its key sorts after the one it's in, so what's inside that goes too. One written
+/// inside another is in `previous` alone: a check adds it as it checks the one it's in.
+fn written_inside(
+    previous: &Checked,
+    program: &Program,
+    carried: &mut BTreeSet<String>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut nested: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for key in previous.defs.keys() {
+        if program.functions.contains_key(key) || !previous.signatures.functions.contains_key(key) {
+            continue;
+        }
+        if let Some((outer, _)) = key.rsplit_once('.')
+            && carried.contains(outer)
+        {
+            nested.entry(outer.to_owned()).or_default().push(key.clone());
+            carried.insert(key.clone());
+        }
+    }
+    nested
 }
 
 /// Whether `at` overlaps `edited`: a span covering nothing does where it is.

@@ -576,6 +576,8 @@ mod unix {
                 std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).map(|()| listener)
             });
         let Ok(listener) = listener else { return ExitCode::FAILURE };
+        // The daemon keeps each kit's check, for its build after an edit to carry over from.
+        crate::kept::keep_checks();
         // Which socket is this daemon's: another daemon started at the same moment binds the
         // same path after it, and then this one can't be reached, so it goes.
         let bound =
@@ -841,7 +843,7 @@ mod unix {
                     },
                     megabytes(Cache::new(&state.home).size()),
                     megabytes(Cache::cap()),
-                ),
+                ) + &crate::kept::status().unwrap_or_default(),
                 ..Outcome::default()
             },
             (Some("stop"), _) => {

@@ -4297,7 +4297,8 @@ fn a_round_that_waits_lets_the_rounds_after_it_run() {
 }
 
 /// Of rounds that run beside each other, refused: two taking from one channel, which gets which
-/// hanging on time; one that waits for what no round sends, which hangs; and the round that
+/// hanging on time; one that waits for what no round sends, a deadlock, which stops the program
+/// as compiled code does; and the round that
 /// handed the rest on stopping the call, as the rounds after it ran where they may not have.
 #[test]
 fn rounds_beside_each_other_are_refused_where_time_decides() {
@@ -4331,7 +4332,7 @@ fn rounds_beside_each_other_are_refused_where_time_decides() {
             with channel[int](size=1) as between:
                 stdout.print([piece(number, between=between) for number in parallel(range(1))])
         ");
-    assert_eq!(ended, Ended::Unsupported("every task waits on another, so the program hangs".to_owned()));
+    assert_eq!(ended, Ended::Stopped(DEADLOCK.to_owned()));
     let (_, ended) = ran("
         from std.concurrent import Channel, channel
 
@@ -4496,9 +4497,10 @@ fn a_parallel_round_that_may_not_run_using_a_channel_is_refused() {
 }
 
 /// A task waiting for its inbox to close, which closes only once the task's own `with launch`
-/// has ended, waits forever, as its block does for it: a hang, which is refused.
+/// has ended, waits forever, as its block does for it: a deadlock, which the runtime finds and
+/// stops the program on, with exit code 1, as compiled code does.
 #[test]
-fn tasks_that_all_wait_are_refused_as_a_hang() {
+fn tasks_that_all_wait_stop_the_program_as_a_deadlock() {
     let (_, ended) = ran("
         from std.concurrent import Closed, Crashed, Inbox, channel
 
@@ -4514,7 +4516,71 @@ fn tasks_that_all_wait_are_refused_as_a_hang() {
                     jobs.send(1)?
             return
         ");
-    assert_eq!(ended, Ended::Unsupported("every task waits on another, so the program hangs".to_owned()));
+    assert_eq!(ended, Ended::Stopped(DEADLOCK.to_owned()));
+}
+
+/// What the oracle says as a deadlock stops the program, after what it printed.
+const DEADLOCK: &str = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
+
+/// A deadlock the runtime finds stops the program with exit code 1 after what it printed, as
+/// `docs/language.md` says: `main` receiving from a channel nothing sends to, sending to one
+/// that's full, waiting at a `with launch` block's end for a task that receives from one, and a
+/// `parallel` call's four rounds each receiving from one. What each prints is what the compiled
+/// program printed, the same on three runs, and the rounds' on 1 and 4 threads. A listener's wait
+/// on a channel to every listener, which the runtime doesn't find yet, is still refused, above.
+#[test]
+fn a_deadlock_the_runtime_finds_stops_the_program_after_what_it_printed() {
+    let stuck = |body: &str| {
+        let text = format!(
+            "
+        from std.concurrent import Channel, Closed, Crashed, Timeout, channel
+
+        def drained(jobs: Channel[int], stdout: Stdout):
+            stdout.print('task waits')
+            number = jobs.receive() else return
+            stdout.print('never', number)
+
+        def stuck(stdout: Stdout) fails Crashed | Closed | Timeout:
+            with channel[int](size=1) as jobs:
+{body}
+
+        def main(stdout: Stdout):
+            stuck(stdout) except why:
+                stdout.print('failed', why)
+            return
+        "
+        );
+        ran(&text)
+    };
+    let received = stuck(
+        "                stdout.print('before')
+                number = jobs.receive() else return
+                stdout.print('never', number)",
+    );
+    assert_eq!(received, ("before\n".to_owned(), Ended::Stopped(DEADLOCK.to_owned())));
+    let sent = stuck(
+        "                jobs.send(1)?
+                stdout.print('sent one')
+                jobs.send(2)?
+                stdout.print('never')",
+    );
+    assert_eq!(sent, ("sent one\n".to_owned(), Ended::Stopped(DEADLOCK.to_owned())));
+    let ended = stuck(
+        "                with launch(() => drained(jobs, stdout)) as task:
+                    pass",
+    );
+    assert_eq!(ended, ("task waits\n".to_owned(), Ended::Stopped(DEADLOCK.to_owned())));
+    let rounds = ran("
+        from std.concurrent import Channel, channel
+
+        def piece(number: int, between: Channel[int]) -> int:
+            return between.receive() else -1
+
+        def main(stdout: Stdout):
+            with channel[int](size=1) as between:
+                stdout.print([piece(number, between=between) for number in parallel(range(4))])
+        ");
+    assert_eq!(rounds, (String::new(), Ended::Stopped(DEADLOCK.to_owned())));
 }
 
 /// A wait given a timeout times out when nothing else can answer it. What it prints is what the

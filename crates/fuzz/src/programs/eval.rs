@@ -22,6 +22,7 @@ use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
     SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
+use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
 use super::source::LONG_PIECE;
@@ -1901,6 +1902,7 @@ impl Machine {
             Stmt::GuardAll(items) => self.guard_all(items),
             Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::Turned(turning) => self.turned(turning)?,
+            Stmt::Filed(filing) => self.filed(filing),
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
@@ -2803,6 +2805,70 @@ impl Machine {
             let _ = writeln!(self.out, "{} {}", alias_name(n), kept_shown(aliasing.id, value));
         }
         Ok(())
+    }
+
+    /// What `filed{id}` prints: a write through `with fs.create(...)` that fails, passes a failure
+    /// up or crashes before its end leaves the file as it was, one that ends replaces it whole, and
+    /// a narrowed `Fs` refuses to write.
+    fn filed(&mut self, filing: &Filing) {
+        let id = filing.id;
+        // Both files are cleared at the start.
+        let mut files: [Option<String>; 2] = [None, None];
+        let shown = |held: &Option<String>| {
+            held.as_ref().map_or_else(|| "nothing".to_owned(), |text| format!("[{text}]"))
+        };
+        for step in &filing.steps {
+            let at = usize::from(step.second);
+            let whole: String =
+                step.pieces.iter().map(|at| FILE_PIECES.get(*at).copied().unwrap_or("")).collect();
+            let finishes = step.stop_at >= step.pieces.len();
+            let mut lines = Vec::new();
+            match step.way {
+                FileWay::Saved | FileWay::Questioned | FileWay::Tasked => {
+                    if finishes {
+                        if let Some(file) = files.get_mut(at) {
+                            *file = Some(whole);
+                        }
+                    } else if step.way == FileWay::Tasked {
+                        lines.push("crashed".to_owned());
+                    } else {
+                        lines.push(format!("failed Halt{id}(at={})", step.stop_at));
+                    }
+                }
+                FileWay::Both => {
+                    if finishes {
+                        files = [Some(whole.clone()), Some(whole)];
+                    } else {
+                        lines.push(format!("failed Halt{id}(at={})", step.stop_at));
+                    }
+                }
+                FileWay::Plain => {
+                    if let Some(file) = files.get_mut(at) {
+                        *file = Some(whole);
+                    }
+                }
+                FileWay::ReadOnly => {
+                    let name = if step.second { "g" } else { "f" };
+                    lines.push(format!(
+                        "refused IoError.PermissionDenied(reason=\"this Fs only reads, so it can't change \
+                         `d{id}/{name}.txt`\")"
+                    ));
+                }
+                FileWay::Outside => lines.push("refused outside".to_owned()),
+                FileWay::Removed => match files.get_mut(at) {
+                    Some(file @ Some(_)) => *file = None,
+                    _ => lines.push("not there".to_owned()),
+                },
+            }
+            match step.way {
+                FileWay::Both => lines.push(format!("{} {}", shown(&files[0]), shown(&files[1]))),
+                FileWay::Outside => {}
+                _ => lines.push(shown(files.get(at).unwrap_or(&None))),
+            }
+            for line in lines {
+                let _ = writeln!(self.out, "{line}");
+            }
+        }
     }
 
     /// What `ordered{id}` prints: each line read left to right, as `ordered_written` writes it,

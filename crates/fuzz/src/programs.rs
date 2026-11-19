@@ -928,6 +928,43 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every way of a `Filed` step checks, and the evaluator prints what the oracle prints: a write
+    /// through `with fs.create(...)` that fails, passes a failure up or crashes partway leaves the
+    /// file as it was, byte for byte, one that ends replaces it, and a narrowed `Fs` refuses.
+    #[test]
+    fn the_file_write_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, Filing, Program, Stmt};
+        let body = (0..3_usize)
+            .map(|round| {
+                let steps = FILE_WAYS
+                    .iter()
+                    .enumerate()
+                    .map(|(at, way)| {
+                        let pieces: Vec<usize> = (0..=(at + round) % 4)
+                            .map(|piece| (piece + at + round) % FILE_PIECES.len())
+                            .collect();
+                        let stop_at = (at * 3 + round) % (pieces.len() + 1);
+                        FileStep { way: *way, second: (at + round) % 2 == 1, pieces, stop_at }
+                    })
+                    .collect();
+                Stmt::Filed(Filing { id: round + 1, steps })
+            })
+            .collect();
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("crashed\n") && printed.contains("failed Halt"), "{printed}");
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
     /// Every step of an `Ordered` statement checks, and the evaluator prints what the oracle
     /// prints, each line read left to right: a receiver, a field's receiver, a list's and a dict's
     /// method, an index's base, arguments, operators, a list, a text, and writes, each changed by

@@ -1082,6 +1082,68 @@ pub(crate) const ORDER_STEPS: [OrderStep; 15] = [
     OrderStep::Added,
 ];
 
+/// A `Filed` statement: `filed{id}(fs, stdout)`, a folder `d{id}` of its own holding two files,
+/// `f.txt` and `g.txt`, cleared at the start, then written a step at a time, each step followed by
+/// what the file holds. A write through `with fs.create(...)` that fails, passes a failure up with
+/// `?` or crashes partway leaves the file as it was, byte for byte, and one that ends well
+/// replaces it whole.
+#[derive(Clone, Debug)]
+pub(crate) struct Filing {
+    pub(crate) id: usize,
+    pub(crate) steps: Vec<FileStep>,
+}
+
+/// A step of a `Filed` statement: how it writes, to `g.txt` rather than `f.txt` when `second`
+/// says, the pieces it writes, from `FILE_PIECES`, and the piece it stops at, which lets it finish
+/// when it's past the last.
+#[derive(Clone, Debug)]
+pub(crate) struct FileStep {
+    pub(crate) way: FileWay,
+    pub(crate) second: bool,
+    pub(crate) pieces: Vec<usize>,
+    pub(crate) stop_at: usize,
+}
+
+/// How a `Filed` step writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileWay {
+    /// `saved{id}`: `with fs.create(path)?`, failing with `Halt{id}` before the piece it stops at.
+    Saved,
+    /// `questioned{id}`: `with fs.create(path, durable=False)?`, syncing each piece, then passing a
+    /// failure up with `?` after the piece it stops at.
+    Questioned,
+    /// `tasked{id}`: the write in a launched task, which crashes after the piece it stops at. In
+    /// programs with threads.
+    Tasked,
+    /// `both{id}`: `f.txt` and `g.txt` in one `with`, failing between the two writes of the piece
+    /// it stops at, so neither changes.
+    Both,
+    /// `fs.write_text(path, text)`.
+    Plain,
+    /// `fs.read_only().write_text(path, text)`, refused.
+    ReadOnly,
+    /// `fs.only("d{id}").write_text("elsewhere.txt", text)`, refused as outside it.
+    Outside,
+    /// `fs.remove(path)`, which says when nothing's there.
+    Removed,
+}
+
+/// Every `FileWay`, for the generator to pick from.
+pub(crate) const FILE_WAYS: [FileWay; 8] = [
+    FileWay::Saved,
+    FileWay::Questioned,
+    FileWay::Tasked,
+    FileWay::Both,
+    FileWay::Plain,
+    FileWay::ReadOnly,
+    FileWay::Outside,
+    FileWay::Removed,
+];
+
+/// What a `Filed` step writes, a piece at a time: lines, text with no line's end, nothing, a
+/// letter past ASCII and an emoji, and quotes.
+pub(crate) const FILE_PIECES: [&str; 6] = ["one\n", "tw\u{f8} \u{1f98a}\n", "", "three", "\n", "a \"b\" c\n"];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1352,6 +1414,8 @@ pub(crate) enum Stmt {
     Turned(Turning),
     /// `ordered{id}(stdout)`: lines whose parts change what's read before them, read left to right.
     Ordered(InOrder),
+    /// `filed{id}(fs, stdout)`: files written whole or left as they were, a step at a time.
+    Filed(Filing),
     /// `streamed{id}(stdout)`: a generator over `parallel(xs)`, read in one of the ways a stream is.
     Streamed(Streaming),
     /// `aliased{id}(stdout)`: copies of collections and their parts, each changed in place, then

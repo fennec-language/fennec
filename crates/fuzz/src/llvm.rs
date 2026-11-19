@@ -249,7 +249,13 @@ fn ran_on(
 ) -> Result<(Vec<u8>, String, bool), String> {
     let (out, err) = (work.join("stdout"), work.join("stderr"));
     let file = |path: &Path| File::create(path).map_err(|err| format!("{}: {err}", path.display()));
+    // Each run starts in an empty folder of its own, so a program that writes files finds none
+    // left by an earlier run, and none land beside the fuzzer.
+    let folder = work.join("folder");
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
     let mut command = Command::new(executable);
+    command.current_dir(&folder);
     if let Some(threads) = threads {
         command.env("FENNEC_THREADS", threads.to_string());
     }

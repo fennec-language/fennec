@@ -5,8 +5,8 @@
 //!
 //! What each should give is worked out here: `int` reads what Rust's `i64` does from the text
 //! with the space around it left off, `float` what Rust's `f64` does, a sized int an `int` that
-//! fits it, a `u64` what Rust's `u64` does, and a UUID 36 characters with hyphens where they go
-//! and hex digits between.
+//! fits it, a `u64` an `int` that fits it or what Rust's `u64` does past the largest `int`, and a
+//! UUID 36 characters with hyphens where they go and hex digits between.
 
 /// The program that parses the text each way, printing a line for each: its name, then
 /// `Ok(value)` or `Err`. A line missing means a parse stopped the program.
@@ -85,7 +85,14 @@ fn wanted(text: &str) -> Vec<(&'static str, Option<String>)> {
         ("u8", fitting(0, i64::from(u8::MAX))),
         ("u16", fitting(0, i64::from(u16::MAX))),
         ("u32", fitting(0, i64::from(u32::MAX))),
-        ("u64", trimmed.parse::<u64>().ok().map(|n| n.to_string())),
+        // What `int` reads when it isn't below 0, `-0` too, and past the largest `int`, digits
+        // with an optional `+`, as Rust's `u64` reads them.
+        (
+            "u64",
+            whole
+                .map_or_else(|| trimmed.parse::<u64>().ok(), |n| u64::try_from(n).ok())
+                .map(|n| n.to_string()),
+        ),
         ("uuid", uuid(text)),
     ]
 }
@@ -127,6 +134,7 @@ mod tests {
         assert_eq!(given("1_000", "int"), None);
         assert_eq!(given("300", "u8"), None);
         assert_eq!(given("-1", "u64"), None);
+        assert_eq!(given("-0", "u64").as_deref(), Some("0"));
         assert_eq!(given(" 18446744073709551615 ", "u64").as_deref(), Some("18446744073709551615"));
         assert_eq!(given("1e400", "float").as_deref(), Some("inf"));
         assert_eq!(

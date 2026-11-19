@@ -8005,6 +8005,8 @@ def main(stdout: Stdout):
 /// holds, and a dict's set writes a value held in place into its entry's own block: what each
 /// prints, a list shared before it's turned round keeping its order, and the blocks made,
 /// one copy for that shared list and none for a sort, are as pinned, with nothing left held.
+/// The comprehension whose item is `… if … else None` is made with room for every turn, since
+/// every turn appends past the two ways joining.
 #[test]
 fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -> std::io::Result<()> {
     if !ready() {
@@ -8013,7 +8015,7 @@ fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -
     prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
     assert_eq!(
         counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
-        "copies 1 copied_bytes 672 largest_copy 672 allocations 111 allocated_bytes 12032 live 0"
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 110 allocated_bytes 11720 live 0"
     );
     Ok(())
 }

@@ -43,6 +43,12 @@ if [ -f "$ledger" ]; then
 else
   echo "flakes: none, as there's no ledger at $ledger"
 fi
+# Failures that passed once main changed what they test, kept out of the ledger (see `flakes.sh`),
+# counted so one that was a flake after all can still be found.
+fixed_on_main="${FENNEC_HOME:-$HOME/.fennec}/fixed-on-main.log"
+if [ -f "$fixed_on_main" ]; then
+  echo "fixed on main: $(grep -c '^=== fixed on main$' "$fixed_on_main") failures that passed after main changed what they test, in $fixed_on_main"
+fi
 repository=${2:-fennec-language/fennec}
 # With GitHub not answering, every run below would read as none yet, so it's said once, plainly.
 if ! gh api rate_limit > /dev/null 2>&1; then

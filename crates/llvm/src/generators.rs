@@ -250,6 +250,14 @@ impl<'p> Emit<'_, '_, 'p> {
         self.line(&failed);
     }
 
+    /// Ends the program with a string made for the message, letting go of it once the runtime has
+    /// copied its text: a stop in a launched task ends only that task, and the program goes on, so
+    /// the string would outlive it (#2170). A literal's block is never freed, so letting go of one
+    /// here is nothing.
+    pub(crate) fn stop_owned(&mut self, text: &str, span: Span) {
+        self.stop_letting_go(text, span, |emit| emit.release_quietly(text));
+    }
+
     /// Ends the program with a string's text, doing `then` once the failure's set.
     pub(crate) fn stop_then(&mut self, text: &str, span: Span, then: &str) {
         self.declare("declare void @fennec_stop(ptr, i64, i64) #1");
@@ -301,6 +309,8 @@ impl<'p> Emit<'_, '_, 'p> {
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         let at = self.offset(&fields_at, offset);
         let (error, text, message) = (self.temp(), self.temp(), self.temp());
+        // Whether the error's block was made here, to be let go of as it stops.
+        let mut made = false;
         // An error in place goes across as a block made of it.
         if let Kind::Struct(id) | Kind::Enum(id) = held {
             let block = self.new_block(id)?;
@@ -308,11 +318,13 @@ impl<'p> Emit<'_, '_, 'p> {
             self.store_field(&held, &at, &fields, "");
             self.retain_inline(&held, &fields);
             self.line(&format!("{error} = getelementptr inbounds i8, ptr {block}, i64 0"));
+            made = true;
         } else if held == Kind::Str && self.headers() {
             let header = self.temp();
             self.line(&format!("{header} = load {}, ptr {at}", crate::headers::HEADER));
             let block = self.owned_text_block(&header);
             self.line(&format!("{error} = getelementptr inbounds i8, ptr {block}, i64 0"));
+            made = true;
         } else {
             self.line(&format!("{error} = load ptr, ptr {at}"));
         }
@@ -321,7 +333,15 @@ impl<'p> Emit<'_, '_, 'p> {
         self.line(&format!("{message} = call ptr @fennec_str_concat(ptr {prefix}, ptr {text})"));
         // Its notes go under it, a line each.
         let message = self.with_notes_under(&message, &at, &held)?;
-        self.stop_with(&message, span);
+        // The runtime copies the message, so what was made for it is let go of before leaving: a
+        // stop in a launched task ends only that task, and the program goes on (#2170).
+        self.stop_letting_go(&message, span, |emit| {
+            emit.release_quietly(&message);
+            emit.release_quietly(&text);
+            if made {
+                emit.release_block(&error, &held);
+            }
+        });
         self.start_block(&ok);
         match dest {
             Some(dest) => self.get_case_field(dest, result, "Ok", "value"),

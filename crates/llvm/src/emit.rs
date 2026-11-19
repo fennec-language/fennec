@@ -5475,15 +5475,19 @@ def main(stdout: Stdout):
         Ok(())
     }
 
-    /// A loop over `items[k:]` with `k` a number goes through the list from `k`, slicing
-    /// nothing; one from the end still makes the slice.
+    /// A loop over a slice of a list goes through the list between the slice's bounds, slicing
+    /// nothing, whether a bound is a number, from the end or a name; a slice kept as a list is
+    /// still made.
     #[test]
-    fn a_loop_over_a_list_from_a_place_slices_nothing() -> Result<(), String> {
+    fn a_loop_over_a_slice_slices_nothing() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    lines = [\"a\", \"b\", \"c\"]\n    mut joined = \"\"\n    for line in lines[1:]:\n        joined += line\n    stdout.print(joined)\n";
-        let text = text_of(source, "main")?;
-        assert!(!text.contains("@fennec_list_slice("), "{text}");
-        let from_the_end = source.replace("lines[1:]", "lines[-1:]");
-        let text = text_of(&from_the_end, "main")?;
+        for bounds in ["[1:]", "[-1:]", "[:-1]", "[len(joined):len(lines)]"] {
+            let walked = source.replace("[1:]", bounds);
+            let text = text_of(&walked, "main")?;
+            assert!(!text.contains("@fennec_list_slice("), "{bounds}: {text}");
+        }
+        let kept = "def main(stdout: Stdout):\n    lines = [\"a\", \"b\", \"c\"]\n    rest = lines[1:]\n    stdout.print(rest)\n";
+        let text = text_of(kept, "main")?;
         assert!(text.contains("@fennec_list_slice("), "{text}");
         Ok(())
     }

@@ -260,7 +260,7 @@ fn test_file(examples: &[&Example]) -> (String, Vec<usize>) {
         if statements.is_empty() {
             // Only a checked example can be declarations alone, like a whole program's `main`.
             for ((line, place), at) in lines {
-                if place == Place::Import && !imports.iter().any(|(import, _)| import == line) {
+                if place == Place::Import {
                     imports.push((line.clone(), at));
                 } else if place == Place::Declaration {
                     declarations.push((line.clone(), at));
@@ -275,10 +275,7 @@ fn test_file(examples: &[&Example]) -> (String, Vec<usize>) {
         ));
         for ((line, place), at) in lines {
             match place {
-                Place::Import if !imports.iter().any(|(import, _)| import == line) => {
-                    imports.push((line.clone(), at));
-                }
-                Place::Import => {}
+                Place::Import => imports.push((line.clone(), at)),
                 Place::Declaration => declarations.push((line.clone(), at)),
                 Place::Statement => tests.push((format!("    {line}"), at)),
             }
@@ -291,12 +288,47 @@ fn test_file(examples: &[&Example]) -> (String, Vec<usize>) {
     }
     let mut text = String::new();
     let mut from = Vec::new();
+    let imports = merged(imports);
     for (line, at) in imports.into_iter().chain(declarations).chain([(String::new(), 0)]).chain(tests) {
         text.push_str(&line);
         text.push('\n');
         from.push(at);
     }
     (text, from)
+}
+
+/// The examples' imports as one file's: each module imported once, with every name any example
+/// takes from it, in the order they first come, since a name imported on two lines is a mistake.
+/// Each line is shown at the first import it holds.
+fn merged(imports: Vec<(String, usize)>) -> Vec<(String, usize)> {
+    let mut modules: Vec<(String, Vec<String>, usize)> = Vec::new();
+    let mut others: Vec<(String, usize)> = Vec::new();
+    for (line, at) in imports {
+        let Some((module, names)) = line.strip_prefix("from ").and_then(|rest| rest.split_once(" import "))
+        else {
+            if !others.iter().any(|(other, _)| *other == line) {
+                others.push((line, at));
+            }
+            continue;
+        };
+        let names = names.split(',').map(|name| name.trim().to_owned());
+        match modules.iter_mut().find(|(seen, ..)| seen == module) {
+            Some((_, taken, _)) => {
+                for name in names {
+                    if !taken.contains(&name) {
+                        taken.push(name);
+                    }
+                }
+            }
+            None => modules.push((module.to_owned(), names.collect(), at)),
+        }
+    }
+    let mut lines: Vec<(String, usize)> = modules
+        .into_iter()
+        .map(|(module, names, at)| (format!("from {module} import {}", names.join(", ")), at))
+        .collect();
+    lines.extend(others);
+    lines
 }
 
 /// What `fennec test` said, with each place in the test file at `path` shown as the line of the
@@ -325,8 +357,9 @@ fn shown_in_std(said: &str, path: &str, file: &str, from: &[usize]) -> String {
     shown
 }
 
-/// Runs one file's examples as tests in `dir`, or only checks them, those `checked` says. What
-/// `fennec` said when one failed, or `None`.
+/// Runs one file's examples as tests in `dir`, or only checks them, those `checked` says, each in
+/// a file of its own, since each may be a whole program with its own `main`. What `fennec` said
+/// when one failed, or `None`.
 fn run_examples(
     dir: &Path,
     file: &str,
@@ -337,7 +370,11 @@ fn run_examples(
         return Ok(None);
     }
     let (text, from) = test_file(examples);
-    let path = dir.join(format!("{file}_{}.fen", if checked { "checked" } else { "examples" }));
+    let name = match examples.first() {
+        Some(example) if checked => format!("{file}_checked_{}.fen", example.line),
+        _ => format!("{file}_examples.fen"),
+    };
+    let path = dir.join(name);
     std::fs::write(&path, text)?;
     let mut command = fennec_command();
     if checked {
@@ -370,7 +407,11 @@ fn every_example_in_the_standard_librarys_docs_runs_and_holds() {
         std::fs::create_dir_all(&dir)?;
         let (checked, run): (Vec<&Example>, Vec<&Example>) =
             examples.iter().partition(|example| example.checked);
-        Ok([run_examples(&dir, file, &run, false)?, run_examples(&dir, file, &checked, true)?])
+        let mut said = vec![run_examples(&dir, file, &run, false)?];
+        for example in checked {
+            said.push(run_examples(&dir, file, &[example], true)?);
+        }
+        Ok(said)
     })
     .unwrap();
     let failed: Vec<String> = failed.into_iter().flatten().flatten().collect();
@@ -525,4 +566,27 @@ fn an_example_becomes_a_test_given_what_it_names() {
         shown_in_std(said, "/tmp/x/time_examples.fen", "time", &from),
         "error\n  --> crates/syntax/src/stdlib/time.fen:14:5\n"
     );
+}
+
+/// Examples' imports become one line a module, with each name once, so two examples taking the
+/// same name from a module don't import it twice.
+#[test]
+fn examples_imports_are_merged_by_module() {
+    let imports = [
+        ("from std.io import MemoryStream", 3),
+        ("from std import json", 4),
+        ("from std.io import MemoryStream, Reader", 9),
+        ("import std.toml", 12),
+        ("from std import base64", 15),
+        ("import std.toml", 20),
+    ]
+    .map(|(line, at)| (line.to_owned(), at))
+    .to_vec();
+    let wanted = [
+        ("from std.io import MemoryStream, Reader", 3),
+        ("from std import json, base64", 4),
+        ("import std.toml", 12),
+    ]
+    .map(|(line, at)| (line.to_owned(), at));
+    assert_eq!(merged(imports), wanted);
 }

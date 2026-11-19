@@ -3,30 +3,66 @@ from std.string import quoted_input
 ## A length of time, to the nanosecond. Written like `1.5s`, `16ms` or `1h30min`, or made with
 ## `Duration.seconds(0.5)`, `Duration.millis(16)` or `Duration(nanos=...)`. It prints the way
 ## it's written, as `16.666667ms` or `1h30min5s`.
+##
+## ```fennec
+## from std.time import Duration
+## assert Duration.seconds(0.5) == 500ms
+## assert str(1h30min) == "1h30min"
+## ```
 export struct Duration:
     nanos = 0
 
+    ## ```fennec
+    ## from std.time import Duration
+    ## assert Duration.seconds(1.5) == 1500ms
+    ## ```
     def seconds(seconds: float) -> Duration:
         return Duration(nanos=round(seconds * 1_000_000_000.0))
 
+    ## ```fennec
+    ## from std.time import Duration
+    ## assert Duration.millis(16) == 16ms
+    ## ```
     def millis(millis: int) -> Duration:
         return Duration(nanos=millis * 1_000_000)
 
+    ## ```fennec
+    ## from std.time import Duration
+    ## assert Duration.micros(1000) == 1ms
+    ## ```
     def micros(micros: int) -> Duration:
         return Duration(nanos=micros * 1_000)
 
+    ## ```fennec
+    ## from std.time import Duration
+    ## assert Duration.minutes(90) == 1h30min
+    ## ```
     def minutes(minutes: int) -> Duration:
         return Duration(nanos=minutes * 60_000_000_000)
 
+    ## ```fennec
+    ## from std.time import Duration
+    ## assert Duration.hours(2) == 120min
+    ## ```
     def hours(hours: int) -> Duration:
         return Duration(nanos=hours * 3_600_000_000_000)
 
-    ## The same length, forward.
+    ## The same length, forward: `abs(d)` calls it, as `abs` does for a number.
+    ##
+    ## ```fennec
+    ## assert abs(1s - 3s) == 2s
+    ## ```
     def abs(self) -> Duration:
         return Duration(nanos=-self.nanos if self.nanos < 0 else self.nanos)
 
     ## As it's written: under a second in its largest unit, like `16.5ms`, and from a second up
     ## in hours, minutes and seconds, leaving out those that are 0, like `1h30min` or `90.5s`.
+    ##
+    ## ```fennec
+    ## from std.time import Duration
+    ## assert str(Duration.micros(16500)) == "16.5ms"
+    ## assert str(Duration.seconds(5405.0)) == "1h30min5s"
+    ## ```
     def str(self, ref out: StrWriter):
         if self.nanos == 0:
             out.write("0s")
@@ -52,41 +88,87 @@ export struct Duration:
                 out.write(Time._decimal(rest, unit=1_000_000_000, places=9) + "s")
 
     ## The duration in seconds, for moving things by `speed * dt.as_seconds()`.
+    ##
+    ## ```fennec
+    ## assert (1500ms).as_seconds() == 1.5
+    ## ```
     def as_seconds(self) -> float:
         return float(self.nanos) / 1_000_000_000.0
 
+    ## The duration in milliseconds.
+    ## ```fennec
+    ## assert (2s).as_millis() == 2000.0
+    ## ```
     def as_millis(self) -> float:
         return float(self.nanos) / 1_000_000.0
 
+    ## ```fennec
+    ## assert 1min + 30s == 90s
+    ## ```
     def +(self, other: Duration) -> Duration:
         return Duration(nanos=self.nanos + other.nanos)
 
+    ## ```fennec
+    ## assert 1min - 15s == 45s
+    ## ```
     def -(self, other: Duration) -> Duration:
         return Duration(nanos=self.nanos - other.nanos)
 
+    ## ```fennec
+    ## assert 16ms * 3 == 48ms
+    ## ```
     def *(self, times: int) -> Duration:
         return Duration(nanos=self.nanos * times)
 
+    ## ```fennec
+    ## assert 16ms < 1s
+    ## ```
     def <(self, other: Duration) -> bool:
         return self.nanos < other.nanos
 
 ## A moment, read from a `Clock`. Subtract two to get the `Duration` between them.
+##
+## ```fennec
+## start = clock.now()
+## clock.sleep(1s)
+## assert clock.now() - start == 1s
+## ```
 export struct Instant:
     ## Nanoseconds since the clock started.
     nanos = 0
 
+    ## ```fennec
+    ## start = clock.now()
+    ## clock.sleep(250ms)
+    ## assert clock.now() - start == 250ms
+    ## ```
     def -(self, earlier: Instant) -> Duration:
         return Duration(nanos=self.nanos - earlier.nanos)
 
+    ## ```fennec
+    ## deadline = clock.now() + 5s
+    ## assert clock.now() < deadline
+    ## ```
     def +(self, later: Duration) -> Instant:
         return Instant(nanos=self.nanos + later.nanos)
 
+    ## ```fennec
+    ## before = clock.now()
+    ## clock.sleep(1ms)
+    ## assert before < clock.now()
+    ## ```
     def <(self, other: Instant) -> bool:
         return self.nanos < other.nanos
 
 ## A moment in UTC, to the nanosecond, as `clock.time()` reads it, for saving and showing:
 ## `clock.now()` is the one for measuring, since this one can jump when the system's clock is
 ## set. It prints as RFC 3339 text, like `2026-11-06T21:55:56Z`, which `Time.parse` reads back.
+##
+## ```fennec
+## from std.time import Time
+## moment = Time.utc(year=2026, month=11, day=6, hour=21)?
+## assert str(moment) == "2026-11-06T21:00:00Z"
+## ```
 export struct Time:
     ## Nanoseconds since 1970-01-01T00:00:00Z, negative before it. An `int` holds the years from
     ## 1678 to 2261.
@@ -96,6 +178,12 @@ export struct Time:
     ## `Time.utc(year=2026, month=11, day=6, hour=21)`. Fails on a date the calendar doesn't
     ## have, like February 30th, on a time of day past `23:59:59`, and on a year outside 1678 to
     ## 2261.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.utc(year=2026, month=11, day=6)?.iso() == "2026-11-06T00:00:00Z"
+    ## assert Time.utc(year=2026, month=2, day=30) fails InvalidValue()
+    ## ```
     def utc(
         year: int,
         month: int,
@@ -123,6 +211,12 @@ export struct Time:
     ## `2026-11-06T23:55:56.25+02:00`. `t` and `z` may be lowercase, and a space may stand for the
     ## `T`. Digits past nanoseconds are left off. A moment outside the years from 1678 to 2261 in
     ## UTC fails, even when its offset is what takes it there.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T23:55:56.25+02:00")?.iso() == "2026-11-06T21:55:56.25Z"
+    ## assert Time.parse("yesterday") fails ParseError()
+    ## ```
     def parse(text: str) -> Time fails ParseError:
         if len(text) < 20: fail Time._not_rfc3339(text, at=len(text))
         for at, wanted in [(4, "-"), (7, "-"), (13, ":"), (16, ":")]:
@@ -189,48 +283,104 @@ export struct Time:
         return Time(nanos=moment)
 
     ## The year, like 2026.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.year() == 2026
+    ## ```
     def year(self) -> int:
         year, _, _ = Time._date_of_days(self.days())
         return year
 
     ## The month, from 1 for January to 12 for December.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.month() == 11
+    ## ```
     def month(self) -> int:
         _, month, _ = Time._date_of_days(self.days())
         return month
 
     ## The day of the month, from 1.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.day() == 6
+    ## ```
     def day(self) -> int:
         _, _, day = Time._date_of_days(self.days())
         return day
 
+    ## The hour of the day, from 0 to 23.
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.hour() == 21
+    ## ```
     def hour(self) -> int:
         return self.nanos % 86_400_000_000_000 // 3_600_000_000_000
 
+    ## The minute of the hour, from 0 to 59.
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.minute() == 55
+    ## ```
     def minute(self) -> int:
         return self.nanos % 3_600_000_000_000 // (60_000_000_000)
 
+    ## The second of the minute, from 0 to 59.
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.second() == 56
+    ## ```
     def second(self) -> int:
         return self.nanos % (60_000_000_000) // 1_000_000_000
 
     ## The nanoseconds past the second, from 0 to 999,999,999.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56.25Z")?.nanosecond() == 250_000_000
+    ## ```
     def nanosecond(self) -> int:
         return self.nanos % 1_000_000_000
 
     ## The day of the week, from 0 for Monday to 6 for Sunday, as Python counts them.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.weekday() == 4
+    ## ```
     def weekday(self) -> int:
         # 1970-01-01 was a Thursday.
         return (self.days() + 3) % 7
 
     ## The day of the year, from 1 for January 1st.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.day_of_year() == 310
+    ## ```
     def day_of_year(self) -> int:
         return self.days() - Time._days_from_date(self.year(), month=1, day=1) + 1
 
     ## Whole days since 1970-01-01, negative before it.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("1970-01-02T12:00:00Z")?.days() == 1
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.days() == 20763
+    ## ```
     def days(self) -> int:
         return self.nanos // 86_400_000_000_000
 
     ## RFC 3339 text in UTC, like `2026-11-06T21:55:56Z`, with as many digits of a fraction of a
     ## second as it needs, like `2026-11-06T21:55:56.25Z`.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56.250Z")?.iso() == "2026-11-06T21:55:56.25Z"
+    ## ```
     def iso(self) -> str:
         year, month, day = Time._date_of_days(self.days())
         mut text = f"{Time._padded(year, width=4)}-{Time._padded(month, width=2)}-{Time._padded(day, width=2)}"
@@ -245,6 +395,13 @@ export struct Time:
     ## whole, `%b` and `%B` the month's, `%y` the year's last two digits, `%z` the offset, which
     ## is `+0000`, `%Z` the zone, which is `UTC`, and `%%` a `%`. Anything else is written as
     ## it is.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## moment = Time.parse("2026-11-06T21:55:56Z")?
+    ## assert moment.format("%Y-%m-%d %H:%M") == "2026-11-06 21:55"
+    ## assert moment.format("%a %d %b") == "Fri 06 Nov"
+    ## ```
     def format(self, pattern: str) -> str:
         mut out = StrWriter()
         mut at = 0
@@ -259,6 +416,11 @@ export struct Time:
         return out.text()
 
     ## What a `format` directive writes, without its `%`.
+    ##
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-11-06T21:55:56Z")?.directive("B") == "November"
+    ## ```
     def directive(self, code: str) -> str?:
         if code == "Y": return Time._padded(self.year(), width=4)
         if code == "y": return Time._padded(self.year() % 100, width=2)
@@ -278,15 +440,39 @@ export struct Time:
         if code == "%": return "%"
         return None
 
+    ## Writes it as RFC 3339 text, as `iso` does.
+    ## ```fennec
+    ## from std.time import Time
+    ## moment = Time.parse("2026-11-06T21:55:56Z")?
+    ## assert f"at {moment}" == "at 2026-11-06T21:55:56Z"
+    ## ```
     def str(self, ref out: StrWriter):
         out.write(self.iso())
 
+    ## The time from `earlier` to this moment.
+    ## ```fennec
+    ## from std.time import Time
+    ## start = Time.parse("2026-11-06T21:00:00Z")?
+    ## end = Time.parse("2026-11-06T22:30:00Z")?
+    ## assert end - start == 1h30min
+    ## ```
     def -(self, earlier: Time) -> Duration:
         return Duration(nanos=self.nanos - earlier.nanos)
 
+    ## The moment `later` after this one.
+    ## ```fennec
+    ## from std.time import Time
+    ## start = Time.parse("2026-11-06T23:30:00Z")?
+    ## assert (start + 1h).iso() == "2026-11-07T00:30:00Z"
+    ## ```
     def +(self, later: Duration) -> Time:
         return Time(nanos=self.nanos + later.nanos)
 
+    ## Whether this moment is before `other`.
+    ## ```fennec
+    ## from std.time import Time
+    ## assert Time.parse("2026-01-01T00:00:00Z")? < Time.parse("2026-11-06T00:00:00Z")?
+    ## ```
     def <(self, other: Time) -> bool:
         return self.nanos < other.nanos
 
@@ -369,9 +555,22 @@ export struct Time:
 ## A `Time` saves as its RFC 3339 text, as APIs and files write a time, and a `Duration` as its
 ## nanoseconds. An `Instant` is a reading of a clock that only measures, so it doesn't save.
 extend Time:
+    ## Writes it as its RFC 3339 text, for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## from std.time import Time
+    ## assert json.dumps(Time.parse("2026-11-06T21:55:56Z")?) == "\"2026-11-06T21:55:56Z\""
+    ## ```
     def serialize(self, ref out: Serializer):
         out.text(self.iso())
 
+    ## Reads it from RFC 3339 text, for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## from std.time import Time
+    ## moment = json.loads[Time]("\"2026-11-06T21:55:56Z\"")?
+    ## assert moment.year() == 2026
+    ## ```
     def deserialize(ref src: Deserializer) -> Time fails ParseError:
         text = src.text()?
         return Time.parse(text) except ParseError(): fail src.here(
@@ -379,8 +578,19 @@ extend Time:
         )
 
 extend Duration:
+    ## Writes it as its nanoseconds, for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps(1500ms) == "1500000000"
+    ## ```
     def serialize(self, ref out: Serializer):
         out.int(self.nanos)
 
+    ## Reads it from its nanoseconds, for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## from std.time import Duration
+    ## assert json.loads[Duration]("1500000000")? == 1500ms
+    ## ```
     def deserialize(ref src: Deserializer) -> Duration fails ParseError:
         return Duration(nanos=src.int()?)

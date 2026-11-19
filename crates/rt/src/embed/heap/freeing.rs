@@ -15,10 +15,53 @@ use crate::value::Value;
 /// that had no other owner, all the way down.
 ///
 /// Program code only runs here for a generator let go partway, by the function its shape was
-/// given with `set_abandon`. So freeing a block whose type holds no such generator and no
-/// `del` runs no program code.
+/// given with `set_abandon`: what closes what it holds, which can fail. So it can fail, and
+/// native code reads the failure flag after it, as after any call that can. It closes every
+/// generator waiting to be, including those [`free_plain`] and the runtime left waiting.
 pub extern "C" fn free(address: i64) {
-    let abandoning = with(|state| {
+    let_go(address);
+    run_abandons();
+}
+
+/// `free`, for a block whose type can't hold or reach a generator that closes something when it's
+/// let go partway, which the compiler worked out: it runs no program code, so it can't fail, and
+/// native code reads no flag after it. What other threads let go of is freed here too, as `free`
+/// does, but a generator that leaves to close waits for the next `free`, or for the end of the
+/// task or the run, which native code checks. A debug build, which tests run, stops if this block
+/// was such a generator or held one, so a wrong proof shows where it's made.
+#[inline]
+pub extern "C" fn free_plain(address: i64) {
+    if cfg!(debug_assertions) {
+        return free_plain_checked(address);
+    }
+    let_go(address);
+}
+
+/// [`free_plain`] in a debug build: it stops if the block, or what it held, was a generator let go
+/// partway, which a free that runs no program code mustn't find.
+#[cold]
+fn free_plain_checked(address: i64) {
+    let waiting = with(|state| {
+        if crate::embed::threads::any_waiting() {
+            free_waiting(state);
+        }
+        state.heap.abandoning.len()
+    });
+    let_go(address);
+    if with(|state| state.heap.abandoning.len()) > waiting {
+        super::runtime_bug(
+            "a free that runs no program code let go of a generator stopped partway, which has something to close",
+        );
+    }
+}
+
+/// What both frees do: frees what other threads let go of last, then the block. Kept a function of
+/// its own, so its fast path for strings and plain lists is written once and inlined here, as it
+/// was into `free` when `free` was the only one, and it gives back nothing: what a free that runs
+/// no program code doesn't need costs every free.
+#[inline(never)]
+fn let_go(address: i64) {
+    with(|state| {
         // What other threads let go of last waits for this one, which made it, to free it.
         if crate::embed::threads::any_waiting() {
             free_waiting(state);
@@ -27,11 +70,7 @@ pub extern "C" fn free(address: i64) {
         if !free_plain_list(state, address) {
             free_block(state, address);
         }
-        !state.heap.abandoning.is_empty()
     });
-    if abandoning {
-        run_abandons();
-    }
 }
 
 /// Frees a string or a list whose items hold nothing of this thread's, the most usual blocks let
@@ -95,12 +134,12 @@ fn stray(address: u64) {
 }
 
 /// `free`, for a block native code knows is a string's. A string's block holds no
-/// addresses, so freeing it needs none of the looking `free` does. A block that isn't a
-/// string's is freed as `free` would.
+/// addresses, so freeing it needs none of the looking `free` does, and runs no program code. A
+/// block that isn't a string's is freed as [`free_plain`] would.
 pub extern "C" fn free_text(address: i64) {
-    // Another thread counted it: `free` waits for that.
+    // Another thread counted it: `free_plain` waits for that.
     if crate::embed::threads::held_elsewhere(address.cast_unsigned()) {
-        free(address);
+        free_plain(address);
         return;
     }
     let freed = with(|state| {
@@ -119,8 +158,15 @@ pub extern "C" fn free_text(address: i64) {
         Some(())
     });
     if freed.is_none() {
-        free(address);
+        free_plain(address);
     }
+}
+
+/// `fennec_close_waiting()`: closes the generators let go of partway that wait to be, as a change
+/// to a list or a dict in the runtime leaves those it lets go of, at the line that let go of them.
+/// It can fail, as `free` can.
+pub extern "C" fn close_waiting() {
+    run_abandons();
 }
 
 /// Says what closes what's open in a generator with this shape that's let go partway. Only
@@ -175,9 +221,19 @@ fn take_up_abandons(state: &mut State) {
 /// isn't expecting a failure there. The rest are closed first, with the crash held aside, as a
 /// crash's cleanup holds one; a later one that crashes too is said, and the first goes on. In a
 /// launched task it stops only that task, as any crash does: the crash stays this thread's,
-/// which the task's code finds at its next check. Anywhere else it ends the program on the spot.
+/// which the task's code finds right after the free, where it reads the flag, and leaves by.
+/// Anywhere else it ends the program on the spot.
+///
+/// A crash already set, as when what a failed function owned is let go of on its way out, or as a
+/// task that crashed ends, is held aside while they close, as a crash's cleanup holds it, since
+/// the code that closes them reads the flag after each call it makes. One of them crashing too is
+/// said, and the first crash goes on.
 pub(in crate::embed) fn run_abandons() {
-    let mut held = None;
+    if with(|state| state.heap.abandoning.is_empty()) {
+        return;
+    }
+    let crashed = crate::embed::failed();
+    let mut held = crashed.then(|| crate::embed::cleanup::crash_hold());
     while let Some((address, abandon)) = with(next_abandoned) {
         // It reads where the generator stopped to know what's open.
         abandon(i64::try_from(address).unwrap_or(0));
@@ -197,7 +253,7 @@ pub(in crate::embed) fn run_abandons() {
     }
     if let Some(first) = held {
         crate::embed::cleanup::crash_resume(first);
-        if !crate::embed::threads::in_a_task() {
+        if !crashed && !crate::embed::threads::in_a_task() {
             crate::embed::aot::stop_for_failure();
         }
     }

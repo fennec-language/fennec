@@ -825,6 +825,172 @@ fn a_loop_wraps_its_generator_s_failure_and_owns_one_inside_enumerate_or_zip() {
     );
 }
 
+/// A generator that can fail, given a name and let go of partway, leaves at its `yield` where
+/// compiled code frees it: as its function ends, or as its name is given another. Each `with` it's
+/// in runs its cleanup there, and a cleanup that fails stops the program, with compiled code's
+/// words, even where the function was failing. One made in an inner block, or two let go of at
+/// once, are still refused: compiled code frees the first later than the block's end, and the two
+/// in an order it doesn't promise. What each prints is what the compiled program printed (#2127).
+#[test]
+fn a_generator_let_go_of_partway_runs_its_cleanup_where_compiled_code_frees_it() {
+    let stopped = "a generator's cleanup failed as it was let go by its last owner: Full(left=0)";
+    for (body, expected, stops) in [
+        (LET_GO_AT_THE_END, "got 1\nafter the loop\nstill in run\nclosing a\n", true),
+        (
+            LET_GO_FOR_ANOTHER,
+            "got 1\nbefore reassigning\nclosing first\nafter reassigning\ngot again 1\nend of run\nclosing second\nafter run\n",
+            false,
+        ),
+        (LET_GO_AFTER_MORE, "got 1\nafter the loop\nlater 0\nlater 1\nclosing d\nafter run\n", false),
+        (LET_GO_AS_IT_FAILS, "got 1\nfailing now\nclosing f\n", true),
+        (LET_GO_IN_A_LIST, "got 1\nend of run\nclosing held\n", true),
+    ] {
+        let (printed, ended) = ran(&format!("{LETTING_GO}{body}"));
+        assert_eq!(printed, expected, "{body}");
+        if stops {
+            assert!(matches!(&ended, Ended::Stopped(said) if said.contains(stopped)), "{ended:?}");
+        } else {
+            assert_eq!(ended, Ended::Exited(0));
+        }
+    }
+    for body in [LET_GO_IN_AN_IF, LET_GO_TWO_AT_ONCE] {
+        let (_, ended) = ran(&format!("{LETTING_GO}{body}"));
+        assert!(matches!(ended, Ended::Unsupported(_)), "{ended:?}");
+    }
+}
+
+const LETTING_GO: &str = r#"error Full:
+    left: int
+
+struct Door:
+    name: str
+
+def source(name: str, failing: bool, stdout: Stdout) -> with Door fails Full:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    if failing:
+        fail Full(left=0)
+
+def numbers(name: str, failing: bool, stdout: Stdout) -> Iterator[int] fails Full:
+    with source(name, failing, stdout)? as door:
+        yield 1
+        yield 2
+        yield 3
+
+"#;
+
+const LET_GO_AT_THE_END: &str = r#"def run(stdout: Stdout) fails Full:
+    made = numbers("a", failing=True, stdout=stdout)?
+    for n in made:
+        stdout.print("got", n)
+        break
+    stdout.print("after the loop")
+    stdout.print("still in run")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_FOR_ANOTHER: &str = r#"def run(stdout: Stdout) fails Full:
+    mut made = numbers("first", failing=False, stdout=stdout)?
+    for n in made:
+        stdout.print("got", n)
+        break
+    stdout.print("before reassigning")
+    made = numbers("second", failing=False, stdout=stdout)?
+    stdout.print("after reassigning")
+    for n in made:
+        stdout.print("got again", n)
+        break
+    stdout.print("end of run")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_AFTER_MORE: &str = r#"def run(stdout: Stdout) fails Full:
+    made = numbers("d", failing=False, stdout=stdout)?
+    for n in made:
+        stdout.print("got", n)
+        break
+    stdout.print("after the loop")
+    for i in range(2):
+        stdout.print("later", i)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_AS_IT_FAILS: &str = r#"error Other:
+    code: int
+
+def run(stdout: Stdout) fails Full | Other:
+    made = numbers("f", failing=True, stdout=stdout)?
+    for n in made:
+        stdout.print("got", n)
+        break
+    stdout.print("failing now")
+    fail Other(code=7)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_IN_A_LIST: &str = r#"def run(stdout: Stdout) fails Full:
+    held = [numbers("held", failing=True, stdout=stdout)?]
+    for made in held:
+        for n in made:
+            stdout.print("got", n)
+            break
+    stdout.print("end of run")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_IN_AN_IF: &str = r#"def run(stdout: Stdout, go: bool) fails Full:
+    if go:
+        made = numbers("c", failing=False, stdout=stdout)?
+        for n in made:
+            stdout.print("got", n)
+            break
+        stdout.print("end of if")
+    stdout.print("after if")
+
+def main(stdout: Stdout):
+    run(stdout, go=True) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_TWO_AT_ONCE: &str = r#"def run(stdout: Stdout) fails Full:
+    first = numbers("one", failing=False, stdout=stdout)?
+    second = numbers("two", failing=False, stdout=stdout)?
+    for n in first:
+        stdout.print("first", n)
+        break
+    for n in second:
+        stdout.print("second", n)
+        break
+    stdout.print("end of run")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
 const GENERATORS_ZIPPED_BOTH: &str = r#"error Shut:
     name: str
 

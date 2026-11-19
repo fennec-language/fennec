@@ -36,6 +36,11 @@ fennec-syntax.workspace = true
 # Lets Ctrl-C go by while `fennec run`'s program stops, as the program sees it too.
 ctrlc.workspace = true
 
+# The build daemon puts a file in standard output's and error's place while it runs a build, to send
+# what the build printed back to the command that asked for it (see the workspace's `rustix`).
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 fennec-loader.workspace = true
 fennec-temp.workspace = true

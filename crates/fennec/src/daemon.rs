@@ -1,8 +1,9 @@
-//! The build daemon: one per user and Fennec version, started by the first command that needs
-//! it, keeping the build engine's state in memory between commands. It's never needed for
-//! correctness: when it can't be reached or started, a command does the work itself.
+//! The build daemon: one per user, Fennec build and build environment, started by the first command
+//! that needs it, keeping the build engine's state in memory between commands. It's never needed
+//! for correctness: when it can't be reached or started, a command does the work itself.
 //!
-//! A command connects to `~/.fennec/daemon/<version>-<build>.sock` (see `unix::socket_path`), sends
+//! A command connects to `~/.fennec/daemon/<version>-<build>-<environment>.sock` (see
+//! `unix::socket_path`), sends
 //! `fennec <version> <build>` and its request one line each, and reads back its exit code and what to
 //! print. The build is the hash of all of Fennec's source (`FENNEC_BUILD`), so a command never talks
 //! to a daemon built from other source, even of the same version, which would answer with what an
@@ -14,7 +15,14 @@
 //! `fennec lsp` sends `lsp` and then keeps the connection open: the daemon serves the
 //! language server's session over it until the editor is done.
 //!
-//! `fennec daemon status` and `fennec daemon stop` manage it. It exits by itself after ten
+//! `fennec build` sends `build` with its folder and arguments, and keeps the connection open while
+//! the daemon builds: one build at a time, in the command's folder, with what it prints sent back.
+//! The environment is part of the socket's name, so the build runs in the command's own, as
+//! `cc` and the linker see it. A command that goes before the answer, as with Ctrl-C, stops the
+//! build. Under CI it's built in the command's own process, as a first build is.
+//!
+//! `fennec daemon status` and `fennec daemon stop` manage every daemon of this build the user has
+//! running, one for each environment commands ran in. Each exits by itself after thirty
 //! minutes with nothing to do; `FENNEC_DAEMON_IDLE` sets that in seconds. `FENNEC_NO_DAEMON`
 //! makes commands do their work in-process.
 
@@ -72,17 +80,24 @@ pub(crate) fn command(action: &str) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match action {
+        // Every daemon of this build the user has running is reached, one for each environment
+        // commands ran in, so a terminal set up another way still sees and stops them all.
         "status" => {
-            if let unix::Reply::Answered(outcome) = unix::send(&home, &["status"]) {
-                outcome.print()
-            } else {
+            let answers = unix::ask_every(&home, &["status"]);
+            if answers.is_empty() {
                 println!("not running");
-                ExitCode::SUCCESS
             }
+            for answer in answers {
+                print!("{}", answer.stdout);
+            }
+            ExitCode::SUCCESS
         }
         "stop" => {
-            let stopped = matches!(unix::send(&home, &["stop"]), unix::Reply::Answered(_));
-            println!("{}", if stopped { "stopped" } else { "not running" });
+            match unix::ask_every(&home, &["stop"]).len() {
+                0 => println!("not running"),
+                1 => println!("stopped"),
+                stopped => println!("stopped {stopped} daemons"),
+            }
             ExitCode::SUCCESS
         }
         "serve" => unix::serve(&home),
@@ -100,6 +115,25 @@ pub(crate) fn ask(home: &Path, request: &[&str]) -> Option<Outcome> {
         return None;
     }
     unix::ask_within(home, request, unix::REPLY_WAIT)
+}
+
+/// `fennec build` made by the daemon, which starts first if it isn't running: how it ended, once
+/// what it printed is printed here. None means it's to be built here: under CI, where what's
+/// measured is a build on its own, with `FENNEC_NO_DAEMON`, or when no daemon answers.
+pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> Option<ExitCode> {
+    if std::env::var_os("FENNEC_NO_DAEMON").is_some() || std::env::var_os("CI").is_some() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let home = fennec_build::fennec_home()?;
+        unix::build(&home, path, output, release)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, output, release);
+        None
+    }
 }
 
 /// A connection to the daemon serving a language server session, starting the daemon first
@@ -122,6 +156,7 @@ mod unix {
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
     use std::process::{ExitCode, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::{Duration, Instant};
 
@@ -151,9 +186,59 @@ mod unix {
         socket_in(home, std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from), makes)
     }
 
+    /// The variables that differ from one terminal to the next and change nothing a build does,
+    /// left out of the environment's hash so one terminal's daemon serves the others'.
+    const PER_TERMINAL: [&str; 15] = [
+        "_",
+        "COLORFGBG",
+        "ITERM_PROFILE",
+        "ITERM_SESSION_ID",
+        "LC_TERMINAL",
+        "LC_TERMINAL_VERSION",
+        "OLDPWD",
+        "PWD",
+        "SHLVL",
+        "SSH_TTY",
+        "TERM_PROGRAM",
+        "TERM_PROGRAM_VERSION",
+        "TERM_SESSION_ID",
+        "TMUX_PANE",
+        "WINDOWID",
+    ];
+
+    /// What the allocator's own settings start with. They change how a process holds memory, not
+    /// what a build makes, and the daemon is started with one of its own (`start`).
+    const ALLOCATOR: &str = "MIMALLOC_";
+
+    /// A short hash of this process's environment but for what's only a terminal's: a daemon
+    /// builds in the environment it was started in, which `cc`, the linker and every setting read,
+    /// so a command whose environment differs has a daemon of its own.
+    fn environment() -> String {
+        environment_of(std::env::vars_os())
+    }
+
+    /// `environment`, of these variables.
+    fn environment_of(variables: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>) -> String {
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut variables: Vec<(std::ffi::OsString, std::ffi::OsString)> = variables
+            .filter(|(name, _)| !PER_TERMINAL.iter().any(|terminal| name == terminal))
+            .filter(|(name, _)| !name.as_bytes().starts_with(ALLOCATOR.as_bytes()))
+            .collect();
+        variables.sort();
+        let mut text = Vec::new();
+        for (name, value) in &variables {
+            text.extend_from_slice(name.as_bytes());
+            text.push(0);
+            text.extend_from_slice(value.as_bytes());
+            text.push(0);
+        }
+        let hash = fennec_blake3::hash(&text).to_hex();
+        hash.get(..16).unwrap_or(&hash).to_owned()
+    }
+
     /// `socket_path`, with the user's runtime folder as given.
     fn socket_in(home: &Path, runtime: Option<PathBuf>, makes: bool) -> Option<PathBuf> {
-        let name = format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD));
+        let name = format!("{}{}.sock", this_build(), environment());
         // Wherever it is, its folder is its user's alone: connecting needs a way into the folder,
         // so nobody else can reach the daemon, which reads any file it's pointed at.
         let preferred = home.join("daemon").join(&name);
@@ -161,8 +246,7 @@ mod unix {
             owned_privately(&home.join("daemon"), home, makes)?;
             return Some(preferred);
         }
-        let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
-        let hash = hash.get(..16).unwrap_or(&hash);
+        let hash = home_hash(home);
         // The user's own runtime folder, which only they can reach, as long as it is theirs alone.
         if let Some(runtime) = runtime.filter(|runtime| owned_privately(runtime, home, false).is_some()) {
             let socket = runtime.join(format!("fennec-{hash}-{name}"));
@@ -173,6 +257,46 @@ mod unix {
         let folder = Path::new("/tmp").join(format!("fennec-{hash}"));
         owned_privately(&folder, home, makes)?;
         Some(folder.join(name))
+    }
+
+    /// How every socket of this build of Fennec starts: its version, then its build.
+    fn this_build() -> String {
+        format!("{VERSION}-{}-", BUILD.get(..16).unwrap_or(BUILD))
+    }
+
+    /// A short hash of Fennec's folder, naming its sockets outside it.
+    fn home_hash(home: &Path) -> String {
+        let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
+        hash.get(..16).unwrap_or(&hash).to_owned()
+    }
+
+    /// The sockets of this build's daemons, one for each environment commands ran in, in every
+    /// folder `socket_in` may choose. A folder that isn't the user's alone is passed over.
+    fn sockets(home: &Path) -> Vec<PathBuf> {
+        let hash = home_hash(home);
+        let mut folders = vec![(home.join("daemon"), String::new())];
+        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+            folders.push((PathBuf::from(runtime), format!("fennec-{hash}-")));
+        }
+        folders.push((Path::new("/tmp").join(format!("fennec-{hash}")), String::new()));
+        let mut found = Vec::new();
+        for (folder, prefix) in folders {
+            let start = format!("{prefix}{}", this_build());
+            let Some(entries) =
+                owned_privately(&folder, home, false).and_then(|()| std::fs::read_dir(&folder).ok())
+            else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(&start) && name.ends_with(".sock") {
+                    found.push(entry.path());
+                }
+            }
+        }
+        found.sort();
+        found
     }
 
     /// Whether `folder` will do for a socket: open to nobody but its owner, who owns Fennec's
@@ -273,7 +397,7 @@ mod unix {
     /// How long the daemon waits with nothing to do before it exits.
     fn idle_limit() -> Duration {
         let seconds =
-            std::env::var("FENNEC_DAEMON_IDLE").ok().and_then(|text| text.parse().ok()).unwrap_or(600);
+            std::env::var("FENNEC_DAEMON_IDLE").ok().and_then(|text| text.parse().ok()).unwrap_or(1_800);
         Duration::from_secs(seconds)
     }
 
@@ -306,13 +430,30 @@ mod unix {
         Unanswered,
     }
 
-    pub(super) fn send(home: &Path, request: &[&str]) -> Reply {
-        send_within(home, request, REPLY_WAIT)
+    /// Sends a request to every daemon of this build the user has running, and gives back the
+    /// answers of those that answered.
+    pub(super) fn ask_every(home: &Path, request: &[&str]) -> Vec<Outcome> {
+        sockets(home)
+            .iter()
+            .filter_map(|socket| match send_at(socket, home, request, REPLY_WAIT) {
+                Reply::Answered(outcome) => Some(outcome),
+                Reply::Unreached | Reply::Unanswered => None,
+            })
+            .collect()
     }
 
-    /// `send`, waiting at most `wait` for the answer.
+    /// Sends a request to the daemon for this command's environment, waiting at most `wait` for
+    /// the answer.
     fn send_within(home: &Path, request: &[&str], wait: Duration) -> Reply {
-        let Some(mut stream) = socket_path(home, false).and_then(|socket| connect(&socket, home)) else {
+        match socket_path(home, false) {
+            Some(socket) => send_at(&socket, home, request, wait),
+            None => Reply::Unreached,
+        }
+    }
+
+    /// `send_within`, to the daemon listening at `socket`.
+    fn send_at(socket: &Path, home: &Path, request: &[&str], wait: Duration) -> Reply {
+        let Some(mut stream) = connect(socket, home) else {
             return Reply::Unreached;
         };
         let message = format!("{}\n{}\n", header(), request.join("\n"));
@@ -352,13 +493,51 @@ mod unix {
         Some(stream)
     }
 
+    /// `fennec build`, asked of the daemon, started first if none is running: how it ended, once what
+    /// it printed is printed here. None when it's to be built here: a request that can't be sent as
+    /// lines, no daemon, or one that went without a whole answer, which says so in a line.
+    pub(super) fn build(home: &Path, path: &str, output: Option<&str>, release: bool) -> Option<ExitCode> {
+        let folder = std::env::current_dir().ok()?;
+        let folder = folder.to_str()?;
+        let output = output.unwrap_or(NO_OUTPUT);
+        if [folder, path, output].iter().any(|line| line.contains('\n') || line.contains('\r')) {
+            return None;
+        }
+        let mode = if release { "release" } else { "dev" };
+        let request = format!("{}\nbuild\n{folder}\n{path}\n{output}\n{mode}\nend\n", header());
+        let socket = socket_path(home, false)?;
+        let mut stream = if let Some(stream) = connect(&socket, home) {
+            stream
+        } else {
+            start(home)?;
+            connect(&socket, home)?
+        };
+        // The connection stays open while the daemon builds: closing it stops the build.
+        let mut reply = String::new();
+        let answered =
+            stream.write_all(request.as_bytes()).is_ok() && stream.read_to_string(&mut reply).is_ok();
+        if let Some(outcome) = Outcome::decode(&reply).filter(|_| answered) {
+            Some(outcome.print())
+        } else {
+            eprintln!("note: the build daemon gave no answer, so this was built here");
+            None
+        }
+    }
+
+    /// What a `build` request says for a build with no output named.
+    const NO_OUTPUT: &str = "-";
+
     /// Starts the daemon in the background and waits until it answers, for up to 2 seconds.
     pub(super) fn start(home: &Path) -> Option<()> {
         let socket = socket_path(home, false)?;
         let exe = std::env::current_exe().ok()?;
-        // The daemon outlives the command that starts it, so it's never waited for.
+        // The daemon outlives the command that starts it, so it's never waited for. It gives what a
+        // build let go of back to the system at once: mimalloc otherwise does so only as later
+        // allocations come, which an idle daemon never makes, and a 200k-line build left 2.2 GB held
+        // through the idle half hour. That costs a build about 0.8% more instructions.
         let _daemon = std::process::Command::new(exe)
             .args(["daemon", "serve"])
+            .env("MIMALLOC_PURGE_DELAY", "0")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -469,6 +648,39 @@ mod unix {
         if lines.read_line(&mut header).is_err() || lines.read_line(&mut kind).is_err() {
             return;
         }
+        if kind.trim_end() == "build" {
+            // A daemon of other source says nothing, so the command builds it itself.
+            if header.trim_end() != self::header() {
+                return;
+            }
+            let mut fields = Vec::new();
+            for _ in 0..5 {
+                let mut line = String::new();
+                if (&mut reader).take(LONGEST_LINE).read_line(&mut line).is_err() || !line.ends_with('\n') {
+                    return;
+                }
+                fields.push(line.trim_end_matches('\n').to_owned());
+            }
+            let [folder, path, output, mode, end] = fields.as_slice() else { return };
+            if end != "end" || !matches!(mode.as_str(), "release" | "dev") {
+                return;
+            }
+            let output = (output != NO_OUTPUT).then_some(output.as_str());
+            // A build takes as long as it takes, and what watches for the command going reads
+            // the same connection, so it has no deadline from here.
+            reader.get_mut().until = None;
+            if reader.get_ref().stream.set_read_timeout(None).is_err() {
+                return;
+            }
+            let Some(outcome) = built(state, &writer, (folder, path, output), mode == "release") else {
+                return;
+            };
+            let _ = writer.write_all(outcome.encode().as_bytes());
+            // The answer ends here, though what watches for the command going holds the
+            // connection still: the command reads to the end, then closes it.
+            let _ = writer.shutdown(std::net::Shutdown::Write);
+            return;
+        }
         if header.trim_end() == self::header() && kind.trim_end() == "lsp" {
             // An editor's session is quiet for as long as nobody types.
             reader.get_mut().until = None;
@@ -486,6 +698,106 @@ mod unix {
         let request = format!("{header}{kind}{rest}");
         let outcome = handle(&request, &mut state.lock().unwrap_or_else(PoisonError::into_inner));
         let _ = writer.write_all(outcome.encode().as_bytes());
+    }
+
+    /// Builds for a command, as `fennec build` would in the command's own process: in its folder,
+    /// with what it prints taken into files to send back. One build at a time, which is also what
+    /// a process's one working folder and one standard output and error allow. The command going
+    /// before the answer, as on Ctrl-C, stops the build. None when the printing can't be taken, so
+    /// nothing is sent and the command builds it itself.
+    fn built(
+        state: &Mutex<State>,
+        client: &UnixStream,
+        (folder, path, output): (&str, &str, Option<&str>),
+        release: bool,
+    ) -> Option<Outcome> {
+        static BUILDING: Mutex<u64> = Mutex::new(0);
+        let mut building = BUILDING.lock().unwrap_or_else(PoisonError::into_inner);
+        *building += 1;
+        let home = state.lock().unwrap_or_else(PoisonError::into_inner).home.clone();
+        // The daemon's own folder in the Fennec folder, made here when its socket is elsewhere.
+        owned_privately(&home.join("daemon"), &home, true)?;
+        {
+            let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.served += 1;
+            state.sessions += 1;
+        }
+        let printed = home.join("daemon").join(format!("build-{}-{}", std::process::id(), *building));
+        let outcome = taking_printing(&printed, || {
+            fennec_build::clear_cancel();
+            let running = Arc::new(AtomicBool::new(true));
+            let _watching = stop_when_gone(client, &running, fennec_build::cancel);
+            let before = std::env::current_dir().ok();
+            let code = if std::env::set_current_dir(folder).is_ok() {
+                let made = std::thread::scope(|scope| {
+                    std::thread::Builder::new()
+                        .stack_size(crate::STACK_BYTES)
+                        .spawn_scoped(scope, || code_of(crate::built::build_here(path, output, release)))
+                        .ok()
+                        .and_then(|building| building.join().ok())
+                });
+                made.unwrap_or(1)
+            } else {
+                eprintln!("error: couldn't go to {folder}");
+                1
+            };
+            if let Some(before) = before {
+                let _ = std::env::set_current_dir(before);
+            }
+            running.store(false, Ordering::Relaxed);
+            code
+        });
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.sessions = state.sessions.saturating_sub(1);
+        state.last_work = Instant::now();
+        outcome
+    }
+
+    /// Watches a command's connection while its build runs: the command going, by Ctrl-C or
+    /// otherwise, closes it, and `stop` is called if the build is still `running`. The connection
+    /// closes after the answer too, by when nothing is. Anything more the command sends is read
+    /// and passed over, so only its going stops the build.
+    fn stop_when_gone(
+        client: &UnixStream,
+        running: &Arc<AtomicBool>,
+        stop: fn(),
+    ) -> Option<std::thread::JoinHandle<()>> {
+        let mut watched = client.try_clone().ok()?;
+        let running = Arc::clone(running);
+        let watching = std::thread::spawn(move || {
+            let mut sent = [0; 64];
+            while matches!(watched.read(&mut sent), Ok(1..)) {}
+            if running.load(Ordering::Relaxed) {
+                stop();
+            }
+        });
+        Some(watching)
+    }
+
+    /// Runs `run` with standard output and error going to files beside `printed`, and gives back
+    /// what it printed with the code it gave. None when they can't be put in place.
+    fn taking_printing(printed: &Path, run: impl FnOnce() -> u8) -> Option<Outcome> {
+        let (out_path, err_path) = (printed.with_extension("out"), printed.with_extension("err"));
+        let (out, err) = (std::fs::File::create(&out_path).ok()?, std::fs::File::create(&err_path).ok()?);
+        let _ = (std::io::stdout().flush(), std::io::stderr().flush());
+        let saved = (rustix::io::dup(std::io::stdout()).ok()?, rustix::io::dup(std::io::stderr()).ok()?);
+        if rustix::stdio::dup2_stdout(&out).is_err() || rustix::stdio::dup2_stderr(&err).is_err() {
+            let _ = (rustix::stdio::dup2_stdout(&saved.0), rustix::stdio::dup2_stderr(&saved.1));
+            return None;
+        }
+        let code = run();
+        let _ = (std::io::stdout().flush(), std::io::stderr().flush());
+        let _ = (rustix::stdio::dup2_stdout(&saved.0), rustix::stdio::dup2_stderr(&saved.1));
+        let read =
+            |path: &Path| String::from_utf8_lossy(&std::fs::read(path).unwrap_or_default()).into_owned();
+        let outcome = Outcome { stdout: read(&out_path), stderr: read(&err_path), code };
+        let _ = (std::fs::remove_file(&out_path), std::fs::remove_file(&err_path));
+        Some(outcome)
+    }
+
+    /// The number a process ending with `code` exits with.
+    fn code_of(code: ExitCode) -> u8 {
+        (0..=u8::MAX).find(|number| ExitCode::from(*number) == code).unwrap_or(1)
     }
 
     /// Serves a language server session over a connection, on a thread with room for the
@@ -554,8 +866,8 @@ mod unix {
         use std::time::{Duration, Instant};
 
         use super::{
-            BUILD, Reply, State, VERSION, answer, ask_within, handle, send_within, socket_in,
-            socket_owned_by, socket_path,
+            BUILD, Reply, State, VERSION, answer, ask_within, environment, handle, send_within, socket_in,
+            socket_owned_by, socket_path, stop_when_gone,
         };
 
         fn state() -> State {
@@ -731,13 +1043,53 @@ mod unix {
             assert!(super::connect(&plain, &folder).is_none());
         }
 
+        /// The environment's hash leaves out what differs from terminal to terminal and the
+        /// allocator's settings, which the daemon is started with one of, and nothing else.
+        #[test]
+        fn the_environment_hash_leaves_out_terminals_and_the_allocator() {
+            let of = |pairs: &[(&str, &str)]| {
+                super::environment_of(pairs.iter().map(|(name, value)| ((*name).into(), (*value).into())))
+            };
+            let base = of(&[("PATH", "/usr/bin"), ("CC", "cc")]);
+            let terminal =
+                of(&[("PATH", "/usr/bin"), ("PWD", "/x"), ("CC", "cc"), ("MIMALLOC_PURGE_DELAY", "0")]);
+            assert_eq!(base, terminal);
+            assert_ne!(base, of(&[("PATH", "/opt/bin"), ("CC", "cc")]));
+            assert_ne!(base, of(&[("PATH", "/usr/bin"), ("CC", "cc"), ("LD", "ld")]));
+        }
+
+        /// A command that goes while its build runs, by Ctrl-C or otherwise, closes its connection,
+        /// and that stops the build. Bytes it sent before going don't, and once the build is done
+        /// its going stops nothing.
+        #[test]
+        fn a_command_gone_while_its_build_runs_stops_it() {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static STOPPED: AtomicBool = AtomicBool::new(false);
+            fn stop() {
+                STOPPED.store(true, Ordering::Relaxed);
+            }
+            // Gone mid-build, after sending a stray byte or two, and gone once the build is done.
+            for building in [true, false] {
+                STOPPED.store(false, Ordering::Relaxed);
+                let (client, command) = UnixStream::pair().unwrap();
+                let running = Arc::new(AtomicBool::new(building));
+                let watching = stop_when_gone(&client, &running, stop).unwrap();
+                (&command).write_all(b"\n\n").unwrap();
+                drop(command);
+                watching.join().unwrap();
+                assert_eq!(STOPPED.load(Ordering::Relaxed), building, "building: {building}");
+            }
+        }
+
         /// A daemon answers only a command of its own build: one of the same version built from
         /// other source would get what an older compiler does.
         #[test]
         fn a_daemon_answers_only_its_own_build() {
             let home = Path::new("/home/fennec/.fennec");
             let socket = socket_path(home, false);
-            let named = format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD));
+            // Named by its version, its build and its environment, so another build's is another.
+            let named = format!("{VERSION}-{}-{}.sock", BUILD.get(..16).unwrap_or(BUILD), environment());
             assert_eq!(socket, Some(home.join("daemon").join(named)));
             let mut state = State {
                 home: home.to_path_buf(),
@@ -823,15 +1175,9 @@ mod unix {
 
     pub(super) const REPLY_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    /// What came of sending a request, which here is always that there's no daemon.
-    pub(super) enum Reply {
-        #[expect(dead_code, reason = "no daemon runs here to answer, but `fennec daemon` names it")]
-        Answered(Outcome),
-        Unreached,
-    }
-
-    pub(super) fn send(_: &Path, _: &[&str]) -> Reply {
-        Reply::Unreached
+    /// There's no daemon here to answer.
+    pub(super) fn ask_every(_: &Path, _: &[&str]) -> Vec<Outcome> {
+        Vec::new()
     }
 
     pub(super) fn ask_within(_: &Path, _: &[&str], _: std::time::Duration) -> Option<Outcome> {

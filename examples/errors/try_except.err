@@ -1,0 +1,7 @@
+error: Fennec doesn't have `try`
+ --> examples/errors/try_except.fen:3:5
+  |
+3 |     try:
+  |     ^^^
+  |
+  = help: a failure is handled at the call: pass it up with `?`, or put `except` after the call, as `x = f() except why:`

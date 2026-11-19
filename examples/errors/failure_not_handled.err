@@ -1,0 +1,7 @@
+error: this can fail, but nothing handles it
+ --> examples/errors/failure_not_handled.fen:2:5
+  |
+2 |     fs.write_text("notes.txt", "hi")
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: pass the error up with `?`, give a default with `else`, or handle it with `match`

@@ -152,10 +152,21 @@ pub use types::{Num, Type};
 /// Checks a parsed module. Returns the signature of every function and method, or every
 /// problem found, in source order.
 pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
+    check_typed_refusing(module).map(Checked::into_signatures)
+}
+
+/// `check_typed`, refusing all `check` refuses: a definition named after a builtin, and the forms
+/// of before 2026-11-11, besides what checking finds. A language server shows this, so an editor
+/// says what `fennec check` says.
+///
+/// # Errors
+///
+/// Every problem found, in source order.
+pub fn check_typed_refusing(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     refuse_reserved(module)?;
     let checked = check_typed(module)?;
     refuse_old_forms(module, &checked)?;
-    Ok(checked.into_signatures())
+    Ok(checked)
 }
 
 /// The forms of before 2026-11-11 a program still has, refused, from what checking it as it was

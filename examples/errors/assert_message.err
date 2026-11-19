@@ -1,0 +1,7 @@
+error: an `assert` takes no message after a `,`
+ --> examples/errors/assert_message.fen:3:21
+  |
+3 |     assert count > 0, "count must be positive"
+  |                     ^
+  |
+  = help: take out the `,` and the message: a failed `assert` shows its line and the values in it, and a `#` comment above it can say why

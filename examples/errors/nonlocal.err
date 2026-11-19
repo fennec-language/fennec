@@ -1,0 +1,7 @@
+error: Fennec doesn't have `nonlocal`
+ --> examples/errors/nonlocal.fen:4:9
+  |
+4 |         nonlocal count
+  |         ^^^^^^^^
+  |
+  = help: a function inside another can't change the names around it: give back the new value, and change `count` outside it

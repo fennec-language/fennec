@@ -16,6 +16,7 @@ mod llvm;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod loader;
 mod lsp;
+mod newcomers;
 mod parallel;
 mod projects;
 mod reached_runs;

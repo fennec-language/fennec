@@ -1,0 +1,7 @@
+error: this is the result of something that can fail
+ --> examples/errors/int_of_text.fen:3:18
+  |
+3 |     stdout.print(count + 1)
+  |                  ^^^^^^^^^
+  |
+  = help: get the value out with `?`, `else`, or `match` first

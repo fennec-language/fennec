@@ -1,0 +1,8 @@
+def main(stdout: Stdout):
+    text = "42"
+    count = int.parse(text) except why:
+        stdout.print(why)
+        return
+    finally:
+        stdout.print("done")
+    stdout.print(count)

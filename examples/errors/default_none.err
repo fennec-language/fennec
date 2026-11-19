@@ -1,0 +1,7 @@
+error: this might be None
+ --> examples/errors/default_none.fen:1:39
+  |
+1 | def greet(stdout: Stdout, name: str = None):
+  |                                       ^^^^
+  |
+  = help: check with `if x is None:` first, or give a default with `else`

@@ -1,0 +1,7 @@
+error: `self` doesn't exist
+ --> examples/errors/self_not_a_parameter.fen:5:16
+  |
+5 |         return self.x + by
+  |                ^^^^
+  |
+  = help: give it a value first, as `self = ...`, or check the spelling

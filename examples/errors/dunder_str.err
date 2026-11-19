@@ -1,0 +1,7 @@
+error: Fennec doesn't have `__str__`
+ --> examples/errors/dunder_str.fen:4:9
+  |
+4 |     def __str__(self) -> str:
+  |         ^^^^^^^
+  |
+  = help: write `def str(self, ref out: StrWriter)`, which `str(x)`, f-strings and `print` call, and add its text with `out.write(...)`

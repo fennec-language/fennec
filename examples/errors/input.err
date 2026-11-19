@@ -1,0 +1,7 @@
+error: `input` doesn't exist
+ --> examples/errors/input.fen:2:12
+  |
+2 |     name = input("name? ")
+  |            ^^^^^
+  |
+  = help: give it a value first, as `input = ...`, or check the spelling

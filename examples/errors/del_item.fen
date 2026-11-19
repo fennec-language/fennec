@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    mut names = ["ana", "bo"]
+    del names[0]
+    stdout.print(names)

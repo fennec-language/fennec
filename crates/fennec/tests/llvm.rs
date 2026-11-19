@@ -5711,6 +5711,39 @@ def main(stdout: Stdout):
     stdout.print(h)
 "#;
 
+/// A list a loop right after fills is made with room for every turn first: written
+/// `mut xs = list[int]()`, several filled in one loop, and filled past a test, as a walk through
+/// a `Table`'s live slots with some removed, or a comprehension with a filter. A list a loop inside
+/// the loop fills keeps growing as it goes. It prints what the reference evaluator prints, with
+/// nothing left, built either way and built checking proofs, which checks each append a room
+/// check was left out of stays inside the room.
+#[test]
+fn a_list_a_loop_fills_is_made_with_room_for_every_turn() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/lists_sized_by_their_loop.fen");
+    let wanted = include_str!("fixtures/lists_sized_by_their_loop.out");
+    prints_in_both_builds("lists_sized_by_their_loop", source, wanted)?;
+    assert!(counts_of("lists_sized_by_their_loop_counts", source)?.ends_with(" live 0"));
+    let dir = folder("lists_sized_by_their_loop_proofs")?;
+    let (program, executable) = (dir.join("sized.fen"), dir.join("sized"));
+    std::fs::write(&program, source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_CHECK_PROOFS", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
 /// Lists and `Table`s a loop changes are made alone once, on the way into the loop, when nothing in
 /// it can give them another owner, and not checked again inside it. Shared before the loop, copied
 /// in it, given to a closure in it, written anew in it, changed by `Id`, and held by a task in it:
@@ -7972,6 +8005,8 @@ def main(stdout: Stdout):
 /// holds, and a dict's set writes a value held in place into its entry's own block: what each
 /// prints, a list shared before it's turned round keeping its order, and the blocks made,
 /// one copy for that shared list and none for a sort, are as pinned, with nothing left held.
+/// The comprehension whose item is `… if … else None` is made with room for every turn, since
+/// every turn appends past the two ways joining.
 #[test]
 fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -> std::io::Result<()> {
     if !ready() {
@@ -7980,7 +8015,7 @@ fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -
     prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
     assert_eq!(
         counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
-        "copies 1 copied_bytes 672 largest_copy 672 allocations 111 allocated_bytes 12032 live 0"
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 110 allocated_bytes 11720 live 0"
     );
     Ok(())
 }

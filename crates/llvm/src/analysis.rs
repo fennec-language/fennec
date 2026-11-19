@@ -112,9 +112,10 @@ pub(crate) struct Analysis {
     /// Reads of a list's item at `i` followed in the same block by one at `i + 1`, by the read's
     /// place: `i`, and the read's own index, `i` or `i + 1` (see `find_adjacent_reads`).
     pub(crate) adjacent_reads: HashMap<(usize, usize), (LocalId, LocalId)>,
-    /// A block ending in a jump to a loop that fills a list made in that block: the list, and
-    /// how many items the loop adds at most.
-    pub(crate) reservations: HashMap<usize, (usize, Operand)>,
+    /// A block ending in a jump to a loop that fills lists made in that block: each list, how
+    /// many items the loop adds to it at most, and the empty list it was copied from, made just
+    /// before in the same block, when it was.
+    pub(crate) reservations: HashMap<usize, Vec<Reserved>>,
     /// Lists such a loop fills with nothing but zeros, one a turn from a count starting at 0:
     /// made whole, already zero, with the appends left out.
     pub(crate) zero_filled: HashSet<usize>,
@@ -3463,6 +3464,15 @@ fn find_aliases(function: &Function, known: &mut Analysis) {
     }
 }
 
+/// A list a loop fills, made once the loop's count is known (see `Analysis::reservations`).
+#[derive(Clone, Debug, Hash)]
+pub(crate) struct Reserved {
+    pub(crate) list: usize,
+    pub(crate) limit: Operand,
+    /// The empty list made just before, and copied into `list`, when the list is made that way.
+    pub(crate) copied_from: Option<usize>,
+}
+
 /// `[f(x) for x in range(n)]` is an empty list and a loop of appends.
 fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut Analysis) {
     for (at, block) in function.blocks.iter().enumerate() {
@@ -3479,21 +3489,39 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
         });
         let Some(limit) = limit else { continue };
         let Some(body) = function.blocks.get(then.0) else { continue };
-        let appended = body.insts.iter().find_map(|inst| match &inst.kind {
-            InstKind::Builtin { name, args, .. } if name == "list.append" => match args.first() {
-                Some(Operand::Local(list)) => Some(list.0),
-                _ => None,
-            },
-            _ => None,
-        });
-        let Some(list) = appended else { continue };
-        // Only a list made here, which has one owner. A constant list is one block every reader
-        // shares and nothing frees, so appending to it with no count check would write into it.
-        let made_here = block
-            .insts
+        // Every list the loop appends to, in any of its own blocks: one block a turn, as a walk
+        // through a `Table`'s live slots appends past the test of whether a slot is live.
+        let looped = loop_of(function, header_at.0, then.0);
+        let appended: BTreeSet<usize> = looped
             .iter()
-            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
-        if made_here {
+            .filter_map(|at| function.blocks.get(*at))
+            .flat_map(|block| &block.insts)
+            .filter_map(|inst| match &inst.kind {
+                InstKind::Builtin { name, args, .. } if name == "list.append" => match args.first() {
+                    Some(Operand::Local(list)) => Some(list.0),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        for list in appended {
+            // What's known of a list while its loop fills it goes by its local: so it's known
+            // only of a list nothing outside the loop appends to, before it or after, in another
+            // loop or once on its own.
+            if !appended_only_in(function, &looped, list)
+                || !appended_every_turn(function, (header_at.0, then.0), &looped, list)
+            {
+                continue;
+            }
+            // Only a list made here, which has one owner, and empty: written straight in, or
+            // made as a temporary nothing else reads and copied in, as `mut xs = list[int]()` is.
+            // A constant list is one block every reader shares and nothing frees, so appending to
+            // it with no count check would write into it. Nothing after it in the block may read it.
+            let copied_from = match made_empty_here(block, known, list) {
+                Some(MadeEmpty::Straight) => None,
+                Some(MadeEmpty::CopiedFrom(temp)) => Some(temp),
+                None => continue,
+            };
             let zeros_counted = fills_with_zeros(function, block, (header, body), list, known);
             let zeros = zeros_counted.is_some();
             match appends_within_room(function, (block, header_at.0), then.0, list) {
@@ -3509,7 +3537,11 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
                 }
                 None => {}
             }
-            known.reservations.insert(at, (list, limit));
+            known.reservations.entry(at).or_default().push(Reserved {
+                list,
+                limit: limit.clone(),
+                copied_from,
+            });
             if let Some(count) = zeros_counted {
                 known.zero_filled.insert(list);
                 known.zero_counts.insert(list, count);
@@ -3518,11 +3550,174 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
     }
 }
 
+/// Whether `inst` appends to `list`.
+fn appends_to(inst: &InstKind, list: usize) -> bool {
+    matches!(inst, InstKind::Builtin { name, args, .. }
+        if name == "list.append" && args.first() == Some(&Operand::Local(LocalId(list))))
+}
+
+/// Whether every append to `list` in the function is in one of the loop's own blocks.
+fn appended_only_in(function: &Function, looped: &[usize], list: usize) -> bool {
+    function.blocks.iter().enumerate().all(|(at, block)| {
+        looped.contains(&at) || !block.insts.iter().any(|inst| appends_to(&inst.kind, list))
+    })
+}
+
+/// Whether every turn of the loop at `header_at` appends to `list`, but those a walk through a
+/// `Table` steps over for an empty slot: then room for every turn is about as much as the list
+/// comes to hold. A turn past a filter or a `continue` may add nothing, and room made for every
+/// one of a long count would be a great deal of memory for a list that may stay short.
+fn appended_every_turn(
+    function: &Function,
+    (header_at, body_at): (usize, usize),
+    looped: &[usize],
+    list: usize,
+) -> bool {
+    let slot_live = |cond: &Operand| {
+        function.blocks.iter().flat_map(|block| &block.insts).any(|inst| {
+            matches!(&inst.kind, InstKind::Builtin { dest: Some(dest), name, .. }
+                if name == "Table.slot_live" && *cond == Operand::Local(*dest))
+        })
+    };
+    // From the body, every way back round to the header without an append. A way out of the
+    // loop isn't a turn: it appends no more than the turns before it.
+    let mut seen = HashSet::new();
+    let mut waiting = vec![body_at];
+    while let Some(at) = waiting.pop() {
+        if at == header_at {
+            return false;
+        }
+        let Some(block) = function.blocks.get(at) else { continue };
+        if !looped.contains(&at)
+            || block.insts.iter().any(|inst| appends_to(&inst.kind, list))
+            || !seen.insert(at)
+        {
+            continue;
+        }
+        match &block.end {
+            Terminator::Branch { cond, then, .. } if slot_live(cond) => waiting.push(then.0),
+            end => waiting.extend(end.targets().iter().map(|next| next.0)),
+        }
+    }
+    true
+}
+
+/// How a list is made empty in the block before the loop that fills it.
+enum MadeEmpty {
+    /// Straight into the list.
+    Straight,
+    /// Into this temporary, copied into the list.
+    CopiedFrom(usize),
+}
+
+/// Whether `list` is made empty in `block`, straight in or through a temporary copied in, with
+/// nothing after that in the block reading either.
+fn made_empty_here(block: &Block, known: &Analysis, list: usize) -> Option<MadeEmpty> {
+    let made = |at: usize| {
+        block.insts.iter().position(
+            |inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == at && items.is_empty()),
+        )
+    };
+    let (from, made_at) = if let Some(made_at) = made(list) {
+        (None, made_at)
+    } else {
+        let (copy_at, temp) = block.insts.iter().enumerate().find_map(|(at, inst)| match &inst.kind {
+            InstKind::Copy { dest, value: Operand::Local(temp) } if dest.0 == list => Some((at, temp.0)),
+            _ => None,
+        })?;
+        let made_at = made(temp).filter(|made_at| *made_at < copy_at)?;
+        if known.reads.get(temp).copied() != Some(1) {
+            return None;
+        }
+        (Some(temp), made_at)
+    };
+    let mentioned = |inst: &InstKind| {
+        let mut found = false;
+        visit(
+            inst,
+            |operand| {
+                found |= matches!(operand, Operand::Local(local) if local.0 == list || Some(local.0) == from);
+            },
+            |_| {},
+        );
+        found
+    };
+    let read_after = block.insts.iter().skip(made_at + 1).any(|inst| {
+        let copy_in = matches!(&inst.kind, InstKind::Copy { dest, .. } if dest.0 == list);
+        !copy_in && mentioned(&inst.kind)
+    });
+    (!read_after).then_some(from.map_or(MadeEmpty::Straight, MadeEmpty::CopiedFrom))
+}
+
 /// What `appends_within_room` found: the appends stay within the room, and whether the loop
 /// leaves only by its header, to the block after it.
 enum Within {
     Room,
     RoomLeavingTo(usize),
+}
+
+/// The blocks of the loop at `header_at` whose body starts at `body_at`: those the body reaches
+/// without going through the header again, that lead back to it, and the header. A loop around
+/// this one is left out: it isn't this loop's turn.
+fn loop_of(function: &Function, header_at: usize, body_at: usize) -> Vec<usize> {
+    let reached = |from: usize, forward: bool| -> HashSet<usize> {
+        let mut seen = HashSet::from([from]);
+        let mut waiting = vec![from];
+        while let Some(at) = waiting.pop() {
+            if forward && at == header_at {
+                continue;
+            }
+            let next: Vec<usize> = if forward {
+                function
+                    .blocks
+                    .get(at)
+                    .map(|block| block.end.targets().iter().map(|target| target.0).collect())
+                    .unwrap_or_default()
+            } else {
+                function
+                    .blocks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, block)| block.end.targets().iter().any(|target| target.0 == at))
+                    .map(|(from, _)| from)
+                    .collect()
+            };
+            for block in next {
+                if seen.insert(block) {
+                    waiting.push(block);
+                }
+            }
+        }
+        seen
+    };
+    let (ahead, behind) = (reached(body_at, true), reached(header_at, false));
+    let mut looped: Vec<usize> = ahead.intersection(&behind).copied().chain([header_at]).collect();
+    looped.sort_unstable();
+    looped.dedup();
+    looped
+}
+
+/// Whether block `at` of a loop can come round to itself without going through the loop's
+/// header: it's in a loop inside that one.
+fn turns_inside(function: &Function, looped: &[usize], (header_at, at): (usize, usize)) -> bool {
+    let mut seen = HashSet::new();
+    let mut waiting: Vec<usize> = function
+        .blocks
+        .get(at)
+        .map(|block| block.end.targets().iter().map(|next| next.0).collect())
+        .unwrap_or_default();
+    while let Some(next) = waiting.pop() {
+        if next == at {
+            return true;
+        }
+        if next == header_at || !looped.contains(&next) || !seen.insert(next) {
+            continue;
+        }
+        if let Some(block) = function.blocks.get(next) {
+            waiting.extend(block.end.targets().iter().map(|target| target.0));
+        }
+    }
+    false
 }
 
 /// Whether the loop after `before`, at `header`, appends to `list` at most as many times as
@@ -3563,40 +3758,7 @@ fn appends_within_room(
     if ways_in != 1 {
         return None;
     }
-    // The loop's own blocks: those its body reaches without going through the header again,
-    // that lead back to it. A loop around this one is left out: it isn't this loop's turn.
-    let reached = |from: usize, forward: bool| -> HashSet<usize> {
-        let mut seen = HashSet::from([from]);
-        let mut waiting = vec![from];
-        while let Some(at) = waiting.pop() {
-            if forward && at == header_at {
-                continue;
-            }
-            let next: Vec<usize> = if forward {
-                function
-                    .blocks
-                    .get(at)
-                    .map(|block| block.end.targets().iter().map(|target| target.0).collect())
-                    .unwrap_or_default()
-            } else {
-                function
-                    .blocks
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, block)| block.end.targets().iter().any(|target| target.0 == at))
-                    .map(|(from, _)| from)
-                    .collect()
-            };
-            for block in next {
-                if seen.insert(block) {
-                    waiting.push(block);
-                }
-            }
-        }
-        seen
-    };
-    let (ahead, behind) = (reached(body_at, true), reached(header_at, false));
-    let looped: Vec<usize> = ahead.intersection(&behind).copied().chain([header_at]).collect();
+    let looped = loop_of(function, header_at, body_at);
     let mut appends = 0;
     for at in &looped {
         let block = function.blocks.get(*at)?;
@@ -3620,7 +3782,9 @@ fn appends_within_room(
             }
             let appended = matches!(&inst.kind, InstKind::Builtin { name, args, .. }
                 if name == "list.append" && args.first() == Some(&Operand::Local(LocalId(list))) && args.len() == 2);
-            if !appended || *at != body_at {
+            // In any of the loop's own blocks, but in none it can come back to without the header:
+            // a block in a loop inside this one could append more than once a turn.
+            if !appended || turns_inside(function, &looped, (header_at, *at)) {
                 return None;
             }
             appends += 1;
@@ -5004,22 +5168,39 @@ mod tests {
     }
 
     /// A comprehension over a count from 0 or more fills its list with no room check: room
-    /// for every turn is made first, and nothing else touches the list while it's filled. One
-    /// counting from below 0 or from a variable could outgrow its room, and one with a filter
-    /// appends somewhere other than its body's first block, so those keep the check.
+    /// for every turn is made first, and nothing else touches the list while it's filled. So
+    /// does a walk through a `Table`'s live slots, and a named list, filled by one loop. One
+    /// counting from below 0 or from a variable could outgrow its room, and one appending in a
+    /// loop inside the loop could append more than once a turn, so those keep the check. A
+    /// filter may append on few turns, so no room is made for every one. What's known of a list
+    /// while its loop fills it goes by its local, so a list appended to outside the loop, after
+    /// it or in a second loop, keeps the check everywhere.
     #[test]
     fn only_a_list_filled_within_its_room_skips_the_check() -> Result<(), String> {
         let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    return len(xs)\n");
-        for body in ["    xs = [i * 2 for i in range(n)]\n", "    xs = [i for i in range(1, n)]\n"] {
+        for body in [
+            "    xs = [i * 2 for i in range(n)]\n",
+            "    xs = [i for i in range(1, n)]\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        xs.append(i)\n",
+        ] {
             assert!(within_room(&filled(body))?, "kept the check: {body}");
         }
+        let walked = "from std.collections import Table\n\nstruct Unit:\n    hp: int\n\ndef go(units: Table[Unit]) -> int:\n    hps = [unit.hp for unit in units]\n    return len(hps)\n";
+        assert!(within_room(walked)?, "kept the check: a walk through a Table");
         for body in [
             "    xs = [i for i in range(-3, n)]\n",
             "    start = n - 5\n    xs = [i for i in range(start, n)]\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        for j in range(i):\n            xs.append(j)\n",
             "    xs = [i for i in range(n) if i % 2 == 0]\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        if i > 3:\n            continue\n        xs.append(i)\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        xs.append(i)\n    xs.append(n)\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        xs.append(i)\n    for i in range(n):\n        xs.append(i)\n",
+            "    mut xs = [n]\n    xs.append(n)\n    m = len(xs)\n    xs = []\n    for i in range(m):\n        xs.append(i)\n",
         ] {
             assert!(!within_room(&filled(body))?, "skipped the check: {body}");
         }
+        let filtered = walked.replace("for unit in units]", "for unit in units if unit.hp > 0]");
+        assert!(!within_room(&filtered)?, "skipped the check: a walk through a Table with a filter");
         Ok(())
     }
 

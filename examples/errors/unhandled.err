@@ -4,4 +4,4 @@ error: this can fail, but nothing handles it
 9 |     risky(3)
   |     ^^^^^^^^
   |
-  = help: pass the error up with `?`, give a default with `else`, or handle it with `match`
+  = help: handle the failure with `except why:`, give a value for the cases it fails with, as `x = f() except Missing(): 0`, or pass it up with `?` from a function that says `fails`

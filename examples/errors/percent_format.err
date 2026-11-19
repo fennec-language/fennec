@@ -4,4 +4,4 @@ error: can't use `%` on a str and an int
 3 |     stdout.print("%d items" % count)
   |                  ^^^^^^^^^^^^^^^^^^
   |
-  = help: convert one side so both are numbers, as `int(text)` or `float(count)`
+  = help: Fennec formats text with f-strings, as `f"{count} items"`

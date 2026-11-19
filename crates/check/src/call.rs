@@ -145,7 +145,15 @@ impl FnCx<'_> {
             }
             Type::Arrow(params, returns) => self.call_value(callee, (params, *returns), args, span),
             Type::Unknown => {
-                self.ignore_args(args);
+                // What couldn't be called was reported, so a type given to it, as in Python's
+                // `isinstance(shape, Circle)`, says nothing more.
+                for arg in args {
+                    let a_type = matches!(&arg.value.kind, ExprKind::Name(name)
+                        if self.lookup(name).is_none() && self.checker.program.is_type_name(name));
+                    if !a_type {
+                        self.arg_value(arg, &[]);
+                    }
+                }
                 Type::Unknown
             }
             other => {

@@ -225,6 +225,9 @@ impl FnCx<'_> {
         if let Some(problem) = self.missing_capability(name, span) {
             return problem;
         }
+        if let Some(problem) = self.newcomer_name(name, span) {
+            return problem;
+        }
         if let Some(problem) = self.std_own(name, span) {
             return problem;
         }
@@ -244,6 +247,44 @@ impl FnCx<'_> {
             }
             None => problem,
         }
+    }
+
+    /// A name read above the line that gives it its value, or one a Python programmer reaches for
+    /// that Fennec spells another way: what to write instead.
+    fn newcomer_name(&self, name: &str, span: Span) -> Option<Diagnostic> {
+        if let Some((_, at)) = self.assigned.iter().find(|(given, at)| given == name && at.start > span.start)
+        {
+            return Some(
+                Diagnostic::new(format!("`{name}` is used before it's given a value"), span)
+                    .with_help(format!("give `{name}` its value above this line"))
+                    .also_at_the(fennec_syntax::Also::GivenValue, *at),
+            );
+        }
+        let help = match name {
+            // A method written without `self`, which reads it all the same.
+            "self" => {
+                let owner = self.checker.program.functions.get(&self.key)?.owner.clone()?;
+                let function = &self.name;
+                return Some(Diagnostic::new(format!("`{function}` has no `self`"), span).with_help(format!(
+                    "write `self` first among its parameters, as `def {function}(self, ...)`, to call it on a `{owner}`"
+                )));
+            }
+            "open" => {
+                "files are reached through `fs: Fs` in `main`'s parameters, as `text = fs.read_text(path)?`; a database is `from std.sqlite import open`"
+            }
+            "input" => {
+                "standard input comes through `stdin: Stdin` in `main`'s parameters, as `line = stdin.read_line()? else \"\"`"
+            }
+            "exit" => {
+                "`main` gives the exit code: write `def main(...) -> int:` and `return 1`, or `fail` out of `main`"
+            }
+            "isinstance" => {
+                "write `value is Circle`, which also narrows `value` to a `Circle` inside the `if`"
+            }
+            "type" => "write `value is int` to test what a value is",
+            _ => return None,
+        };
+        Some(unknown_name(name, span).with_help(help))
     }
 
     /// `print` or `console`, which a newcomer writes first: what to write instead, in the function
@@ -1519,6 +1560,8 @@ impl FnCx<'_> {
 /// How to fix an operator used on values it doesn't work on.
 fn operator_help(op: BinOp, left: &Type, right: &Type) -> &'static str {
     match (left, right) {
+        // Python's `"%d items" % count`.
+        (Type::Str | Type::LiteralStr, _) if op == BinOp::Mod => crate::messages::F_STRINGS,
         (Type::Str, _) | (_, Type::Str) if op == BinOp::Add => {
             "join text with an f-string, as `f\"{name}{count}\"`"
         }

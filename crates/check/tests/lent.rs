@@ -144,3 +144,29 @@ fn a_plain_value_a_with_lends_is_a_copy() {
     ";
     assert_eq!(problems(program), Vec::<String>::new());
 }
+
+/// A channel's end, as the mailbox `with launch(...)` lends a task, is made to be handed to other
+/// tasks: a hub may keep it past the block, and a send to it after that fails with `Closed`, which
+/// the hub deals with. So it can leave its block, as `bench/server/chat.fen` hands each
+/// connection's mailbox to its hub.
+#[test]
+fn a_channels_end_can_be_handed_on() {
+    let program = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender
+
+        enum Note:
+            Joined(name: str, mailbox: Sender[str])
+
+        def deliver(inbox: Inbox[str]) -> int:
+            mut count = 0
+            for _ in inbox:
+                count += 1
+            return count
+
+        def attend(name: str, to_hub: Sender[Note]) fails Closed | Crashed:
+            with launch((inbox) => deliver(inbox), inbox_size=4)? as mailbox:
+                to_hub.send(.Joined(name=name, mailbox=mailbox))?
+            return
+    ";
+    assert_eq!(problems(program), Vec::<String>::new());
+}

@@ -6,7 +6,10 @@
 //!
 //! It's what has something to finish that's held, a struct or an enum or a value holding one. A
 //! number, text or bytes a source lends, or a collection of them, is a copy with nothing to
-//! finish, and leaves as any value does: `with saved()? as count: return count`.
+//! finish, and leaves as any value does: `with saved()? as count: return count`. So does a
+//! channel's end, a `Channel`, `Sender` or `Inbox`: it's made to be handed to other tasks, as a
+//! task's mailbox `with launch(...) as mailbox` is handed to a hub, and one used after its block
+//! fails with `Closed`, which the program deals with.
 //!
 //! A name in the block given a value that can hold it, as `kept = file` or `kept.append(file)`,
 //! may hold it from then on, and is held to the same. The program is held to this as it's
@@ -39,7 +42,7 @@ impl FnCx<'_> {
             return;
         }
         let lent = self.checker.settled(lent);
-        if !has_own_type(&lent) {
+        if !has_own_type(&lent) || self.channel_end(&lent) {
             return;
         }
         let block = self.innermost_scope();
@@ -156,8 +159,7 @@ impl FnCx<'_> {
                 }
                 return;
             }
-            ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if self.checker.program.type_info(name).is_some()) =>
-            {
+            ExprKind::Call { callee, args } if self.builds_value(callee) => {
                 for arg in args {
                     self.lent_parts(&arg.value, None, found);
                 }
@@ -188,6 +190,25 @@ impl FnCx<'_> {
                 }
             }
         }
+    }
+
+    /// Whether a call to `callee` makes a value of what it's given: a struct, an error or an enum's
+    /// case, written by its name or as `.Case(...)`.
+    fn builds_value(&self, callee: &Expr) -> bool {
+        match &callee.kind {
+            ExprKind::Variant(_) => true,
+            ExprKind::Name(name) => self.checker.program.type_info(name).is_some(),
+            ExprKind::Attr { object, .. } => {
+                matches!(&object.kind, ExprKind::Name(name) if self.checker.program.type_info(name).is_some())
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `ty` is a channel's end from the standard library: a `Channel`, `Sender` or `Inbox`.
+    fn channel_end(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Generic(name, _) if matches!(name.as_str(), "Channel" | "Sender" | "Inbox")
+            && self.checker.program.type_info(name).is_some_and(|info| info.prelude))
     }
 
     /// Whether a value of type `ty` can hold one of type `lent`: it is one, or one is among its

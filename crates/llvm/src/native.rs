@@ -265,13 +265,27 @@ impl crate::emit::Emit<'_, '_, '_> {
     /// The function a block whose last owner let it go is freed with: the runtime's `free`, or,
     /// when the program has native blocks, one that frees those itself and gives the rest to it.
     pub(crate) fn free_function(&mut self) -> Result<&'static str, String> {
-        self.declare("declare void @fennec_free(ptr) nounwind");
+        self.free_any(Frees::Checked)
+    }
+
+    /// [`Self::free_function`], for a block whose type can't hold or reach a generator that
+    /// closes something when it's let go partway: the runtime's `free_plain`, which can't fail.
+    pub(crate) fn plain_free_function(&mut self) -> Result<&'static str, String> {
+        self.free_any(Frees::Plain)
+    }
+
+    fn free_any(&mut self, frees: Frees) -> Result<&'static str, String> {
+        let (runtime, any) = match frees {
+            Frees::Checked => ("@fennec_free", "fen_free_any"),
+            Frees::Plain => ("@fennec_free_plain", "fen_free_any_plain"),
+        };
+        self.declare(&format!("declare void {runtime}(ptr) nounwind"));
         let native: Vec<u32> = self.module.reads.native().iter().copied().collect();
         if native.is_empty() {
-            return Ok("@fennec_free");
+            return Ok(runtime);
         }
-        let mut body = String::from(
-            "define internal void @fen_free_any(ptr %block) nounwind {\nentry:\n  %shape_at = getelementptr inbounds i8, ptr %block, i64 8\n  %held = load i64, ptr %shape_at\n  %shape = and i64 %held, 281474976710655\n  br label %native0\n",
+        let mut body = format!(
+            "define internal void @{any}(ptr %block) nounwind {{\nentry:\n  %shape_at = getelementptr inbounds i8, ptr %block, i64 8\n  %held = load i64, ptr %shape_at\n  %shape = and i64 %held, 281474976710655\n  br label %native0\n",
         );
         for (at, id) in native.iter().enumerate() {
             let name = self.layout_of(*id)?.name.clone();
@@ -285,11 +299,14 @@ impl crate::emit::Emit<'_, '_, '_> {
             ));
         }
         body.push_str(&format!(
-            "native{}:\n  tail call void @fennec_free(ptr %block)\n  ret void\n}}\n\n",
+            "native{}:\n  tail call void {runtime}(ptr %block)\n  ret void\n}}\n\n",
             native.len()
         ));
-        self.module.add_helper("fen_free_any", body);
-        Ok("@fen_free_any")
+        self.module.add_helper(any, body);
+        Ok(match frees {
+            Frees::Checked => "@fen_free_any",
+            Frees::Plain => "@fen_free_any_plain",
+        })
     }
 
     /// Defines `@"fen_drop_{name}"(block)`, which frees a native block of layout `id` whose last
@@ -303,6 +320,8 @@ impl crate::emit::Emit<'_, '_, '_> {
         use fennec_rt::embed::layout::FIELDS;
         let (_, free) = allocator();
         self.declare(free);
+        self.declare("declare void @fennec_free(ptr) nounwind");
+        self.declare("declare void @fennec_free_plain(ptr) nounwind");
         let free_call = if free.contains("@free") { "@free" } else { "@mi_free" };
         // A build that watches native blocks tells the runtime each one's gone.
         let watched = self.module.native_blocks() == crate::NativeBlocks::Watched;
@@ -326,11 +345,19 @@ impl crate::emit::Emit<'_, '_, '_> {
                     .collect()
             };
             let (held, texts) = (held_by(Kind::Boxed(id)), held_by(Kind::Str));
-            let lists: Vec<u64> = case
+            // Each list with the free that lets go of it: one whose items can't reach a generator
+            // that closes something when it's let go partway runs no program code.
+            let lists: Vec<(u64, &str)> = case
                 .fields
                 .iter()
-                .filter(|field| matches!(Kind::from_ty(self.module.layouts, field.ty), Some(Kind::List(_))))
-                .map(|field| fields_at + u64::from(field.offset))
+                .filter_map(|field| match Kind::from_ty(self.module.layouts, field.ty) {
+                    Some(kind @ Kind::List(_)) => {
+                        let free =
+                            if self.lets_go_quietly(&kind) { "@fennec_free_plain" } else { "@fennec_free" };
+                        Some((fields_at + u64::from(field.offset), free))
+                    }
+                    _ => None,
+                })
                 .collect();
             if !held.is_empty() || !texts.is_empty() || !lists.is_empty() {
                 cases.push((number, held, texts, lists));
@@ -349,20 +376,20 @@ impl crate::emit::Emit<'_, '_, '_> {
         for (number, held, texts, lists) in &cases {
             text.push_str(&format!("case{number}:\n"));
             // Its strings first: each header's block, if it has one, loses an owner, and is
-            // given to the runtime's free once it has none.
+            // given to the runtime's free once it has none, which for a string runs no code.
             for (at, offset) in texts.iter().enumerate() {
                 let it = format!("{number}_text{at}");
                 text.push_str(&format!(
-                    "  %tag_at{it} = getelementptr inbounds i8, ptr %block, i64 {}\n  %tag{it} = load i64, ptr %tag_at{it}\n  %in_block{it} = icmp sgt i64 %tag{it}, -1\n  br i1 %in_block{it}, label %held{it}, label %kept{it}\nheld{it}:\n  %word_at{it} = getelementptr inbounds i8, ptr %block, i64 {offset}\n  %text{it} = load ptr, ptr %word_at{it}\n  %count{it} = load i64, ptr %text{it}\n  %left{it} = sub i64 %count{it}, 1\n  store i64 %left{it}, ptr %text{it}\n  %gone{it} = icmp eq i64 %left{it}, 0\n  br i1 %gone{it}, label %free{it}, label %kept{it}\nfree{it}:\n  call void @fennec_free(ptr %text{it})\n  br label %kept{it}\nkept{it}:\n",
+                    "  %tag_at{it} = getelementptr inbounds i8, ptr %block, i64 {}\n  %tag{it} = load i64, ptr %tag_at{it}\n  %in_block{it} = icmp sgt i64 %tag{it}, -1\n  br i1 %in_block{it}, label %held{it}, label %kept{it}\nheld{it}:\n  %word_at{it} = getelementptr inbounds i8, ptr %block, i64 {offset}\n  %text{it} = load ptr, ptr %word_at{it}\n  %count{it} = load i64, ptr %text{it}\n  %left{it} = sub i64 %count{it}, 1\n  store i64 %left{it}, ptr %text{it}\n  %gone{it} = icmp eq i64 %left{it}, 0\n  br i1 %gone{it}, label %free{it}, label %kept{it}\nfree{it}:\n  call void @fennec_free_plain(ptr %text{it})\n  br label %kept{it}\nkept{it}:\n",
                     offset + 16
                 ));
             }
             // Then its lists: each, if made, loses an owner, and is given to the runtime's free,
             // which lets go of its items, once it has none.
-            for (at, offset) in lists.iter().enumerate() {
+            for (at, (offset, free)) in lists.iter().enumerate() {
                 let it = format!("{number}_list{at}");
                 text.push_str(&format!(
-                    "  %word_at{it} = getelementptr inbounds i8, ptr %block, i64 {offset}\n  %list{it} = load ptr, ptr %word_at{it}\n  %none{it} = icmp eq ptr %list{it}, null\n  br i1 %none{it}, label %kept{it}, label %held{it}\nheld{it}:\n  %count{it} = load i64, ptr %list{it}\n  %left{it} = sub i64 %count{it}, 1\n  store i64 %left{it}, ptr %list{it}\n  %gone{it} = icmp eq i64 %left{it}, 0\n  br i1 %gone{it}, label %free{it}, label %kept{it}\nfree{it}:\n  call void @fennec_free(ptr %list{it})\n  br label %kept{it}\nkept{it}:\n"
+                    "  %word_at{it} = getelementptr inbounds i8, ptr %block, i64 {offset}\n  %list{it} = load ptr, ptr %word_at{it}\n  %none{it} = icmp eq ptr %list{it}, null\n  br i1 %none{it}, label %kept{it}, label %held{it}\nheld{it}:\n  %count{it} = load i64, ptr %list{it}\n  %left{it} = sub i64 %count{it}, 1\n  store i64 %left{it}, ptr %list{it}\n  %gone{it} = icmp eq i64 %left{it}, 0\n  br i1 %gone{it}, label %free{it}, label %kept{it}\nfree{it}:\n  call void {free}(ptr %list{it})\n  br label %kept{it}\nkept{it}:\n"
                 ));
             }
             // Then the blocks of its own type it holds: each loses an owner, and joins those
@@ -411,4 +438,13 @@ impl crate::emit::Emit<'_, '_, '_> {
         self.module.add_helper(&format!("fen_drop_{name}"), text);
         Ok(())
     }
+}
+
+/// Which of the runtime's frees a block whose last owner let it go is given to.
+#[derive(Clone, Copy)]
+enum Frees {
+    /// `fennec_free`, which can run what closes a generator let go partway, and fail.
+    Checked,
+    /// `fennec_free_plain`, which can't.
+    Plain,
 }

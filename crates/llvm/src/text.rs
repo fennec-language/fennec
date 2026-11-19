@@ -202,7 +202,7 @@ impl Emit<'_, '_, '_> {
                 let text = self.plain_text(value, kind)?;
                 self.declare("declare void @fennec_str_print(ptr) nounwind");
                 self.line(&format!("call void @fennec_str_print(ptr {text})"));
-                self.release(&text);
+                self.release_quietly(&text);
                 self.leave_if_failed();
             }
             Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
@@ -215,7 +215,7 @@ impl Emit<'_, '_, '_> {
                 let text = self.plain_text(value, kind)?;
                 self.declare("declare void @fennec_str_print(ptr) nounwind");
                 self.line(&format!("call void @fennec_str_print(ptr {text})"));
-                self.release(&text);
+                self.release_quietly(&text);
                 self.leave_if_failed();
             }
             // A name narrowed to `None`, like `x` after `x = None`, holds nothing but prints so.
@@ -270,7 +270,7 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare ptr @fennec_block_text(ptr) nounwind");
                 let text = self.temp();
                 self.line(&format!("{text} = call ptr @fennec_block_text(ptr {block})"));
-                self.release(&block);
+                self.release_block(&block, &Kind::Boxed(*id));
                 Ok(text)
             }
             // An `Id` shows its slot and never its tag, which differs from run to run.
@@ -579,9 +579,9 @@ impl Emit<'_, '_, '_> {
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         let text = self.temp();
         self.line(&format!("{text} = call ptr @fennec_str_concat(ptr {first}, ptr {second})"));
-        self.release(first);
+        self.release_quietly(first);
         if second_owned {
-            self.release(second);
+            self.release_quietly(second);
         }
         text
     }
@@ -761,7 +761,7 @@ impl Emit<'_, '_, '_> {
                 };
                 for (piece, owned) in &pieces {
                     if *owned {
-                        self.release(piece);
+                        self.release_quietly(piece);
                     }
                 }
                 if self.headers() {
@@ -801,7 +801,7 @@ impl Emit<'_, '_, '_> {
         for piece in &pieces {
             match &piece.owned {
                 Some(Owned::Header(header)) => self.release_text(header),
-                Some(Owned::Block(block)) => self.release(block),
+                Some(Owned::Block(block)) => self.release_quietly(block),
                 None => {}
             }
         }
@@ -1051,7 +1051,7 @@ impl Emit<'_, '_, '_> {
             };
             text = self.append_text(&text, &piece);
             if owned {
-                self.release(&piece);
+                self.release_quietly(&piece);
             }
         }
         self.line(&format!("store ptr {text}, ptr {slot}"));

@@ -316,7 +316,7 @@ impl Emit<'_, '_, '_> {
         let block = self.owned_key_block(id, key);
         let entry = self.temp();
         self.line(&format!("{entry} = call ptr @fennec_dict_find_by_value(ptr {dict}, ptr {block})"));
-        self.release(&block);
+        self.release_quietly(&block);
         entry
     }
 
@@ -826,7 +826,7 @@ impl Emit<'_, '_, '_> {
             let block = self.temp();
             self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
             self.line(&format!("store ptr {block}, ptr {value_at}"));
-            self.release(&old);
+            self.release_block(&old, &value_kind);
         } else if value_kind.counted() {
             let held = if value_kind == Kind::TextBlock {
                 self.owned_text_block(&held)
@@ -837,7 +837,7 @@ impl Emit<'_, '_, '_> {
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {value_at}"));
             self.line(&format!("store ptr {held}, ptr {value_at}"));
-            self.release(&old);
+            self.release_block(&old, &value_kind);
         } else if value_kind != Kind::Unit {
             self.store_field(&value_kind, &held, &value_at, "");
         }
@@ -1906,7 +1906,7 @@ found:
             self.line(&format!("{old} = load ptr, ptr {value_at}"));
             self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
             self.line(&format!("store ptr {block}, ptr {value_at}"));
-            self.release(&old);
+            self.release_block(&old, &value_kind);
         } else if value_kind.counted() {
             // A string's header becomes a block of the dict's own, as any store's does.
             let held = if value_kind == Kind::TextBlock {
@@ -2119,7 +2119,7 @@ found:
                 let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
                 self.read_into(dest, &value_kind, &fields, "")?;
             }
-            self.release(&block);
+            self.release_block(&block, &value_kind);
             return Ok(());
         }
         // The value's word, read back as what it holds, already with its owner.

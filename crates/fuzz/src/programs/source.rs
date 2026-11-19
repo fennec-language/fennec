@@ -13,6 +13,7 @@ use super::ast::{
     Between, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, Looping, REF_TEXTS,
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
+use super::ast::{InOrder, OrderStep};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -1804,6 +1805,63 @@ fn plus_written(field: Field, plus: bool, n: i64) -> String {
     }
 }
 
+/// `ordered{id}`, the function an `Ordered` calls, after its structs and `three{id}`: a line for
+/// each step, then what `tally` and `pair` hold at the end.
+fn ordered_written(in_order: &InOrder) -> String {
+    let InOrder { id, base, steps } = in_order;
+    let mut out = format!(
+        "struct Tally{id}:\n    items: list[int]\n    count: int\n    names: dict[str, int]\n\n    def grow(ref \
+         self, by: int) -> int:\n        self.items.append(self.count + by)\n        self.count += 1\n        return \
+         self.count\n\n    def key(ref self, by: int) -> str:\n        self.names[\"a\"] = self.names[\"a\"] + \
+         by\n        return \"a\"\n\n    def show(self, given: int) -> str:\n        return f\"{{self.items}} \
+         {{self.count}} {{given}}\"\n\nstruct Pair{id}:\n    left: Tally{id}\n    right: int\n\n    def \
+         shown(self, given: int) -> str:\n        return f\"{{self.left.count}} {{self.right}} {{given}}\"\n\ndef \
+         three{id}(first: int, second: int, third: int) -> str:\n    return f\"{{first}} {{second}} \
+         {{third}}\"\n\ndef ordered{id}(stdout: Stdout):\n    mut tally = Tally{id}(items=[{base}, {}, {}, {}], \
+         count={base}, names={{\"a\": {base}}})\n    mut pair = Pair{id}(left=tally, right={base})\n",
+        base + 1,
+        base + 2,
+        base + 3
+    );
+    for (step, n) in steps {
+        let grow = format!("tally.grow({n})");
+        let line = match step {
+            OrderStep::Receiver => format!("stdout.print(\"receiver\", tally.show({grow}))"),
+            OrderStep::FieldReceiver => {
+                format!("stdout.print(\"field receiver\", pair.shown(pair.left.grow({n})))")
+            }
+            OrderStep::Counted => format!("stdout.print(\"counted\", tally.items.count({grow}))"),
+            OrderStep::Got => format!("stdout.print(\"got\", tally.names.get(tally.key({n})))"),
+            OrderStep::Indexed => format!("stdout.print(\"indexed\", tally.items[{grow} % 4])"),
+            OrderStep::Keyed => format!("stdout.print(\"keyed\", tally.names[tally.key({n})])"),
+            OrderStep::Arguments => format!(
+                "stdout.print(\"arguments\", three{id}(tally.count, second={grow}, third=tally.count))"
+            ),
+            OrderStep::PlusBefore => format!("stdout.print(\"plus before\", tally.count + {grow})"),
+            OrderStep::PlusAfter => format!("stdout.print(\"plus after\", {grow} + tally.count)"),
+            OrderStep::Listed => format!("stdout.print(\"listed\", [tally.count, {grow}, tally.count])"),
+            OrderStep::Text => {
+                format!("stdout.print(\"text\", f\"{{tally.count}} {{{grow}}} {{tally.count}}\")")
+            }
+            OrderStep::AtLeast => format!("stdout.print(\"at least\", tally.count >= {grow})"),
+            OrderStep::FieldWrite => {
+                format!("tally.count = {grow} + {n}\n    stdout.print(\"field write\", tally.count)")
+            }
+            OrderStep::IndexWrite => {
+                format!("tally.items[{grow} % 4] = {grow}\n    stdout.print(\"index write\", tally.items)")
+            }
+            OrderStep::Added => format!("tally.count += {grow}\n    stdout.print(\"added\", tally.count)"),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    let _ = writeln!(
+        out,
+        "    stdout.print(\"tally\", tally.items, tally.count, tally.names)\n    stdout.print(\"pair\", \
+         pair.left.items, pair.left.count, pair.right)\n    return\n"
+    );
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -2546,6 +2604,10 @@ impl Writer {
             Stmt::Turned(turning) => {
                 let _ = write!(self.helpers, "{}", turned_written(turning));
                 self.line(indent, &format!("turned{}(stdout)", turning.id));
+            }
+            Stmt::Ordered(in_order) => {
+                let _ = write!(self.helpers, "{}", ordered_written(in_order));
+                self.line(indent, &format!("ordered{}(stdout)", in_order.id));
             }
             Stmt::Left { id, depth, together, rounds, at, how } => {
                 let _ = write!(self.helpers, "{}", left_written(*id, *depth, *together, *rounds, *at, *how));

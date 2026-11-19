@@ -1,0 +1,13 @@
+pairs that differ: 0
+bb,ccc, dddd,eeeee,  a,bb,ccc,dddd,eeeee,
+ccc,dddd,eeeee, eeeee,  a,bb,ccc,dddd,eeeee,
+a,bb, a,bb,ccc,dddd,  a,bb,ccc,dddd,eeeee,
+[] [x,]
+9 [99, 2, 3, 4, 20, 30, 40]
+[6, 7] ["list", "start", "end"]
+label middle
+label bottom
+cell 4
+cell 6
+3 0
+49

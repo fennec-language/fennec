@@ -234,6 +234,7 @@ impl FnCx<'_> {
             to_every: false,
             param_of: None,
             arrow: None,
+            alias: None,
         };
         self.declare_with(binding, at);
         self.record(at, &self.checker.settled(&ty));

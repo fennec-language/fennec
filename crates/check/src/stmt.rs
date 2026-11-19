@@ -581,7 +581,7 @@ impl FnCx<'_> {
     }
 
     /// An assignment, with the arrow function it gives a name noted: what it may capture, and, for
-    /// a name declared with it, the arrow itself (see `keep_arrow`).
+    /// a name declared with it, the arrow itself (see `keep_function_value`).
     fn assign_noting_arrows(
         &mut self,
         target: &Expr,
@@ -592,7 +592,7 @@ impl FnCx<'_> {
     ) {
         self.note_arrow(target, value);
         self.assign(target, op, value, declare_mut, ty);
-        self.keep_arrow(target, value);
+        self.keep_function_value(target, value);
     }
 
     /// A function defined inside this one. It can read the names around it, but not change them.
@@ -630,10 +630,9 @@ impl FnCx<'_> {
             // By the type it's declared with, a function's or an optional one's, as callers' values
             // are followed (see `takes_function`), not by what it's narrowed to here.
             let declared = self.declared_type(name);
-            let param =
-                self.param_owner(name).filter(|_| declared.is_some_and(|ty| self.takes_function(&ty)));
-            if let Some(owner) = param {
-                self.checker.values.note_captured_param(key, owner, name);
+            let param = self.param_key(name).filter(|_| declared.is_some_and(|ty| self.takes_function(&ty)));
+            if let Some((owner, param)) = param {
+                self.checker.values.note_captured_param(key, owner, &param);
             } else if let Some(arrow) = self.local_arrow(name) {
                 self.checker.values.captured_arrows.push((key.to_owned(), arrow));
             } else {
@@ -673,6 +672,7 @@ impl FnCx<'_> {
             to_every: false,
             param_of: None,
             arrow: None,
+            alias: None,
         });
         let report = self.report;
         let inherited = self.generics.clone();

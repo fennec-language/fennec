@@ -436,8 +436,19 @@ pub(crate) const CHANGES: &[&str] = &[
     "discard",
 ];
 
+/// Whether calling `name` on what's held only reads it: any method of a string, and a dict's or a
+/// list's that look things up. Others, `sort` and `remove_where` among them, change it where it is.
+pub(crate) fn only_reads(held: &Value, name: &str) -> bool {
+    match held {
+        Value::Str(_) => true,
+        Value::Dict(_) => matches!(name, "get" | "items" | "keys" | "values"),
+        Value::List(_) => matches!(name, "count" | "get" | "index"),
+        _ => false,
+    }
+}
+
 /// A method that only reads a string, a dict or a list, worked out where the value is: what it
-/// gives, or `None` for one that isn't.
+/// gives, or `None` for one that isn't, or that's worked out from the whole value instead.
 fn read_only(
     value: &Value,
     name: &str,
@@ -445,6 +456,9 @@ fn read_only(
     named: &[(String, Value)],
     span: Span,
 ) -> Option<Run<Value>> {
+    if !only_reads(value, name) {
+        return None;
+    }
     match value {
         Value::Str(text) => Some(str_method(text, name, args, named, span)),
         Value::Dict(pairs) if named.is_empty() => Some(dict_method(pairs, name, args, span)),

@@ -155,6 +155,9 @@ pub(crate) struct Checker {
     pub(crate) own_callers: BTreeMap<String, BTreeSet<String>>,
     /// What each function waits on itself: a network call, a sleep, a channel.
     pub(crate) waits: BTreeMap<String, String>,
+    /// The functions that call a function value they can't follow, outside a lock: each may wait
+    /// on whatever it does, which counts only where nothing it reaches is known to wait.
+    pub(crate) unfollowed: BTreeSet<String>,
     /// Set when what's checked is a program as lowering rewrote it, checked again: the rules
     /// about how a program is written were held to it as written, the first time.
     pub(crate) again: bool,
@@ -279,6 +282,7 @@ impl Checker {
             previous: BTreeMap::new(),
             own_callers: BTreeMap::new(),
             waits: BTreeMap::new(),
+            unfollowed: BTreeSet::new(),
             again: false,
             takes_locks: BTreeMap::new(),
             lock_calls: Vec::new(),

@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    names = ["ana"]
+    if (count := len(names)) > 0:
+        stdout.print(count)

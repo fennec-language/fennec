@@ -41,7 +41,7 @@ fn leads_to(under: &[String], path: &[String]) -> bool {
 }
 
 /// What an instruction may give another owner, or replace.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub(crate) enum Unsettled {
     /// What's at the path, and everything under it.
     Under(LocalId, Vec<String>),

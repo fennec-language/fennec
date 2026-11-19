@@ -1,0 +1,7 @@
+error: Fennec doesn't have `class`
+ --> examples/errors/class.fen:1:1
+  |
+1 | class Point:
+  | ^^^^^
+  |
+  = help: write `struct Point:`, with its fields under it: it makes its own constructor from them, as `Point(x=1)`

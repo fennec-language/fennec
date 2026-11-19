@@ -1,0 +1,7 @@
+error: `input` doesn't exist
+ --> examples/errors/input.fen:2:12
+  |
+2 |     name = input("name? ")
+  |            ^^^^^
+  |
+  = help: standard input comes through `stdin: Stdin` in `main`'s parameters, as `line = stdin.read_line()? else ""`

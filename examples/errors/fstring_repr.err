@@ -1,0 +1,7 @@
+error: an f-string has no `!r`
+ --> examples/errors/fstring_repr.fen:3:25
+  |
+3 |     stdout.print(f"{name!r}")
+  |                         ^^
+  |
+  = help: `{name}` shows the value as `str(name)` does, and a format goes after `:`, as `{price:.2f}`

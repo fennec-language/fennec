@@ -1,0 +1,7 @@
+error: `name` is a str, which can't be `None`
+ --> examples/errors/default_none.fen:1:39
+  |
+1 | def greet(stdout: Stdout, name: str = None):
+  |                                       ^^^^
+  |
+  = fix: write `name: str? = None` to let it be left out

@@ -825,6 +825,172 @@ fn a_loop_wraps_its_generator_s_failure_and_owns_one_inside_enumerate_or_zip() {
     );
 }
 
+/// A generator that can fail, given a name and let go of partway, leaves at its `yield` where
+/// compiled code frees it: as its function ends, or as its name is given another. Each `with` it's
+/// in runs its cleanup there, and a cleanup that fails stops the program, with compiled code's
+/// words, even where the function was failing. One made in an inner block, or two let go of at
+/// once, are still refused: compiled code frees the first later than the block's end, and the two
+/// in an order it doesn't promise. What each prints is what the compiled program printed (#2127).
+#[test]
+fn a_generator_let_go_of_partway_runs_its_cleanup_where_compiled_code_frees_it() {
+    let stopped = "a generator's cleanup failed as it was let go by its last owner: Full(left=0)";
+    for (body, expected, stops) in [
+        (LET_GO_AT_THE_END, "got 1\nafter the loop\nstill in run\nclosing a\n", true),
+        (
+            LET_GO_FOR_ANOTHER,
+            "got 1\nbefore reassigning\nclosing first\nafter reassigning\ngot again 1\nend of run\nclosing second\nafter run\n",
+            false,
+        ),
+        (LET_GO_AFTER_MORE, "got 1\nafter the loop\nlater 0\nlater 1\nclosing d\nafter run\n", false),
+        (LET_GO_AS_IT_FAILS, "got 1\nfailing now\nclosing f\n", true),
+        (LET_GO_IN_A_LIST, "got 1\nend of run\nclosing held\n", true),
+    ] {
+        let (printed, ended) = ran(&format!("{LETTING_GO}{body}"));
+        assert_eq!(printed, expected, "{body}");
+        if stops {
+            assert!(matches!(&ended, Ended::Stopped(said) if said.contains(stopped)), "{ended:?}");
+        } else {
+            assert_eq!(ended, Ended::Exited(0));
+        }
+    }
+    for body in [LET_GO_IN_AN_IF, LET_GO_TWO_AT_ONCE] {
+        let (_, ended) = ran(&format!("{LETTING_GO}{body}"));
+        assert!(matches!(ended, Ended::Unsupported(_)), "{ended:?}");
+    }
+}
+
+const LETTING_GO: &str = r#"error Full:
+    left: int
+
+struct Door:
+    name: str
+
+def source(name: str, failing: bool, stdout: Stdout) -> with Door fails Full:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    if failing:
+        fail Full(left=0)
+
+def numbers(name: str, failing: bool, stdout: Stdout) -> Iterator[int] fails Full:
+    with source(name, failing, stdout)? as door:
+        yield 1
+        yield 2
+        yield 3
+
+"#;
+
+const LET_GO_AT_THE_END: &str = r#"def run(stdout: Stdout) fails Full:
+    made = numbers("a", failing=True, stdout=stdout)?
+    for n in made:
+        stdout.print("got", n)
+        break
+    stdout.print("after the loop")
+    stdout.print("still in run")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_FOR_ANOTHER: &str = r#"def run(stdout: Stdout) fails Full:
+    mut made = numbers("first", failing=False, stdout=stdout)?
+    for n in made:
+        stdout.print("got", n)
+        break
+    stdout.print("before reassigning")
+    made = numbers("second", failing=False, stdout=stdout)?
+    stdout.print("after reassigning")
+    for n in made:
+        stdout.print("got again", n)
+        break
+    stdout.print("end of run")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_AFTER_MORE: &str = r#"def run(stdout: Stdout) fails Full:
+    made = numbers("d", failing=False, stdout=stdout)?
+    for n in made:
+        stdout.print("got", n)
+        break
+    stdout.print("after the loop")
+    for i in range(2):
+        stdout.print("later", i)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_AS_IT_FAILS: &str = r#"error Other:
+    code: int
+
+def run(stdout: Stdout) fails Full | Other:
+    made = numbers("f", failing=True, stdout=stdout)?
+    for n in made:
+        stdout.print("got", n)
+        break
+    stdout.print("failing now")
+    fail Other(code=7)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_IN_A_LIST: &str = r#"def run(stdout: Stdout) fails Full:
+    held = [numbers("held", failing=True, stdout=stdout)?]
+    for made in held:
+        for n in made:
+            stdout.print("got", n)
+            break
+    stdout.print("end of run")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_IN_AN_IF: &str = r#"def run(stdout: Stdout, go: bool) fails Full:
+    if go:
+        made = numbers("c", failing=False, stdout=stdout)?
+        for n in made:
+            stdout.print("got", n)
+            break
+        stdout.print("end of if")
+    stdout.print("after if")
+
+def main(stdout: Stdout):
+    run(stdout, go=True) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
+const LET_GO_TWO_AT_ONCE: &str = r#"def run(stdout: Stdout) fails Full:
+    first = numbers("one", failing=False, stdout=stdout)?
+    second = numbers("two", failing=False, stdout=stdout)?
+    for n in first:
+        stdout.print("first", n)
+        break
+    for n in second:
+        stdout.print("second", n)
+        break
+    stdout.print("end of run")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after run")
+"#;
+
 const GENERATORS_ZIPPED_BOTH: &str = r#"error Shut:
     name: str
 
@@ -2580,6 +2746,102 @@ fn a_types_own_index_reads_writes_back_and_gives_positions() {
     );
 }
 
+/// Through a type's own `def []`, every built-in method that changes its value is written back
+/// through `def []=`, as compiled code does: a list's `sort`, with a key too, and `remove_where`,
+/// and a table's `add`, `modify` and `remove_where`. One that only reads, a list's `count`,
+/// `index` and `get` or a table's `values` and `get`, writes nothing back. What it prints is what
+/// the compiled program printed, built for dev and with `--release`.
+#[test]
+fn every_change_through_a_types_own_index_is_written_back() {
+    prints(
+        "
+        from std.collections import Table
+
+        struct Point:
+            x: int
+
+        def bump(ref point: Point):
+            point.x += 5
+
+        struct Shelf:
+            rows: list[list[int]]
+            writes = 0
+
+            def [](self, at: int) -> list[int]:
+                return self.rows[at]
+
+            def []=(ref self, at: int, row: list[int]):
+                self.rows[at] = row
+                self.writes += 1
+
+        struct Desk:
+            tables: list[Table[Point]]
+            writes = 0
+
+            def [](self, at: int) -> Table[Point]:
+                return self.tables[at]
+
+            def []=(ref self, at: int, table: Table[Point]):
+                self.tables[at] = table
+                self.writes += 1
+
+        def main(stdout: Stdout):
+            mut shelf = Shelf(rows=[[3, 1, 3], [5, 4, 6]])
+            stdout.print(shelf[0].count(3), shelf[0].index(1), shelf[0].get(9), shelf.writes)
+            shelf[0].sort()
+            stdout.print(shelf.rows, shelf.writes)
+            shelf[1].sort(key=item => 0 - item)
+            stdout.print(shelf.rows, shelf.writes)
+            shelf[1].remove_where(item => item > 5)
+            stdout.print(shelf.rows, shelf.writes)
+            mut desk = Desk(tables=[Table[Point]()])
+            made = desk[0].add(Point(x=1))
+            other = desk[0].add(Point(x=2))
+            stdout.print(len(desk[0].values()), desk.writes)
+            _ = desk[0].modify(made, bump)
+            stdout.print(desk[0].get(made), desk.writes)
+            desk[0].remove_where(point => point.x > 3)
+            stdout.print(desk[0].get(made), desk[0].get(other), desk.writes)
+            return
+        ",
+        "2 1 None 0\n\
+         [[1, 3, 3], [5, 4, 6]] 1\n\
+         [[1, 3, 3], [6, 5, 4]] 2\n\
+         [[1, 3, 3], [5, 4]] 3\n\
+         2 2\n\
+         Point(x=6) 3\n\
+         None Point(x=2) 4\n",
+    );
+}
+
+/// A built-in method the oracle doesn't know changes its value or only reads it, called through
+/// a type's own `def []`, is refused: writing it back or not could each be wrong.
+#[test]
+fn a_method_through_a_types_own_index_not_known_to_change_or_read_is_refused() {
+    let (_, ended) = ran("
+        struct Blobs:
+            items: list[bytes]
+
+            def [](self, at: int) -> bytes:
+                return self.items[at]
+
+            def []=(ref self, at: int, item: bytes):
+                self.items[at] = item
+
+        def main(stdout: Stdout):
+            mut blobs = Blobs(items=['hi'.encode()])
+            stdout.print(blobs[0].hex())
+            return
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "the method `hex` through a type's own `def []`, not known to change its value or only read it"
+                .to_owned()
+        )
+    );
+}
+
 /// A change through a type's own `def []=` that fails partway keeps what it changed before the
 /// failure: the part is written back, since only `lock ... as ref` rolls back. What it prints is
 /// what the compiled program printed, built for dev and with `--release`.
@@ -3181,6 +3443,38 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
                     with launch(() => took(inbox, stdout=stdout))?:
                         _ = quiet.receive_within(2ms) except Timeout(): -1
                         hits.send(2)?
+        ";
+
+/// A loop polling with waits of no time, while a task beside it waits with a timeout, runs: each
+/// poll asks who could still send on the channel, and the answer is worked out without going
+/// over every message for every task each time (#2131). What it prints is what the compiled
+/// program printed.
+#[test]
+fn a_loop_polling_with_waits_of_no_time_beside_a_waiting_task_runs() {
+    prints(POLLING_WITH_NO_TIME, "found 20\n");
+}
+
+const POLLING_WITH_NO_TIME: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def waiting(quiet: Inbox[int], done: Sender[int]) fails Closed:
+            _ = quiet.receive_within(10s) except Timeout(): -1
+            done.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as quiet, channel[int](size=1) as done:
+                with launch(() => waiting(quiet.inbox(), done=done.sender())?)?:
+                    with channel[int](size=4) as box:
+                        mut found = 0
+                        for at in range(2000):
+                            if at % 100 == 0:
+                                box.send(at)?
+                            got = box.receive_within(0ms) except Timeout(): -1
+                            if got is not None and got >= 0:
+                                found += 1
+                        stdout.print('found', found)
+                    quiet.send(1)?
+                    _ = done.receive() else -1
         ";
 
 /// A listener started in a task beside the block's sends hears them or not by time: each place it

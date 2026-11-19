@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    name = input("name? ")
+    stdout.print(name)

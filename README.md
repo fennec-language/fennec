@@ -68,24 +68,34 @@ Until then, install it from a checkout of this repository. This builds `fennec` 
 .github/scripts/install.sh
 ```
 
-Or run it from the checkout with Cargo. Fennec runs most of the language on the website: structs, enums, unions, `match`, errors with `fail` and `?`, optional values, tables and Ids, comprehensions, generators, `parallel` loops, tests and property tests, and a standard library with JSON, HTTP and more. `fennec run` and `fennec test` type-check a program first and report every mistake they find. `fennec run` builds a program through LLVM a function at a time, and where LLVM can't build something yet, it says why.
+Or work in the checkout. Build `fennec` and the runtime library it links programs with together, and again after pulling: `fennec` refuses a runtime library from other source. Then add LLVM's tools, which `fennec` builds programs through, to the Rust toolchain this repository pins:
 
 ```bash
-cargo run -q -p fennec -- run examples/game.fen
+cargo build -p fennec -p fennec-runtime
 ```
 
 ```bash
-cargo run -q -p fennec -- test examples/testing.fen
+rustup component add llvm-tools
+```
+
+Fennec runs most of the language on the website: structs, enums, unions, `match`, errors with `fail` and `?`, optional values, tables and Ids, comprehensions, generators, `parallel` loops, tests and property tests, and a standard library with JSON, HTTP and more. `fennec run` and `fennec test` type-check a program first and report every mistake they find. `fennec run` builds a program through LLVM a function at a time, and where LLVM can't build something yet, it says why.
+
+```bash
+target/debug/fennec run examples/game.fen
 ```
 
 ```bash
-cargo run -q -p fennec -- build --release examples/game.fen -o game
+target/debug/fennec test examples/testing.fen
+```
+
+```bash
+target/debug/fennec build --release examples/game.fen -o game
 ```
 
 A program can span several files as a kit: a folder with a `kit.toml` and its code under `src`. `fennec new my_game` starts one, `fennec init` sets up the current folder and adds Fennec's guidance for coding agents to its `AGENTS.md`, and `fennec run` and `fennec test` with no file run the kit around the current folder.
 
 ```bash
-cargo run -q -p fennec -- run examples/projects/arena
+target/debug/fennec run examples/projects/arena
 ```
 
 Every program in [`examples/`](examples) is a test: it must print exactly its `.out` file and pass its own `test` blocks, and every program in [`examples/errors/`](examples/errors) must fail with exactly its `.err` message. The kits in [`examples/projects/`](examples/projects) work the same way.

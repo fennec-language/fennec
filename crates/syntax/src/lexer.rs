@@ -284,6 +284,9 @@ impl Lexer<'_> {
 
     fn punct(&mut self, start: usize) -> Result<(), Diagnostic> {
         let rest = self.source.get(start..).unwrap_or("");
+        if rest.starts_with(":=") {
+            return Err(self.walrus(start));
+        }
         let longer = Punct::THREE_CHAR.iter().chain(&Punct::TWO_CHAR);
         if let Some(&(text, punct)) = longer.into_iter().find(|(text, _)| rest.starts_with(text)) {
             self.pos += text.len();
@@ -292,10 +295,7 @@ impl Lexer<'_> {
         }
         let c = self.peek(0).unwrap_or(' ');
         let Some(punct) = Punct::single(c) else {
-            return Err(Diagnostic::new(
-                format!("unexpected character `{c}`"),
-                self.span(start).to(Span::new(start, start + c.len_utf8()).shifted(self.base)),
-            ));
+            return Err(self.unexpected(start, c));
         };
         match punct {
             Punct::LParen | Punct::LBracket | Punct::LBrace => self.depth += 1,
@@ -305,6 +305,56 @@ impl Lexer<'_> {
         self.pos += 1;
         self.push(Tok::P(punct), start);
         Ok(())
+    }
+
+    /// A character no token starts with, at byte `start`. Where it's a habit from Python, what to
+    /// write instead: `;` between statements, a string in `'`s, a `\` that goes on to the next
+    /// line, `!r` in an f-string's `{}`, or `!` for `not`.
+    fn unexpected(&self, start: usize, c: char) -> Diagnostic {
+        let rest = self.source.get(start..).unwrap_or("");
+        let after = rest.get(c.len_utf8()..).unwrap_or("");
+        let one = Span::new(start, start + c.len_utf8()).shifted(self.base);
+        match c {
+            ';' => Diagnostic::new("Fennec doesn't use `;`", one).with_help("put each statement on its own line"),
+            '\'' => {
+                let line = after.split('\n').next().unwrap_or("");
+                // The text up to the closing `'` on this line, when it can go in `"`s as it is.
+                let quoted = line.find('\'').and_then(|close| line.get(..close).map(|text| (close, text)));
+                match quoted {
+                    Some((close, text)) if !text.contains(['"', '\\', '{', '}']) => Diagnostic::new(
+                        "a string is written in double quotes",
+                        Span::new(start, start + close + 2).shifted(self.base),
+                    )
+                    .with_help(format!("write `\"{text}\"`")),
+                    _ => Diagnostic::new("a string is written in double quotes", one)
+                        .with_help("write it in `\"`s, as `\"text\"`"),
+                }
+            }
+            '\\' if after.trim_start_matches([' ', '\t', '\r']).chars().next().is_none_or(|next| next == '\n') => {
+                Diagnostic::new("Fennec doesn't go on to the next line with `\\`", one).with_help(
+                    "put what goes on in brackets, which can span lines, as `total = (1 +` with `2)` on the next line",
+                )
+            }
+            '!' if matches!(rest.trim_end(), "!r" | "!s" | "!a") => Diagnostic::new(
+                format!("an f-string has no `{}`", rest.trim_end()),
+                Span::new(start, start + 2).shifted(self.base),
+            )
+            .with_help("`{name}` shows the value as `str(name)` does, and a format goes after `:`, as `{price:.2f}`"),
+            '!' => Diagnostic::new("Fennec writes `not`, not `!`", one).with_help("write `not done`"),
+            _ => Diagnostic::new(format!("unexpected character `{c}`"), one),
+        }
+    }
+
+    /// `:=`, Python's way to name a value inside an expression, at byte `start`.
+    fn walrus(&self, start: usize) -> Diagnostic {
+        let help = match self.tokens.last().map(|token| &token.tok) {
+            Some(Tok::Name(name)) => {
+                format!("give `{name}` its value on a line of its own first, as `{name} = ...`, then use it")
+            }
+            _ => "give the value a name on a line of its own first, then use the name".to_owned(),
+        };
+        Diagnostic::new("Fennec doesn't have `:=`", Span::new(start, start + 2).shifted(self.base))
+            .with_help(help)
     }
 
     fn string(&mut self, start: usize) -> Result<(), Diagnostic> {

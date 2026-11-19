@@ -533,6 +533,52 @@ fn what_a_mut_parameter_can_make_none_is_checked_again() {
     assert_eq!(problems(keeps_what_it_knows), Vec::<String>::new());
 }
 
+/// A union known to hold one member, given by `ref` where the whole union is taken, can come back
+/// holding another, so it's known as the union again, however it was narrowed: by `is`, by what
+/// it was given, by what's left after one member leaves, in a `match` case or as a `for ref`
+/// loop's item. Given where its own member is taken, it can only come back as that member.
+#[test]
+fn what_a_ref_parameter_can_make_another_member_is_checked_again() {
+    let shapes = "
+        struct Crate:
+            items: list[int]
+
+        struct Heap:
+            held: int
+
+        def swapped(ref shape: Crate | Heap):
+            if shape is Crate:
+                shape = Heap(held=len(shape.items))
+
+        def grown(ref crate: Crate):
+            crate.items.append(1)
+    ";
+    let after = |body: &str| {
+        problems(&format!(
+            "{shapes}\n        def f(made: Crate | Heap, shapes: list[Crate | Heap]) -> int:\n{body}"
+        ))
+    };
+    let narrowed = [
+        "            mut shape = made\n            if shape is Crate:\n                swapped(ref shape)\n                return len(shape.items)\n            return 0\n",
+        "            mut shape: Crate | Heap = Crate(items=[2])\n            swapped(ref shape)\n            return len(shape.items)\n",
+        "            mut shape = made\n            if shape is Heap:\n                return 0\n            swapped(ref shape)\n            return len(shape.items)\n",
+        "            mut shape = made\n            match shape:\n                case Crate(items=_):\n                    swapped(ref shape)\n                    return len(shape.items)\n                case Heap(held=_):\n                    return 0\n",
+        "            mut shapes_here = shapes\n            for ref shape in shapes_here:\n                if shape is Crate:\n                    swapped(ref shape)\n                    return len(shape.items)\n            return 0\n",
+    ];
+    for body in narrowed {
+        assert_eq!(after(body), ["a Crate | Heap has no field `items` @ shape.items"], "{body}");
+    }
+    let keeps_what_it_knows = "            mut shape = made\n            if shape is Crate:\n                grown(ref shape)\n                return len(shape.items)\n            return 0\n";
+    assert_eq!(after(keeps_what_it_knows), Vec::<String>::new());
+    let program = format!("{shapes}\n        def f(made: Crate | Heap) -> int:\n{}", narrowed[0]);
+    assert_eq!(
+        helps(&program),
+        [
+            "only `Crate` has `.items`: read it where it's known to be one, after an `is` check or in a `match` case for it"
+        ]
+    );
+}
+
 #[test]
 fn a_loop_sees_what_its_body_changes() {
     let cases = [

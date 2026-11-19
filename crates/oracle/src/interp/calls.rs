@@ -852,9 +852,15 @@ impl Interp {
                 let value = self.eval(default)?;
                 self.bind(&name, value)?;
             }
-            self.block(&def.body)
+            // Its names last until the frame's let go of, below, where compiled code frees them.
+            self.stmts(&def.body)
         })();
-        self.pop_frame(previous);
+        let came = super::stream::letting_go(|| self.pop_frame(previous));
+        // Letting go of a generator partway, its cleanup failing, stops the program where the
+        // function ends, as compiled code's free does, unless it's stopped already.
+        if !matches!(ran, Err(Flow::Crash(..) | Flow::Unsupported(_))) {
+            self.came_of_letting_go(came, span)?;
+        }
         match ran {
             Ok(()) => Ok(Value::Unit),
             Err(Flow::Return(value)) => Ok(value),

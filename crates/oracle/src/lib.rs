@@ -200,6 +200,11 @@ fn run_once(
         shared.sched.orders.lock().map(|mut orders| std::mem::take(&mut orders.made)).unwrap_or_default();
     // A run the oracle couldn't finish is skipped, and what it printed on the way isn't shown.
     let outcome = match (refused, ended) {
+        // Every task waits on another where the runtime finds it, which stops the program after
+        // what it printed.
+        (Some(why), _) | (None, Ended::Unsupported(why)) if why == interp::DEADLOCK => {
+            Outcome { stdout, ended: Ended::Stopped(format!("error: {why}\n")) }
+        }
         (_, Ended::Unsupported(why)) | (Some(why), _) => Outcome::unsupported(why),
         (None, ended) => Outcome { stdout, ended },
     };

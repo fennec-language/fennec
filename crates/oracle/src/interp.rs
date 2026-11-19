@@ -5,6 +5,7 @@
 //! positions under it. Reading a place copies what's there, and writing one writes there.
 
 mod actors;
+pub(crate) use actors::DEADLOCK;
 mod builtins;
 mod calls;
 pub(crate) mod disk;

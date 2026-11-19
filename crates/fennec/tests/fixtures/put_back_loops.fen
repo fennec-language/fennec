@@ -1,0 +1,140 @@
+# The coverage lane's put-back loop shapes main got wrong: a list item, a dict value and a `Table`
+# item read once before a `while True:` loop that puts it back each turn, with its way out after
+# the put-back. Between the turns the item is changed in place, the list holding it is popped
+# and appended to, or the dict's key is removed. Each put-back puts back what was read: a change
+# made in place between the turns is undone, and a removed key is stored again, as any store does.
+
+from std.collections import Id, Table
+
+struct Holder:
+    items: list[int]
+    tag: int
+
+struct Point:
+    across: int
+    down: int
+
+struct Room:
+    counts: dict[str, int]
+
+def list_item_changed(ref holders: list[Holder]):
+    mut taken = holders[0]
+    taken.tag += -2
+    taken.items.append(-2)
+    mut turn = 0
+    while True:
+        holders[0] = taken
+        turn += 1
+        if turn == 3: break
+        holders[0].tag = -2
+        holders[0].items.append(-2)
+    return
+
+def list_popped_and_appended(ref holders: list[Holder]):
+    mut taken = holders[0]
+    taken.tag += 3
+    taken.items.append(3)
+    mut turn = 0
+    while True:
+        holders[0] = taken
+        turn += 1
+        if turn == 3: break
+        _ = holders.pop(0)
+        holders.append(Holder(items=[3], tag=3))
+    return
+
+def dict_list_appended(ref lists: dict[str, list[int]]):
+    mut taken = lists["a"]
+    taken.append(0)
+    mut turn = 0
+    while True:
+        lists["a"] = taken
+        turn += 1
+        if turn == 3: break
+        lists["a"].append(0)
+    return
+
+def dict_holder_changed(ref keepers: dict[str, Holder]):
+    mut taken = keepers["a"]
+    taken.tag += 3
+    taken.items.append(3)
+    mut turn = 0
+    while True:
+        keepers["a"] = taken
+        turn += 1
+        if turn == 3: break
+        keepers["a"].tag = -3
+        keepers["a"].items.append(-3)
+    return
+
+def table_room_changed(ref rooms: Table[Room], room: Id[Room]):
+    mut taken = rooms[room]
+    taken.counts["a"] += -1
+    mut turn = 0
+    while True:
+        rooms[room] = taken
+        turn += 1
+        if turn == 3: break
+        rooms[room].counts["b"] = -1
+    return
+
+def dict_list_key_removed(ref lists: dict[str, list[int]]):
+    mut taken = lists["a"]
+    taken.append(-1)
+    mut turn = 0
+    while True:
+        lists["a"] = taken
+        turn += 1
+        if turn == 3: break
+        _ = lists.remove("a")
+    return
+
+def dict_point_key_removed(ref spots: dict[str, Point]):
+    mut taken = spots["a"]
+    taken.across += 5
+    mut turn = 0
+    while True:
+        spots["a"] = taken
+        turn += 1
+        if turn == 3: break
+        _ = spots.remove("a")
+    return
+
+def dict_holder_key_removed(ref keepers: dict[str, Holder]):
+    mut taken = keepers["a"]
+    taken.items.append(9)
+    mut turn = 0
+    while True:
+        keepers["a"] = taken
+        turn += 1
+        if turn == 3: break
+        _ = keepers.remove("a")
+    return
+
+def main(stdout: Stdout):
+    mut holders = [Holder(items=[6, 7], tag=8), Holder(items=[1], tag=1)]
+    list_item_changed(ref holders)
+    stdout.print(holders[0])
+    holders = [Holder(items=[6, 7], tag=8), Holder(items=[1], tag=1)]
+    list_popped_and_appended(ref holders)
+    stdout.print(holders)
+    mut lists = {"a": [4, 12], "b": [13, 5]}
+    dict_list_appended(ref lists)
+    stdout.print(lists)
+    mut keepers = {"a": Holder(items=[5, 6], tag=7), "b": Holder(items=[2], tag=2)}
+    dict_holder_changed(ref keepers)
+    stdout.print(keepers["a"])
+    mut rooms = Table[Room]()
+    room = rooms.add(Room(counts={"a": 4, "b": 1}))
+    table_room_changed(ref rooms, room)
+    stdout.print(rooms[room].counts)
+    lists = {"a": [4, 12], "b": [13, 5]}
+    dict_list_key_removed(ref lists)
+    stdout.print(lists)
+    mut spots = {"a": Point(across=1, down=2), "b": Point(across=3, down=4)}
+    dict_point_key_removed(ref spots)
+    stdout.print(spots)
+    keepers = {"a": Holder(items=[5, 6], tag=7), "b": Holder(items=[2], tag=2)}
+    dict_holder_key_removed(ref keepers)
+    stdout.print(keepers)
+    return

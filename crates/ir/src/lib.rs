@@ -113,7 +113,7 @@ pub mod slot {
 }
 
 /// A generator: its block's contents, and the functions that run it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct GeneratorDef {
     pub name: String,
     pub item: Type,
@@ -167,7 +167,7 @@ pub struct NotLowered {
 }
 
 /// One function, by its key in the typed tree: `name`, or `Type.name` for a method.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Function {
     pub name: String,
     /// How many of the first locals are parameters.
@@ -188,7 +188,7 @@ pub struct Function {
 
 /// A field or item a call changes, written as reading it out to a local, calling, and writing
 /// that back. The instructions say all of it, so a backend can ignore this.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct ChangedPlace {
     pub root: LocalId,
     pub steps: Vec<PlaceStep>,
@@ -201,7 +201,7 @@ pub struct ChangedPlace {
 }
 
 /// One step from a local towards a place a call changes: only through structs and lists.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum PlaceStep {
     Field(String),
     Item(Operand),
@@ -209,7 +209,7 @@ pub enum PlaceStep {
 
 /// A `for` loop's count. It's set once before the loop, the limit is read once, and it's short
 /// of the limit whenever the body runs, so the one step after the body can't overflow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Count {
     pub count: LocalId,
     pub stop: LocalId,
@@ -218,7 +218,7 @@ pub struct Count {
 }
 
 /// A place a function holds a value. Temporaries have no name.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Local {
     pub name: Option<String>,
     pub ty: Type,
@@ -232,23 +232,23 @@ pub struct Local {
 pub struct LocalId(pub usize);
 
 /// A block of the function, by position in [`Function::blocks`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockId(pub usize);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Block {
     pub insts: Vec<Inst>,
     pub end: Terminator,
 }
 
 /// One step, with the source it came from, for reporting what goes wrong while it runs.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Inst {
     pub kind: InstKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum InstKind {
     Copy {
         dest: LocalId,
@@ -525,7 +525,7 @@ pub enum InstKind {
 }
 
 /// One piece of an f-string.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum FormatPart {
     Text(String),
     Value { value: Operand, spec: Option<String> },
@@ -545,8 +545,24 @@ pub enum Operand {
     None,
 }
 
+/// A float by its bits, so two floats that print alike, as NaNs do, hash apart when they differ.
+impl std::hash::Hash for Operand {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Operand::Local(local) => local.hash(state),
+            Operand::Int(value) => value.hash(state),
+            Operand::Float(value) => value.to_bits().hash(state),
+            Operand::Bool(value) => value.hash(state),
+            Operand::Str(text) => text.hash(state),
+            Operand::Bytes(blob) => blob.hash().as_bytes().hash(state),
+            Operand::None => {}
+        }
+    }
+}
+
 /// How a block ends.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum Terminator {
     Jump(BlockId),
     Branch {

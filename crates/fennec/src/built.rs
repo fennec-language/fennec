@@ -63,8 +63,8 @@ fn files_now(path: &str, state: &fennec_build::KitState) -> Option<Vec<KitFile>>
     }
 }
 
-/// `fennec build`: made by the build daemon when there is one for this environment, which keeps
-/// what it works out between builds, or else here.
+/// `fennec build`: made by the build daemon for this environment, started if it isn't running, or
+/// else here when there's none to be had.
 pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> ExitCode {
     crate::daemon::build(path, output, release).unwrap_or_else(|| build_here(path, output, release))
 }
@@ -123,7 +123,14 @@ fn stored(cache: &Cache, key: &str, output: Option<&str>) -> bool {
     let none = std::time::Duration::ZERO;
     crate::aot::said_built(
         &output,
-        &crate::aot::Built { total, fresh: 0, compiled: none, linked: none, root: Some(root.to_owned()) },
+        &crate::aot::Built {
+            total,
+            fresh: 0,
+            reused: 0,
+            compiled: none,
+            linked: none,
+            root: Some(root.to_owned()),
+        },
     );
     true
 }

@@ -49,7 +49,8 @@ pub enum CheckKind {
 pub fn checks_left(program: &Program) -> Vec<CheckLeft> {
     let noting = crate::Shared { noting_checks: true, ..crate::Shared::default() };
     // Only checks are wanted, and no unit is kept, so nothing is audited.
-    let Ok((_, shared, _, _)) = crate::emit::emit_keeping(program, crate::Cpu::Usual, noting, false) else {
+    let Ok((_, shared, _, _)) = crate::emit::emit_keeping(program, crate::Cpu::Usual, noting, (false, None))
+    else {
         return checks_from_analysis(program);
     };
     let mut seen = std::collections::HashSet::new();

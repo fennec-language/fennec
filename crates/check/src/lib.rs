@@ -671,8 +671,9 @@ impl KeptCheck {
 /// `check_to_build_saying`, keeping what the first check finds for a build after an edit, and
 /// carrying over from `kept`, what the build before it kept, what was found for each function the
 /// edit left as it was. Nothing's carried over when the edit changed anything the program declares
-/// besides what's inside its functions and tests, or added, took away or renamed a function. Each
-/// round of rewriting carries over what the check before it found the same way.
+/// besides what's inside its functions and tests, or added, took away or renamed a function. The
+/// rounds of rewriting that follow check what they write all again, as a build that keeps nothing
+/// does.
 ///
 /// With `compare`, each check that carried anything over is compared with checking it all again,
 /// and a difference is the compiler's mistake, said as one (`compares_kept_check`).
@@ -1033,9 +1034,8 @@ fn differs_from_checked_again(
     let (whole, carried) = match (whole, carried) {
         (Ok(whole), Ok(carried)) => (whole, carried.clone()),
         (Err(whole), Err(carried)) => {
-            return (&whole != carried).then(|| {
-                format!("what it finds wrong: {:?} against {:?}", whole.first(), carried.first())
-            });
+            return (&whole != carried)
+                .then(|| format!("what it finds wrong: {:?} against {:?}", whole.first(), carried.first()));
         }
         (whole, _) => {
             let passes = |passes: bool| if passes { "passes" } else { "doesn't" };
@@ -1532,11 +1532,11 @@ pub struct Checked {
     pub signatures: Signatures,
     pub types: Types,
     /// What each function's check wrote in the tables below, by its key, settled: what a later
-    /// round carries over for a function it left as it was.
+    /// check carries over for a function an edit left as it was. Empty unless the check kept it.
     tables_of: BTreeMap<String, checker::Tables>,
     /// What each function's check added to what's followed across functions, by its key, settled.
     graph_of: BTreeMap<String, checker::Graph>,
-    /// Every function the check knew, by its key, as it was: what a later round compares its own
+    /// Every function the check knew, by its key, as it was: what a later check compares its own
     /// with, to carry over what was found for those left as they were.
     defs: BTreeMap<String, program::FnEntry>,
     /// Every test the check knew, by its key, as it was, for the same: those whose name another

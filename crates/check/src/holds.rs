@@ -123,7 +123,7 @@ impl Handovers {
         }
     }
 
-    /// The same, with every type in it settled, for a later round's check to carry over.
+    /// The same, with every type in it settled, for a later check to carry over.
     pub(crate) fn settled(mut self, settle: &dyn Fn(&Type) -> Type) -> Handovers {
         for calls in self.handed.values_mut() {
             for handed in calls.values_mut() {

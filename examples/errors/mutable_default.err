@@ -1,7 +1,7 @@
 error: can't tell the type of `names` from its default
- --> examples/errors/mutable_default.fen:1:26
+ --> examples/errors/mutable_default.fen:1:28
   |
-1 | def add(name: str, names=[]) -> list[str]:
-  |                          ^^
+1 | def add(name: str, names = []) -> list[str]:
+  |                            ^^
   |
   = help: say it, like `names = list[int]()`

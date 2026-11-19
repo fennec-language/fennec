@@ -6,6 +6,16 @@ from std.string import cut_input, quoted_input
 
 ## How field names are spelled in JSON, set with `names=`. `.SnakeCase` writes them as the
 ## program does. The keys of a dict are written as they are.
+##
+## ```fennec
+## from std import json
+## from std.json import JsonNames
+##
+## struct Player:
+##     first_name: str
+##
+## assert json.dumps(Player(first_name="Ana"), names=JsonNames.CamelCase) == "{\"firstName\": \"Ana\"}"
+## ```
 export enum JsonNames:
     SnakeCase
     CamelCase
@@ -13,6 +23,18 @@ export enum JsonNames:
     KebabCase
 
 ## What reading does with a key no field has, set with `extra=`.
+##
+## ```fennec
+## from std import json
+## from std.json import JsonExtra
+##
+## struct Point:
+##     x: int
+##
+## text = "{\"x\": 1, \"y\": 2}"
+## assert json.loads[Point](text) fails ParseError()
+## assert json.loads[Point](text, extra=JsonExtra.Ignore)?.x == 1
+## ```
 export enum JsonExtra:
     Error
     Ignore
@@ -1898,6 +1920,15 @@ def explained[T: Deserializable](
     return read_value[T](ref src)?
 
 ## Writes `value` as JSON to `out`, any `Writer` from `std.io`, as `dumps` gives it.
+##
+## ```fennec
+## from std import json
+## from std.io import MemoryStream
+##
+## mut out = MemoryStream()
+## json.dump([1, 2], ref out)?
+## assert out.text()? == "[1, 2]"
+## ```
 export def dump[T: Serializable, W: Writer](
     value: T,
     ref out: W,
@@ -1908,6 +1939,14 @@ export def dump[T: Serializable, W: Writer](
 
 ## Reads what's left in `src`, any `Reader` from `std.io`, as JSON for a `T`, as `loads` does,
 ## with the same `names=` and `extra=`.
+##
+## ```fennec
+## from std import json
+## from std.io import MemoryStream
+##
+## mut src = MemoryStream.of("[1, 2]".encode())
+## assert json.load[list[int]](ref src)? == [1, 2]
+## ```
 export def load[T: Deserializable, R: Reader](
     ref src: R,
     names: JsonNames? = None,

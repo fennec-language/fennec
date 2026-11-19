@@ -13,12 +13,14 @@
 # It says too whether main's CI is green on every system, `CI` and `CI macOS` each in a line,
 # naming each job that isn't, with `main-ci.sh`, and warns when GitHub holds more than 25 branches.
 #
-# It says how the night's Fuzzing run ended too. Under each run that failed, it names each job that
-# failed and the step it failed at, a line each, as `failed: <job> :: <step>`, and those lines head
-# the copied report, so a night that failed in no test, as a soak can, still says what failed.
+# It says how the night's Fuzzing and Release runs ended too: Release's nightly installs each
+# archive through the launcher and uses it as a person would. Under each run that failed, it names
+# each job that failed and the step it failed at, a line each, as `failed: <job> :: <step>`, and
+# those lines head the copied report, so a night that failed in no test, as a soak can, still says
+# what failed.
 #
 # It needs `gh`, signed in. A night still running, or one with no report, is said so, and nothing
-# is written. It exits 1 when the night's Proofs or Fuzzing failed, a job of main's CI is red on
+# is written. It exits 1 when the night's Proofs, Fuzzing or Release failed, a job of main's CI is red on
 # any system, or GitHub doesn't answer, so whatever runs it can say so loudly.
 set -eu
 folder=$1
@@ -84,22 +86,28 @@ failed_steps() {
     | [.steps[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name] as $steps
     | "  failed: \(.name) :: \(if ($steps | length) == 0 then "no step failed, the job ended \($how)" else $steps | join(", ") end)"'
 }
-# Whether the night's Fuzzing failed, which fails the report as main's CI does.
-fuzzing=0
-# The night's fuzzing, from the latest scheduled Fuzzing run: a failed one fails the night.
-read -r fuzz fuzz_conclusion fuzz_started <<< "$(gh run list --repo "$repository" --workflow fuzz.yml --event schedule \
-  --limit 1 --json databaseId,conclusion,createdAt --jq "$how_ended")"
-if [ -z "${fuzz:-}" ]; then
-  echo "Fuzzing: no nightly run yet"
-elif [ "$fuzz_conclusion" = running ]; then
-  echo "Fuzzing: the nightly run $fuzz is still going"
-else
-  echo "Fuzzing on ${fuzz_started%%T*}: $fuzz_conclusion, https://github.com/$repository/actions/runs/$fuzz"
-  if [ "$fuzz_conclusion" != success ]; then
-    fuzzing=1
-    failed_steps "$fuzz" || echo "  failed: its jobs couldn't be read"
+# Whether a night's Fuzzing or Release failed, which fails the report as main's CI does.
+nights=0
+# How the latest scheduled run of `workflow`, called `name`, ended: a failed one fails the night.
+# Release's nightly was red for days unseen until it was read here too.
+nightly() {
+  local name=$1 workflow=$2 run conclusion started
+  read -r run conclusion started <<< "$(gh run list --repo "$repository" --workflow "$workflow" --event schedule \
+    --limit 1 --json databaseId,conclusion,createdAt --jq "$how_ended")"
+  if [ -z "${run:-}" ]; then
+    echo "$name: no nightly run yet"
+  elif [ "$conclusion" = running ]; then
+    echo "$name: the nightly run $run is still going"
+  else
+    echo "$name on ${started%%T*}: $conclusion, https://github.com/$repository/actions/runs/$run"
+    if [ "$conclusion" != success ]; then
+      nights=1
+      failed_steps "$run" || echo "  failed: its jobs couldn't be read"
+    fi
   fi
-fi
+}
+nightly Fuzzing fuzz.yml
+nightly Release release.yml
 # The night's mutants, from the latest scheduled Mutation tests run, as `mutants-<date>.md`: each
 # crate's slice, with what no test caught ranked by file. Survivors are reported, never a failed night.
 read -r mutants finished started <<< "$(gh run list --repo "$repository" --workflow mutants.yml --event schedule \
@@ -148,11 +156,11 @@ read -r run conclusion created <<< "$(gh run list --repo "$repository" --workflo
   --json databaseId,conclusion,createdAt --jq "$how_ended")"
 if [ -z "${run:-}" ]; then
   echo "no Proofs run yet"
-  exit $((main_ci | fuzzing))
+  exit $((main_ci | nights))
 fi
 if [ "$conclusion" = running ]; then
   echo "the Proofs run $run is still going"
-  exit $((main_ci | fuzzing))
+  exit $((main_ci | nights))
 fi
 # Each job of the night that failed, and the step it failed at, so a failed night says plainly
 # what failed even when it's no test, as when a soak's memory rose past its budget.
@@ -165,7 +173,7 @@ if ! gh run download "$run" --repo "$repository" --name nightly-report --dir "$w
   echo "the Proofs run $run ($conclusion) kept no report"
   [ -z "$steps" ] || echo "$steps"
   [ "$conclusion" = success ] || exit 1
-  exit $((main_ci | fuzzing))
+  exit $((main_ci | nights))
 fi
 day=${created%%T*}
 {
@@ -193,4 +201,4 @@ fi
 failed=$(sed -n 's/^Failed tests: //p' "$work/nightly.md" | head -n 1)
 echo "Proofs on $day: $conclusion${failed:+, failed tests: $failed}, report in $folder/nightly-proofs-$day.md"
 [ -z "$steps" ] || echo "$steps"
-[ "$conclusion" = success ] && [ "$main_ci" -eq 0 ] && [ "$fuzzing" -eq 0 ]
+[ "$conclusion" = success ] && [ "$main_ci" -eq 0 ] && [ "$nights" -eq 0 ]

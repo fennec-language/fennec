@@ -99,6 +99,93 @@ fn a_changed_signature_checks_its_callers_again() {
     assert_eq!(problems.len(), 1, "{problems:?}");
 }
 
+/// A callee whose type parameter gets a bound its caller's argument doesn't fit has its callers
+/// checked again, though what it takes and gives back is as it was.
+#[test]
+fn a_callee_given_a_bound_checks_its_callers_again() {
+    let before = "interface Shape:\n    def area(self) -> float\n\n\
+                  struct Dot:\n    x: int\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(measure(Dot(1)))\n\n\
+                  def measure[T](item: T) -> int:\n    return 1\n";
+    let after = before.replace("measure[T](item", "measure[T: Shape](item");
+    let (_, problems) = edited(before, &after);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+}
+
+/// A callee that now changes what its caller loops over, or replaces what its caller holds a `ref`
+/// into, is refused there, though the caller is written as it was: directly, or two calls down.
+#[test]
+fn what_a_callee_now_changes_under_a_ref_is_refused_in_its_caller() {
+    let loops = "struct Bag:\n    items = list[int]()\n    total = 0\n\n\
+                 def run(ref bag: Bag):\n    for item in bag.items:\n        bump(ref bag, item)\n\n\
+                 def main(stdout: Stdout):\n    mut bag = Bag()\n    bag.items.append(1)\n    run(ref bag)\n    stdout.print(bag.total)\n\n\
+                 def bump(ref bag: Bag, by: int):\n    bag.total += by\n";
+    let (_, problems) = edited(loops, &loops.replace("bag.total += by", "bag.items.append(by)"));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    let deeper = loops.replace("        bump(ref bag, item)", "        middle(ref bag, item)").replace(
+        "def bump(ref bag: Bag, by: int):",
+        "def middle(ref bag: Bag, by: int):\n    bump(ref bag, by)\n\ndef bump(ref bag: Bag, by: int):",
+    );
+    let (_, problems) = edited(&deeper, &deeper.replace("bag.total += by", "bag.items.append(by)"));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    let lent = "struct Bag:\n    items = list[int]()\n\n\
+                def main(stdout: Stdout):\n    mut bag = Bag()\n    ref first = bag.items\n    touch(ref bag)\n    first.append(1)\n    stdout.print(bag.items)\n\n\
+                def touch(ref bag: Bag):\n    look(bag)\n\n\
+                def look(bag: Bag):\n    pass\n";
+    let (_, problems) = edited(lent, &lent.replace("    look(bag)\n", "    bag.items = list[int]()\n"));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+}
+
+/// A constant, or a field typed by its default, whose value calls a function that gives back
+/// something else now has every function that reads it checked again, not only the first.
+#[test]
+fn a_constant_from_a_function_that_changed_checks_every_reader_again() {
+    let changed = |source: &str| {
+        source.replace("def pick() -> int:\n    return 2", "def pick() -> str:\n    return \"2\"")
+    };
+    let two_readers = "LIMIT = pick()\n\n\
+                       def main(stdout: Stdout):\n    stdout.print(over(3), under(3))\n\n\
+                       def over(n: int) -> bool:\n    return n > LIMIT\n\n\
+                       def under(n: int) -> bool:\n    return n < LIMIT\n\n\
+                       def pick() -> int:\n    return 2\n";
+    let (_, problems) = edited(two_readers, &changed(two_readers));
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    let first_still_fits = "LIMIT = pick()\n\n\
+                            def main(stdout: Stdout):\n    stdout.print(LIMIT)\n    stdout.print(under(3))\n\n\
+                            def under(n: int) -> bool:\n    return n < LIMIT\n\n\
+                            def pick() -> int:\n    return 2\n";
+    let (_, problems) = edited(first_still_fits, &changed(first_still_fits));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    let field = "struct Limit:\n    most = pick()\n\n\
+                 def main(stdout: Stdout):\n    stdout.print(Limit().most)\n    stdout.print(under(3))\n\n\
+                 def under(n: int) -> bool:\n    return n < Limit().most\n\n\
+                 def pick() -> int:\n    return 2\n";
+    let (_, problems) = edited(field, &changed(field));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+}
+
+/// A test that calls a function giving back something else now is checked again.
+#[test]
+fn a_test_calling_a_changed_function_is_checked_again() {
+    let before = "def main(stdout: Stdout):\n    stdout.print(1)\n\n\
+                  test \"doubles\":\n    total: int = double(2)\n    assert total == 4\n\n\
+                  def double(n: int) -> int:\n    return n * 2\n";
+    let after = before.replace("-> int:\n    return n * 2", "-> str:\n    return \"ab\"");
+    let (_, problems) = edited(before, &after);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+}
+
+/// A `with` source whose body changed is written in where it's used as it is now: its callers keep
+/// its whole definition, so they're checked again, though what it gives is as it was.
+#[test]
+fn a_with_sources_body_edit_checks_where_it_is_used_again() {
+    let before = "def main(stdout: Stdout):\n    with opened(stdout) as one:\n        stdout.print(one)\n\n\
+                  def opened(stdout: Stdout) -> with int:\n    stdout.print(\"open\")\n    lend 1\n    stdout.print(\"close\")\n";
+    let after = before.replace("stdout.print(\"open\")", "stdout.print(\"opens\")");
+    let (_, problems) = edited(before, &after);
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
 /// A function that waits now, called inside a lock by one written as it was, is refused there:
 /// what's called inside a lock is followed over every function, carried over or not.
 #[test]

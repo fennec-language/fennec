@@ -745,9 +745,61 @@ fn value_place(block: &[u64], layout: Layout, entry: usize) -> Option<usize> {
     Some(DICT_HEADER_WORDS + mask + 1 + entry * layout.width() + layout.value_at())
 }
 
+/// How many words of a string key's text are packed on the stack to look it up: 128 bytes.
+const KEY_WORDS: usize = 16;
+
+/// A string key's text to look for, packed eight bytes to a word as a string's block packs it,
+/// the last word padded with zeros, with its length in bytes and in characters. Short ones are
+/// packed on the stack, so looking one up makes nothing.
+struct KeyText {
+    short: [u64; KEY_WORDS],
+    long: Vec<u64>,
+    length: usize,
+    chars: usize,
+}
+
+impl KeyText {
+    /// The `length` bytes of `words` from byte `start` on, as a key of `chars` characters.
+    fn packed(words: &[u64], start: usize, length: usize, chars: usize) -> KeyText {
+        let count = length.div_ceil(8);
+        // The bytes of word `number`, with zeros past the text's end.
+        let word = |number: usize| {
+            let left = length - number * 8;
+            let mask = if left >= 8 { u64::MAX } else { (1_u64 << (left * 8)) - 1 };
+            super::text::eight_bytes_at(words, start + number * 8) & mask
+        };
+        let mut key = KeyText { short: [0; KEY_WORDS], long: Vec::new(), length, chars };
+        if count <= KEY_WORDS {
+            for (number, place) in key.short.iter_mut().enumerate().take(count) {
+                *place = word(number);
+            }
+        } else {
+            key.long = (0..count).map(word).collect();
+        }
+        key
+    }
+
+    /// Its words, as a string's block holds them after its header.
+    fn words(&self) -> &[u64] {
+        let count = self.length.div_ceil(8);
+        if count <= KEY_WORDS { self.short.get(..count).unwrap_or_default() } else { &self.long }
+    }
+
+    /// Its bytes, for a key made new.
+    fn bytes(&self) -> Vec<u8> {
+        self.words().iter().flat_map(|word| word.to_le_bytes()).take(self.length).collect()
+    }
+}
+
+/// How many characters the `length` bytes of `words` from byte `start` on hold: the bytes that
+/// start one, as every byte but UTF-8's continuation bytes does.
+fn chars_in(words: &[u64], start: usize, length: usize) -> usize {
+    (start..start + length).filter(|at| super::text::eight_bytes_at(words, *at) & 0xC0 != 0x80).count()
+}
+
 /// `text[from:to]`, with positions in characters clamped the way slicing clamps them, as a
-/// string key's block would hold it: its length in bytes and in characters, and its bytes.
-fn slice_of(state: &State, text: i64, from: i64, to: i64) -> Option<(Vec<u8>, usize)> {
+/// string key's block would hold it, read from the text's own words.
+fn slice_of(state: &State, text: i64, from: i64, to: i64) -> Option<KeyText> {
     let block = state.heap.block(u64::try_from(text).ok()?)?;
     if !super::heap::is_text(state, block) {
         return None;
@@ -763,42 +815,30 @@ fn slice_of(state: &State, text: i64, from: i64, to: i64) -> Option<(Vec<u8>, us
     let (from, to) = (bound(from, 0), bound(to, count));
     let to = to.max(from);
     let words = block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8))?;
-    let byte = |at: usize| words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied());
     if length == chars {
-        // ASCII: a character is a byte, so only the bytes in the slice are read.
-        let mut bytes = Vec::with_capacity(to - from);
-        for at in from..to {
-            bytes.push(byte(at)?);
-        }
-        return Some((bytes, to - from));
+        // ASCII: a character is a byte.
+        return Some(KeyText::packed(words, from, to - from, to - from));
     }
-    let all: Option<Vec<u8>> = (0..length).map(byte).collect();
-    let all = String::from_utf8(all?).ok()?;
-    let part: String = all.chars().skip(from).take(to - from).collect();
-    Some((part.into_bytes(), to - from))
+    // Where character `wanted` starts, in bytes: the start of the `wanted`th byte that starts
+    // one, or the text's end.
+    let starts = (0..length).filter(|at| super::text::eight_bytes_at(words, *at) & 0xC0 != 0x80);
+    let mut starts = starts.chain(std::iter::once(length));
+    let first = starts.nth(from)?;
+    let last = if to == from { first } else { starts.nth(to - from - 1)? };
+    Some(KeyText::packed(words, first, last - first, to - from))
 }
 
-/// Bytes as a string's block packs them, eight to a word, the last one padded with zeros.
-fn packed_words(bytes: &[u8]) -> Vec<u64> {
-    bytes
-        .chunks(8)
-        .map(|chunk| {
-            let mut word = [0_u8; 8];
-            word.get_mut(..chunk.len()).unwrap_or_default().copy_from_slice(chunk);
-            u64::from_le_bytes(word)
-        })
-        .collect()
-}
-
-/// Where a string key with these bytes is in a dict of string keys, comparing hashes first
+/// Where a string key with this text is in a dict of string keys, comparing hashes first
 /// and then the key's length and words, with no key of its own made.
-fn find_text(state: &State, block: &[u64], (bytes, chars): (&[u8], usize)) -> Option<(Probe, u64)> {
+fn find_text(state: &State, block: &[u64], key: &KeyText) -> Option<(Probe, u64)> {
     let layout = layout(state, block)?;
     let width = layout.width();
-    let short = (bytes.len() <= super::text::INLINE_BYTES).then(|| super::text::inline(bytes));
-    let words = packed_words(bytes);
-    let length = u64::try_from(bytes.len()).ok()?;
-    let hash = text_hash(Hashing::of(block), length, &words);
+    let words = key.words();
+    let short = (key.length <= super::text::INLINE_BYTES)
+        .then(|| super::text::inline_from_words(words, 0, key.length));
+    let length = u64::try_from(key.length).ok()?;
+    let chars = key.chars;
+    let hash = text_hash(Hashing::of(block), length, words);
     let mask = usize::try_from(*block.get(4)?).ok()?;
     let start = DICT_HEADER_WORDS + mask + 1;
     let header = [length, u64::try_from(chars).ok()?];
@@ -813,7 +853,7 @@ fn find_text(state: &State, block: &[u64], (bytes, chars): (&[u8], usize)) -> Op
             let same_block = |address: u64| {
                 state.heap.block(address).is_some_and(|key| {
                     key.get(2..4) == Some(&header[..])
-                        && key.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words.len()) == Some(&words[..])
+                        && key.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words.len()) == Some(words)
                 })
             };
             let same_text = match block.get(at + 1..at + layout.value_at()) {
@@ -842,7 +882,7 @@ pub extern "C" fn find_slice(dict: i64, text: i64, from: i64, to: i64) -> i64 {
         if !matches!(kind(state, block)?.0, Word::Str | Word::Text) {
             return None;
         }
-        let (Probe::Found(entry), _) = find_text(state, block, (&slice.0, slice.1))? else { return Some(0) };
+        let (Probe::Found(entry), _) = find_text(state, block, &slice)? else { return Some(0) };
         let word = value_place(block, layout(state, block)?, entry)?;
         i64::try_from(block.as_ptr().addr() + word * 8).ok()
     })
@@ -859,7 +899,7 @@ pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64
 /// `add_slice`, `None` having changed nothing for anything but a dict of string keys.
 #[inline]
 fn add_by_slice(state: &mut State, dict: i64, (text, from, to): (i64, i64, i64), value: i64) -> Option<i64> {
-    let (bytes, chars) = slice_of(state, text, from, to)?;
+    let slice = slice_of(state, text, from, to)?;
     let at = u64::try_from(dict).ok()?;
     let block = state.heap.block(at)?;
     let (key_word, value_word) = kind(state, block)?;
@@ -870,7 +910,7 @@ fn add_by_slice(state: &mut State, dict: i64, (text, from, to): (i64, i64, i64),
         return None;
     }
     let unique = state.heap.is_alone(at, block);
-    if let (true, (Probe::Found(entry), _)) = (unique, find_text(state, block, (&bytes, chars))?) {
+    if let (true, (Probe::Found(entry), _)) = (unique, find_text(state, block, &slice)?) {
         let word = value_place(block, layout(state, block)?, entry)?;
         let value = u64::from_ne_bytes(value.to_ne_bytes());
         let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value);
@@ -879,7 +919,7 @@ fn add_by_slice(state: &mut State, dict: i64, (text, from, to): (i64, i64, i64),
         }
         return Some(dict);
     }
-    let key = new_key(state, key_word, (&bytes, chars));
+    let key = new_key(state, key_word, (&slice.bytes(), slice.chars));
     set_words(state, dict, &key, value.cast_unsigned())
 }
 
@@ -914,8 +954,8 @@ pub extern "C" fn add_new_slice(dict: i64, text: i64, from: i64, to: i64, value:
                     return set_inline(state, dict, key, value)
                         .or_else(|| set_words(state, dict, &key, value));
                 }
-                let (bytes, chars) = slice_of(state, text, from, to)?;
-                let key = new_key(state, Word::Text, (&bytes, chars));
+                let slice = slice_of(state, text, from, to)?;
+                let key = new_key(state, Word::Text, (&slice.bytes(), slice.chars));
                 return set_words(state, dict, &key, value.cast_unsigned());
             }
             let key = slice_key(state, text, from, to)?;
@@ -970,22 +1010,22 @@ fn slice_key(state: &mut State, text: i64, from: i64, to: i64) -> Option<i64> {
         let kept = u64::try_from(to - from).ok()?;
         return super::strings::ascii_part_of(state, address, (from, to), kept);
     }
-    let (bytes, chars) = slice_of(state, text, from, to)?;
-    Some(text_from_bytes(state, &bytes, chars))
+    let slice = slice_of(state, text, from, to)?;
+    Some(text_from_bytes(state, &slice.bytes(), slice.chars))
 }
 
-/// A string key given as its header (see `super::text`): its bytes and how many characters
-/// they are, read from the header itself or from its block, with no block made.
-fn header_text(state: &State, header: &[u64; 3]) -> Option<(Vec<u8>, usize)> {
-    if let Some(bytes) = super::text::inline_bytes(header) {
-        let chars = String::from_utf8_lossy(&bytes).chars().count();
-        return Some((bytes, chars));
+/// A string key given as its header (see `super::text`), read from the header itself or from
+/// its block, with no block made.
+fn header_text(state: &State, header: &[u64; 3]) -> Option<KeyText> {
+    if super::text::block_of(header).is_none() {
+        let length = super::text::inline_length(header);
+        return Some(KeyText::packed(header, 0, length, chars_in(header, 0, length)));
     }
     let block = state.heap.block(super::text::block_of(header)?)?;
     let length = usize::try_from(*block.get(2)?).ok()?;
     let chars = usize::try_from(*block.get(3)?).ok()?;
-    let words = block.get(TEXT_HEADER_WORDS..)?;
-    Some((words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect(), chars))
+    let words = block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8))?;
+    Some(KeyText::packed(words, 0, length, chars))
 }
 
 /// `dict.get(key)` for a dict of string keys, the key given as its header's words: the
@@ -1004,11 +1044,11 @@ pub extern "C" fn find_header(dict: i64, a: u64, b: u64, c: u64) -> i64 {
             let word = value_place(block, layout, entry)?;
             return i64::try_from(block.as_ptr().addr() + word * 8).ok();
         }
-        let (bytes, chars) = header_text(state, &[a, b, c])?;
+        let key = header_text(state, &[a, b, c])?;
         if layout.key != Word::Str {
             return None;
         }
-        let (Probe::Found(entry), _) = find_text(state, block, (&bytes, chars))? else { return Some(0) };
+        let (Probe::Found(entry), _) = find_text(state, block, &key)? else { return Some(0) };
         let word = value_place(block, layout, entry)?;
         i64::try_from(block.as_ptr().addr() + word * 8).ok()
     })
@@ -1036,7 +1076,7 @@ fn set_by_header(state: &mut State, dict: i64, header: [u64; 3], value: i64) -> 
         let value = value.cast_unsigned();
         return set_inline(state, dict, header, value).or_else(|| set_words(state, dict, &header, value));
     }
-    let (bytes, chars) = header_text(state, &header)?;
+    let text = header_text(state, &header)?;
     // One word can't be written over a value held in place.
     if key_word != Word::Str || matches!(value_word, Word::InPlace(_)) {
         if matches!(value_word, Word::InPlace(_)) {
@@ -1045,7 +1085,7 @@ fn set_by_header(state: &mut State, dict: i64, header: [u64; 3], value: i64) -> 
         return None;
     }
     let owned = super::text::block_of(&header);
-    if let (Some(&1), (Probe::Found(entry), _)) = (block.first(), find_text(state, block, (&bytes, chars))?) {
+    if let (Some(&1), (Probe::Found(entry), _)) = (block.first(), find_text(state, block, &text)?) {
         let word = value_place(block, layout(state, block)?, entry)?;
         let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value.cast_unsigned());
         if value_word.owned() {
@@ -1058,7 +1098,7 @@ fn set_by_header(state: &mut State, dict: i64, header: [u64; 3], value: i64) -> 
     }
     let key = match owned {
         Some(key) => key.cast_signed(),
-        None => text_from_bytes(state, &bytes, chars),
+        None => text_from_bytes(state, &text.bytes(), text.chars),
     };
     set_in(state, dict, key, value)
 }
@@ -1731,8 +1771,10 @@ fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64,
                     .block(at)
                     .and_then(|block| kind(state, block))
                     .map_or(Word::Int, |kind| kind.0);
-                let value = key_value(state, key_word, key);
-                let message = format!("{} isn't in the set", crate::format::repr(&value));
+                // Read for the message, written and let go of with room for however deep it is.
+                let message = super::heap::with_room_to_read(|| {
+                    format!("{} isn't in the set", crate::format::repr(&key_value(state, key_word, key)))
+                });
                 Err(Diagnostic::new(message, span(start, end)))
             }
             Taken::NotOne => Ok(set),
@@ -1991,8 +2033,10 @@ fn pop_words<const IN_PLACE: bool>(dict: i64, key: &[u64], whose: Key, (start, e
                     .block(at)
                     .and_then(|block| kind(state, block))
                     .map_or(Word::Int, |kind| kind.0);
-                let value = key_value(state, key_word, key);
-                let message = format!("the dict has no key {}", crate::format::repr(&value));
+                // Read for the message, written and let go of with room for however deep it is.
+                let message = super::heap::with_room_to_read(|| {
+                    format!("the dict has no key {}", crate::format::repr(&key_value(state, key_word, key)))
+                });
                 (held, Some(Diagnostic::new(message, span(start, end))))
             }
             Taken::NotOne => (dict, None),
@@ -2039,11 +2083,12 @@ fn missing_words(dict: i64, key: &[u64], whose: Key, augmented: i8, (start, end)
         let at = u64::try_from(dict).unwrap_or(0);
         let key_word =
             state.heap.block(at).and_then(|block| kind(state, block)).map_or(Word::Int, |kind| kind.0);
-        let said = key_value(state, key_word, key);
-        // The key is read for the message, and then let go of: the failure holds only its text.
+        // The key is read for the message, written and let go of with room for however deep it is,
+        // and then let go of itself: the failure holds only its text.
+        let message = super::heap::with_room_to_read(|| {
+            format!("the dict has no key {}", crate::format::repr(&key_value(state, key_word, key)))
+        });
         let_go_of_key(state, at, key, whose);
-        let key = said;
-        let message = format!("the dict has no key {}", crate::format::repr(&key));
         let failure = Diagnostic::new(message, span(start, end));
         Err(if augmented == 0 {
             failure.with_help("use `.get(key)`, which gives None instead")
@@ -2053,49 +2098,51 @@ fn missing_words(dict: i64, key: &[u64], whose: Key, augmented: i8, (start, end)
     });
 }
 
-/// The addresses of the blocks a dict's block owns, read where its entries are, with no copy of them.
-pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
-    let Some(layout) = layout(state, block) else { return Vec::new() };
+/// Adds the addresses of the blocks a dict's block owns to `found`, read where its entries are,
+/// with no copy of them.
+pub(super) fn children(state: &State, block: &[u64], found: &mut Vec<u64>) {
+    let Some(layout) = layout(state, block) else { return };
     if layout.in_place() {
-        return children_in_place(state, block, layout);
+        return children_in_place(state, block, layout, found);
     }
     // Numbers as keys and values hold no blocks, so there's nothing to look through.
     if !layout.value.owned() && !layout.key.owned() && layout.key != Word::Text {
-        return Vec::new();
+        return;
     }
     let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;
     let words = block.get(start..start + used * layout.width()).unwrap_or_default();
-    let mut found = Vec::new();
+    // Room for a key's block and a value's in each entry at once: grown one at a time, the list
+    // would double, copying itself on the way, and end with room for twice what it holds.
+    let each =
+        usize::from(layout.key.owned() || layout.key == Word::Text) + usize::from(layout.value.owned());
+    found.reserve(used * each);
     for entry in words.chunks_exact(layout.width()).filter(|entry| entry.first() != Some(&REMOVED)) {
         found.extend(key_block(layout.key, key_of(layout, entry)));
         found.extend(layout.value.owned().then(|| value_of(entry)));
     }
-    found
 }
 
 /// `children` for a dict that holds its values in place: each entry's key, if it's held in a
 /// block, and each block its value's words hold. Apart from `children`, as each walk of a value in
 /// place is from the walk of a one-word value, so that one is the loop it always was.
 #[inline(never)]
-fn children_in_place(state: &State, block: &[u64], layout: Layout) -> Vec<u64> {
-    let Some(element) = value_element(state, layout.value) else { return Vec::new() };
+fn children_in_place(state: &State, block: &[u64], layout: Layout, found: &mut Vec<u64>) {
+    let Some(element) = value_element(state, layout.value) else { return };
     // Keys and values of kinds that hold no blocks, as numbers and structs of numbers are, leave
     // nothing to look through.
     if !layout.key.owned() && layout.key != Word::Text && !super::heap::holds_blocks(&element) {
-        return Vec::new();
+        return;
     }
     let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;
     let words = block.get(start..start + used * layout.width()).unwrap_or_default();
-    let mut found = Vec::new();
     for entry in words.chunks_exact(layout.width()).filter(|entry| entry.first() != Some(&REMOVED)) {
         found.extend(key_block(layout.key, key_of(layout, entry)));
-        super::heap::held_addresses(&element, value_words(layout, entry), &mut found);
+        super::heap::held_addresses(&element, value_words(layout, entry), found);
     }
-    found
 }
 
 /// Where among a dict's words its live entries hold the addresses of other blocks.

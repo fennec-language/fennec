@@ -1011,6 +1011,77 @@ pub(crate) enum StreamRead {
     Listed,
 }
 
+/// An `Ordered` statement: `ordered{id}(stdout)`, a `Tally{id}` and a `Pair{id}` holding a copy of
+/// it, then a line for each step, in which a call made later changes what was read earlier.
+/// Evaluation is left to right, as `docs/decisions.md` says, so each line shows what was read
+/// before the change: a method's receiver and a field's receiver before an argument, an index's
+/// base before the index, and the left of an operator, a list, a text, a call's arguments, a
+/// field or index write and `+=` before what's to their right.
+#[derive(Clone, Debug)]
+pub(crate) struct InOrder {
+    pub(crate) id: usize,
+    /// What the tally's items, count and dict start from.
+    pub(crate) base: i64,
+    /// Each step, with what its `grow` or `key` adds, from 0 to 9.
+    pub(crate) steps: Vec<(OrderStep, i64)>,
+}
+
+/// A line of an `Ordered` statement, each reading `tally`, and `pair` for `FieldReceiver`, before
+/// a call that changes it: `grow(n)`, which appends `count + n` and gives back the count it adds
+/// 1 to, or `key(n)`, which adds `n` to `names["a"]` and gives back `"a"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OrderStep {
+    /// `tally.show(tally.grow(n))`: a method taking its value as a copy.
+    Receiver,
+    /// `pair.shown(pair.left.grow(n))`: the same through a field.
+    FieldReceiver,
+    /// `tally.items.count(tally.grow(n))`: a list's method that only reads.
+    Counted,
+    /// `tally.names.get(tally.key(n))`: a dict's.
+    Got,
+    /// `tally.items[tally.grow(n) % 4]`: an index's base.
+    Indexed,
+    /// `tally.names[tally.key(n)]`: a dict's.
+    Keyed,
+    /// `three{id}(tally.count, second=tally.grow(n), third=tally.count)`.
+    Arguments,
+    /// `tally.count + tally.grow(n)`.
+    PlusBefore,
+    /// `tally.grow(n) + tally.count`.
+    PlusAfter,
+    /// `[tally.count, tally.grow(n), tally.count]`.
+    Listed,
+    /// `f"{tally.count} {tally.grow(n)} {tally.count}"`.
+    Text,
+    /// `tally.count >= tally.grow(n)`, false read left to right.
+    AtLeast,
+    /// `tally.count = tally.grow(n) + n`.
+    FieldWrite,
+    /// `tally.items[tally.grow(n) % 4] = tally.grow(n)`: the place before what's put there.
+    IndexWrite,
+    /// `tally.count += tally.grow(n)`: the count before the call.
+    Added,
+}
+
+/// Every `OrderStep`, for the generator to pick from.
+pub(crate) const ORDER_STEPS: [OrderStep; 15] = [
+    OrderStep::Receiver,
+    OrderStep::FieldReceiver,
+    OrderStep::Counted,
+    OrderStep::Got,
+    OrderStep::Indexed,
+    OrderStep::Keyed,
+    OrderStep::Arguments,
+    OrderStep::PlusBefore,
+    OrderStep::PlusAfter,
+    OrderStep::Listed,
+    OrderStep::Text,
+    OrderStep::AtLeast,
+    OrderStep::FieldWrite,
+    OrderStep::IndexWrite,
+    OrderStep::Added,
+];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1279,6 +1350,8 @@ pub(crate) enum Stmt {
     /// to each end of `int`, so a proof that it's never negative, made from the first turn alone,
     /// shows: from -4 to 3 all of those hold, and past them the program stops.
     Turned(Turning),
+    /// `ordered{id}(stdout)`: lines whose parts change what's read before them, read left to right.
+    Ordered(InOrder),
     /// `streamed{id}(stdout)`: a generator over `parallel(xs)`, read in one of the ways a stream is.
     Streamed(Streaming),
     /// `aliased{id}(stdout)`: copies of collections and their parts, each changed in place, then

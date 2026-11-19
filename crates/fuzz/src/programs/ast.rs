@@ -456,6 +456,7 @@ impl Aliasing {
                 | Alias::Tasked { .. }
                 | Alias::Walked { .. }
                 | Alias::Drained { .. }
+                | Alias::Looped(_)
                 | Alias::Read { .. } => {}
             }
         }
@@ -539,6 +540,55 @@ pub(crate) enum Alias {
     /// `print(last{s}.values())` as the dict's last use, so the walk is all that holds what it
     /// gives back once the dict is gone.
     Drained { from: usize, at: usize, n: i64 },
+    /// An item taken out, changed and put back in a `while True:` loop whose exit comes after
+    /// the put-back, with the item or what holds it changed between turns.
+    Looped(Looping),
+}
+
+/// A `Looped` step: `mut taken{s} = to[at]`, or that item's `items` when `items`, changed, then
+/// `to[at] = taken{s}` in a `while True:` loop that ends after the put-back on its `turns`th
+/// turn, `between` done before each turn but the first. Read once before the loop, the put-back
+/// comes round again with no read between, and has to put back what was read whatever happened
+/// to the item since: the shape the compiled program once got wrong, putting back at a place
+/// found before the turn. With `inside`, each turn reads the item first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Looping {
+    pub(crate) to: usize,
+    pub(crate) at: usize,
+    pub(crate) n: i64,
+    pub(crate) turns: i64,
+    pub(crate) between: Between,
+    pub(crate) inside: bool,
+    pub(crate) items: bool,
+}
+
+/// What a `Looped` step does between its turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Between {
+    /// The item changed in place, which the next put-back undoes.
+    Changed,
+    /// What holds the item grown by this many items, past the room it had.
+    Grown(i64),
+    /// The item taken out. A table's goes by its `Id`, so the next turn stops the program, as an
+    /// `Id` whose item has gone does; a list's by place, another added at its end; a dict's by
+    /// key, which the next put-back adds again, last, or a fresh value added at once where the
+    /// next turn reads it first or puts back only its `items`.
+    Removed,
+}
+
+/// The kinds a `Looped` step takes an item out of, and those whose item's `items` it can take.
+pub(crate) const fn loops_back(held: Held) -> bool {
+    matches!(
+        held,
+        Held::Holders
+            | Held::Keepers
+            | Held::Lists
+            | Held::Spots
+            | Held::Table
+            | Held::Entries
+            | Held::Ledger
+            | Held::Rooms
+    )
 }
 
 /// How a `Read` step's loop reads a table's items.

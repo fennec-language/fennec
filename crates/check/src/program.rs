@@ -35,10 +35,11 @@ impl<T> Clone for Held<T> {
     }
 }
 
-/// Two are the same when what they hold is.
+/// Two are the same when what they hold is: at once when they hold the same one, as the library's
+/// always do.
 impl<T: PartialEq> PartialEq for Held<T> {
     fn eq(&self, other: &Self) -> bool {
-        **self == **other
+        std::ptr::eq::<T>(&raw const **self, &raw const **other) || **self == **other
     }
 }
 

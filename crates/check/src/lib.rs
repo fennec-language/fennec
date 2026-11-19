@@ -704,11 +704,12 @@ pub fn check_to_build_keeping(
     }
     let checked = found.map_err(|problems| as_written(problems, &names))?;
     refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
-    // The rounds carry over from the first check, taking what they carry; the next build carries
-    // over from it as it is.
-    let first = checked.clone();
+    // The rounds only read the first check, and hand it back for the next build to carry over from.
     let seen = module.clone();
-    let (signatures, as_left) = resolved_saying(module, (checked, seen), checker::Scope::Building)?;
+    let (signatures, as_left, _, first) =
+        resolved_from(module, checked, checker::Scope::Building, (MOST_ROUNDS, Some(seen)), true)?;
+    // It's always handed back: an empty one would carry nothing over.
+    let first = first.unwrap_or_default();
     Ok((signatures, as_left, KeptCheck { first, declared, carriable }))
 }
 
@@ -865,12 +866,26 @@ const MOST_ROUNDS: usize = 64;
 /// Without it, they're said to be only when nothing was written in.
 fn resolved_within(
     module: &mut Module,
-    mut checked: Checked,
+    checked: Checked,
     scope: checker::Scope,
     most: usize,
-    mut seen: Option<Module>,
+    seen: Option<Module>,
 ) -> Result<(Signatures, bool, usize), Vec<Diagnostic>> {
+    resolved_from(module, checked, scope, (most, seen), false)
+        .map(|(signatures, as_left, rounds, _)| (signatures, as_left, rounds))
+}
+
+/// `resolved_within`, giving back too, with `keep_first`, the first check, `checked`, once the
+/// rounds are done with it: they only read it.
+fn resolved_from(
+    module: &mut Module,
+    mut checked: Checked,
+    scope: checker::Scope,
+    (most, mut seen): (usize, Option<Module>),
+    keep_first: bool,
+) -> Result<(Signatures, bool, usize, Option<Checked>), Vec<Diagnostic>> {
     let mut first = true;
+    let mut kept = None;
     for round in 1.. {
         // Only the last round's changes are looked at, to name what didn't stop changing.
         let before = (round >= most).then(|| module.clone());
@@ -897,7 +912,11 @@ fn resolved_within(
                 Some(seen) => seen == module,
                 None => first && !moved,
             };
-            return Ok((checked.into_signatures(), as_left, round));
+            // When no round checked again, the signatures are the first check's too.
+            if keep_first && kept.is_none() {
+                kept = Some(checked.clone());
+            }
+            return Ok((checked.into_signatures(), as_left, round, kept));
         }
         if let Some(before) = before {
             return Err(vec![still_changing(&before, module)]);
@@ -908,9 +927,13 @@ fn resolved_within(
         }
         let mut next = checker::Checker::new(module);
         next.again = true;
-        checked = next.run(scope).map_err(|problems| {
+        let found = next.run(scope).map_err(|problems| {
             problems.iter().map(|problem| not_checked_again(problem, &module.copied)).collect::<Vec<_>>()
         })?;
+        let done_with = std::mem::replace(&mut checked, found);
+        if keep_first && kept.is_none() {
+            kept = Some(done_with);
+        }
     }
     unreachable!("the rounds go on until one returns")
 }

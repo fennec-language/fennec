@@ -7,7 +7,7 @@
 //! A page's places hold numbers, not blocks: each is 0 for none, or one more than its block's
 //! index in a dense list, `live`. A place is 4 bytes where a block's pointer is 8 or 16, so a page
 //! is a quarter the size to make and read, and a look through every block reads the list, not
-//! every place of every page: peak memory is 12% to 46% lower on the scoreboard's programs.
+//! every place of every page: peak memory is 12% to 49% lower on the scoreboard's programs.
 //!
 //! - **A block is found only at its own address.** A lookup reads the place, then the entry it
 //!   points at, and gives the block only when its address is the one asked for. Whatever a place
@@ -520,13 +520,25 @@ impl Table {
     }
 
     /// Looks for empty pages to give back, as `insert_in_new_page` does, for a worker going to sleep
-    /// with nothing to do: once it's made a few pages, not 64. Each look still costs about a page's
-    /// reading for each page made since the last.
+    /// with nothing to do: once it's made a few pages, not 64, or once its list is mostly holes.
+    /// Each look still costs about a page's reading for each page made since the last.
+    ///
+    /// A burst's blocks can all go with no page made after, as a server's worker takes a burst,
+    /// lets it go and waits. No look would come by pages made, so the burst's list and pages would
+    /// stay: a list of 200,000 entries and 100 pages, 5.6 MB, for one block. After a look the
+    /// list holds what's live, so the next comes only once it's mostly holes again.
     #[cfg(any(test, feature = "threads"))]
     pub(super) fn look_while_idle(&mut self) {
-        if self.made >= self.kept.max(PAGES_BEFORE_LOOKING_IDLE) {
+        if self.made >= self.kept.max(PAGES_BEFORE_LOOKING_IDLE) || self.mostly_holes() {
             self.give_back_empty_pages();
         }
+    }
+
+    /// Whether fewer than half the list's entries hold a block, past the few a short list keeps
+    /// spare (`ENTRIES_KEPT_SPARE`): when `cut_down` moves its blocks down.
+    fn mostly_holes(&self) -> bool {
+        let held = self.len.saturating_sub(self.short.len());
+        self.live.len() >= 2 * held + ENTRIES_KEPT_SPARE
     }
 
     /// Lets go of every page with no block on it, reading only the pages it has, and cuts `live`
@@ -556,9 +568,8 @@ impl Table {
     /// entries long. So where fewer than half its entries hold a block, the blocks at its end move
     /// down into its holes. Its room is let go of too, which popping keeps.
     fn cut_down(&mut self) {
-        let held = self.len.saturating_sub(self.short.len());
-        if self.live.len() >= 2 * held + ENTRIES_KEPT_SPARE {
-            self.compact(held);
+        if self.mostly_holes() {
+            self.compact(self.len.saturating_sub(self.short.len()));
         } else if matches!(self.live.last(), Some(Held::Spare(_))) {
             while matches!(self.live.last(), Some(Held::Spare(_))) {
                 self.live.pop();
@@ -856,6 +867,35 @@ mod tests {
             );
         }
         assert_eq!(table.len(), 1);
+    }
+
+    /// A worker that takes a burst, lets it all go but one block, and waits, makes no page after:
+    /// its first idle look still gives back the burst's pages and cuts its list down, as a busy
+    /// table's would. Before, the list kept 200,000 entries and the pages stayed, 5.6 MB.
+    #[test]
+    fn a_quiet_table_lets_its_burst_go_at_its_first_idle_look() {
+        let mut table = Table::default();
+        let burst: Vec<Box<[u64]>> = (0..200_000_u64).map(|n| vec![1, n, 7, 8].into()).collect();
+        let addresses: Vec<usize> = burst.iter().map(|block| at(block)).collect();
+        for block in burst {
+            table.insert(block);
+        }
+        let Some((&kept, gone)) = addresses.split_last() else { return };
+        let mut elsewhere = Vec::new();
+        for address in gone {
+            elsewhere.extend(table.remove(*address));
+        }
+        let pages = table.pages();
+        assert!(pages > 2 + PAGES_BEFORE_LOOKING_IDLE, "the burst took only {pages} pages");
+        table.look_while_idle();
+        table.agrees().unwrap_or_else(|wrong| panic!("{wrong}"));
+        let (entries, _, room) = table.entries();
+        assert!(entries <= 3, "{entries} entries for one block after an idle look");
+        assert!(room <= 2 * ENTRIES_KEPT_SPARE, "room for {room} entries for one block");
+        assert!(table.pages() <= 2, "{} of {pages} pages kept for one block", table.pages());
+        assert_eq!(table.get(kept).map(|block| block[1]), Some(199_999));
+        // Once the list holds what's live, an idle look doesn't come again for nothing.
+        assert!(!table.mostly_holes());
     }
 
     #[test]

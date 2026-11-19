@@ -244,6 +244,10 @@ pub(super) fn share_statics(state: &mut State) {
         return;
     }
     state.heap.shared_statics = true;
+    // The table is built again here, and a stale place would go with the old one, unseen by any
+    // later audit.
+    #[cfg(any(test, feature = "audit"))]
+    state.heap.blocks.check_agrees();
     let mut shared = super::table::Table::default();
     let mut kept = super::table::Table::default();
     let mut moved = 0;

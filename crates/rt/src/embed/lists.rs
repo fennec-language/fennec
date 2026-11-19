@@ -1372,13 +1372,16 @@ pub extern "C" fn slice(list: i64, from: i64, to: i64) -> i64 {
         let from = items(source, stride).get(kept.clone()).unwrap_or_default();
         let Some(into) = block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + from.len()) else { return 0 };
         into.copy_from_slice(from);
+        // The count and the owners are of what was copied: were the list's block ever shorter than
+        // the range asked for, the slice would count items it never had.
+        let copied = from.len();
         if let Some(count) = block.get_mut(2) {
-            *count = u64::try_from(kept.len() / stride.max(1)).unwrap_or(0);
+            *count = u64::try_from(copied / stride.max(1)).unwrap_or(0);
         }
         retain_items(
             state,
             &element,
-            block.get(LIST_HEADER_WORDS..LIST_HEADER_WORDS + kept.len()).unwrap_or_default(),
+            block.get(LIST_HEADER_WORDS..LIST_HEADER_WORDS + copied).unwrap_or_default(),
         );
         state.heap.insert(block)
     })

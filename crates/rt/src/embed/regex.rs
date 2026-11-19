@@ -26,6 +26,11 @@ thread_local! {
     static WITH: Cell<String> = const { Cell::new(String::new()) };
 }
 
+/// The most room a buffer keeps from one call to the next. A longer text is copied into room of
+/// its own, which goes when the call ends, as every text's did: kept, one search of a big file
+/// would hold a copy of it on that thread for the rest of the run.
+const KEPT_BYTES: usize = 64 << 10;
+
 /// Runs `work` with the text of the string at `address`, copied into the room `kept` holds,
 /// which is given back to it after: an empty text for no string.
 fn with_text<R>(
@@ -39,6 +44,11 @@ fn with_text<R>(
     if let Some(block) = u64::try_from(address).ok().and_then(|at| state.heap.block(at)) {
         let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
         let words = block.get(TEXT_HEADER_WORDS..).unwrap_or_default().iter().take(length.div_ceil(8));
+        // A text too long to keep gets room for all of it at once, as it always did: grown as it's
+        // copied, it could end with room for twice the text.
+        if words.len() * 8 > KEPT_BYTES {
+            bytes.reserve_exact(words.len() * 8);
+        }
         for word in words {
             bytes.extend_from_slice(&word.to_le_bytes());
         }
@@ -47,7 +57,9 @@ fn with_text<R>(
     // A string's block always holds UTF-8: anything else reads as empty, as it always did.
     let text = String::from_utf8(bytes).unwrap_or_default();
     let result = work(state, &text);
-    kept.set(text);
+    if text.capacity() <= KEPT_BYTES {
+        kept.set(text);
+    }
     result
 }
 
@@ -177,4 +189,40 @@ pub extern "C" fn split(pattern: i64, whole: i64, strings: i64, start: i64, end:
             list_of_strings(state, strings, &pieces)
         }))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use super::super::{Tables, finish, heap, start, with};
+    use super::{KEPT_BYTES, SEARCHED, with_text};
+    use crate::packed::Element;
+
+    /// How much room the searched text's buffer keeps between calls.
+    fn kept_room() -> usize {
+        let kept = SEARCHED.take();
+        let room = kept.capacity();
+        SEARCHED.set(kept);
+        room
+    }
+
+    /// A short text's room is kept for the next call, but a big one's copy goes when its call
+    /// ends: kept, one search of a big file held a copy of it on its thread for the rest of the run.
+    #[test]
+    fn a_kept_buffer_lets_a_big_texts_copy_go() {
+        start(Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() }, crate::Inputs::default());
+        let line = "a line of a file, long enough to take a block of its own";
+        let short = with(|state| heap::text_address(state, line));
+        let read = with(|state| with_text(state, &SEARCHED, short, |_, text| text.to_owned()));
+        assert_eq!(read, line);
+        assert!((line.len()..=KEPT_BYTES).contains(&kept_room()), "{} bytes kept", kept_room());
+        let file = "a line of a big file\n".repeat(4 * KEPT_BYTES / 21);
+        let big = with(|state| heap::text_address(state, &file));
+        let read = with(|state| with_text(state, &SEARCHED, big, |_, text| text.len()));
+        assert_eq!(read, file.len());
+        assert!(kept_room() <= KEPT_BYTES, "{} bytes kept after a {}-byte text", kept_room(), file.len());
+        let (_, failure, _) = finish();
+        assert!(failure.is_none());
+    }
 }

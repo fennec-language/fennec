@@ -185,6 +185,7 @@ impl FnCx<'_> {
                 }
             }
         }
+        self.lent_kept(target, value);
     }
 
     /// The type a field or item holds, as declared: not narrowed by a check for None.

@@ -77,6 +77,9 @@ struct Scope {
     /// A `parallel` loop's or comprehension's body, which runs on other tasks: a generator that
     /// can fail, from outside it, can't pass its failure up from there.
     apart: bool,
+    /// The names in this scope that may hold what a `with` lent, with the type it lent and the
+    /// scope its block is: they're kept inside that block (see `lent.rs`).
+    lent: Vec<(String, Type, usize)>,
 }
 
 /// What a function's body gives back.
@@ -198,7 +201,7 @@ impl<'c> FnCx<'c> {
             checker,
             key: key.to_owned(),
             name: name.to_owned(),
-            scopes: vec![Scope { bindings: Vec::new(), barrier: false, apart: false }],
+            scopes: vec![Scope { bindings: Vec::new(), barrier: false, apart: false, lent: Vec::new() }],
             report,
             declared: None,
             generator: false,
@@ -742,7 +745,44 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn push(&mut self, barrier: bool) {
-        self.scopes.push(Scope { bindings: Vec::new(), barrier, apart: false });
+        self.scopes.push(Scope { bindings: Vec::new(), barrier, apart: false, lent: Vec::new() });
+    }
+
+    /// Where the innermost scope is, counting out from the function's own.
+    pub(crate) fn innermost_scope(&self) -> usize {
+        self.scopes.len().saturating_sub(1)
+    }
+
+    /// The scope the name in sight is declared in, counting out from the function's own.
+    pub(crate) fn scope_of(&self, name: &str) -> Option<usize> {
+        self.scopes.iter().rposition(|scope| scope.bindings.iter().any(|binding| binding.name == name))
+    }
+
+    /// What a `with` lent that the name declared in scope `at` may hold: each by its type and the
+    /// scope of the `with` block that lent it.
+    pub(crate) fn lent_in(&self, at: usize, name: &str) -> Vec<(Type, usize)> {
+        let Some(scope) = self.scopes.get(at) else { return Vec::new() };
+        scope
+            .lent
+            .iter()
+            .filter(|(held, ..)| held == name)
+            .map(|(_, lent, block)| (lent.clone(), *block))
+            .collect()
+    }
+
+    /// Notes that the name declared in scope `at` may hold what the `with` block at scope `block`
+    /// lent, of type `lent`.
+    pub(crate) fn hold_lent(&mut self, at: usize, name: &str, (lent, block): (Type, usize)) {
+        if let Some(scope) = self.scopes.get_mut(at)
+            && !scope.lent.iter().any(|(held, had, from)| held == name && *had == lent && *from == block)
+        {
+            scope.lent.push((name.to_owned(), lent, block));
+        }
+    }
+
+    /// Whether any name in sight may hold what a `with` lent.
+    pub(crate) fn any_lent(&self) -> bool {
+        self.scopes.iter().any(|scope| !scope.lent.is_empty())
     }
 
     /// Marks the innermost scope as a `parallel` loop's or comprehension's body, which runs on

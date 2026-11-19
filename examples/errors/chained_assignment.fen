@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    a = b = 0
+    stdout.print(a + b)

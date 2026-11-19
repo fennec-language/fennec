@@ -13,17 +13,20 @@
     reason = "one match chooses each kind of statement, and one each kind of value"
 )]
 
-use super::ast::Reading;
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
+use super::ast::{Between, Looping, Reading, loops_back};
 use super::ast::{
     CAPTURE_WAYS, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_STARTS,
     REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
     Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
+use super::ast::{InOrder, ORDER_STEPS, OrderStep};
+use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
+use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
 /// from a source or failing partway (`ZipSumming`): the loop owns it since #2041.
@@ -42,6 +45,17 @@ const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 /// ordered stream since #1479. Turned off, no input reads the byte that picks it, so the shape
 /// can be taken out without changing what any other input writes.
 const PARALLEL_STREAMS: bool = true;
+
+/// Whether random programs read what a later call in the same line changes: receivers, an index's
+/// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
+/// code and the oracle both read a receiver before its arguments (#546).
+const EVALUATION_ORDER: bool = true;
+
+/// Whether random programs change values of types with their own `def []` through it (`Owned`):
+/// the plain form beside a `def []=`, nested, failing partway and given by `ref`, every built-in
+/// method that changes a list or only reads it, and the `ref` form's places reached by `=`, `ref`
+/// and `for ref`. On since the oracle writes back every change through it (#2192).
+const OWN_INDEXES: bool = true;
 
 /// Whether random programs make copies of collections and their parts, change each through every
 /// way of writing in place, and print them all: the shape that shows an in-place write reaching a
@@ -88,6 +102,17 @@ const LOOKUPS_SWAPPED: bool = true;
 /// found them, held to the compiled program. On since #2017 put each case back by its fields'
 /// names, and #2038 wrote a `for ref` item back before its case.
 const REF_CASES: bool = true;
+
+/// Whether random programs narrow a union of two structs to one member and change it through a
+/// `ref self` method, a `match` case, a `for ref` loop, a field, or a `ref` call taking the member or
+/// the union (`Narrowed`). The method was given the whole union, so compiled code crashed (#2157).
+const NARROWED_UNIONS: bool = true;
+
+/// Whether a `Narrowed` statement grows a name narrowed by what it was given right after a `ref`
+/// call that gave it the other member (`NarrowWay::RefUnionGrown`). The checker kept the narrowing,
+/// so compiled code ran the other member's method on it (#2163). On since #2177 ended the
+/// narrowing at the call.
+const REF_ENDS_NARROWING: bool = true;
 
 /// Whether random programs write a name where another of the same name and type is in sight, each
 /// way the checker renamed by text rather than by what the name means where it's written
@@ -676,6 +701,7 @@ impl Writer<'_> {
             26 if PART_CRASHES && !self.threadless && self.choice(4) == 0 => self.shelves(body),
             26 if REF_CASES && self.choice(4) == 0 => self.ref_cases(body),
             26 if NAME_CAPTURE && self.choice(4) == 0 => self.captures(body),
+            26 if EVALUATION_ORDER && self.choice(4) == 0 => self.in_order(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
             // each of their cases still comes up as often.
@@ -685,6 +711,8 @@ impl Writer<'_> {
             27 if YIELDS && !self.threadless && self.choice(4) == 0 => self.yields(body),
             27 if CRASH_WAKES && !self.threadless && self.choice(4) == 0 => self.wakes(body),
             27 if EVERY_LISTENER && !self.threadless && self.choice(4) == 0 => self.listens(body),
+            27 if NARROWED_UNIONS && self.choice(4) == 0 => self.narrows(body),
+            27 if OWN_INDEXES && self.choice(4) == 0 => self.own_indexes(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1129,6 +1157,20 @@ impl Writer<'_> {
         body.push(Stmt::RefCased(RefCasing { id, way, start, text }));
     }
 
+    /// A union narrowed to one member and changed through it, one of `NARROW_WAYS`, starting
+    /// from 0 to 9.
+    fn narrows(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut way = NARROW_WAYS.get(self.choice(NARROW_WAYS.len())).copied().unwrap_or(NarrowWay::Given);
+        if way == NarrowWay::RefUnionGrown && !REF_ENDS_NARROWING {
+            way = NarrowWay::RefUnion;
+        }
+        let crate_first = self.choice(2) == 0;
+        let n = i64::from(self.byte() % 10);
+        body.push(Stmt::Narrowed(Narrowing { id, way, crate_first, n }));
+    }
+
     /// A name written where another of its name and type is in sight, one of `CAPTURE_WAYS`.
     fn captures(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
@@ -1291,6 +1333,11 @@ impl Writer<'_> {
                 held.push(Held::Holder);
                 continue;
             }
+            if loops_back(kind) && self.choice(5) == 0 {
+                let looping = self.looping(from, kind);
+                steps.push(Alias::Looped(looping));
+                continue;
+            }
             let ways: &[Writing] = match kind {
                 Held::Numbers => &[Writing::Append, Writing::Set, Writing::ForRef, Writing::Ref],
                 Held::Holders => {
@@ -1365,6 +1412,59 @@ impl Writer<'_> {
             steps.push(Alias::Written { to: from, how, at, n });
         }
         body.push(Stmt::Aliased(Aliasing { id, base, steps }));
+    }
+
+    /// An `Owned` statement: 3 to 10 steps, each at a position from 0 to 2 and with what it adds,
+    /// from 0 to 9. A program without threads loops over the slots plainly where it would over
+    /// `parallel`.
+    fn own_indexes(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 10);
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let mut step = OWN_STEPS.get(self.choice(OWN_STEPS.len())).copied().unwrap_or(OwnStep::Plus);
+            if step == OwnStep::ParallelRef && self.threadless {
+                step = OwnStep::ForRef;
+            }
+            steps.push((step, self.choice(3), i64::from(self.byte() % 10)));
+        }
+        body.push(Stmt::Owned(OwnIndexing { id, base, steps }));
+    }
+
+    /// An `Ordered` statement: 3 to 10 steps, each with what its call adds, from 0 to 9.
+    fn in_order(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 10);
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let step =
+                ORDER_STEPS.get(self.choice(ORDER_STEPS.len())).copied().unwrap_or(OrderStep::Receiver);
+            steps.push((step, i64::from(self.byte() % 10)));
+        }
+        body.push(Stmt::Ordered(InOrder { id, base, steps }));
+    }
+
+    /// A `Looped` step taking an item out of `to`, which holds `kind`.
+    fn looping(&mut self, to: usize, kind: Held) -> Looping {
+        let tabled = matches!(kind, Held::Table | Held::Entries | Held::Ledger | Held::Rooms);
+        let between = match self.choice(3) {
+            0 => Between::Changed,
+            1 => Between::Grown([2, 6, 20].get(self.choice(3)).copied().unwrap_or(2)),
+            // A table's item taken out stops the program on the next turn, so that's rare.
+            _ if tabled && self.choice(6) != 0 => Between::Changed,
+            _ => Between::Removed,
+        };
+        Looping {
+            to,
+            at: self.choice(2),
+            n: i64::from(self.byte() % 19) - 9,
+            turns: 2 + i64::from(self.byte() % 2),
+            between,
+            inside: self.choice(3) == 0,
+            items: matches!(kind, Held::Holders | Held::Keepers) && self.choice(2) == 0,
+        }
     }
 
     /// A loop whose int is at least 0 on its first turn and changes sign later, used as an index,

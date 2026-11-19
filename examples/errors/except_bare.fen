@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    count = int.parse("4") except:
+        0
+    stdout.print(count)

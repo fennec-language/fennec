@@ -12,17 +12,64 @@
 
 use std::fmt::Write as _;
 
-use super::ast::Reading;
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, KEYS,
     Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
+use super::ast::{Between, Looping, Reading};
 use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
     SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
+use super::ast::{InOrder, OrderStep};
+use super::ast::{NarrowWay, Narrowing};
+use super::ast::{OwnIndexing, OwnStep};
 use super::source::LONG_PIECE;
+
+/// A `Narrowed` statement's union as the evaluator holds it: a `Crate{id}`'s list or a `Heap{id}`'s
+/// int.
+#[derive(Clone, Debug)]
+enum Member {
+    Crate(Vec<i64>),
+    Heap(i64),
+}
+
+impl Member {
+    /// What `grow` does to it, and what it gives back.
+    fn grow(&mut self) -> i64 {
+        match self {
+            Member::Crate(items) => {
+                let length = |items: &Vec<i64>| i64::try_from(items.len()).unwrap_or(i64::MAX);
+                items.push(length(items) + 7);
+                length(items)
+            }
+            Member::Heap(held) => {
+                *held += 3;
+                *held
+            }
+        }
+    }
+
+    /// What `shown{id}` gives back for it.
+    fn shown(&self) -> String {
+        match self {
+            Member::Crate(items) => {
+                let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+                format!("crate [{}]", items.join(", "))
+            }
+            Member::Heap(held) => format!("heap {held}"),
+        }
+    }
+
+    /// The other member, holding what `swapped{id}` gives it: `grown`.
+    fn swapped(&self, grown: i64) -> Member {
+        match self {
+            Member::Crate(_) => Member::Heap(grown),
+            Member::Heap(_) => Member::Crate(vec![grown]),
+        }
+    }
+}
 
 /// A `Swapped`'s struct as the evaluator holds it: its counts and its lists, each in the order
 /// their keys went in.
@@ -108,20 +155,30 @@ impl Named {
 
     /// As the program's `named_digest` writes it.
     fn digest(&self, text: &mut String) {
+        self.digest_as(text, ('l', 'p'));
+    }
+
+    /// As the program's `held_digest` writes a `Held` of the same shape.
+    fn held_digest(&self, text: &mut String) {
+        self.digest_as(text, ('h', 'q'));
+    }
+
+    /// A digest whose leaves and pairs start with `leaf` and `pair`.
+    fn digest_as(&self, text: &mut String, (leaf, pair): (char, char)) {
         match self {
             Named::Leaf(name) => {
-                let _ = write!(text, "l({name})");
+                let _ = write!(text, "{leaf}({name})");
             }
             Named::Pair(left, right, label, tags) => {
-                let _ = write!(text, "p({label}");
+                let _ = write!(text, "{pair}({label}");
                 for tag in tags {
                     text.push(',');
                     text.push_str(tag);
                 }
                 text.push(' ');
-                left.digest(text);
+                left.digest_as(text, (leaf, pair));
                 text.push(' ');
-                right.digest(text);
+                right.digest_as(text, (leaf, pair));
                 text.push(')');
             }
         }
@@ -730,6 +787,263 @@ fn drained(value: &mut Kept, at: usize, n: i64) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// A `Part{id}` of an `Owned` statement as the evaluator keeps it.
+#[derive(Clone)]
+struct OwnPart {
+    name: &'static str,
+    x: i64,
+    marks: Vec<i64>,
+}
+
+impl OwnPart {
+    fn new(name: &'static str, x: i64) -> OwnPart {
+        OwnPart { name, x, marks: Vec::new() }
+    }
+
+    /// `moved(by)`: adds `by` twice, noting it between.
+    fn moved(&mut self, by: i64) -> Ran<()> {
+        self.x = checked(self.x.checked_add(by))?;
+        self.marks.push(by);
+        self.x = checked(self.x.checked_add(by))?;
+        Ok(())
+    }
+
+    /// `shift(by)`: adds `by` and notes it, then fails past 5, and otherwise adds 100. Whether it
+    /// failed.
+    fn shift(&mut self, by: i64) -> Ran<bool> {
+        self.x = checked(self.x.checked_add(by))?;
+        self.marks.push(by);
+        if by > 5 {
+            return Ok(true);
+        }
+        self.x = checked(self.x.checked_add(100))?;
+        Ok(false)
+    }
+
+    /// How it prints, as `Part{id}(name="a", x=1, marks=[2])`.
+    fn shown(&self, id: usize) -> String {
+        format!(
+            "Part{id}(name=\"{}\", x={}, marks={})",
+            self.name,
+            self.x,
+            shown(&Value::Ints(self.marks.clone()))
+        )
+    }
+}
+
+/// A `Tally{id}` of an `Ordered` statement as the evaluator keeps it: its items, its count, and
+/// what its dict holds at `"a"`, its only key.
+#[derive(Clone)]
+struct Tallied {
+    items: Vec<i64>,
+    count: i64,
+    named: i64,
+}
+
+impl Tallied {
+    /// `grow(by)`: appends `count + by`, then gives back the count, 1 more.
+    fn grow(&mut self, by: i64) -> Ran<i64> {
+        self.items.push(self.count.checked_add(by).ok_or(Stop::Unsure)?);
+        self.count = self.count.checked_add(1).ok_or(Stop::Unsure)?;
+        Ok(self.count)
+    }
+}
+
+/// An item a `Looped` step takes out, changes and puts back: a point, a room's counts and label,
+/// a holder's items and tag, or a list.
+#[derive(Clone)]
+enum Taken {
+    Point(i64, i64),
+    Room(Vec<(String, i64)>, String),
+    Holder(Vec<i64>, i64),
+    Ints(Vec<i64>),
+}
+
+/// The value at `key` among a dict's entries, without changing it.
+fn found<'a, T>(pairs: &'a [(String, T)], key: &str) -> Option<&'a T> {
+    pairs.iter().find(|(name, _)| name == key).map(|(_, value)| value)
+}
+
+/// `value` put at `key`: where the key is, or last where it isn't, as a dict's store does.
+fn stored<T>(pairs: &mut Vec<(String, T)>, key: &str, value: T) {
+    match pairs.iter_mut().find(|(name, _)| name == key) {
+        Some((_, held)) => *held = value,
+        None => pairs.push((key.to_owned(), value)),
+    }
+}
+
+/// The item a `Looped` step takes out of `value`, at `at`, or its `items` when `items`.
+fn taken_out_of(value: &Kept, at: usize, items: bool) -> Option<Taken> {
+    let key = KEYS.get(at)?;
+    let holder = |(held, tag): &(Vec<i64>, i64)| {
+        if items { Taken::Ints(held.clone()) } else { Taken::Holder(held.clone(), *tag) }
+    };
+    Some(match value {
+        Kept::Table(points) | Kept::Entries(points) | Kept::Ledger(points, _) => {
+            let (x, y) = points.get(at)?;
+            Taken::Point(*x, *y)
+        }
+        Kept::Rooms(rooms) => {
+            let (counts, label) = rooms.get(at)?;
+            Taken::Room(counts.clone(), label.clone())
+        }
+        Kept::Holders(holders) => holder(holders.get(at)?),
+        Kept::Keepers(holders) => holder(found(holders, key)?),
+        Kept::Lists(lists) => Taken::Ints(found(lists, key)?.clone()),
+        Kept::Spots(points) => {
+            let (x, y) = found(points, key)?;
+            Taken::Point(*x, *y)
+        }
+        _ => return None,
+    })
+}
+
+/// `taken` put back into `value` at `at`, or as its item's `items` when `items`.
+fn put_back(value: &mut Kept, at: usize, items: bool, taken: Taken) -> Option<()> {
+    let key = KEYS.get(at)?;
+    match (value, taken) {
+        (Kept::Table(points) | Kept::Entries(points) | Kept::Ledger(points, _), Taken::Point(x, y)) => {
+            *points.get_mut(at)? = (x, y);
+        }
+        (Kept::Rooms(rooms), Taken::Room(counts, label)) => *rooms.get_mut(at)? = (counts, label),
+        (Kept::Holders(holders), Taken::Ints(held)) if items => holders.get_mut(at)?.0 = held,
+        (Kept::Holders(holders), Taken::Holder(held, tag)) => *holders.get_mut(at)? = (held, tag),
+        (Kept::Keepers(holders), Taken::Ints(held)) if items => keyed(holders, at)?.0 = held,
+        (Kept::Keepers(holders), Taken::Holder(held, tag)) => stored(holders, key, (held, tag)),
+        (Kept::Lists(lists), Taken::Ints(held)) => stored(lists, key, held),
+        (Kept::Spots(points), Taken::Point(x, y)) => stored(points, key, (x, y)),
+        _ => return None,
+    }
+    Some(())
+}
+
+/// The copy a `Looped` step takes changed, as `looped_written` changes it.
+fn copy_changed(taken: &mut Taken, n: i64) -> Option<()> {
+    match taken {
+        Taken::Point(_, y) => *y = y.checked_add(n)?,
+        Taken::Room(counts, _) => {
+            let count = keyed(counts, 0)?;
+            *count = count.checked_add(n)?;
+        }
+        Taken::Holder(items, tag) => {
+            *tag = tag.checked_add(n)?;
+            items.push(n);
+        }
+        Taken::Ints(items) => items.push(n),
+    }
+    Some(())
+}
+
+/// What a `Looped` step does between turns to `value`, after its `turn`th: whether the program
+/// goes on, which it doesn't once a table's item is taken out.
+fn between_turns(value: &mut Kept, looping: Looping, turn: i64) -> Option<bool> {
+    let Looping { at, n, between, inside, items, .. } = looping;
+    let key = *KEYS.get(at)?;
+    match (value, between) {
+        (Kept::Table(_) | Kept::Entries(_) | Kept::Ledger(..) | Kept::Rooms(_), Between::Removed) => {
+            return Some(false);
+        }
+        (Kept::Table(points) | Kept::Entries(points) | Kept::Ledger(points, _), Between::Changed) => {
+            let (x, _) = points.get_mut(at)?;
+            *x = x.checked_add(n)?;
+        }
+        (Kept::Table(points) | Kept::Entries(points) | Kept::Ledger(points, _), Between::Grown(count)) => {
+            points.extend((0..count).map(|more| (more, n)));
+        }
+        (Kept::Rooms(rooms), Between::Changed) => stored(&mut rooms.get_mut(at)?.0, "b", n),
+        (Kept::Rooms(rooms), Between::Grown(count)) => {
+            rooms.extend((0..count).map(|more| (vec![("a".to_owned(), more)], "g".to_owned())));
+        }
+        (Kept::Holders(holders), Between::Changed) => {
+            let (held, tag) = holders.get_mut(at)?;
+            if !items {
+                *tag = n;
+            }
+            held.push(n);
+        }
+        (Kept::Holders(holders), Between::Grown(count)) => {
+            holders.extend((0..count).map(|more| (vec![more], n)));
+        }
+        (Kept::Holders(holders), Between::Removed) => {
+            if at >= holders.len() {
+                return None;
+            }
+            holders.remove(at);
+            holders.push((vec![n], n));
+        }
+        (Kept::Keepers(holders), Between::Changed) => {
+            let (held, tag) = keyed(holders, at)?;
+            if !items {
+                *tag = n;
+            }
+            held.push(n);
+        }
+        (Kept::Lists(lists), Between::Changed) => keyed(lists, at)?.push(n),
+        (Kept::Spots(points), Between::Changed) => {
+            let (x, _) = keyed(points, at)?;
+            *x = x.checked_add(n)?;
+        }
+        // Two steps can add the same key, the second storing where the first put it.
+        (Kept::Keepers(holders), Between::Grown(count)) => {
+            for more in 0..count {
+                stored(holders, &format!("g{turn}x{more}"), (vec![more], n));
+            }
+        }
+        (Kept::Lists(lists), Between::Grown(count)) => {
+            for more in 0..count {
+                stored(lists, &format!("g{turn}x{more}"), vec![more]);
+            }
+        }
+        (Kept::Spots(points), Between::Grown(count)) => {
+            for more in 0..count {
+                stored(points, &format!("g{turn}x{more}"), (more, n));
+            }
+        }
+        (Kept::Keepers(holders), Between::Removed) => {
+            holders.retain(|(name, _)| name != key);
+            if inside || items {
+                holders.push((key.to_owned(), (vec![n], n)));
+            }
+        }
+        (Kept::Lists(lists), Between::Removed) => {
+            lists.retain(|(name, _)| name != key);
+            if inside {
+                lists.push((key.to_owned(), vec![n]));
+            }
+        }
+        (Kept::Spots(points), Between::Removed) => {
+            points.retain(|(name, _)| name != key);
+            if inside {
+                points.push((key.to_owned(), (n, n)));
+            }
+        }
+        _ => return None,
+    }
+    Some(true)
+}
+
+/// What a `Looped` step does to `value`, as `looped_written` writes it: whether the program goes
+/// on, which it doesn't once a table's item is taken out.
+fn looped(value: &mut Kept, looping: Looping) -> Option<bool> {
+    let Looping { at, n, turns, inside, items, .. } = looping;
+    let mut taken = taken_out_of(value, at, items)?;
+    copy_changed(&mut taken, n)?;
+    for turn in 1..=turns {
+        if inside {
+            taken = taken_out_of(value, at, items)?;
+            copy_changed(&mut taken, n)?;
+        }
+        put_back(value, at, items, taken.clone())?;
+        if turn == turns {
+            break;
+        }
+        if !between_turns(value, looping, turn)? {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 /// What a `Read` step does: prints, or keeps an item by a name of its own.
@@ -1632,6 +1946,8 @@ impl Machine {
             Stmt::GuardAll(items) => self.guard_all(items),
             Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::Turned(turning) => self.turned(turning)?,
+            Stmt::Ordered(in_order) => self.ordered(in_order)?,
+            Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
             Stmt::Constants(constants) => self.constants(constants)?,
@@ -1643,6 +1959,7 @@ impl Machine {
             Stmt::Listened(listening) => self.listened(listening),
             Stmt::RefCased(casing) => self.ref_cased(*casing),
             Stmt::Captured(capturing) => self.captured(*capturing),
+            Stmt::Narrowed(narrowing) => self.narrowed(*narrowing),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -2150,7 +2467,12 @@ impl Machine {
                     Named::Leaf(name) | Named::Pair(_, _, name, _) => name.push_str(text),
                 }
                 let moved = if way == RefWay::IndexMoved { " 1" } else { "" };
-                let _ = writeln!(self.out, "{} {}{moved}", digest(&named), digest(&leaf("z")));
+                let held = |named: &Named| {
+                    let mut out = String::new();
+                    named.held_digest(&mut out);
+                    out
+                };
+                let _ = writeln!(self.out, "{} {}{moved}", held(&named), held(&leaf("z")));
             }
             RefWay::ForRefWhile | RefWay::ForRefElif | RefWay::ForRefAnd => {
                 // The first tag grows, and the `?` after it fails with its length, which the
@@ -2177,6 +2499,81 @@ impl Machine {
                 }
                 let _ = writeln!(self.out, "{}", digest(&named));
             }
+        }
+    }
+
+    /// What `narrowed{id}` prints: each `grow` changes the member the union holds, whether it's
+    /// called on a narrowed name, a `match` case, a `for ref` item, a field or a `ref` parameter, and
+    /// a `ref` call taking the union leaves it the other member.
+    fn narrowed(&mut self, narrowing: Narrowing) {
+        let Narrowing { way, crate_first, n, .. } = narrowing;
+        let start = if crate_first { Member::Crate(vec![n]) } else { Member::Heap(n) };
+        let other = if crate_first { Member::Heap(n + 1) } else { Member::Crate(vec![n + 1]) };
+        let mut shape = start.clone();
+        let mut lines: Vec<String> = Vec::new();
+        match way {
+            NarrowWay::Given => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+                shape = other;
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Is => {
+                let grown = shape.grow();
+                let read = match &shape {
+                    Member::Crate(_) => shape.shown().replacen("crate ", "", 1),
+                    Member::Heap(held) => held.to_string(),
+                };
+                lines.push(format!("{grown} {read}"));
+                lines.push(shape.shown());
+            }
+            NarrowWay::Left => {
+                let grown = shape.grow();
+                let added = if crate_first { 100 } else { 0 };
+                lines.push((grown + added).to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Whole | NarrowWay::Field => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Matched => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::ForRef => {
+                let mut shapes = [start, other];
+                for each in &mut shapes {
+                    lines.push(each.grow().to_string());
+                    if matches!(each, Member::Crate(_)) {
+                        lines.push(each.grow().to_string());
+                    }
+                }
+                lines.extend(shapes.iter().map(Member::shown));
+            }
+            NarrowWay::RefMember => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+                let mut given = start;
+                lines.push(given.grow().to_string());
+                lines.push(given.shown());
+            }
+            NarrowWay::RefUnion | NarrowWay::RefUnionGrown => {
+                let grown = shape.grow();
+                shape = shape.swapped(grown);
+                lines.push(grown.to_string());
+                if way == NarrowWay::RefUnion {
+                    lines.push(shape.shown());
+                }
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+        }
+        for line in lines {
+            let _ = writeln!(self.out, "{line}");
         }
     }
 
@@ -2404,6 +2801,13 @@ impl Machine {
                 Alias::Written { to, how, at, n } => {
                     changed(kept.get_mut(to).ok_or(Stop::Unsure)?, how, at, n).ok_or(Stop::Unsure)?;
                 }
+                Alias::Looped(looping) => {
+                    let value = kept.get_mut(looping.to).ok_or(Stop::Unsure)?;
+                    if !looped(value, looping).ok_or(Stop::Unsure)? {
+                        self.said = Some("this Id refers to something that's been removed".to_owned());
+                        return Err(Stop::Failed);
+                    }
+                }
                 Alias::Tasked { from } => {
                     let given = kept.get(from).ok_or(Stop::Unsure)?;
                     let sums: Option<Vec<i64>> = (0..3).map(|i| handed(given, i)).collect();
@@ -2431,9 +2835,10 @@ impl Machine {
             }
         }
         let points = |at: usize| match kept.get(at) {
+            // Only the two items the program made at first are printed, by their `Id`s.
             Some(Kept::Table(points) | Kept::Ledger(points, _)) => {
                 let points: Vec<String> =
-                    points.iter().map(|(x, y)| format!("Point(x={x}, y={y})")).collect();
+                    points.iter().take(2).map(|(x, y)| format!("Point(x={x}, y={y})")).collect();
                 Ok(points.join(" "))
             }
             _ => Err(Stop::Unsure),
@@ -2443,6 +2848,202 @@ impl Machine {
         for (n, value) in kept.iter().enumerate() {
             let _ = writeln!(self.out, "{} {}", alias_name(n), kept_shown(aliasing.id, value));
         }
+        Ok(())
+    }
+
+    /// What `owned{id}` prints: each change through a type's own `def []` written back once
+    /// through its `def []=`, as far as it got when it fails, and each `ref` form's place changed
+    /// where it is, then what each value holds and how often its `def []=` ran.
+    fn owned(&mut self, owning: &OwnIndexing) -> Ran<()> {
+        let OwnIndexing { id, base, ref steps } = *owning;
+        let mut shelved = [OwnPart::new("a", base), OwnPart::new("b", base + 1)];
+        let mut keyed = OwnPart::new("k", base);
+        let mut room = [OwnPart::new("c", base), OwnPart::new("d", base + 1)];
+        let mut rows = [vec![base + 2, base, base + 2], vec![base + 4, base + 3, base + 5]];
+        let mut slots = [base, base + 1, base + 2];
+        let (mut shelf_writes, mut keyed_writes, mut room_shelf_writes, mut room_writes, mut rows_writes) =
+            (0, 0, 0, 0, 0);
+        let add = |held: &mut i64, by: i64| -> Ran<()> {
+            *held = checked(held.checked_add(by))?;
+            Ok(())
+        };
+        for &(step, at, n) in steps {
+            let pair = at % 2;
+            let other = 1 - pair;
+            let slot = slots.get_mut(at).ok_or(Stop::Unsure)?;
+            let part = shelved.get_mut(pair).ok_or(Stop::Unsure)?;
+            match step {
+                OwnStep::Plus | OwnStep::RefField => add(&mut part.x, n)?,
+                OwnStep::Set => part.x = n,
+                OwnStep::Moved => part.moved(n)?,
+                OwnStep::Appended => part.marks.push(n),
+                OwnStep::Shifted | OwnStep::Passed => {
+                    if part.shift(n)? {
+                        let _ = writeln!(self.out, "failed {n}");
+                    } else if step == OwnStep::Passed {
+                        add(&mut part.x, 1000)?;
+                        shelf_writes += 1;
+                    }
+                }
+                OwnStep::PlusOther => {
+                    let read = shelved.get(other).ok_or(Stop::Unsure)?.x;
+                    add(&mut shelved.get_mut(pair).ok_or(Stop::Unsure)?.x, read)?;
+                }
+                OwnStep::Keyed => add(&mut keyed.x, n)?,
+                OwnStep::KeyedMoved => keyed.moved(n)?,
+                OwnStep::Nested | OwnStep::NestedRef => {
+                    add(&mut room.get_mut(pair).ok_or(Stop::Unsure)?.x, n)?;
+                }
+                OwnStep::NestedMoved => room.get_mut(pair).ok_or(Stop::Unsure)?.moved(n)?,
+                OwnStep::Counted => {
+                    let row = rows.get(pair).ok_or(Stop::Unsure)?;
+                    let count = row.iter().filter(|item| **item == n).count();
+                    let got = usize::try_from(n).ok().and_then(|at| row.get(at));
+                    let got = got.map_or_else(|| "None".to_owned(), ToString::to_string);
+                    let _ = writeln!(self.out, "counted {count} {got} {rows_writes}");
+                }
+                OwnStep::Sorted => rows.get_mut(pair).ok_or(Stop::Unsure)?.sort_unstable(),
+                OwnStep::SortedKey => rows.get_mut(pair).ok_or(Stop::Unsure)?.sort_by(|a, b| b.cmp(a)),
+                OwnStep::Removed => rows.get_mut(pair).ok_or(Stop::Unsure)?.retain(|item| *item <= n),
+                OwnStep::SlotSet => *slot = n,
+                OwnStep::SlotPlus | OwnStep::SlotRef => add(slot, n)?,
+                OwnStep::ForRef | OwnStep::ParallelRef => {
+                    // The middle position is empty, so `for ref` passes it over.
+                    for (place, held) in slots.iter_mut().enumerate() {
+                        if place == 1 {
+                            continue;
+                        }
+                        *held = if step == OwnStep::ForRef {
+                            checked(held.checked_mul(2).and_then(|twice| twice.checked_add(n)))?
+                        } else {
+                            checked(held.checked_add(n))?
+                        };
+                    }
+                }
+            }
+            match step {
+                OwnStep::Plus
+                | OwnStep::Set
+                | OwnStep::Moved
+                | OwnStep::Appended
+                | OwnStep::Shifted
+                | OwnStep::Passed
+                | OwnStep::RefField
+                | OwnStep::PlusOther => shelf_writes += 1,
+                OwnStep::Keyed | OwnStep::KeyedMoved => keyed_writes += 1,
+                OwnStep::Nested | OwnStep::NestedMoved | OwnStep::NestedRef => {
+                    room_shelf_writes += 1;
+                    room_writes += 1;
+                }
+                OwnStep::Sorted | OwnStep::SortedKey | OwnStep::Removed => rows_writes += 1,
+                OwnStep::Counted
+                | OwnStep::SlotSet
+                | OwnStep::SlotPlus
+                | OwnStep::SlotRef
+                | OwnStep::ForRef
+                | OwnStep::ParallelRef => {}
+            }
+        }
+        let parts = |parts: &[OwnPart]| {
+            let parts: Vec<String> = parts.iter().map(|part| part.shown(id)).collect();
+            format!("[{}]", parts.join(", "))
+        };
+        let lists: Vec<String> = rows.iter().map(|row| shown(&Value::Ints(row.clone()))).collect();
+        let _ = writeln!(self.out, "shelf {} {shelf_writes}", parts(&shelved));
+        let _ = writeln!(self.out, "keyed {{\"k\": {}}} {keyed_writes}", keyed.shown(id));
+        let _ = writeln!(self.out, "room {} {room_shelf_writes} {room_writes}", parts(&room));
+        let _ = writeln!(self.out, "rows [{}] {rows_writes}", lists.join(", "));
+        let _ = writeln!(self.out, "slots {}", shown(&Value::Ints(slots.to_vec())));
+        Ok(())
+    }
+
+    /// What `ordered{id}` prints: each line read left to right, as `ordered_written` writes it,
+    /// then what the tally and the pair hold.
+    fn ordered(&mut self, in_order: &InOrder) -> Ran<()> {
+        let base = in_order.base;
+        let mut tally = Tallied { items: vec![base, base + 1, base + 2, base + 3], count: base, named: base };
+        let (mut left, right) = (tally.clone(), base);
+        let ints = |items: &[i64]| shown(&Value::Ints(items.to_vec()));
+        for &(step, n) in &in_order.steps {
+            let line = match step {
+                OrderStep::Receiver => {
+                    let (items, count) = (ints(&tally.items), tally.count);
+                    format!("receiver {items} {count} {}", tally.grow(n)?)
+                }
+                OrderStep::FieldReceiver => {
+                    let count = left.count;
+                    format!("field receiver {count} {right} {}", left.grow(n)?)
+                }
+                OrderStep::Counted => {
+                    let items = tally.items.clone();
+                    let grown = tally.grow(n)?;
+                    format!("counted {}", items.iter().filter(|item| **item == grown).count())
+                }
+                OrderStep::Got | OrderStep::Keyed => {
+                    let named = tally.named;
+                    tally.named = tally.named.checked_add(n).ok_or(Stop::Unsure)?;
+                    format!("{} {named}", if step == OrderStep::Got { "got" } else { "keyed" })
+                }
+                OrderStep::Indexed => {
+                    let items = tally.items.clone();
+                    let at = usize::try_from(tally.grow(n)? % 4).map_err(|_| Stop::Unsure)?;
+                    format!("indexed {}", items.get(at).ok_or(Stop::Unsure)?)
+                }
+                OrderStep::Arguments => {
+                    let first = tally.count;
+                    let second = tally.grow(n)?;
+                    format!("arguments {first} {second} {}", tally.count)
+                }
+                OrderStep::PlusBefore => {
+                    let count = tally.count;
+                    format!("plus before {}", count.checked_add(tally.grow(n)?).ok_or(Stop::Unsure)?)
+                }
+                OrderStep::PlusAfter => {
+                    let grown = tally.grow(n)?;
+                    format!("plus after {}", grown.checked_add(tally.count).ok_or(Stop::Unsure)?)
+                }
+                OrderStep::Listed | OrderStep::Text => {
+                    let first = tally.count;
+                    let second = tally.grow(n)?;
+                    let third = tally.count;
+                    if step == OrderStep::Listed {
+                        format!("listed {}", ints(&[first, second, third]))
+                    } else {
+                        format!("text {first} {second} {third}")
+                    }
+                }
+                OrderStep::AtLeast => {
+                    let count = tally.count;
+                    let grown = tally.grow(n)?;
+                    format!("at least {}", if count >= grown { "True" } else { "False" })
+                }
+                OrderStep::FieldWrite => {
+                    tally.count = tally.grow(n)?.checked_add(n).ok_or(Stop::Unsure)?;
+                    format!("field write {}", tally.count)
+                }
+                OrderStep::IndexWrite => {
+                    let at = usize::try_from(tally.grow(n)? % 4).map_err(|_| Stop::Unsure)?;
+                    let put = tally.grow(n)?;
+                    *tally.items.get_mut(at).ok_or(Stop::Unsure)? = put;
+                    format!("index write {}", ints(&tally.items))
+                }
+                OrderStep::Added => {
+                    let count = tally.count;
+                    tally.count = count.checked_add(tally.grow(n)?).ok_or(Stop::Unsure)?;
+                    format!("added {}", tally.count)
+                }
+            };
+            let _ = writeln!(self.out, "{line}");
+        }
+        let _ = writeln!(
+            self.out,
+            "tally {} {} {{\"a\": {}}}\npair {} {} {right}",
+            ints(&tally.items),
+            tally.count,
+            tally.named,
+            ints(&left.items),
+            left.count
+        );
         Ok(())
     }
 

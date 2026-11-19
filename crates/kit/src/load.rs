@@ -417,6 +417,35 @@ fn exported(text: &str) -> HashSet<String> {
         .collect()
 }
 
+/// A test is reported, kept as passed and run by its name, so two of the program's own tests of
+/// one name, which two files may fairly use to say different things alike, are each told apart by
+/// their module, and within one module by their line as well: `it works (in one)`. By the module,
+/// not the path, so a test's name is the same however the kit is named to `fennec test`. Before,
+/// neither ran (#1860).
+fn name_tests_apart(files: &mut [File], sources: &Sources) {
+    let mut places: HashMap<String, Vec<String>> = HashMap::new();
+    for file in files.iter().filter(|file| file.prefix.is_empty()) {
+        for item in &file.module.items {
+            if let Item::Test(test) = item {
+                places.entry(test.name.clone()).or_default().push(file.name.clone());
+            }
+        }
+    }
+    for file in files.iter_mut().filter(|file| file.prefix.is_empty()) {
+        for item in &mut file.module.items {
+            let Item::Test(test) = item else { continue };
+            let Some(found) = places.get(&test.name).filter(|found| found.len() > 1) else { continue };
+            let place = if found.iter().filter(|module| **module == file.name).count() > 1 {
+                let line = sources.locate(test.span).map_or(0, |(_, line, ..)| line);
+                format!("in {}, line {line}", file.name)
+            } else {
+                format!("in {}", file.name)
+            };
+            test.name = format!("{} ({place})", test.name);
+        }
+    }
+}
+
 /// Every `.fen` file under `dir`, as module paths.
 ///
 /// A folder that's a link isn't gone into: one linked into itself, as `src/a -> .`, would be walked
@@ -630,8 +659,10 @@ impl<'a> Loader<'a> {
                 Err(err) => {
                     match from {
                         Some(span) => self.errors.push(
-                            Diagnostic::new(format!("there's no module called `{name}`"), span)
-                                .with_help(format!("it would be the file {shown}")),
+                            Diagnostic::new(format!("there's no module called `{name}`"), span).with_help(
+                                fennec_syntax::python_module(name)
+                                    .unwrap_or_else(|| format!("it would be the file {shown}")),
+                            ),
                         ),
                         None => self.unplaced.push(format!("error: couldn't read {shown}: {err}\n")),
                     }
@@ -741,8 +772,8 @@ impl<'a> Loader<'a> {
     fn finish(mut self, manifest: Option<Manifest>) -> Result<Program, Problems> {
         // Past this, a program's own text would be read as what the compiler writes in.
         if self.sources.too_long() {
-            let message = "the program and its kits are more than 1.75 GiB of source together";
-            let help = "a program this size isn't one Fennec builds: split it into programs of their own";
+            let message = "the program and its kits are more source than Fennec builds: past 6,144 files of up to 256 KiB, the rest have 256 MiB together";
+            let help = "split it into programs of their own (#2114)";
             self.errors.push(Diagnostic::new(message, Span::default()).with_help(help));
         }
         if !self.unplaced.is_empty() {
@@ -765,6 +796,7 @@ impl<'a> Loader<'a> {
         }
         let dependency_files =
             self.files.iter().filter(|file| !file.prefix.is_empty()).map(|file| file.shown.clone()).collect();
+        name_tests_apart(&mut self.files, &self.sources);
         // A dependency's tests are its own to run.
         let items = self
             .files

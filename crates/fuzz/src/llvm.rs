@@ -26,7 +26,7 @@ fn fennec() -> PathBuf {
 }
 
 /// This process's own folder to build in.
-fn work() -> PathBuf {
+pub(crate) fn work() -> PathBuf {
     work_of(std::process::id())
 }
 
@@ -117,7 +117,7 @@ fn built_within(command: &mut Command) -> Result<std::process::Output, String> {
 
 /// Builds `source` in `work`, giving back the executable, or None when the backend doesn't take
 /// the program yet.
-fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, String> {
+pub(crate) fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("{}: {err}", work.display()))?;
     let (program, executable) = (work.join("program.fen"), work.join("program"));
     std::fs::write(&program, source).map_err(|err| format!("{}: {err}", program.display()))?;
@@ -464,7 +464,7 @@ def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
 
 /// The programs the targets that read an input natively run it through, each reading the file
 /// it's given. A program here may fail, but never crash or get stuck.
-const READERS: [(&str, &str); 9] = [
+const READERS: [(&str, &str); 12] = [
     ("postgres", crate::postgres_rules::READER),
     ("http-client", crate::http_rules::CLIENT),
     ("http-server", crate::http_rules::SERVER),
@@ -474,6 +474,9 @@ const READERS: [(&str, &str); 9] = [
     ("json", JSON_READER),
     ("toml", TOML_READER),
     ("utf8", UTF8_READER),
+    ("numbers", crate::numbers_rules::READER),
+    ("time", crate::time_rules::READER),
+    ("base64", crate::base64_rules::READER),
 ];
 
 /// The Fennec program the target `name` reads its inputs through, if it has one.
@@ -522,15 +525,28 @@ fn reader(name: &str) -> Result<PathBuf, String> {
         let made = build(&source, &work().join(name), false)?
             .ok_or_else(|| format!("LLVM doesn't take the `{name}` reader"))?;
         std::fs::create_dir_all(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
-        // Moved into place whole, so another process never runs half of one.
         let copying = folder.join(format!("program.{}", std::process::id()));
         std::fs::copy(&made, &copying).map_err(|err| format!("{}: {err}", copying.display()))?;
-        std::fs::rename(&copying, &kept).map_err(|err| format!("{}: {err}", kept.display()))?;
+        put_in_place(&copying, &kept)?;
         kept
     };
     used(&executable);
     built.push((name.to_owned(), executable.clone()));
     Ok(executable)
+}
+
+/// Moves a reader just built from `copying` to `kept` whole, so another process never runs half of
+/// one.
+///
+/// Two processes needing the same reader both build it when neither finds it, as tests running
+/// side by side do, and the second's lands where the first's may already be running. Unix replaces
+/// it, and the first runs on from the file it opened. Windows won't replace a program that's
+/// running, and says access is denied. Both were built from the same source by the same `fennec`,
+/// so the one in place is kept, and this one's copy is let go.
+fn put_in_place(copying: &Path, kept: &Path) -> Result<(), String> {
+    let Err(err) = std::fs::rename(copying, kept) else { return Ok(()) };
+    let _ = std::fs::remove_file(copying);
+    if kept.is_file() { Ok(()) } else { Err(format!("{}: {err}", kept.display())) }
 }
 
 /// Marks the folder a reader's in as used now, so it isn't forgotten while it's being used.
@@ -605,6 +621,38 @@ pub(crate) fn read_natively(name: &str, input: &[u8]) -> Result<Option<Vec<u8>>,
     std::fs::write(&file, input).map_err(|err| format!("{}: {err}", file.display()))?;
     ran_holding(&executable, &[file.as_os_str()], &work, READER_KILOBYTES)
         .map(|(printed, _, _)| Some(printed))
+}
+
+#[cfg(test)]
+mod placing_tests {
+    use std::process::{Command, Stdio};
+
+    use super::put_in_place;
+
+    /// A reader built while the same one is in place and running lands without an error and leaves
+    /// no copy behind. On Windows, which won't replace a program that's running, the one running is
+    /// kept: two tests building the `pack` reader at once failed there with access denied.
+    #[test]
+    fn a_reader_built_twice_lands_while_the_first_runs() {
+        #[cfg(windows)]
+        let (program, args) = (r"C:\Windows\System32\PING.EXE", ["-n", "30", "127.0.0.1"]);
+        #[cfg(not(windows))]
+        let (program, args) = ("/bin/sleep", ["30"]);
+        let folder = std::env::temp_dir().join(format!("fennec-fuzz-placing-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let kept = folder.join("program");
+        std::fs::copy(program, &kept).unwrap();
+        let mut running = Command::new(&kept).args(args).stdout(Stdio::null()).spawn().unwrap();
+        let copying = folder.join("program.2");
+        std::fs::copy(program, &copying).unwrap();
+        let placed = put_in_place(&copying, &kept);
+        let _ = running.kill();
+        let _ = running.wait();
+        assert_eq!(placed, Ok(()));
+        assert!(kept.is_file(), "{} is gone", kept.display());
+        assert!(!copying.exists(), "{} is left", copying.display());
+        let _ = std::fs::remove_dir_all(&folder);
+    }
 }
 
 #[cfg(test)]

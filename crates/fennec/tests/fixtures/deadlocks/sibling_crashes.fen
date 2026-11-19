@@ -1,0 +1,17 @@
+# As sibling_fails, with a crash in place of the failure: the range divides by zero.
+# (From Fable 5.2's review of the phase 2 design.)
+from std.concurrent import Channel, channel
+
+def part(at: int, pipe: Channel[int]) -> int:
+    if at == 0:
+        got = pipe.receive() else -1
+        return got
+    return 100 // (at - 1)
+
+def all_parts(pipe: Channel[int]) -> int:
+    got = [part(at, pipe=pipe) for at in parallel(range(4))]
+    return sum(got)
+
+def main(stdout: Stdout):
+    with channel[int](size=1) as pipe:
+        stdout.print(all_parts(pipe))

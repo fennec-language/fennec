@@ -589,6 +589,18 @@ def read_request(
         or not is_ascii(parts[1])
     ):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
+    # A target is a path, `*` for an `OPTIONS` of the server as a whole, or a whole `http` or
+    # `https` URL, as a proxy sends one, whose host then stands for the `host` header, as HTTP/1.1
+    # says. Anything else would reach the program as a path no one asked for.
+    mut target = parts[1]
+    mut host: str? = None
+    if not target.startswith("/") and not (target == "*" and parts[0] == "OPTIONS"):
+        whole = whole_target(target) else return .Bad(
+            status=400,
+            reason="the target isn't a path or a URL",
+        )
+        target = whole.rest
+        host = whole.host
     mut headers: dict[str, str] = {}
     # In bytes, as the limit is: a header of characters UTF-8 writes in two or more bytes counts
     # each of them.
@@ -650,10 +662,11 @@ def read_request(
             if len(more) == 0: return .Bad(status=400, reason="the body ended early")
             bytes_push_bytes(ref built, more)
         body = built[0:len(built)]
+    if host is not None:
+        headers["host"] = host
     version = parts[2]
     asked = (headers.get("connection") else "").lower()
     keep = asked != "close" if version == "HTTP/1.1" else asked == "keep-alive"
-    target = parts[1]
     mut path = target
     mut query: dict[str, str] = {}
     at = target.find("?")
@@ -678,6 +691,35 @@ def read_request(
         ),
         keep=keep,
     )
+
+## A request's target written as a whole URL: its host, and the rest from its path on.
+struct WholeTarget:
+    host: str
+    rest: str
+
+## The host of a whole `http` or `https` URL, and the rest from the `/` or `?` after it, which is
+## `/` when there's none, or `None` when `target` isn't one. A user before the host is refused, as
+## HTTP says it should be, since it could make the URL read as another host's.
+def whole_target(target: str) -> WholeTarget?:
+    lower = target.lower()
+    mut start = 0
+    if lower.startswith("http://"):
+        start = 7
+    elif lower.startswith("https://"):
+        start = 8
+    else:
+        return None
+    size = text_size(target)
+    mut end = size
+    for at in range(start, size):
+        b = text_byte(target, at)
+        if b == 47 or b == 63:
+            end = at
+            break
+    host = text_part(target, start, end)
+    if host == "" or host.find("@") is not None: return None
+    rest = text_part(target, end, size)
+    return WholeTarget(host=host, rest=rest if rest.startswith("/") else f"/{rest}")
 
 ## Whether `text` is what HTTP calls a token, as a method or a header's name has to be.
 def is_token(text: str) -> bool:

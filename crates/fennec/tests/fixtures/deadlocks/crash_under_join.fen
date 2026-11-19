@@ -1,0 +1,33 @@
+# A waiting call's ranges receive on a channel nobody sends to while the task main launched naps
+# and then crashes: the crash cuts their waits short, the call ends, and the block's end says the
+# crash, 8 times. Never a deadlock, if the crash reaches the ranges. (From Fable 5.2's review of
+# #2142.)
+from std.concurrent import Channel, Crashed, channel
+
+def crashes(numbers: list[int], clock: Clock) -> int:
+    clock.sleep(20ms)
+    return numbers[5]
+
+def takes(pipe: Channel[int]) -> int:
+    got = pipe.receive() else -1
+    return got
+
+def all_take(pipe: Channel[int]) -> int:
+    got = [takes(pipe) for at in parallel(range(3))]
+    return sum(got)
+
+def launched(clock: Clock) -> int fails Crashed:
+    mut total = 0
+    with channel[int](size=1) as pipe:
+        with launch(() => crashes([1, 2], clock=clock))?:
+            total = all_take(pipe)
+    return total
+
+def once(clock: Clock) -> str:
+    total = launched(clock) except Crashed():
+        return "it crashed"
+    return f"it didn't crash: {total}"
+
+def main(stdout: Stdout, clock: Clock):
+    for turn in range(8):
+        stdout.print(turn, once(clock))

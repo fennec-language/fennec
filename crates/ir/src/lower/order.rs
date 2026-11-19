@@ -28,6 +28,11 @@ impl Reads {
         self.0.push(Read { value, block: lowering.current, at, changes: lowering.changed.len() });
     }
 
+    /// How many operands it holds.
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
     /// Adds an operand that's the place itself, which a change is meant to reach.
     pub(super) fn add_place(&mut self, value: Operand) {
         self.0.push(Read { value, block: BlockId(0), at: 0, changes: usize::MAX });

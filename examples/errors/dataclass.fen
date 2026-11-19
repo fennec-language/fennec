@@ -1,0 +1,7 @@
+@dataclass
+struct Point:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    stdout.print(Point(x=1, y=2))

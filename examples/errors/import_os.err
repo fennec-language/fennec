@@ -1,0 +1,7 @@
+error: there's no module called `os`
+ --> examples/errors/import_os.fen:1:1
+  |
+1 | import os
+  | ^^^^^^^^^
+  |
+  = help: Fennec reaches the system through what `main` is given, as `fs: Fs`, `env: Env`, `args: Args` or `process: Process`, so take out the import

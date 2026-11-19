@@ -10,12 +10,16 @@
 # this Mac's flake ledger (see `flakes.sh`), listed by test with `fennec-flakes` and
 # each entry whole under it, as `flakes-<date>.md`, so every flake the gates saw is there to read.
 #
-# It says too whether main's CI is green on every system, naming each job that isn't, with
-# `main-ci.sh`, and warns when GitHub holds more than 25 branches.
+# It says too whether main's CI is green on every system, `CI` and `CI macOS` each in a line,
+# naming each job that isn't, with `main-ci.sh`, and warns when GitHub holds more than 25 branches.
+#
+# It says how the night's Fuzzing run ended too. Under each run that failed, it names each job that
+# failed and the step it failed at, a line each, as `failed: <job> :: <step>`, and those lines head
+# the copied report, so a night that failed in no test, as a soak can, still says what failed.
 #
 # It needs `gh`, signed in. A night still running, or one with no report, is said so, and nothing
-# is written. It exits 1 when the night failed, or a job of main's CI is red on any system, so
-# whatever runs it can say so loudly.
+# is written. It exits 1 when the night's Proofs or Fuzzing failed, a job of main's CI is red on
+# any system, or GitHub doesn't answer, so whatever runs it can say so loudly.
 set -eu
 folder=$1
 here=$(cd "$(dirname "$0")" && pwd)
@@ -39,9 +43,20 @@ if [ -f "$ledger" ]; then
 else
   echo "flakes: none, as there's no ledger at $ledger"
 fi
+# Failures that passed once main changed what they test, kept out of the ledger (see `flakes.sh`),
+# counted so one that was a flake after all can still be found.
+fixed_on_main="${FENNEC_HOME:-$HOME/.fennec}/fixed-on-main.log"
+if [ -f "$fixed_on_main" ]; then
+  echo "fixed on main: $(grep -c '^=== fixed on main$' "$fixed_on_main") failures that passed after main changed what they test, in $fixed_on_main"
+fi
 repository=${2:-fennec-language/fennec}
-# Main's CI on every system, in a line: a job red on one, like Windows, is said here, and fails the
-# report, the day it goes red.
+# With GitHub not answering, every run below would read as none yet, so it's said once, plainly.
+if ! gh api rate_limit > /dev/null 2>&1; then
+  echo "GitHub isn't answering, so the night can't be read: try again in a while"
+  exit 1
+fi
+# Main's CI on every system, a line for `CI` and one for `CI macOS`: a job red on one, like
+# Windows, is said here, and fails the report, the day it goes red.
 main_ci=0
 "$here/main-ci.sh" "$repository" || main_ci=1
 # The weekly sweep (`sweep-branches.yml`) deletes the branches nothing needs, so past 25 something
@@ -53,6 +68,38 @@ if [ "$branches" -gt 25 ]; then
 fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# A run's id, how it ended, and when it started, on a line. A run still going has a conclusion of
+# "" rather than none, which `//` passes over, so it's said as `running` here: left empty, `read`
+# took the start for the conclusion, and a night still going read as one that kept no report.
+how_ended='.[0] // empty | "\(.databaseId) \(if (.conclusion // "") == "" then "running" else .conclusion end) \(.createdAt)"'
+# Each job of a run that didn't succeed, and the step it failed at, a line each, as in
+#
+#   failed: Soak web_backend for an hour, in main :: Run it for an hour, reading what it holds every minute
+#
+# A job that ran out of time or was cancelled can have no step that failed: it's said so.
+failed_steps() {
+  gh run view "$1" --repo "$repository" --json jobs --jq '.jobs[]
+    | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")
+    | .conclusion as $how
+    | [.steps[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name] as $steps
+    | "  failed: \(.name) :: \(if ($steps | length) == 0 then "no step failed, the job ended \($how)" else $steps | join(", ") end)"'
+}
+# Whether the night's Fuzzing failed, which fails the report as main's CI does.
+fuzzing=0
+# The night's fuzzing, from the latest scheduled Fuzzing run: a failed one fails the night.
+read -r fuzz fuzz_conclusion fuzz_started <<< "$(gh run list --repo "$repository" --workflow fuzz.yml --event schedule \
+  --limit 1 --json databaseId,conclusion,createdAt --jq "$how_ended")"
+if [ -z "${fuzz:-}" ]; then
+  echo "Fuzzing: no nightly run yet"
+elif [ "$fuzz_conclusion" = running ]; then
+  echo "Fuzzing: the nightly run $fuzz is still going"
+else
+  echo "Fuzzing on ${fuzz_started%%T*}: $fuzz_conclusion, https://github.com/$repository/actions/runs/$fuzz"
+  if [ "$fuzz_conclusion" != success ]; then
+    fuzzing=1
+    failed_steps "$fuzz" || echo "  failed: its jobs couldn't be read"
+  fi
+fi
 # The night's mutants, from the latest scheduled Mutation tests run, as `mutants-<date>.md`: each
 # crate's slice, with what no test caught ranked by file. Survivors are reported, never a failed night.
 read -r mutants finished started <<< "$(gh run list --repo "$repository" --workflow mutants.yml --event schedule \
@@ -82,8 +129,8 @@ fi
 # The week's big codebase, from the latest scheduled weekly run, as `big-codebase-weekly-<date>.md`:
 # each step at 100,000 and 200,000 lines, and how each grew against the program.
 read -r weekly weekly_conclusion weekly_started <<< "$(gh run list --repo "$repository" --workflow big-codebase-weekly.yml \
-  --event schedule --limit 1 --json databaseId,conclusion,createdAt --jq '.[0] | "\(.databaseId) \(.conclusion // "running") \(.createdAt)"' 2> /dev/null)"
-if [ -n "${weekly:-}" ] && [ "$weekly_conclusion" != running ] && [ -n "$weekly_conclusion" ]; then
+  --event schedule --limit 1 --json databaseId,conclusion,createdAt --jq "$how_ended" 2> /dev/null)"
+if [ -n "${weekly:-}" ] && [ "$weekly_conclusion" != running ]; then
   week=${weekly_started%%T*}
   if [ ! -f "$folder/big-codebase-weekly-$week.md" ] \
     && gh run download "$weekly" --repo "$repository" --name big-codebase-weekly --dir "$work/weekly" > /dev/null 2>&1; then
@@ -98,21 +145,40 @@ if [ -n "${weekly:-}" ] && [ "$weekly_conclusion" != running ] && [ -n "$weekly_
   fi
 fi
 read -r run conclusion created <<< "$(gh run list --repo "$repository" --workflow proofs.yml --limit 1 \
-  --json databaseId,conclusion,createdAt --jq '.[0] | "\(.databaseId) \(.conclusion // "running") \(.createdAt)"')"
+  --json databaseId,conclusion,createdAt --jq "$how_ended")"
 if [ -z "${run:-}" ]; then
   echo "no Proofs run yet"
-  exit "$main_ci"
+  exit $((main_ci | fuzzing))
 fi
-if [ "$conclusion" = running ] || [ "$conclusion" = "" ]; then
+if [ "$conclusion" = running ]; then
   echo "the Proofs run $run is still going"
-  exit "$main_ci"
+  exit $((main_ci | fuzzing))
+fi
+# Each job of the night that failed, and the step it failed at, so a failed night says plainly
+# what failed even when it's no test, as when a soak's memory rose past its budget.
+steps=""
+if [ "$conclusion" != success ]; then
+  steps=$(failed_steps "$run") \
+    || steps="  failed: its jobs couldn't be read, see https://github.com/$repository/actions/runs/$run"
 fi
 if ! gh run download "$run" --repo "$repository" --name nightly-report --dir "$work" > /dev/null 2>&1; then
   echo "the Proofs run $run ($conclusion) kept no report"
-  exit "$main_ci"
+  [ -z "$steps" ] || echo "$steps"
+  [ "$conclusion" = success ] || exit 1
+  exit $((main_ci | fuzzing))
 fi
 day=${created%%T*}
-cp "$work/nightly.md" "$folder/nightly-proofs-$day.md"
+{
+  if [ -n "$steps" ]; then
+    echo "# What failed in the Proofs run of $day"
+    echo
+    echo "https://github.com/$repository/actions/runs/$run"
+    echo
+    sed 's/^  failed: /- /' <<< "$steps"
+    echo
+  fi
+  cat "$work/nightly.md"
+} > "$folder/nightly-proofs-$day.md"
 # The soaks' curves from the same night, after the rest: each real program's memory and live
 # blocks over an hour, where they started and ended and how fast they rose.
 if gh run download "$run" --repo "$repository" --pattern 'soak-*' --dir "$work/soak" > /dev/null 2>&1; then
@@ -122,7 +188,9 @@ fi
 if gh run download "$run" --repo "$repository" --name big-codebase --dir "$work/big" > /dev/null 2>&1; then
   cat "$work/big/big-codebase.md" 2> /dev/null >> "$folder/nightly-proofs-$day.md" || true
 fi
-# The tests that failed, by name, so a failed night reads in one line.
+# The tests that failed, by name, so a failed night reads in one line, and under it each job and
+# step that failed.
 failed=$(sed -n 's/^Failed tests: //p' "$work/nightly.md" | head -n 1)
 echo "Proofs on $day: $conclusion${failed:+, failed tests: $failed}, report in $folder/nightly-proofs-$day.md"
-[ "$conclusion" = success ] && [ "$main_ci" -eq 0 ]
+[ -z "$steps" ] || echo "$steps"
+[ "$conclusion" = success ] && [ "$main_ci" -eq 0 ] && [ "$fuzzing" -eq 0 ]

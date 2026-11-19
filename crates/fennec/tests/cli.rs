@@ -65,9 +65,15 @@ fn run_shows_lints_on_standard_error_and_still_runs() {
         assert_eq!(text(&output.stdout), "4\n", "{time}");
         let said = text(&output.stderr);
         assert!(
-            said.contains("needless-mut") && said.contains("1 lints, 1 of which `fennec fix` can fix"),
+            said.contains("needless-mut") && said.contains("1 lint, which `fennec fix` can fix"),
             "{time}: {said}"
         );
+        // The run goes on, so a lint says it's one, and that `fennec lint` fails on it.
+        assert!(
+            said.contains("lint: needless-mut: ") && said.contains("(`fennec lint` fails on this)"),
+            "{time}: {said}"
+        );
+        assert!(!said.contains("error: "), "{time}: {said}");
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -700,6 +706,18 @@ fn unknown_commands_show_usage() {
     assert!(text(&output.stderr).starts_with("usage:"));
 }
 
+/// Help asked for is the answer, on standard output, and no failure: a newcomer's first
+/// `fennec --help` shouldn't read as a mistake to a script or an editor.
+#[test]
+fn help_asked_for_shows_usage_and_succeeds() {
+    for asked in ["--help", "-h", "help"] {
+        let output = fennec(&[asked], "").unwrap();
+        assert!(output.status.success(), "{asked}");
+        assert!(text(&output.stdout).starts_with("usage:"), "{asked}");
+        assert!(output.stderr.is_empty(), "{asked}");
+    }
+}
+
 /// A fresh empty folder for one test.
 fn scratch(name: &str) -> std::io::Result<fennec_temp::Temp> {
     let dir =
@@ -1109,6 +1127,41 @@ fn test_runs_the_tests_in_every_file_of_a_kit() {
     assert!(stdout.ends_with("3 passed, 0 failed\n"), "{stdout}");
 }
 
+/// Two tests of one name, in two files of a kit or twice in one file, each run, told apart by
+/// their module, and in one module by their line. Neither ran before: both failed, saying LLVM
+/// couldn't build them (#1860).
+#[test]
+fn tests_of_one_name_in_a_kit_each_run_told_apart_by_their_modules() {
+    let dir = scratch("one-name").unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"dup\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(
+        dir.join("src/one.fen"),
+        "def twice(n: int) -> int:\n    return n * 2\n\ntest \"it works\":\n    assert twice(2) == 4\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/two.fen"),
+        "def thrice(n: int) -> int:\n    return n * 3\n\ntest \"it works\":\n    assert thrice(2) == 6\n\n\
+         test \"again\":\n    assert thrice(1) == 3\n\ntest \"again\":\n    assert thrice(0) == 0\n",
+    )
+    .unwrap();
+    let test = fennec_in(&dir, &["test", "--verbose"], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stdout = text(&test.stdout);
+    assert!(test.status.success(), "{stdout}{}", text(&test.stderr));
+    for shown in [
+        "✓ it works (in one)",
+        "✓ it works (in two)",
+        "✓ again (in two, line 7)",
+        "✓ again (in two, line 10)",
+    ] {
+        assert!(stdout.contains(shown), "{shown}:\n{stdout}");
+    }
+    assert!(stdout.ends_with("4 passed, 0 failed\n"), "{stdout}");
+}
+
 #[test]
 fn run_points_at_the_import_and_names_the_file() {
     let output = fennec(&["run", "examples/projects/errors/cycle"], "").unwrap();
@@ -1486,6 +1539,114 @@ fn every_tour_sample_not_marked_planned_compiles() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(checked > 30, "found only {checked} samples in the tour");
+}
+
+/// The front page's program is the first Fennec most visitors read, and each other page of the
+/// site shows samples too: each compiles as it's shown, as the tour's do, unless marked planned.
+#[test]
+fn the_sites_front_page_program_and_every_pages_sample_compile() {
+    let pages = repo().join("site/src/pages");
+    let front = std::fs::read_to_string(pages.join("index.astro")).unwrap();
+    let program = front
+        .split("const program = `")
+        .nth(1)
+        .and_then(|rest| rest.split("`;").next())
+        .expect("the front page has its program in `const program`");
+    let mut samples = vec![("index.astro".to_owned(), program.to_owned())];
+    let mut names: Vec<String> = std::fs::read_dir(&pages)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            Path::new(name).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+                && name != "tour.md"
+        })
+        .collect();
+    names.sort();
+    for name in names {
+        let page = std::fs::read_to_string(pages.join(&name)).unwrap();
+        let mut lines = page.lines().enumerate();
+        while let Some((at, line)) = lines.next() {
+            let Some(info) = line.strip_prefix("```fennec") else { continue };
+            let sample: Vec<&str> =
+                lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+            if !info.contains("planned") {
+                samples.push((format!("{name} at line {}", at + 2), sample.join("\n")));
+            }
+        }
+    }
+    let dir = scratch("site").unwrap();
+    for (at, (shown, sample)) in samples.iter().enumerate() {
+        let name = format!("sample_{at}.fen");
+        std::fs::write(dir.join(&name), format!("{sample}\n")).unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the site's sample in {shown} doesn't compile:\n{}",
+            text(&output.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(samples.len() > 3, "found only {} samples on the site", samples.len());
+}
+
+/// The guide says every sample compiles and passes its tests on main. Each whole program is
+/// checked as it's shown. One whose fence names a file, as ```` ```fennec src/store.fen ````, is
+/// that file of Hoard, the kit the guide builds: they're put together, in order, as the kit, which
+/// is checked, and tested where LLVM is here. A fence marked `fragment` or `planned` is left out.
+#[test]
+fn the_guides_samples_compile_and_its_kit_passes_its_tests() {
+    let guide = std::fs::read_to_string(repo().join("docs/guide.md")).unwrap();
+    let dir = scratch("guide").unwrap();
+    let mut kit_files: Vec<(String, String)> = Vec::new();
+    let mut checked = 0;
+    let mut lines = guide.lines().enumerate();
+    while let Some((at, line)) = lines.next() {
+        let Some(info) = line.strip_prefix("```fennec") else { continue };
+        let sample: Vec<&str> =
+            lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+        let info = info.trim();
+        if info == "fragment" || info == "planned" {
+            continue;
+        }
+        if !info.is_empty() {
+            match kit_files.iter_mut().find(|(file, _)| file == info) {
+                Some((_, text)) => {
+                    text.push('\n');
+                    text.push_str(&sample.join("\n"));
+                    text.push('\n');
+                }
+                None => kit_files.push((info.to_owned(), sample.join("\n") + "\n")),
+            }
+            continue;
+        }
+        let name = format!("line_{}.fen", at + 2);
+        std::fs::write(dir.join(&name), sample.join("\n") + "\n").unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the guide's sample at line {} doesn't compile:\n{}",
+            at + 2,
+            text(&output.stderr)
+        );
+        checked += 1;
+    }
+    assert!(checked >= 8, "found only {checked} whole programs in the guide");
+    let names: Vec<&str> = kit_files.iter().map(|(file, _)| file.as_str()).collect();
+    assert_eq!(names, ["src/store.fen", "src/index.fen", "src/main.fen"], "the guide's kit has other files");
+    assert!(fennec_in(&dir, &["new", "hoard"], "").unwrap().status.success());
+    let kit = dir.join("hoard");
+    std::fs::remove_file(kit.join("src/greeting.fen")).unwrap();
+    for (file, source) in &kit_files {
+        std::fs::write(kit.join(file), source).unwrap();
+    }
+    let checked = fennec_in(&kit, &["check"], "").unwrap();
+    assert!(checked.status.success(), "the guide's kit doesn't compile:\n{}", text(&checked.stderr));
+    if crate::llvm::ready() {
+        let tested = fennec_in(&kit, &["test"], "").unwrap();
+        assert!(tested.status.success(), "the guide's kit fails its tests:\n{}", text(&tested.stderr));
+        assert!(text(&tested.stdout).contains("3 passed, 0 failed"), "{}", text(&tested.stdout));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -2543,7 +2704,13 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let flagged = fennec(&["lint", &path], "").unwrap();
     assert_eq!(flagged.status.code(), Some(1));
     assert!(text(&flagged.stderr).contains("needless-pass:"), "{}", text(&flagged.stderr));
-    assert!(text(&flagged.stderr).contains("1 lints, 1 of which"), "{}", text(&flagged.stderr));
+    assert!(
+        text(&flagged.stderr).contains("1 lint, which `fennec fix` can fix"),
+        "{}",
+        text(&flagged.stderr)
+    );
+    // `fennec lint` fails on it, so there it's an error.
+    assert!(text(&flagged.stderr).contains("error: needless-pass: "), "{}", text(&flagged.stderr));
 
     assert!(fennec(&["fix", &path], "").unwrap().status.success());
     let after = std::fs::read_to_string(&program).unwrap();
@@ -4376,6 +4543,7 @@ fn a_kits_grants_belong_to_its_source_not_its_name() {
 #[test]
 fn a_function_handed_to_a_dependency_holds_what_it_captures() {
     let helper = "export def twice(work: (int) -> int) -> int:\n    return work(work(1))\n\n\
+                  export def call(job: () -> int) -> int:\n    return job()\n\n\
                   export def touch(fs: Fs) -> int:\n    return 1\n\n\
                   export def printer() -> (Stdout) -> int:\n    return (out) => 1\n";
     let kits = Kits::new(
@@ -4424,6 +4592,16 @@ fn a_function_handed_to_a_dependency_holds_what_it_captures() {
         (
             "import helper\n\ndef main(stdout: Stdout):\n    show = helper.printer()\n    stdout.print(show(stdout))\n",
             "`helper` makes a function here that takes a `Stdout`, so it would now receive a `Stdout`",
+        ),
+        // A name an arrow function was given in a block, declared again after it by a loop: it
+        // holds what the loop gives it, not that arrow, which held nothing. On main before this,
+        // the arrow was found by name, and `helper` was handed a `Stdout` with nothing said.
+        (
+            "import helper\n\ndef main(stdout: Stdout):\n    if len(\"a\") > 0:\n        work = () => 1\n        \
+             stdout.print(helper.call(work))\n    for work in [loud(stdout)]:\n        stdout.print(helper.call(work))\n\n\
+             def loud(stdout: Stdout) -> () -> int:\n    return () => shout(stdout)\n\n\
+             def shout(stdout: Stdout) -> int:\n    stdout.print(1)\n    return 1\n",
+            "`helper` would now receive a function here whose making can't be seen, so it may hold anything the program holds: a `Stdout`",
         ),
     ] {
         kits.write("app", "src/main.fen", main).unwrap();
@@ -4967,6 +5145,139 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
 
     let stop = with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert_eq!(text(&stop.stdout), "stopped\n");
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// `fennec daemon status` and `stop` reach every daemon the user has running, one for each
+/// environment commands ran in: a terminal set up another way still sees and stops them all.
+#[cfg(unix)]
+#[test]
+fn status_and_stop_reach_the_daemon_of_every_environment() {
+    let (_folder, kit, home) = small_kit("daemons").unwrap();
+    // Commands whose environments differ in one variable, so each has a daemon of its own. It's
+    // none of Fennec's, so `docs/environment.md` doesn't list it.
+    let run_in = |environment: &str, args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_DAEMON_IDLE", "30")
+            .env("DAEMON_TEST_SIDE", environment)
+            .env_remove("FENNEC_NO_DAEMON")
+            .output()
+            .unwrap()
+    };
+    for environment in ["first", "second"] {
+        let ran = run_in(environment, &["dev", "changes"]);
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+    }
+    let status = text(&run_in("third", &["daemon", "status"]).stdout);
+    assert_eq!(status.matches("running: Fennec").count(), 2, "{status}");
+    assert_eq!(text(&run_in("third", &["daemon", "stop"]).stdout), "stopped 2 daemons\n");
+    assert!(stops(&kit, &home), "the daemons didn't stop");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// `fennec build` in `kit` to `prog` there, with the Fennec folder `home`, through the daemon or
+/// in its own process, as CI would have it if `ci`.
+#[cfg(unix)]
+fn build_in(kit: &Path, home: &Path, daemon: bool, ci: bool) -> std::io::Result<Output> {
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", ".", "-o", "prog"]).current_dir(kit).env("FENNEC_HOME", home);
+    command.env("FENNEC_DAEMON_IDLE", "30").env_remove("CI");
+    if daemon {
+        command.env_remove("FENNEC_NO_DAEMON");
+    }
+    if ci {
+        command.env("CI", "true");
+    }
+    command.output()
+}
+
+/// What a build printed, with how long each step took left out: it's never the same twice.
+#[cfg(unix)]
+fn without_times(printed: &[u8]) -> String {
+    let mut out = String::new();
+    let mut digits = String::new();
+    for c in text(printed).chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        out.push_str(if c == ' ' && !digits.is_empty() { "N" } else { &digits });
+        digits.clear();
+        out.push(c);
+    }
+    out + &digits
+}
+
+/// A program built by the daemon is the one built in the command's own process: the same exit code,
+/// the same output but for how long its steps took, the same problems, and the same file, byte
+/// for byte. A build under CI never starts a daemon.
+#[cfg(unix)]
+#[test]
+fn a_build_the_daemon_makes_is_the_one_made_here() {
+    let (folder, kit, home) = small_kit("build-daemon").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let here_home = folder.join("home-here");
+    let main = kit.join("src/main.fen");
+    let wrong = "def main(stdout: Stdout):\n    stdout.print(1 + \"x\")\n";
+    for (source, built) in [("def main(stdout: Stdout):\n    stdout.print(1)\n", true), (wrong, false)] {
+        std::fs::write(&main, source).unwrap();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let here = build_in(&kit, &here_home, false, false).unwrap();
+        let made_here = std::fs::read(kit.join("prog")).ok();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let made = build_in(&kit, &home, true, false).unwrap();
+        assert_eq!(made.status.code(), here.status.code(), "{}", text(&made.stderr));
+        assert_eq!(without_times(&made.stdout), without_times(&here.stdout));
+        assert_eq!(text(&made.stderr), text(&here.stderr));
+        assert_eq!(std::fs::read(kit.join("prog")).ok(), made_here);
+        assert_eq!(made_here.is_some(), built);
+    }
+    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert!(status.contains("2 requests served"), "{status}");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    // Under CI it's built here, and no daemon is started.
+    let ci_home = folder.join("home-ci");
+    assert_eq!(build_in(&kit, &ci_home, true, true).unwrap().status.code(), Some(1));
+    let status = text(&with_daemon(&kit, &ci_home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert_eq!(status, "not running\n");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// Two builds of one kit at once through the daemon queue, so neither's output takes in the
+/// other's: each prints what a build made here prints, once.
+#[cfg(unix)]
+#[test]
+fn two_builds_of_one_kit_at_once_queue_in_the_daemon() {
+    let (folder, kit, home) = small_kit("queued-daemon").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    // Each side built once first, so the builds compared find what they need kept.
+    let here_home = folder.join("home-here");
+    for (side, daemon) in [(&here_home, false), (&home, true)] {
+        let first = build_in(&kit, side, daemon, false).unwrap();
+        assert!(first.status.success(), "{}", text(&first.stderr));
+    }
+    let here = build_in(&kit, &here_home, false, false).unwrap();
+    let both: Vec<Output> = std::thread::scope(|scope| {
+        let builds = [(); 2].map(|()| scope.spawn(|| build_in(&kit, &home, true, false).unwrap()));
+        builds.into_iter().map(|build| build.join().unwrap()).collect()
+    });
+    for made in both {
+        assert_eq!(made.status.code(), Some(0), "{}", text(&made.stderr));
+        assert_eq!(without_times(&made.stdout), without_times(&here.stdout));
+        assert_eq!(text(&made.stderr), text(&here.stderr));
+    }
+    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert!(status.contains("3 requests served"), "{status}");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
@@ -5914,6 +6225,10 @@ fn a_program_linked_from_the_caches_objects_is_the_one_built_without_it() -> std
 /// another command runs can take it, is compiled again from its function's text, so the build
 /// still makes the program a build without the cache makes. `FENNEC_LOSE_KEPT_OBJECTS=1` takes
 /// every kept object just before the link. The next build, finding them gone, compiles them again.
+///
+/// The edit changes `scaled` alone, so the build uses `label` and `main` again without writing
+/// them, and they have no text to compile again from: that build is made again writing every
+/// function, and says so.
 #[test]
 fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()> {
     use crate::executables::Within as _;
@@ -5951,6 +6266,11 @@ fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()>
         "a build whose kept objects went before the link failed: {}",
         text(&lost.stderr)
     );
+    assert!(
+        text(&lost.stderr).contains("so it wrote every function again"),
+        "the build used no unit again, or didn't say it wrote them again: {}",
+        text(&lost.stderr)
+    );
     let uncached = build("uncached", false, false)?;
     assert!(uncached.status.success(), "{}", text(&uncached.stderr));
     assert!(
@@ -5964,6 +6284,328 @@ fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()>
     assert!(again.status.success(), "{}", text(&again.stderr));
     let ran = std::process::Command::new(dir.join("again")).output_within()?;
     assert_eq!(text(&ran.stdout), "value 84\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The program [`an_edit_build_makes_what_a_build_without_the_cache_makes`] edits.
+const EDITED_BASE: &str = r#"error Short:
+    excess: int
+
+struct Spot:
+    across = 0
+    down = 0
+
+struct Named:
+    name: str? = None
+
+enum Twig:
+    Leaf
+    Node(left: Twig, right: Twig)
+
+enum Bush:
+    Bare
+    Branch(inner: Bush, weight: int)
+
+LIMIT = 40
+
+def tiny(value: int) -> int:
+    return value + 1
+
+def picked(items: list[int], index: int) -> int:
+    return items[index]
+
+def bound(value: int) -> int:
+    return value
+
+def checked(value: int) -> int fails Short:
+    limit = bound(value)
+    if limit > 1000:
+        fail Short(excess=limit - 1000)
+    return limit
+
+def pair_of[T](first: T, second: T) -> list[T]:
+    return [first, second]
+
+def moved(spot: Spot, steps: int) -> Spot:
+    return Spot(across=spot.across + steps, down=spot.down)
+
+def summed() -> int:
+    mut total = 0
+    for step in range(LIMIT):
+        total += tiny(step)
+    return total
+
+def shelves() -> int:
+    spots = [Spot(across=1)]
+    places = {"home": Spot(down=2)}
+    nested = [[1, 2], [3]]
+    return len(spots) + len(places) + len(nested)
+
+def twigs(depth: int) -> Twig:
+    if depth == 0: return .Leaf
+    return .Node(left=twigs(depth - 1), right=twigs(depth - 1))
+
+def leaves(twig: Twig) -> int:
+    match twig:
+        case .Leaf:
+            return 1
+        case .Node(left, right):
+            return leaves(left) + leaves(right)
+
+def bushes(depth: int) -> Bush:
+    if depth == 0: return .Bare
+    return .Branch(inner=bushes(depth - 1), weight=depth)
+
+def weights(bush: Bush) -> int:
+    match bush:
+        case .Bare:
+            return 0
+        case .Branch(inner, weight):
+            return weight + weights(inner)
+
+def kept(fs: Fs, path: str) fails IoError:
+    with fs.create(path)? as file:
+        file.write_line("kept")?
+
+def main(stdout: Stdout, fs: Fs):
+    items = [3, 5, 7, 9]
+    stdout.print(picked(items, 2))
+    stdout.print(summed())
+    checked_value = checked(tiny(41)) except Short(): -1
+    stdout.print(checked_value)
+    stdout.print(len(pair_of(first=1, second=2)), pair_of(first="a", second="b")[0])
+    stdout.print(moved(Spot(across=1, down=2), steps=3).across)
+    stdout.print(Named(name="spot").name else "none")
+    stdout.print(shelves(), leaves(twigs(2)), weights(bushes(3)))
+    if len(items) > 100:
+        kept(fs, "never.txt") except why:
+            stdout.print(why)
+    return
+"#;
+
+/// The edits [`an_edit_build_makes_what_a_build_without_the_cache_makes`] makes, each to
+/// [`EDITED_BASE`]: what it is, and what it replaces with what.
+const EDITS: &[(&str, &[(&str, &str)])] = &[
+    ("a body", &[("        total += tiny(step)\n", "        total += tiny(step) * 2\n")]),
+    ("a small function others hold a copy of", &[("    return value + 1\n", "    return value + 2\n")]),
+    (
+        "a caller whose argument changes what its callee may assume",
+        &[("picked(items, 2)", "picked(items, len(items) - 2)")],
+    ),
+    (
+        "a callee that starts to fail",
+        &[
+            (
+                "def bound(value: int) -> int:\n    return value\n",
+                "def bound(value: int) -> int fails Short:\n    if value < 0:\n        fail Short(excess=value)\n    return value\n",
+            ),
+            ("    limit = bound(value)\n", "    limit = bound(value)?\n"),
+        ],
+    ),
+    ("a type's field", &[("    down = 0\n", "    down = 0\n    depth = 0\n")]),
+    (
+        "a use elsewhere that lays a type out in a dict and a list",
+        &[(
+            "    stdout.print(moved(",
+            "    places = {\"home\": Spot(across=5, down=6)}\n    stdout.print(places[\"home\"].across, len([Spot(across=7)]))\n    stdout.print(moved(",
+        )],
+    ),
+    ("a constant", &[("LIMIT = 40", "LIMIT = 41")]),
+    ("a generic, with its copies", &[("    return [first, second]", "    return [second, first]")]),
+    ("lines added above a function", &[("def picked(", "# Two lines above `picked`.\n\ndef picked(")]),
+    (
+        "the program's first `parallel`",
+        &[(
+            "    stdout.print(summed())\n",
+            "    stdout.print(summed())\n    stdout.print(sum(tiny(step) for step in parallel([1, 2, 3])))\n",
+        )],
+    ),
+    ("a function renamed, so one is added and one removed", &[("moved", "shifted")]),
+    (
+        "a type, a tuple and a closure added early",
+        &[
+            ("struct Spot:", "struct Early:\n    flag = False\n\nstruct Spot:"),
+            (
+                "    items = [3, 5, 7, 9]\n",
+                "    items = [3, 5, 7, 9]\n    pairing = (Early(flag=True).flag, 3)\n    stdout.print(pairing[1], sorted(items, key=(item) => -item)[0])\n",
+            ),
+        ],
+    ),
+    (
+        "a function std's text is lent into, written above another that has some",
+        &[
+            (
+                "def picked(",
+                "def kept_first(fs: Fs, path: str) fails IoError:\n    with fs.create(path)? as file:\n        file.write_line(\"first\")?\n\ndef picked(",
+            ),
+            (
+                "    items = [3, 5, 7, 9]\n",
+                "    items = [3, 5, 7, 9]\n    if len(items) > 200:\n        kept_first(fs, \"never.txt\") except why:\n            stdout.print(why)\n",
+            ),
+        ],
+    ),
+    (
+        "two types that hold themselves, swapped",
+        &[(
+            "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\nenum Bush:\n    Bare\n    Branch(inner: Bush, weight: int)\n",
+            "enum Bush:\n    Bare\n    Branch(inner: Bush, weight: int)\n\nenum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n",
+        )],
+    ),
+];
+
+/// A build of `edited.fen` in `dir` for [`an_edit_build_makes_what_a_build_without_the_cache_makes`]:
+/// its output, the objects it linked in order, and the program. It's from the cache in `dir`, or
+/// with none, and with types boxed or not.
+type EditBuilt = (Output, Vec<Vec<u8>>, Vec<u8>);
+
+fn edit_build(dir: &Path, name: &str, cached: bool, boxed: bool) -> std::io::Result<EditBuilt> {
+    use crate::executables::Within as _;
+    let objects = dir.join(format!("{name}-objects"));
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "edited.fen", "-o", name]).current_dir(dir).env("FENNEC_LINK_KEEP", &objects);
+    if cached {
+        command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");
+    } else {
+        command.env("FENNEC_HOME", dir.join("no-home")).env("FENNEC_NO_CACHE", "1");
+    }
+    if boxed {
+        command.env("FENNEC_BOXED_TYPES", "1");
+    } else {
+        command.env_remove("FENNEC_BOXED_TYPES");
+    }
+    let output = command.output_within()?;
+    assert!(output.status.success(), "{name}: {}", text(&output.stderr));
+    // A program the store had whole links nothing, so it keeps no objects.
+    let count = std::fs::read_dir(&objects).map_or(0, Iterator::count);
+    let linked =
+        (0..count).map(|at| std::fs::read(objects.join(format!("{at}.o")))).collect::<Result<_, _>>()?;
+    Ok((output, linked, std::fs::read(dir.join(name))?))
+}
+
+/// How many functions' text a build wrote, of how many, as it says when it used others again.
+fn written_of(output: &Output) -> Option<(usize, usize)> {
+    let said = text(&output.stdout);
+    let (_, rest) = said.split_once("(wrote ")?;
+    let (counts, _) = rest.split_once(')')?;
+    let (written, total) = counts.split_once(" of ")?;
+    Some((written.parse().ok()?, total.parse().ok()?))
+}
+
+/// How many functions a build compiled, of how many, as it says.
+fn compiled_of(output: &Output) -> Option<(usize, usize)> {
+    let said = text(&output.stdout);
+    let (_, rest) = said.split_once("compiled ")?;
+    let (counts, _) = rest.split_once(" functions")?;
+    let (fresh, total) = counts.split_once(" of ")?;
+    Some((fresh.parse().ok()?, total.parse().ok()?))
+}
+
+/// What a dev build makes after an edit, from the cache the builds before it filled, is what a
+/// build with no cache at all makes: every object it links and the program, byte for byte. Each
+/// of the edits changes what some function's object is made from in a way of its own (see
+/// [`EDITS`]), and a switch that lays types out another way goes on, then off again. So whatever
+/// a build reuses, it can never be an object made from anything but what it would make now.
+#[test]
+fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("edit-kinds")?;
+    let same = |what: &str, step: &str, cached: &EditBuilt, whole: &EditBuilt| {
+        assert!(!whole.1.is_empty(), "{what}: the build without the cache kept no objects");
+        assert_eq!(cached.1.len(), whole.1.len(), "{what}: {step} linked another number of objects");
+        if let Some(at) = cached.1.iter().zip(&whole.1).position(|(cached, whole)| cached != whole) {
+            panic!("{what}: object {at} of {} isn't the one built without the cache", cached.1.len());
+        }
+        assert!(cached.2 == whole.2, "{what}: the program isn't the one built without the cache");
+        let ran = std::process::Command::new(dir.join(step)).output_within().expect("the program runs");
+        assert!(ran.status.success(), "{what}: {}", text(&ran.stderr));
+    };
+    std::fs::write(dir.join("edited.fen"), EDITED_BASE)?;
+    let base = (edit_build(&dir, "base", true, false)?, edit_build(&dir, "base-whole", false, false)?);
+    same("the first build", "base", &base.0, &base.1);
+    let mut reused = Vec::new();
+    for (at, (what, changes)) in EDITS.iter().enumerate() {
+        let mut edited = EDITED_BASE.to_owned();
+        for (from, to) in *changes {
+            assert!(edited.contains(from), "{what}: no {from:?}");
+            edited = edited.replace(from, to);
+        }
+        std::fs::write(dir.join("edited.fen"), &edited)?;
+        let step = format!("edit{at}");
+        let cached = edit_build(&dir, &step, true, false)?;
+        same(what, &step, &cached, &edit_build(&dir, &format!("{step}-whole"), false, false)?);
+        reused.push((*what, compiled_of(&cached.0)));
+        if at == 0 {
+            // A body's edit writes that function's text again, and uses the rest as kept.
+            let written = written_of(&cached.0);
+            assert!(written.is_some_and(|(written, total)| written > 0 && written < total), "{written:?}");
+        }
+    }
+    // Every edit compiles again only some of the functions, and an edit to a body at least one.
+    let all_again: Vec<_> =
+        reused.iter().filter(|(_, counts)| counts.is_none_or(|(fresh, total)| fresh >= total)).collect();
+    assert!(all_again.is_empty(), "edits that reused nothing: {all_again:?}");
+    assert!(
+        reused.first().is_some_and(|(_, counts)| counts.is_some_and(|(fresh, _)| fresh > 0)),
+        "{reused:?}"
+    );
+    std::fs::write(dir.join("edited.fen"), EDITED_BASE)?;
+    let boxed = (edit_build(&dir, "boxed", true, true)?, edit_build(&dir, "boxed-whole", false, true)?);
+    same("types boxed", "boxed", &boxed.0, &boxed.1);
+    assert!(boxed.0.2 != base.1.2, "boxing types changed nothing: the switch tests nothing here");
+    // Back as it was, the program is the first one again, from the store; and a program not built
+    // before reuses what was compiled with types in place.
+    assert!(
+        edit_build(&dir, "back", true, false)?.2 == base.1.2,
+        "the program after boxing and back changed"
+    );
+    std::fs::write(dir.join("edited.fen"), EDITED_BASE.replace("LIMIT = 40", "LIMIT = 42"))?;
+    let last = (edit_build(&dir, "last", true, false)?, edit_build(&dir, "last-whole", false, false)?);
+    same("types in place again", "last", &last.0, &last.1);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// With `FENNEC_CACHE_AUDIT=1`, a build writes each unit it uses again anyway, into what's thrown
+/// away, and fails if it doesn't come out as kept: its text, what it shares, every kind it asks
+/// the layouts for, in order, and every read it makes. So each of these edit builds, one for
+/// every kind of edit, checks every unit it uses again. The first three edits use some again.
+#[test]
+fn an_edit_build_audited_writes_each_unit_it_uses_again_the_same() -> std::io::Result<()> {
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("edit-audited")?;
+    let audited = |name: &str| {
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(["build", "edited.fen", "-o", name])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env("FENNEC_CACHE_AUDIT", "1")
+            .env_remove("FENNEC_NO_CACHE");
+        command.output()
+    };
+    let mut wrote = Vec::new();
+    for (at, (what, changes)) in
+        [("the first build", &[][..])].into_iter().chain(EDITS.iter().copied()).enumerate()
+    {
+        let mut edited = EDITED_BASE.to_owned();
+        for (from, to) in changes {
+            edited = edited.replace(from, to);
+        }
+        std::fs::write(dir.join("edited.fen"), &edited)?;
+        let built = audited(&format!("audited{at}"))?;
+        assert!(built.status.success(), "{what}: {}", text(&built.stderr));
+        wrote.push((what, written_of(&built)));
+    }
+    assert!(
+        wrote.iter().skip(1).take(3).all(|(_, written)| written.is_some()),
+        "edits that used nothing again: {wrote:?}"
+    );
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

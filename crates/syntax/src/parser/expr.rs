@@ -120,6 +120,15 @@ impl Parser {
     /// the case's.
     fn except_handler(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.advance().span;
+        // Python's `except InvalidValue as problem:`.
+        if let (Tok::Name(case), Tok::Kw(Kw::As), Tok::Name(name)) =
+            (self.peek().clone(), self.peek_at(1), self.peek_at(2))
+        {
+            let span = self.span().to(self.tokens.get(self.pos + 2).map_or(start, |token| token.span));
+            return Err(Diagnostic::new("Fennec doesn't name a failure with `as`", span).with_help(format!(
+                "write `except {name}:` to name any failure, or `except {case}(): ...` to handle only `{case}`"
+            )));
+        }
         if let (Tok::Name(name), Tok::P(Punct::Colon)) = (self.peek().clone(), self.peek_at(1))
             && name.starts_with(char::is_uppercase)
         {
@@ -541,6 +550,14 @@ impl Parser {
             Tok::Kw(Kw::True) => ExprKind::Bool(true),
             Tok::Kw(Kw::False) => ExprKind::Bool(false),
             Tok::Kw(Kw::None) => ExprKind::None,
+            Tok::Name(name)
+                if name == "lambda" && matches!(self.peek(), Tok::Name(_) | Tok::P(Punct::Colon)) =>
+            {
+                return Err(self.python_lambda(span));
+            }
+            Tok::P(Punct::Star | Punct::StarStar) if matches!(self.peek(), Tok::Name(_)) => {
+                return Err(python_unpacking(&token.tok, span.to(self.span())));
+            }
             Tok::Name(name) => ExprKind::Name(name),
             Tok::P(Punct::Dot) => ExprKind::Variant(self.name("an enum case after `.`")?),
             Tok::P(Punct::LParen) => return self.parenthesized(span),
@@ -550,6 +567,17 @@ impl Parser {
                 self.pos -= 1;
                 return Err(self.reserved(word));
             }
+            // A chain of calls going on to the next line outside brackets, as `text` with
+            // `.strip()` under it.
+            Tok::Indent if matches!(self.peek(), Tok::P(Punct::Dot)) => {
+                let call =
+                    self.tokens.get(self.pos + 1).map_or(self.span(), |name| self.span().to(name.span));
+                return Err(Diagnostic::new(
+                    "a chain of calls goes on to the next line only inside brackets",
+                    call,
+                )
+                .with_help("open a `(` before the chain's first value and close it after its last call, as `short = (text` with `.upper())` on the last line"));
+            }
             other => {
                 return Err(Diagnostic::new(
                     format!("expected a value, found {}", super::describe(&other)),
@@ -558,6 +586,29 @@ impl Parser {
             }
         };
         Ok(Expr { kind, span: span.to(self.prev_span()) })
+    }
+
+    /// Python's `lambda x: ...`, after `lambda`, which is at `start`: what the arrow function
+    /// with its parameters is.
+    fn python_lambda(&self, start: Span) -> Diagnostic {
+        let mut params = Vec::new();
+        let mut end = start;
+        let mut at = self.pos;
+        while let Some(token) = self.tokens.get(at) {
+            match &token.tok {
+                Tok::Name(name) => params.push(name.clone()),
+                Tok::P(Punct::Comma) => {}
+                _ => break,
+            }
+            end = token.span;
+            at += 1;
+        }
+        let arrow = match params.as_slice() {
+            [one] => format!("{one} => ..."),
+            many => format!("({}) => ...", many.join(", ")),
+        };
+        Diagnostic::new("Fennec doesn't have `lambda`", start.to(end))
+            .with_help(format!("write an arrow function: `{arrow}`"))
     }
 
     /// `(expr)`, or a tuple: `()`, `(a,)`, `(a, b)`.
@@ -688,4 +739,15 @@ pub(super) fn leaving_match(start: Span, body: Vec<Stmt>, span: Span) -> Expr {
     let subject =
         Box::new(Expr { kind: ExprKind::Bool(false), span: Span { start: start.start, end: start.start } });
     Expr { kind: ExprKind::Match { subject, arms: vec![arm] }, span }
+}
+
+/// Python's `*items` or `**options` before a value, at `span`: Fennec unpacks neither.
+fn python_unpacking(star: &Tok, span: Span) -> Diagnostic {
+    if matches!(star, Tok::P(Punct::StarStar)) {
+        return Diagnostic::new("Fennec doesn't unpack with `**`", span)
+            .with_help("name each argument, as `configure(width=3)`");
+    }
+    Diagnostic::new("Fennec doesn't unpack with `*`", span).with_help(
+        "take the parts by place, as `first = items[0]` and `rest = items[1:]`, or pass the list itself",
+    )
 }

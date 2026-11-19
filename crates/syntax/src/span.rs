@@ -1,7 +1,7 @@
 //! Byte ranges into a source file.
 
 /// A range of bytes in a source file, used to point diagnostics at code.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: u32,
     pub end: u32,

@@ -8,7 +8,7 @@ use std::fmt;
 ///
 /// A program that checks without errors has no `Unknown` or `Var` anywhere in its
 /// signatures or typed tree: every type is fully known.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
     /// A type the checker couldn't work out because of a mistake it has already reported.
     Unknown,
@@ -583,6 +583,11 @@ impl Type {
             | Type::Var(_)
             | Type::Iterator(_, Some(_)) => return None,
         })
+    }
+
+    /// Whether a type variable still open is anywhere in this type.
+    pub(crate) fn has_var(&self) -> bool {
+        matches!(self, Type::Var(_)) || self.children().iter().any(|child| child.has_var())
     }
 
     /// Whether `var` appears anywhere in this type.

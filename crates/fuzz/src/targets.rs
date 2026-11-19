@@ -178,7 +178,64 @@ const PAGE: [&str; 16] = [
 
 const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
 
-pub(crate) const TARGETS: [Target; 21] = [
+/// What numbers and UUIDs are written with, and what's near enough to be mistaken for them:
+/// signs, exponents, the ends of each size, separators, other bases, space that isn't ASCII,
+/// and digits that aren't.
+const NUMBERS: [&str; 24] = [
+    "0",
+    "9",
+    "-",
+    "+",
+    ".",
+    "e",
+    "E-",
+    "_",
+    " ",
+    "\t",
+    "\n",
+    "0x",
+    "inf",
+    "NaN",
+    "127",
+    "-128",
+    "65535",
+    "4294967296",
+    "9223372036854775808",
+    "18446744073709551616",
+    "0f8fad5b-d9cb-469f-a165-70867728950e",
+    "\u{a0}",
+    "\u{663}",
+    "é🦊",
+];
+
+/// What RFC 3339 times are written with, and the edges of what `Time` holds.
+const TIMES: [&str; 20] = [
+    "2026-11-06T21:55:56Z",
+    "1678-01-01T00:00:00+01:00",
+    "2261-12-31T23:59:59.999999999-23:59",
+    "T",
+    "t",
+    " ",
+    "-",
+    ":",
+    "+",
+    ".",
+    "Z",
+    "z",
+    "0",
+    "9",
+    "60",
+    "02-29",
+    "23:59",
+    "123456789012",
+    "\u{663}",
+    "é🦊",
+];
+
+/// What base64 is written with, in both alphabets, and its padding.
+const BASE64: [&str; 14] = ["=", "==", "+", "/", "-", "_", "A", "Q", "AA", "aGk", "\n", " ", "%", "é🦊"];
+
+pub(crate) const TARGETS: [Target; 24] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
@@ -284,6 +341,27 @@ pub(crate) const TARGETS: [Target; 21] = [
         stuck: STUCK,
     },
     Target {
+        name: "numbers",
+        corpus: &["crates/fuzz/seeds/numbers"],
+        tokens: &NUMBERS,
+        run: crate::numbers_rules::numbers,
+        stuck: STUCK,
+    },
+    Target {
+        name: "time",
+        corpus: &["crates/fuzz/seeds/time"],
+        tokens: &TIMES,
+        run: crate::time_rules::time,
+        stuck: STUCK,
+    },
+    Target {
+        name: "base64",
+        corpus: &["crates/fuzz/seeds/base64"],
+        tokens: &BASE64,
+        run: crate::base64_rules::base64,
+        stuck: STUCK,
+    },
+    Target {
         name: "parked",
         corpus: &["crates/fuzz/seeds/parked"],
         tokens: &ANYTHING,
@@ -304,16 +382,19 @@ pub(crate) const LLVM: Target = Target {
 };
 
 /// The targets, besides `llvm`, that run their input through a program built natively.
-pub(crate) const NATIVE: [&str; 13] = [
+pub(crate) const NATIVE: [&str; 16] = [
+    "base64",
     "csv",
     "html",
     "http-client",
     "http-server",
     "json",
     "json-rules",
+    "numbers",
     "pack",
     "postgres",
     "router",
+    "time",
     "toml",
     "toml-rules",
     "url",
@@ -334,8 +415,19 @@ pub(crate) const RANDOM_PROGRAMS: Target = Target {
     stuck: Duration::from_secs(60),
 };
 
+/// Tasks and a server's rounds that print and make way, recorded on 1 and 4 threads and each
+/// recording replayed on 1, 4 and 16, which runs only when named, since it builds every input once
+/// and runs it 8 times: 2 recordings and 6 replays.
+pub(crate) const REPLAY: Target = Target {
+    name: "replay",
+    corpus: &["crates/fuzz/seeds/replay"],
+    tokens: &ANYTHING,
+    run: crate::replay_rules::replay,
+    stuck: Duration::from_secs(60),
+};
+
 pub(crate) fn find(name: &str) -> Option<&'static Target> {
-    TARGETS.iter().chain([&UTF8, &LLVM, &RANDOM_PROGRAMS]).find(|target| target.name == name)
+    TARGETS.iter().chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY]).find(|target| target.name == name)
 }
 
 impl Target {

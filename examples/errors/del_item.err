@@ -1,0 +1,7 @@
+error: Fennec doesn't have `del`
+ --> examples/errors/del_item.fen:3:5
+  |
+3 |     del names[0]
+  |     ^^^
+  |
+  = help: take an item out of a list with `_ = items.pop(at)`, or a key out of a dict with `_ = table.remove(key)`

@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    name = "bo"
+    stdout.print(f"{name!r}")

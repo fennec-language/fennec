@@ -138,7 +138,9 @@ fn def_return(def: &FnDef) -> Vec<Diagnostic> {
         .into_iter()
         .map(|line| {
             let at = Span { start: line.span.start, end: line.span.start };
-            Diagnostic::new("a `def` gives its value with `return`", line.span).with_fix(at, "return ")
+            Diagnostic::new("a `def` gives its value with `return`", line.span)
+                .with_help("write `return` at the start of the line: `fennec fix` writes it in")
+                .with_fix(at, "return ")
         })
         .collect()
 }

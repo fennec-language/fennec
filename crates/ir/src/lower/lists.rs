@@ -175,8 +175,12 @@ impl Lowering<'_> {
         Operand::Local(dest)
     }
 
-    /// `object[index]`. A tuple's item at a position written as a number is known here.
+    /// `object[index]`. A tuple's item at a position written as a number is known here, and a
+    /// part of a split text is found where it is, with no list made.
     pub(super) fn get_index(&mut self, expr: &Expr, object: &Expr, index: &Expr) -> Lowered<Operand> {
+        if let Some(split) = self.split_of(object) {
+            return self.split_part(split, index, (expr.span, object.span));
+        }
         let ty = self.ty(expr)?;
         let held = self.type_at(object.span);
         if let (Some(Type::Tuple(items)), ExprKind::Int(at)) = (&held, &index.kind)
@@ -599,6 +603,9 @@ impl Lowering<'_> {
                 body,
             );
         }
+        if let Some(walk) = self.walk_of(iter).filter(|_| back.is_none()) {
+            return self.walking(names, walk, span, body);
+        }
         if let Some((made, owned)) = self.made_inside(iter)? {
             return self.owning(&owned, Over { names, iter: &made, back }, span, body);
         }
@@ -644,7 +651,7 @@ impl Lowering<'_> {
                 };
                 let items = self.temporary(Type::List(item.clone()));
                 self.emit(InstKind::Call { dest: Some(items), function, args: vec![value] }, span);
-                return self.count_through(names, (items, *item), back, span, body);
+                return self.count_through(names, (items, *item), (Operand::Int(0), back), span, body);
             }
             other => return Err(format!("it has a `for` loop over {other}")),
         };
@@ -661,7 +668,7 @@ impl Lowering<'_> {
             },
             span,
         );
-        self.count_through(names, (items, item), back, span, body)
+        self.count_through(names, (items, item), (Operand::Int(0), back), span, body)
     }
 
     /// Goes through a `Table`'s slots in place, with nothing made for it: each slot in use, in
@@ -789,7 +796,7 @@ impl Lowering<'_> {
         &mut self,
         names: &[String],
         (items, item): (LocalId, Type),
-        back: Option<Back>,
+        (first, back): (Operand, Option<Back>),
         span: Span,
         body: F,
     ) -> Lowered<()>
@@ -807,8 +814,7 @@ impl Lowering<'_> {
             self.emit(kind, span);
             Operand::Local(limit)
         };
-        let counting =
-            Counting { names, first: Operand::Int(0), limit, down: false, items: Some((items, item)), back };
+        let counting = Counting { names, first, limit, down: false, items: Some((items, item)), back };
         self.counting(counting, span, body)
     }
 
@@ -1005,6 +1011,300 @@ impl Lowering<'_> {
     }
 }
 
+/// A loop that goes through what it's over with no list made for it.
+enum Unlisted<'e> {
+    /// `for x in items[k:]`, a list from a place written as a number, `k`.
+    From { items: &'e Expr, item: Type, first: i64 },
+    /// `for part in text.split(separator)`, the call written at `call`.
+    Split { text: &'e Expr, separator: &'e Expr, call: Span },
+}
+
+impl Lowering<'_> {
+    /// How a `for` over `iter` can go through it with no list made, if it can.
+    fn walk_of<'e>(&self, iter: &'e Expr) -> Option<Unlisted<'e>> {
+        match &iter.kind {
+            // A list from a place written as a number: its own items from there, with no list
+            // copied for the slice. From the end, the slice is made as before.
+            ExprKind::Slice { object, start, end: None } => {
+                let Some(Type::List(item)) = self.type_at(object.span).and_then(|ty| self.held(&ty)) else {
+                    return None;
+                };
+                Some(Unlisted::From { items: object, item: *item, first: counted_from(start.as_deref())? })
+            }
+            // A text split by a separator given: a part at a time.
+            ExprKind::Call { .. } => {
+                let (text, separator) = self.split_of(iter)?;
+                Some(Unlisted::Split { text, separator, call: iter.span })
+            }
+            _ => None,
+        }
+    }
+
+    /// The text and the separator of `text.split(separator)`, a str's own `split` given one, if
+    /// that's what `expr` is.
+    pub(super) fn split_of<'e>(&self, expr: &'e Expr) -> Option<(&'e Expr, &'e Expr)> {
+        let ExprKind::Call { callee, args } = &expr.kind else { return None };
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
+        let [fennec_syntax::Arg { name: None, is_mut: false, value: separator }] = args.as_slice() else {
+            return None;
+        };
+        let texts =
+            self.type_at(object.span) == Some(Type::Str) && self.type_at(separator.span) == Some(Type::Str);
+        (name == "split" && texts).then_some((object, separator))
+    }
+
+    /// A loop through what [`Self::walk_of`] found, with no list made for it.
+    fn walking<F>(&mut self, names: &[String], walk: Unlisted<'_>, span: Span, body: F) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
+        match walk {
+            // The loop holds the list as it was, as the slice would have, whatever its body does
+            // to the name. Past the end there's nothing, as the slice would have been empty.
+            Unlisted::From { items, item, first } => {
+                let value = self.expr(items)?;
+                let held = self.temporary(Type::List(Box::new(item.clone())));
+                self.emit(InstKind::Copy { dest: held, value }, span);
+                self.count_through(names, (held, item), (Operand::Int(first), None), span, body)
+            }
+            // The text as it was read, even if working out the separator changes its name, as
+            // `split`'s own arguments are read.
+            Unlisted::Split { text, separator, call } => {
+                let text = self.expr(text)?;
+                let read = self.both(text, |lowering| lowering.expr(separator), call)?;
+                self.through_split(names, read, (span, call), body)
+            }
+        }
+    }
+}
+
+impl Lowering<'_> {
+    /// `for part in text.split(separator)`, a part at a time from where the last separator
+    /// ended, so nothing is made but each part, and no list of them all, as `split` would make.
+    /// `str.split_at(text, separator, at)` gives the byte where the next separator starts from
+    /// byte `at`, or the text's length when there's none left, and `intrinsics.text_part` the
+    /// part up to it. The last part runs to the text's end, so there's always one more part than
+    /// separators, as `split` gives. An empty separator fails as `split` does, by `split` itself.
+    fn through_split<F>(
+        &mut self,
+        names: &[String],
+        (text, separator): (Operand, Operand),
+        (span, call): (Span, Span),
+        body: F,
+    ) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
+        let [name] = names else { return Err("it unpacks a split's parts".to_owned()) };
+        let builtin = |name: &str, dest, args| InstKind::Builtin {
+            dest: Some(dest),
+            name: name.to_owned(),
+            args,
+            changes: false,
+        };
+        let whole = self.temporary(Type::Str);
+        self.emit(InstKind::Copy { dest: whole, value: text }, span);
+        let separator_given = separator.clone();
+        let between = self.temporary(Type::Str);
+        self.emit(InstKind::Copy { dest: between, value: separator }, span);
+        let length = self.temporary(Type::Int);
+        self.emit(builtin("intrinsics.text_size", length, vec![Operand::Local(whole)]), span);
+        let step = self.temporary(Type::Int);
+        self.emit(builtin("intrinsics.text_size", step, vec![Operand::Local(between)]), span);
+        let (start, head, then, next, exit) =
+            (self.new_block(), self.new_block(), self.new_block(), self.new_block(), self.new_block());
+        // An empty separator: `split` fails for it, and so does this, saying so where the call is.
+        // One written as text that isn't empty can't be, so it's not looked at.
+        if matches!(&separator_given, Operand::Str(written) if !written.is_empty()) {
+            self.finish(Terminator::Jump(start));
+        } else {
+            let refused = self.new_block();
+            let empty = self.temporary(Type::Bool);
+            let (lhs, rhs) = (Operand::Local(step), Operand::Int(0));
+            self.emit(InstKind::Binary { dest: empty, op: BinOp::Eq, lhs, rhs }, span);
+            self.finish(Terminator::Branch { cond: Operand::Local(empty), then: refused, otherwise: start });
+            self.current = refused;
+            let parts = self.temporary(Type::List(Box::new(Type::Str)));
+            let args = vec![Operand::Local(whole), Operand::Local(between)];
+            self.emit(builtin("str.split", parts, args), call);
+            self.finish(Terminator::Jump(exit));
+        }
+        self.current = start;
+        let at = self.temporary(Type::Int);
+        self.emit(InstKind::Copy { dest: at, value: Operand::Int(0) }, span);
+        // Whether the part just taken ran to the text's end, so it was the last.
+        let last = self.temporary(Type::Bool);
+        self.emit(InstKind::Copy { dest: last, value: Operand::Bool(false) }, span);
+        self.finish(Terminator::Jump(head));
+        self.current = head;
+        self.finish(Terminator::Branch { cond: Operand::Local(last), then: exit, otherwise: then });
+        self.current = then;
+        let end = self.temporary(Type::Int);
+        let args = vec![Operand::Local(whole), Operand::Local(between), Operand::Local(at)];
+        self.emit(builtin("str.split_at", end, args), span);
+        let (lhs, rhs) = (Operand::Local(end), Operand::Local(length));
+        self.emit(InstKind::Binary { dest: last, op: BinOp::Eq, lhs, rhs }, span);
+        self.scopes.push(HashMap::new());
+        let part = self.declare(name, Type::Str);
+        let args = vec![Operand::Local(whole), Operand::Local(at), Operand::Local(end)];
+        self.emit(builtin("intrinsics.text_part", part, args), span);
+        self.loops.push(Loop { next, exit, depth: self.leaving.len() });
+        let lowered = body(self);
+        self.loops.pop();
+        self.scopes.pop();
+        lowered?;
+        self.finish(Terminator::Jump(next));
+        self.current = next;
+        // Past the separator: never past the text's end, since it was found inside it.
+        let args = vec![Operand::Local(end), Operand::Local(step)];
+        self.emit(builtin("str.next_place", at, args), span);
+        self.finish(Terminator::Jump(head));
+        self.current = exit;
+        Ok(())
+    }
+
+    /// `text.split(separator)[place]`, the part at `place` found where it is in the text, so
+    /// nothing is made but that part, and no list of them all, as `split` would make. An empty
+    /// separator fails as `split` does, by `split` itself, before the place is worked out, as
+    /// `split` runs before it.
+    pub(super) fn split_part(
+        &mut self,
+        (text, separator): (&Expr, &Expr),
+        index: &Expr,
+        (span, call): (Span, Span),
+    ) -> Lowered<Operand> {
+        // The text and the separator as they were read, even if working out the place changes
+        // their names, as `split`'s own arguments are.
+        let mut reads = super::order::Reads::default();
+        let text = self.expr(text)?;
+        reads.add(self, text.clone());
+        let separator = self.expr(separator)?;
+        reads.add(self, separator.clone());
+        let step = self.temporary(Type::Int);
+        let size = vec![separator.clone()];
+        self.emit(
+            InstKind::Builtin {
+                dest: Some(step),
+                name: "intrinsics.text_size".to_owned(),
+                args: size,
+                changes: false,
+            },
+            span,
+        );
+        // One written as text that isn't empty can't be, so it's not looked at.
+        if !matches!(&separator, Operand::Str(written) if !written.is_empty()) {
+            let (refused, given) = (self.new_block(), self.new_block());
+            let empty = self.temporary(Type::Bool);
+            let (lhs, rhs) = (Operand::Local(step), Operand::Int(0));
+            self.emit(InstKind::Binary { dest: empty, op: BinOp::Eq, lhs, rhs }, span);
+            self.finish(Terminator::Branch { cond: Operand::Local(empty), then: refused, otherwise: given });
+            self.current = refused;
+            let parts = self.temporary(Type::List(Box::new(Type::Str)));
+            let args = vec![text, separator];
+            self.emit(
+                InstKind::Builtin { dest: Some(parts), name: "str.split".to_owned(), args, changes: false },
+                call,
+            );
+            self.finish(Terminator::Jump(given));
+            self.current = given;
+        }
+        let place = self.expr(index)?;
+        let place = self.coerce(place, &Type::Int, index.span)?;
+        reads.add(self, place);
+        let [text, separator, place] = <[Operand; 3]>::try_from(reads.finish(self, span))
+            .map_err(|_| "an operand went missing".to_owned())?;
+        Ok(self.part_at((text, separator, step), place, (span, call)))
+    }
+
+    /// The part of `text` split by `separator` at `place`. The parts before it are passed over
+    /// as a loop over the split goes through them: `str.split_at` finds where each ends, and
+    /// `str.next_place` steps past its separator, `step` bytes. A place that's negative, or past
+    /// the last part, is read from `split`'s list as before, so it counts from the end, or stops
+    /// the program, as `items[place]` does.
+    fn part_at(
+        &mut self,
+        (text, separator, step): (Operand, Operand, LocalId),
+        place: Operand,
+        (span, call): (Span, Span),
+    ) -> Operand {
+        let builtin = |name: &str, dest, args| InstKind::Builtin {
+            dest: Some(dest),
+            name: name.to_owned(),
+            args,
+            changes: false,
+        };
+        let whole = self.temporary(Type::Str);
+        self.emit(InstKind::Copy { dest: whole, value: text }, span);
+        let between = self.temporary(Type::Str);
+        self.emit(InstKind::Copy { dest: between, value: separator }, span);
+        let part = self.temporary(Type::Str);
+        let (listed, join) = (self.new_block(), self.new_block());
+        // A place written as a number below zero counts from the end, so the list is made for it.
+        if matches!(place, Operand::Int(written) if written < 0) {
+            self.finish(Terminator::Jump(listed));
+        } else {
+            let length = self.temporary(Type::Int);
+            self.emit(builtin("intrinsics.text_size", length, vec![Operand::Local(whole)]), span);
+            let at = self.temporary(Type::Int);
+            self.emit(InstKind::Copy { dest: at, value: Operand::Int(0) }, span);
+            // How many parts are still to be passed over.
+            let left = self.temporary(Type::Int);
+            self.emit(InstKind::Copy { dest: left, value: place.clone() }, span);
+            let (head, over, on, found) =
+                (self.new_block(), self.new_block(), self.new_block(), self.new_block());
+            if let Operand::Int(_) = place {
+                self.finish(Terminator::Jump(head));
+            } else {
+                let negative = self.temporary(Type::Bool);
+                let (lhs, rhs) = (place.clone(), Operand::Int(0));
+                self.emit(InstKind::Binary { dest: negative, op: BinOp::Lt, lhs, rhs }, span);
+                self.finish(Terminator::Branch {
+                    cond: Operand::Local(negative),
+                    then: listed,
+                    otherwise: head,
+                });
+            }
+            self.current = head;
+            let reached = self.temporary(Type::Bool);
+            let (lhs, rhs) = (Operand::Local(left), Operand::Int(0));
+            self.emit(InstKind::Binary { dest: reached, op: BinOp::Eq, lhs, rhs }, span);
+            self.finish(Terminator::Branch { cond: Operand::Local(reached), then: found, otherwise: over });
+            // The part `at` starts is passed over. When it runs to the text's end, it's the last,
+            // and there's no part at the place.
+            self.current = over;
+            let end = self.temporary(Type::Int);
+            let args = vec![Operand::Local(whole), Operand::Local(between), Operand::Local(at)];
+            self.emit(builtin("str.split_at", end, args), span);
+            let last = self.temporary(Type::Bool);
+            let (lhs, rhs) = (Operand::Local(end), Operand::Local(length));
+            self.emit(InstKind::Binary { dest: last, op: BinOp::Eq, lhs, rhs }, span);
+            self.finish(Terminator::Branch { cond: Operand::Local(last), then: listed, otherwise: on });
+            // Past the separator: never past the text's end, since it was found inside it.
+            self.current = on;
+            self.emit(builtin("str.next_place", at, vec![Operand::Local(end), Operand::Local(step)]), span);
+            let (lhs, rhs) = (Operand::Local(left), Operand::Int(1));
+            self.emit(InstKind::Binary { dest: left, op: BinOp::Sub, lhs, rhs }, span);
+            self.finish(Terminator::Jump(head));
+            self.current = found;
+            let args = vec![Operand::Local(whole), Operand::Local(between), Operand::Local(at)];
+            self.emit(builtin("str.split_at", end, args), span);
+            let args = vec![Operand::Local(whole), Operand::Local(at), Operand::Local(end)];
+            self.emit(builtin("intrinsics.text_part", part, args), span);
+            self.finish(Terminator::Jump(join));
+        }
+        self.current = listed;
+        let parts = self.temporary(Type::List(Box::new(Type::Str)));
+        let args = vec![Operand::Local(whole), Operand::Local(between)];
+        self.emit(builtin("str.split", parts, args), call);
+        let list = Type::List(Box::new(Type::Str));
+        let item = self.read_item(&list, Operand::Local(parts), place, &Type::Str, span);
+        self.emit(InstKind::Copy { dest: part, value: Operand::Local(item) }, span);
+        self.finish(Terminator::Jump(join));
+        self.current = join;
+        Operand::Local(part)
+    }
+}
+
 /// The name an expression starts from and the fields it goes through, if that's all it is.
 pub(super) fn field_path_of(expr: &Expr) -> Option<(&str, Vec<&str>)> {
     match &expr.kind {
@@ -1176,3 +1476,14 @@ pub(super) fn owned_name(read: &Expr) -> bool {
 
 /// What starts the name `made_inside` gives a generator the loop owns.
 const OWNED: &str = "\0owned";
+
+/// Where a loop over `items[start:]` starts counting: 0 with no start, or the start when it's
+/// written as a number that isn't negative. Anything else, like a start counted from the end,
+/// is left to the slice.
+fn counted_from(start: Option<&Expr>) -> Option<i64> {
+    match start.map(|start| &start.kind) {
+        None => Some(0),
+        Some(ExprKind::Int(first)) if *first >= 0 => Some(*first),
+        Some(_) => None,
+    }
+}

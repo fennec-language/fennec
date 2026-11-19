@@ -1,0 +1,7 @@
+error: Fennec doesn't have `@dataclass`
+ --> examples/errors/dataclass.fen:1:1
+  |
+1 | @dataclass
+  | ^^^^^^^^^^
+  |
+  = help: a `struct` is one already, and makes its own constructor from its fields: take out `@dataclass`

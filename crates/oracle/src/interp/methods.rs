@@ -420,6 +420,20 @@ impl Interp {
     }
 }
 
+/// Whether calling the built-in method `name` changes the value it's called on: one of `CHANGES`,
+/// or a list's or a table's `sort`, `remove_where` and `modify`, which are worked out from the
+/// whole value and put back.
+pub(crate) fn changes(name: &str) -> bool {
+    CHANGES.contains(&name) || matches!(name, "sort" | "remove_where" | "modify")
+}
+
+/// Whether calling the built-in method `name` on what's held only reads it: `only_reads`, or a
+/// table's `get`, `values`, `ids` and `items`.
+pub(crate) fn reads(held: &Value, name: &str) -> bool {
+    only_reads(held, name)
+        || matches!(held, Value::Table(_)) && matches!(name, "get" | "values" | "ids" | "items")
+}
+
 /// The methods that change a list, dict or set where it is.
 pub(crate) const CHANGES: &[&str] = &[
     "append",
@@ -436,8 +450,19 @@ pub(crate) const CHANGES: &[&str] = &[
     "discard",
 ];
 
+/// Whether calling `name` on what's held only reads it: any method of a string, and a dict's or a
+/// list's that look things up. Others, `sort` and `remove_where` among them, change it where it is.
+pub(crate) fn only_reads(held: &Value, name: &str) -> bool {
+    match held {
+        Value::Str(_) => true,
+        Value::Dict(_) => matches!(name, "get" | "items" | "keys" | "values"),
+        Value::List(_) => matches!(name, "count" | "get" | "index"),
+        _ => false,
+    }
+}
+
 /// A method that only reads a string, a dict or a list, worked out where the value is: what it
-/// gives, or `None` for one that isn't.
+/// gives, or `None` for one that isn't, or that's worked out from the whole value instead.
 fn read_only(
     value: &Value,
     name: &str,
@@ -445,6 +470,9 @@ fn read_only(
     named: &[(String, Value)],
     span: Span,
 ) -> Option<Run<Value>> {
+    if !only_reads(value, name) {
+        return None;
+    }
     match value {
         Value::Str(text) => Some(str_method(text, name, args, named, span)),
         Value::Dict(pairs) if named.is_empty() => Some(dict_method(pairs, name, args, span)),

@@ -297,6 +297,19 @@ pub extern "C" fn find_header(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u
     })
 }
 
+/// `fennec_str_split_at_header(text, separator, at)`: where the next `separator` in `text` starts
+/// from byte `at`, in bytes, or `text`'s length in bytes when there's none: where the part a
+/// loop over `text.split(separator)` takes next ends. Both are headers, only read.
+pub extern "C" fn split_at_header(t0: u64, t1: u64, t2: u64, s0: u64, s1: u64, s2: u64, at: i64) -> i64 {
+    with(|state| {
+        let (text, separator) = ([t0, t1, t2], [s0, s1, s2]);
+        let whole = bytes_of(state, &text);
+        let from = usize::try_from(at).unwrap_or(0);
+        let found = super::strings::place_from(whole, bytes_of(state, &separator), from);
+        i64::try_from(found.unwrap_or(whole.1)).unwrap_or(-1)
+    })
+}
+
 /// The eight bytes of `words` from byte `at` on, as a word, zero past the words' end. Bytes are
 /// packed into words in order from each word's lowest byte, as a block and an inline header hold
 /// them.

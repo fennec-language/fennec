@@ -1,0 +1,7 @@
+error: Fennec doesn't use `;`
+ --> examples/errors/semicolon.fen:2:10
+  |
+2 |     a = 1; b = 2
+  |          ^
+  |
+  = help: put each statement on its own line

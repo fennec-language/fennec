@@ -288,18 +288,23 @@ extend u64:
         return u64(x)
 
     ## The u64 `text` writes, or an `InvalidValue` when it isn't a whole number or doesn't fit.
-    ## What's past the largest `int` is read a digit at a time.
+    ## What's past the largest `int` is read a digit at a time, from what `int` reads: the digits,
+    ## with space around them and a `+` before them.
     def parse(text: str) -> u64 fails InvalidValue:
         n = int(text) except problem:
-            if not text.isdigit(): fail problem
+            written = text.strip()
+            digits = written[1:] if written.startswith("+") else written
+            if not digits.isdigit(): fail problem
             top = u64(9223372036854775807) * 2 + 1
             mut value = u64(0)
-            for c in text:
+            for c in digits:
                 digit = u64(c.code() - 48)
                 # Checked before it's multiplied, so it never goes past the top.
                 if value > (top - digit) // 10:
                     # Only digits, but as many as it likes: past 40, its first 20 and its length.
-                    shown = text if len(text) <= 40 else f"{text[0:20]}… ({len(text):,} digits)"
+                    mut shown = digits
+                    if len(digits) > 40:
+                        shown = f"{digits[0:20]}… ({len(digits):,} digits)"
                     fail InvalidValue(
                         message=f"{shown} doesn't fit in u64, which holds 0 to 18446744073709551615",
                     )

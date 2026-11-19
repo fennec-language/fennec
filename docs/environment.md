@@ -18,8 +18,8 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_THREADS_RUNTIME`: `0` or `1` picks the plain runtime or the one with threads, in place of what the program needs.
 - `FENNEC_NO_CACHE`: build without the cache, and run every test rather than reusing results.
 - `FENNEC_TOOLCHAIN_STORE`: the toolchain's store, which every home reads the standard library's parse and the runtime libraries' stamps from, in place of `fennec-store` beside `fennec`; empty turns it off. See [store.md](store.md).
-- `FENNEC_NO_DAEMON`: never start or use the daemon.
-- `FENNEC_DAEMON_IDLE`: how many seconds the daemon stays up with nothing to do; 600 by default.
+- `FENNEC_NO_DAEMON`: never start or use the daemon. `fennec build` then builds in its own process, as it does whenever `CI` is set.
+- `FENNEC_DAEMON_IDLE`: how many seconds the daemon stays up with nothing to do; 1800 by default.
 - `FENNEC_LLVM_BIN`: the folder holding LLVM's `opt` and `llc`.
 - `FENNEC_LLVM_KEEP`: keeps the folder of LLVM text a build writes, to read what was emitted.
 - `FENNEC_BUILD_JOBS`: how many functions a dev build compiles at once; the number of cores by default. `.cargo/config.toml` sets it to 2 for everything Cargo runs, the tests among them, since they run many builds at once.
@@ -38,6 +38,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_EXPECT_STATIC`: the static-link test fails rather than skips when musl is missing.
 - `FENNEC_PARALLEL_STRESS`: every parallel loop runs on the pool, split one item a range.
 - `FENNEC_STREAM_RUN_AHEAD`: set, a parallel stream's reader waits for the workers to run every chunk in its window before it takes one, so chunks always run ahead of it, as a test of what runs past a `break` needs. Off on a worker and in a replay.
+- `FENNEC_TEST_SLOW_WAKE_MS`: a debug build's runtime holds a woken idle worker this many milliseconds before its slot says it's awake, so a test finds every worker asleep while a `parallel` call's first job is queued: the moment the deadlock check's look at the pools' queues is for. A release build never reads it.
 - `FENNEC_UNDER_MUTANTS`: slow tests sample fewer inputs under cargo-mutants.
 - `FENNEC_TEST_POSTGRES`: the URL of a real Postgres for `std.postgres`'s tests.
 - `FENNEC_PIN_OUTPUTS`: rewrites `crates/fennec/tests/fixtures/pinned` from this build's results.
@@ -47,6 +48,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_KEEP_FAILED`: `1` has a test that fails keep the temporary folder it made, and say on standard error where, rather than remove it: the gate's tests step sets it, and keeps each such folder, with the failed step's whole log and every panic, in `~/.fennec/gate-logs`.
 - `FENNEC_LINK_KEEP`: a build keeps the objects it links, whole, in the folder this names, for the loader's tests to link them their own way and compare with the system linker's.
 - `FENNEC_LOSE_KEPT_OBJECTS`: `1` has a dev build remove every kept object it found just before it links, as a cleanup another command runs can, for a test to check that each is compiled again and the build still makes the same program.
+- `FENNEC_CACHE_AUDIT`: `1` has a dev build write each unit it uses again from the last build anyway, and fail if it doesn't come out as it was kept: its text, what it shares, every kind it asks the layouts for, in order, and every read it makes of the whole program. For a test to check that a unit is only used again when it would come out the same.
 - `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.
 - `FENNEC_HASH_SEED`: a fixed seed for dict hashing, so a run's order repeats. `fennec test` sets it.
 - `FENNEC_GATE_LOCK`: the lock file the pre-push hook takes, so the landing script's test can use its own.

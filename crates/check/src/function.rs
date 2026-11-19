@@ -32,6 +32,13 @@ pub(crate) struct Binding {
     /// The function whose parameter it is, by key, when it's one: kept when a nested function
     /// captures it, so the nested function calling it is a call of that function's parameter.
     pub(crate) param_of: Option<String>,
+    /// The arrow function, by span, a name that isn't `mut` was given where it's declared: all it
+    /// can hold, so calling it does what the arrow's own body does. It ends with the name's scope,
+    /// as a name declared again after it holds something else.
+    pub(crate) arrow: Option<(u32, u32)>,
+    /// The function parameter, by its function's key and its name, a name that isn't `mut` was
+    /// declared holding, as `job = work`: calling the name calls the parameter (see `param_key`).
+    pub(crate) alias: Option<(String, String)>,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -73,6 +80,9 @@ struct Scope {
     /// A `parallel` loop's or comprehension's body, which runs on other tasks: a generator that
     /// can fail, from outside it, can't pass its failure up from there.
     apart: bool,
+    /// The names in this scope that may hold what a `with` lent, with the type it lent and the
+    /// scope its block is: they're kept inside that block (see `lent.rs`).
+    lent: Vec<(String, Type, usize)>,
 }
 
 /// What a function's body gives back.
@@ -83,6 +93,9 @@ pub(crate) struct BodyType {
 
 pub(crate) struct FnCx<'c> {
     pub(crate) checker: &'c mut Checker,
+    /// Each name the body gives a value with `=`, and where: one read above that line is read too
+    /// early, which says more than that it doesn't exist.
+    pub(crate) assigned: Vec<(String, Span)>,
     /// The function's name in the signature table, for naming the functions inside it.
     pub(crate) key: String,
     /// The function's own name, for messages.
@@ -162,9 +175,11 @@ pub(crate) struct FnCx<'c> {
     /// The functions whose arguments are being matched, innermost last, for what's passed for a
     /// function parameter.
     pub(crate) calling: Vec<String>,
-    /// Each local name given an arrow function, by the arrow function's span: `None` once it's
-    /// given anything else too, when what it holds can't be known.
-    pub(crate) arrow_locals: std::collections::HashMap<String, Option<(u32, u32)>>,
+    /// The name, by span, being read where a function value read is followed or can't call it:
+    /// a call's callee, an argument for a function parameter, or one side of an `is None` test.
+    /// A function parameter read anywhere else counts as called right there (see
+    /// `note_function_read`).
+    pub(crate) direct_read: Option<(u32, u32)>,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
     /// How many loops this is inside, which `break` and `continue` need.
@@ -194,10 +209,11 @@ impl<'c> FnCx<'c> {
     pub(crate) fn new(checker: &'c mut Checker, key: &str, name: &str, report: bool) -> Self {
         let first_var = checker.vars.len();
         FnCx {
+            assigned: Vec::new(),
             checker,
             key: key.to_owned(),
             name: name.to_owned(),
-            scopes: vec![Scope { bindings: Vec::new(), barrier: false, apart: false }],
+            scopes: vec![Scope { bindings: Vec::new(), barrier: false, apart: false, lent: Vec::new() }],
             report,
             declared: None,
             generator: false,
@@ -231,7 +247,7 @@ impl<'c> FnCx<'c> {
             looped_here: Vec::new(),
             arrows_open: Vec::new(),
             calling: Vec::new(),
-            arrow_locals: std::collections::HashMap::new(),
+            direct_read: None,
             value_functions: 0,
             loops: 0,
             arrows: 0,
@@ -323,6 +339,7 @@ impl<'c> FnCx<'c> {
         report: bool,
     ) -> BodyType {
         let mut cx = FnCx::new(checker, key, &def.name, report);
+        assigned_in(&def.body, &mut cx.assigned);
         let entry = cx.checker.program.functions.get(key);
         cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
         cx.declared = crate::program::written_ret(def).map(|ret| cx.resolve(ret));
@@ -344,7 +361,13 @@ impl<'c> FnCx<'c> {
                 // one is expected of the default.
                 let actual =
                     if written.ty.is_some() { cx.expr_as(default, &param.ty) } else { cx.expr(default) };
-                cx.check_arg(param, &actual, default.span);
+                if let (ExprKind::None, Some(ty)) = (&default.kind, &written.ty)
+                    && !param.ty.maybe_none()
+                {
+                    cx.error(none_for_plain_type(&param.name, &param.ty, ty.span, default.span));
+                } else {
+                    cx.check_arg(param, &actual, default.span);
+                }
             }
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
         }
@@ -535,7 +558,12 @@ impl<'c> FnCx<'c> {
         if self.generator || passed_through || self.checker.fits(declared, &actual) {
             return;
         }
-        let diagnostic = if actual.maybe_none() && !declared.maybe_none() {
+        let diagnostic = if actual == Type::None && !declared.maybe_none() {
+            // Python's `return None` from a function that gives back a plain value.
+            let shown = crate::types::a(declared);
+            Diagnostic::new(format!("`{}` gives back {shown}, which can't be `None`", self.name), span)
+                .with_help(format!("write `-> {declared}?` to give back `None` when there's nothing"))
+        } else if actual.maybe_none() && !declared.maybe_none() {
             crate::messages::might_be_none(span)
         } else if matches!(actual, Type::Result(..)) {
             crate::messages::unhandled_result(span)
@@ -742,7 +770,44 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn push(&mut self, barrier: bool) {
-        self.scopes.push(Scope { bindings: Vec::new(), barrier, apart: false });
+        self.scopes.push(Scope { bindings: Vec::new(), barrier, apart: false, lent: Vec::new() });
+    }
+
+    /// Where the innermost scope is, counting out from the function's own.
+    pub(crate) fn innermost_scope(&self) -> usize {
+        self.scopes.len().saturating_sub(1)
+    }
+
+    /// The scope the name in sight is declared in, counting out from the function's own.
+    pub(crate) fn scope_of(&self, name: &str) -> Option<usize> {
+        self.scopes.iter().rposition(|scope| scope.bindings.iter().any(|binding| binding.name == name))
+    }
+
+    /// What a `with` lent that the name declared in scope `at` may hold: each by its type and the
+    /// scope of the `with` block that lent it.
+    pub(crate) fn lent_in(&self, at: usize, name: &str) -> Vec<(Type, usize)> {
+        let Some(scope) = self.scopes.get(at) else { return Vec::new() };
+        scope
+            .lent
+            .iter()
+            .filter(|(held, ..)| held == name)
+            .map(|(_, lent, block)| (lent.clone(), *block))
+            .collect()
+    }
+
+    /// Notes that the name declared in scope `at` may hold what the `with` block at scope `block`
+    /// lent, of type `lent`.
+    pub(crate) fn hold_lent(&mut self, at: usize, name: &str, (lent, block): (Type, usize)) {
+        if let Some(scope) = self.scopes.get_mut(at)
+            && !scope.lent.iter().any(|(held, had, from)| held == name && *had == lent && *from == block)
+        {
+            scope.lent.push((name.to_owned(), lent, block));
+        }
+    }
+
+    /// Whether any name in sight may hold what a `with` lent.
+    pub(crate) fn any_lent(&self) -> bool {
+        self.scopes.iter().any(|scope| !scope.lent.is_empty())
     }
 
     /// Marks the innermost scope as a `parallel` loop's or comprehension's body, which runs on
@@ -826,6 +891,8 @@ impl<'c> FnCx<'c> {
                 mut_at: None,
                 to_every: false,
                 param_of,
+                arrow: None,
+                alias: None,
             },
             at,
         );
@@ -847,6 +914,8 @@ impl<'c> FnCx<'c> {
             mut_at: Some(at.start),
             to_every: false,
             param_of: None,
+            arrow: None,
+            alias: None,
         };
         self.declare_with(binding, at);
     }
@@ -998,18 +1067,74 @@ impl<'c> FnCx<'c> {
             .map(|binding| binding.origin)
     }
 
-    /// The function `name` is a parameter of, by key: this one's, or one around it that a nested
-    /// function captured it from.
-    pub(crate) fn param_owner(&self, name: &str) -> Option<String> {
+    /// The arrow function the local name in sight was declared with, by span, when it isn't
+    /// `mut`: then it's all the name can hold. A `mut` name can hold another value by the time it's
+    /// read, and a name declared again, even by unpacking, is another binding with none. A nested
+    /// function's copy of one it captured holds the same.
+    pub(crate) fn local_arrow(&self, name: &str) -> Option<(u32, u32)> {
         let binding = self
             .scopes
             .iter()
             .rev()
             .flat_map(|scope| scope.bindings.iter().rev())
             .find(|binding| binding.name == name)?;
-        match binding.origin {
-            Origin::Param | Origin::Captured => binding.param_of.clone(),
+        (matches!(binding.origin, Origin::Local | Origin::Captured) && !binding.is_mut)
+            .then_some(binding.arrow)
+            .flatten()
+    }
+
+    /// The function parameter the name in sight is, by its function's key and its name: a
+    /// parameter of this function, one around it a nested function captured, or one a name that
+    /// isn't `mut` was declared holding, as `job = work`, however many times over.
+    pub(crate) fn param_key(&self, name: &str) -> Option<(String, String)> {
+        let binding = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|binding| binding.name == name)?;
+        match (&binding.origin, &binding.param_of, &binding.alias) {
+            (Origin::Param | Origin::Captured, Some(owner), _) => Some((owner.clone(), name.to_owned())),
+            (Origin::Local | Origin::Captured, None, Some(alias)) if !binding.is_mut => Some(alias.clone()),
             _ => None,
+        }
+    }
+
+    /// Keeps the function value a name that isn't `mut` is declared with on the name's binding:
+    /// an arrow function, `name = () => ...` (see `local_arrow`), or a function parameter,
+    /// `name = work`, or an optional one unwrapped, `name = work else return` or `name = work?`
+    /// (see `param_key`).
+    pub(crate) fn keep_function_value(&mut self, target: &Expr, value: &Expr) {
+        let ExprKind::Name(name) = &target.kind else { return };
+        let arrow =
+            matches!(value.kind, ExprKind::Lambda { .. }).then_some((value.span.start, value.span.end));
+        // An `else` that leaves gives nothing, so the name holds the parameter's own function.
+        let held = match &value.kind {
+            ExprKind::Else { value: unwrapped, default, except: false } if default.leaves() => unwrapped,
+            ExprKind::Try { value: unwrapped, context: None } => unwrapped,
+            _ => value,
+        };
+        let alias = match &held.kind {
+            ExprKind::Name(read) if read != name => self.param_key(read),
+            _ => None,
+        };
+        if arrow.is_none() && alias.is_none() {
+            return;
+        }
+        let Some(binding) = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.bindings.iter_mut().rev().find(|b| b.name == *name))
+        else {
+            return;
+        };
+        if binding.origin == Origin::Local
+            && !binding.is_mut
+            && binding.arrow.is_none()
+            && binding.alias.is_none()
+        {
+            binding.arrow = arrow;
+            binding.alias = alias;
         }
     }
 
@@ -1278,5 +1403,31 @@ fn failing_generator_reached(name: &str, ty: &Type, span: Span, param: bool) -> 
         crate::messages::failing_generator_given_to_arrow(name, holds, span)
     } else {
         crate::messages::failing_generator_inside(name, holds, span)
+    }
+}
+
+/// Python's `name: str = None`: a `None` default for a parameter of a plain type, which can't be
+/// `None`. The `?` that lets it be is a fix to make by hand, since every use of it changes.
+fn none_for_plain_type(name: &str, ty: &Type, written: Span, default: Span) -> Diagnostic {
+    let shown = crate::types::a(ty);
+    Diagnostic::new(format!("`{name}` is {shown}, which can't be `None`"), default).with_hint(
+        format!("write `{name}: {ty}? = None` to let it be left out"),
+        Span { start: written.end, end: written.end },
+        "?",
+    )
+}
+
+/// Each name `body` gives a value with `=`, however deep in its blocks, and where. `+=` and the
+/// like change a value the name already has, so they don't count.
+fn assigned_in(body: &[Stmt], found: &mut Vec<(String, Span)>) {
+    for stmt in body {
+        if let StmtKind::Assign { target, op: None, .. } = &stmt.kind
+            && let ExprKind::Name(name) = &target.kind
+        {
+            found.push((name.clone(), stmt.span));
+        }
+        for block in blocks(stmt) {
+            assigned_in(block, found);
+        }
     }
 }

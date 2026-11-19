@@ -581,7 +581,10 @@ mod tests {
                     let Some(gives) = trimmed.strip_prefix("def ").and_then(def_gives) else {
                         continue;
                     };
-                    if gives.starts_with("with ") || gives.starts_with("Iterator") {
+                    // A source and a generator give with `lend` and `yield`, and an interface's
+                    // method has no body to end.
+                    if gives.starts_with("with ") || gives.starts_with("Iterator") || !trimmed.ends_with(':')
+                    {
                         continue;
                     }
                     let indent = line.len() - trimmed.len();

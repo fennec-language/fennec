@@ -6,6 +6,11 @@ from std.string import quoted_input
 
 ## A UUID. `Uuid()` is the nil UUID, all zeros. It prints in lower case with its hyphens, and
 ## `Uuid.parse` reads that back.
+##
+## ```fennec
+## from std.uuid import Uuid
+## assert str(Uuid()) == "00000000-0000-0000-0000-000000000000"
+## ```
 export struct Uuid:
     ## The first 64 bits, the first byte highest.
     high = 0
@@ -13,6 +18,13 @@ export struct Uuid:
     low = 0
 
     ## The UUID 36-character text says, with its hyphens where they go, in either case.
+    ##
+    ## ```fennec
+    ## from std.uuid import Uuid
+    ## id = Uuid.parse("0190E1A2-7B3C-7DEF-8123-456789ABCDEF")?
+    ## assert str(id) == "0190e1a2-7b3c-7def-8123-456789abcdef"
+    ## assert Uuid.parse("not a uuid") fails InvalidValue()
+    ## ```
     def parse(text: str) -> Uuid fails InvalidValue:
         if len(text) != 36:
             fail InvalidValue(
@@ -43,15 +55,31 @@ export struct Uuid:
         return Uuid(high=high, low=low)
 
     ## Which kind of UUID it is: 4 for one `v4` made, 7 for one `v7` made, 0 for the nil one.
+    ##
+    ## ```fennec
+    ## from std.uuid import Uuid
+    ## assert Uuid.parse("0190e1a2-7b3c-7def-8123-456789abcdef")?.version() == 7
+    ## assert Uuid().version() == 0
+    ## ```
     def version(self) -> int:
         return (self.high >> 12) & 15
 
     ## Ordered as their text is, as 128-bit numbers with no sign.
+    ##
+    ## ```fennec
+    ## from std.uuid import Uuid
+    ## assert Uuid() < Uuid.parse("00000000-0000-0000-0000-000000000001")?
+    ## ```
     def <(self, other: Uuid) -> bool:
         top = 1 << 63
         if self.high != other.high: return (self.high ^ top) < (other.high ^ top)
         return (self.low ^ top) < (other.low ^ top)
 
+    ## Writes it in lower case with its hyphens.
+    ## ```fennec
+    ## from std.uuid import Uuid
+    ## assert f"id {Uuid()}" == "id 00000000-0000-0000-0000-000000000000"
+    ## ```
     def str(self, ref out: StrWriter):
         out.write(Uuid._hex(self.high >> 32, count=8) + "-")
         out.write(Uuid._hex(self.high >> 16, count=4) + "-")
@@ -73,6 +101,11 @@ export struct Uuid:
         return "0123456789abcdef".find(c.lower()) else -1
 
 ## A random UUID: 122 bits from `entropy`, with its version and variant bits set.
+##
+## ```fennec
+## from std import uuid
+## assert uuid.v4(entropy).version() == 4
+## ```
 export def v4(entropy: Entropy) -> Uuid:
     data = entropy.bytes(16)
     high = word(data, at=0)
@@ -81,6 +114,12 @@ export def v4(entropy: Entropy) -> Uuid:
 
 ## A UUID that starts with the milliseconds since 1970 that `clock` says, then 74 random bits
 ## from `entropy`. One made later sorts after one made earlier, at a millisecond's grain.
+##
+## ```fennec
+## from std import uuid
+## first = uuid.v7(entropy, clock)
+## assert first.version() == 7
+## ```
 export def v7(entropy: Entropy, clock: Clock) -> Uuid:
     data = entropy.bytes(10)
     millis = clock.time().nanos // 1_000_000
@@ -104,9 +143,21 @@ def stamped(high: int, low: int, version: int) -> Uuid:
 
 ## A `Uuid` saves as its text, as APIs and files write one.
 extend Uuid:
+    ## Writes it as its text, for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## from std.uuid import Uuid
+    ## assert json.dumps(Uuid()) == "\"00000000-0000-0000-0000-000000000000\""
+    ## ```
     def serialize(self, ref out: Serializer):
         out.text(str(self))
 
+    ## Reads it from its text, for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## from std.uuid import Uuid
+    ## assert json.loads[Uuid]("\"00000000-0000-0000-0000-000000000000\"")? == Uuid()
+    ## ```
     def deserialize(ref src: Deserializer) -> Uuid fails ParseError:
         text = src.text()?
         return Uuid.parse(text) except InvalidValue(): fail src.here(

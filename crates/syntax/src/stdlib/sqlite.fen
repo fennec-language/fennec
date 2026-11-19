@@ -3,11 +3,18 @@
 ## ```fennec
 ## from std import sqlite
 ##
-## with sqlite.open(fs, ".hoard/index.db")? as db:
-##     db.execute(t"create table if not exists entries (path text primary key, hash text)")?
+## struct Indexed:
+##     path: str
+##     hash: str
+##
+## path = "notes.txt"
+## hash = "5d41402a"
+## with sqlite.open(fs, "index.db")? as db:
+##     _ = db.execute(t"create table if not exists entries (path text primary key, hash text)")?
 ##     with db.transaction()? as tx:
-##         tx.execute(t"insert into entries values ({path}, {hash})")?
-##     rows = db.query[Entry](t"select path, hash from entries where path = {path}")?
+##         _ = tx.execute(t"insert into entries values ({path}, {hash})")?
+##     rows = db.query[Indexed](t"select path, hash from entries where path = {path}")?
+##     assert rows == [Indexed(path="notes.txt", hash="5d41402a")]
 ## ```
 ##
 ## A database is opened in WAL mode, so reads go on while something writes, and every commit is

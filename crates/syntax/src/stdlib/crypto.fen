@@ -108,9 +108,14 @@ def sha256_digest_of_bytes_list(chunks: list[bytes]) -> bytes:
 ## `==` on two compares what they hold in constant time.
 ##
 ## ```fennec
-## token = env.secret("API_TOKEN")?
+## from std.crypto import Secret
+##
+## token = Secret.of("s3cret")
 ## headers = {"authorization": f"Bearer {token.expose_secret()}"}
+## assert headers["authorization"] == "Bearer s3cret"
 ## ```
+##
+## `env.secret("API_TOKEN")?` reads one from the environment.
 export struct Secret[T]:
     _value: T
 

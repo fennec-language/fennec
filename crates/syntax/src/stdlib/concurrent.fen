@@ -6,6 +6,7 @@
 ## with channel[str](size=64) as jobs:
 ##     jobs.send("first")?
 ##     job = jobs.receive() else "none"
+##     assert job == "first"
 ## ```
 ##
 ## A channel holds at most its `size` messages, so `send` waits while it's full, and `receive`

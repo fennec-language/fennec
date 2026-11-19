@@ -18,9 +18,19 @@ struct Uses<'p> {
 
 /// The standard library types `module` uses without importing them.
 pub(crate) fn unimported(module: &Module, program: &Program) -> Vec<Diagnostic> {
+    unimported_but(module, program, &|_| false)
+}
+
+/// `unimported`, looking at no function or method that `passed` says was looked at already.
+pub(crate) fn unimported_but(
+    module: &Module,
+    program: &Program,
+    passed: &dyn Fn(&FnDef) -> bool,
+) -> Vec<Diagnostic> {
     let mut uses = Uses { program, reported: BTreeSet::new(), found: Vec::new() };
     for item in &module.items {
         match item {
+            Item::Function(def) if passed(def) => {}
             Item::Function(def) => uses.function(def),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 for field in def.fields.iter().chain(def.cases.iter().flat_map(|case| &case.fields)) {
@@ -28,7 +38,7 @@ pub(crate) fn unimported(module: &Module, program: &Program) -> Vec<Diagnostic> 
                     uses.expr(field.default.as_ref());
                     uses.expr(field.rule.as_ref());
                 }
-                for method in &def.methods {
+                for method in def.methods.iter().filter(|method| !passed(method)) {
                     uses.function(method);
                 }
             }
@@ -44,7 +54,7 @@ pub(crate) fn unimported(module: &Module, program: &Program) -> Vec<Diagnostic> 
                 uses.stmts(&test.body);
             }
             Item::Extend(extension) => {
-                for method in &extension.methods {
+                for method in extension.methods.iter().filter(|method| !passed(method)) {
                     uses.function(method);
                 }
             }

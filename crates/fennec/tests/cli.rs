@@ -65,9 +65,15 @@ fn run_shows_lints_on_standard_error_and_still_runs() {
         assert_eq!(text(&output.stdout), "4\n", "{time}");
         let said = text(&output.stderr);
         assert!(
-            said.contains("needless-mut") && said.contains("1 lints, 1 of which `fennec fix` can fix"),
+            said.contains("needless-mut") && said.contains("1 lint, which `fennec fix` can fix"),
             "{time}: {said}"
         );
+        // The run goes on, so a lint says it's one, and that `fennec lint` fails on it.
+        assert!(
+            said.contains("lint: needless-mut: ") && said.contains("(`fennec lint` fails on this)"),
+            "{time}: {said}"
+        );
+        assert!(!said.contains("error: "), "{time}: {said}");
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -2698,7 +2704,13 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let flagged = fennec(&["lint", &path], "").unwrap();
     assert_eq!(flagged.status.code(), Some(1));
     assert!(text(&flagged.stderr).contains("needless-pass:"), "{}", text(&flagged.stderr));
-    assert!(text(&flagged.stderr).contains("1 lints, 1 of which"), "{}", text(&flagged.stderr));
+    assert!(
+        text(&flagged.stderr).contains("1 lint, which `fennec fix` can fix"),
+        "{}",
+        text(&flagged.stderr)
+    );
+    // `fennec lint` fails on it, so there it's an error.
+    assert!(text(&flagged.stderr).contains("error: needless-pass: "), "{}", text(&flagged.stderr));
 
     assert!(fennec(&["fix", &path], "").unwrap().status.success());
     let after = std::fs::read_to_string(&program).unwrap();

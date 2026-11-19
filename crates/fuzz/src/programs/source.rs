@@ -16,6 +16,7 @@ use super::ast::{
 use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
+use super::ast::{OwnIndexing, OwnStep};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -2172,6 +2173,152 @@ fn filed_written(filing: &Filing) -> String {
     out
 }
 
+/// The types an `Owned` statement changes through their own `def []`, `{N}` standing for its id:
+/// a failing `Part`, a `Shelf`, `Keyed`, `Room` and `Rows` with the plain form and a `def []=`
+/// that counts its writes, and `Slots` with the `ref` form, `len` and `is_live`.
+const OWNED_TYPES: &str = "error Nope{N}:
+    code: int
+
+struct Part{N}:
+    name: str
+    x = 0
+    marks = list[int]()
+
+    def moved(ref self, by: int):
+        self.x += by
+        self.marks.append(by)
+        self.x += by
+
+    def shift(ref self, by: int) fails Nope{N}:
+        self.x += by
+        self.marks.append(by)
+        if by > 5:
+            fail Nope{N}(code=by)
+        self.x += 100
+
+struct Shelf{N}:
+    parts: list[Part{N}]
+    writes = 0
+
+    def [](self, at: int) -> Part{N}:
+        return self.parts[at]
+
+    def []=(ref self, at: int, part: Part{N}):
+        self.parts[at] = part
+        self.writes += 1
+
+struct Keyed{N}:
+    parts: dict[str, Part{N}]
+    writes = 0
+
+    def [](self, key: str) -> Part{N}:
+        return self.parts[key]
+
+    def []=(ref self, key: str, part: Part{N}):
+        self.parts[key] = part
+        self.writes += 1
+
+struct Room{N}:
+    shelf: Shelf{N}
+    writes = 0
+
+    def [](self, name: str) -> Shelf{N}:
+        return self.shelf
+
+    def []=(ref self, name: str, shelf: Shelf{N}):
+        self.shelf = shelf
+        self.writes += 1
+
+struct Rows{N}:
+    rows: list[list[int]]
+    writes = 0
+
+    def [](self, at: int) -> list[int]:
+        return self.rows[at]
+
+    def []=(ref self, at: int, row: list[int]):
+        self.rows[at] = row
+        self.writes += 1
+
+struct Slots{N}:
+    items: list[int]
+    alive: list[bool]
+
+    def len(self) -> int:
+        return len(self.items)
+
+    def is_live(self, at: int) -> bool:
+        return self.alive[at]
+
+    def [](ref self, at: int) -> int:
+        return self.items[at]
+
+def bumped{N}(ref value: int, by: int):
+    value += by
+
+def passed{N}(ref shelf: Shelf{N}, at: int, by: int) fails Nope{N}:
+    shelf[at].shift(by)?
+    shelf[at].x += 1000
+
+";
+
+/// `owned{id}`, the function an `Owned` calls, after its types: the values, a line for each step,
+/// then what each holds and how often its `def []=` ran.
+fn owned_written(owning: &OwnIndexing) -> String {
+    let OwnIndexing { id, base, steps } = owning;
+    let mut out = OWNED_TYPES.replace("{N}", &id.to_string());
+    let (b1, b2, b3, b4, b5) = (base + 1, base + 2, base + 3, base + 4, base + 5);
+    let _ = write!(
+        out,
+        "def owned{id}(stdout: Stdout):\n    mut shelf = Shelf{id}(parts=[Part{id}(name=\"a\", x={base}), \
+         Part{id}(name=\"b\", x={b1})])\n    mut keyed = Keyed{id}(parts={{\"k\": Part{id}(name=\"k\", \
+         x={base})}})\n    mut room = Room{id}(shelf=Shelf{id}(parts=[Part{id}(name=\"c\", x={base}), \
+         Part{id}(name=\"d\", x={b1})]))\n    mut rows = Rows{id}(rows=[[{b2}, {base}, {b2}], [{b4}, {b3}, \
+         {b5}]])\n    mut slots = Slots{id}(items=[{base}, {b1}, {b2}], alive=[True, False, True])\n"
+    );
+    for &(step, at, n) in steps {
+        let pair = at % 2;
+        let other = 1 - pair;
+        let failed = "except why:\n        stdout.print(\"failed\", why.code)";
+        let line = match step {
+            OwnStep::Plus => format!("shelf[{pair}].x += {n}"),
+            OwnStep::Set => format!("shelf[{pair}].x = {n}"),
+            OwnStep::Moved => format!("shelf[{pair}].moved({n})"),
+            OwnStep::Appended => format!("shelf[{pair}].marks.append({n})"),
+            OwnStep::Shifted => format!("shelf[{pair}].shift({n}) {failed}"),
+            OwnStep::Passed => format!("passed{id}(ref shelf, at={pair}, by={n}) {failed}"),
+            OwnStep::RefField => format!("bumped{id}(ref shelf[{pair}].x, by={n})"),
+            OwnStep::PlusOther => format!("shelf[{pair}].x += shelf[{other}].x"),
+            OwnStep::Keyed => format!("keyed[\"k\"].x += {n}"),
+            OwnStep::KeyedMoved => format!("keyed[\"k\"].moved({n})"),
+            OwnStep::Nested => format!("room[\"back\"][{pair}].x += {n}"),
+            OwnStep::NestedMoved => format!("room[\"back\"][{pair}].moved({n})"),
+            OwnStep::NestedRef => format!("bumped{id}(ref room[\"back\"][{pair}].x, by={n})"),
+            OwnStep::Counted => {
+                format!(
+                    "stdout.print(\"counted\", rows[{pair}].count({n}), rows[{pair}].get({n}), rows.writes)"
+                )
+            }
+            OwnStep::Sorted => format!("rows[{pair}].sort()"),
+            OwnStep::SortedKey => format!("rows[{pair}].sort(key=item => 0 - item)"),
+            OwnStep::Removed => format!("rows[{pair}].remove_where(item => item > {n})"),
+            OwnStep::SlotSet => format!("slots[{at}] = {n}"),
+            OwnStep::SlotPlus => format!("slots[{at}] += {n}"),
+            OwnStep::SlotRef => format!("bumped{id}(ref slots[{at}], by={n})"),
+            OwnStep::ForRef => format!("for ref slot in slots:\n        slot = slot * 2 + {n}"),
+            OwnStep::ParallelRef => format!("for ref slot in parallel(slots):\n        slot += {n}"),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    let _ = writeln!(
+        out,
+        "    stdout.print(\"shelf\", shelf.parts, shelf.writes)\n    stdout.print(\"keyed\", keyed.parts, \
+         keyed.writes)\n    stdout.print(\"room\", room.shelf.parts, room.shelf.writes, room.writes)\n    \
+         stdout.print(\"rows\", rows.rows, rows.writes)\n    stdout.print(\"slots\", slots.items)\n"
+    );
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -2926,6 +3073,10 @@ impl Writer {
             Stmt::Ordered(in_order) => {
                 let _ = write!(self.helpers, "{}", ordered_written(in_order));
                 self.line(indent, &format!("ordered{}(stdout)", in_order.id));
+            }
+            Stmt::Owned(owning) => {
+                let _ = write!(self.helpers, "{}", owned_written(owning));
+                self.line(indent, &format!("owned{}(stdout)", owning.id));
             }
             Stmt::Left { id, depth, together, rounds, at, how } => {
                 let _ = write!(self.helpers, "{}", left_written(*id, *depth, *together, *rounds, *at, *how));

@@ -1,0 +1,14 @@
+from std.concurrent import Crashed
+
+def numbers() -> Iterator[int]:
+    yield 1
+    yield 2
+
+def count(items: Iterator[int], stdout: Stdout):
+    stdout.print(sum(items))
+
+def main(stdout: Stdout) fails Crashed:
+    made = numbers()
+    with launch(() => count(made, stdout))?:
+        pass
+    return

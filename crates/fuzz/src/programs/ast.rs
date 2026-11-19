@@ -1144,6 +1144,102 @@ pub(crate) const FILE_WAYS: [FileWay; 8] = [
 /// letter past ASCII and an emoji, and quotes.
 pub(crate) const FILE_PIECES: [&str; 6] = ["one\n", "tw\u{f8} \u{1f98a}\n", "", "three", "\n", "a \"b\" c\n"];
 
+/// An `Owned` statement: `owned{id}(stdout)`, values of types with their own `def []`, each
+/// changed through it a step at a time, then printed with how often each `def []=` ran. Through the
+/// plain form beside a `def []=`, a change reads the part, changes the copy and writes it back
+/// once, nested too, and still once when what changed it fails partway. Through the `ref` form a
+/// position is a place, which `=`, a `ref` argument and `for ref` reach, its empty positions
+/// skipped. `docs/decisions.md` sets these out, and #2192 wrote back every built-in method.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnIndexing {
+    pub(crate) id: usize,
+    /// What the parts' `x`, the rows and the slots start from.
+    pub(crate) base: i64,
+    /// Each step, with the position it's at, from 0 to 2, and what it adds, from 0 to 9.
+    pub(crate) steps: Vec<(OwnStep, usize, i64)>,
+}
+
+/// A line of an `Owned` statement. A `Shelf{id}` holds two `Part{id}`s in a list, a `Keyed{id}`
+/// one in a dict, a `Room{id}` a shelf, and a `Rows{id}` two lists, each with the plain form of
+/// `def []` and a `def []=` that counts its writes. `Slots{id}` has the `ref` form, `len` and
+/// `is_live`, its middle position empty. The shelf's and the rows' position is the step's, from 0
+/// to 1, and the slots' is from 0 to 2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnStep {
+    /// `shelf[at].x += n`.
+    Plus,
+    /// `shelf[at].x = n`.
+    Set,
+    /// `shelf[at].moved(n)`: a `ref self` method changing it twice, written back once.
+    Moved,
+    /// `shelf[at].marks.append(n)`: a built-in method on a part's field.
+    Appended,
+    /// `shelf[at].shift(n) except why:`: a method that fails past 5, after changing the part, which
+    /// is written back as far as it got.
+    Shifted,
+    /// `passed{id}(ref shelf, at=at, by=n) except why:`: the same failure passed up with `?`, so the
+    /// change after it is skipped.
+    Passed,
+    /// `bumped{id}(ref shelf[at].x, by=n)`: a `ref` argument through the plain form.
+    RefField,
+    /// `shelf[at].x += shelf[other].x`: a read through `def []` beside a write through it.
+    PlusOther,
+    /// `keyed["k"].x += n`, over a dict.
+    Keyed,
+    /// `keyed["k"].moved(n)`.
+    KeyedMoved,
+    /// `room["back"][at].x += n`: two own indexes, each written back once.
+    Nested,
+    /// `room["back"][at].moved(n)`.
+    NestedMoved,
+    /// `bumped{id}(ref room["back"][at].x, by=n)`.
+    NestedRef,
+    /// `rows[at].count(n)` and `rows[at].get(n)`: methods that only read, so nothing's written back.
+    Counted,
+    /// `rows[at].sort()`.
+    Sorted,
+    /// `rows[at].sort(key=item => 0 - item)`.
+    SortedKey,
+    /// `rows[at].remove_where(item => item > n)`.
+    Removed,
+    /// `slots[at] = n`, through the `ref` form.
+    SlotSet,
+    /// `slots[at] += n`.
+    SlotPlus,
+    /// `bumped{id}(ref slots[at], by=n)`.
+    SlotRef,
+    /// `for ref slot in slots: slot = slot * 2 + n`, the empty position skipped.
+    ForRef,
+    /// `for ref slot in parallel(slots): slot += n`, in programs with threads.
+    ParallelRef,
+}
+
+/// Every `OwnStep`, for the generator to pick from.
+pub(crate) const OWN_STEPS: [OwnStep; 22] = [
+    OwnStep::Plus,
+    OwnStep::Set,
+    OwnStep::Moved,
+    OwnStep::Appended,
+    OwnStep::Shifted,
+    OwnStep::Passed,
+    OwnStep::RefField,
+    OwnStep::PlusOther,
+    OwnStep::Keyed,
+    OwnStep::KeyedMoved,
+    OwnStep::Nested,
+    OwnStep::NestedMoved,
+    OwnStep::NestedRef,
+    OwnStep::Counted,
+    OwnStep::Sorted,
+    OwnStep::SortedKey,
+    OwnStep::Removed,
+    OwnStep::SlotSet,
+    OwnStep::SlotPlus,
+    OwnStep::SlotRef,
+    OwnStep::ForRef,
+    OwnStep::ParallelRef,
+];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1416,6 +1512,8 @@ pub(crate) enum Stmt {
     Ordered(InOrder),
     /// `filed{id}(fs, stdout)`: files written whole or left as they were, a step at a time.
     Filed(Filing),
+    /// `owned{id}(stdout)`: values of types with their own `def []`, changed through it.
+    Owned(OwnIndexing),
     /// `streamed{id}(stdout)`: a generator over `parallel(xs)`, read in one of the ways a stream is.
     Streamed(Streaming),
     /// `aliased{id}(stdout)`: copies of collections and their parts, each changed in place, then

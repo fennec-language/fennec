@@ -43,6 +43,14 @@ impl FnCx<'_> {
             );
         }
         let held = self.checker.settled(&ty);
+        // What a `shared` value holds is kept where every task can reach it, and a generator
+        // can't be kept there yet.
+        if self.holds_generator(&held, &mut Vec::new()) {
+            self.error(
+                Diagnostic::new("a `shared` value can't hold a generator yet", value.span)
+                    .with_help(crate::launch::GENERATOR_HELP),
+            );
+        }
         self.checker.shared_values.insert((value.span.start, value.span.end), held.clone());
         self.record(at, &shared(held.clone()));
         self.declare(name, shared(held), false, at);

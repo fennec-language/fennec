@@ -308,16 +308,16 @@ fn every_program_built_again_after_an_edit_finds_what_a_whole_check_finds() {
         edits += 1;
         // Then a line put in near the top, which moves most of the file.
         let Some(kept) = kept else { continue };
-        let Some(moved) = with_a_line_put_in(&edited) else { continue };
+        let Some(lined) = with_a_line_put_in(&edited) else { continue };
         let text = |source: &str, span: Span| {
             let at = |offset: u32| usize::try_from(offset).unwrap_or(usize::MAX);
             source.get(at(span.start)..at(span.end)).map(str::to_owned)
         };
         let same_text =
-            |was: Span, is: Span| text(&edited, was).is_some_and(|was| text(&moved, is) == Some(was));
-        let edit = Edit { dirty: dirty_between(&edited, &moved), same_text: &same_text };
-        let (found, _) = kept_build_after(&moved, Some(kept), Some(&edit));
-        assert_eq!(found, cold_build(&moved), "{shown}, with a line put in");
+            |was: Span, is: Span| text(&edited, was).is_some_and(|was| text(&lined, is) == Some(was));
+        let edit = Edit { dirty: dirty_between(&edited, &lined), same_text: &same_text };
+        let (found, _) = kept_build_after(&lined, Some(kept), Some(&edit));
+        assert_eq!(found, cold_build(&lined), "{shown}, with a line put in");
         moves += 1;
     }
     assert!(programs >= 100, "only {programs} programs were built");

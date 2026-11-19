@@ -117,7 +117,14 @@ fn stored(cache: &Cache, key: &str, output: Option<&str>) -> bool {
     let none = std::time::Duration::ZERO;
     crate::aot::said_built(
         &output,
-        &crate::aot::Built { total, fresh: 0, compiled: none, linked: none, root: Some(root.to_owned()) },
+        &crate::aot::Built {
+            total,
+            fresh: 0,
+            reused: 0,
+            compiled: none,
+            linked: none,
+            root: Some(root.to_owned()),
+        },
     );
     true
 }

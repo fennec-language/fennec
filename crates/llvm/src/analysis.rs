@@ -156,6 +156,111 @@ pub(crate) struct Analysis {
     pub(crate) param_ranges: Vec<(usize, Range)>,
 }
 
+impl Analysis {
+    /// Hashes everything this says, the same whenever it says the same: sets and maps in order.
+    /// Every field is named, so one added later has to be hashed too.
+    pub(crate) fn stable(&self, state: &mut crate::keys::Stable) {
+        use crate::keys::{hash_map, hash_set};
+        use std::hash::Hash as _;
+        let Analysis {
+            safe,
+            nonzero,
+            below,
+            length_of,
+            reads,
+            writes,
+            shared,
+            changed,
+            maybe_marked,
+            given_mut,
+            read_again,
+            borrowed,
+            borrowed_from,
+            taken,
+            items_taken,
+            put_back_reads,
+            slot_homes,
+            path_taken,
+            path_waits,
+            path_waiting,
+            loop_taken,
+            places_taken,
+            place_parts,
+            place_paths,
+            places_waiting,
+            field_of,
+            slice_keys,
+            unmade,
+            aliases,
+            alone_in_loops,
+            steady_lengths,
+            adjacent_reads,
+            reservations,
+            zero_filled,
+            zero_counts,
+            room_enough,
+            length_kept,
+            last_copies,
+            last_reads,
+            last_made,
+            enumerated,
+            map_walks,
+            walk_items,
+            walk_keys,
+            pairs,
+            guarded_reads,
+            param_ranges,
+        } = self;
+        hash_set(safe, state);
+        hash_set(nonzero, state);
+        hash_map(below, state);
+        hash_map(length_of, state);
+        reads.hash(state);
+        writes.hash(state);
+        hash_set(shared, state);
+        hash_set(changed, state);
+        hash_set(maybe_marked, state);
+        hash_set(given_mut, state);
+        hash_set(read_again, state);
+        hash_set(borrowed, state);
+        hash_map(borrowed_from, state);
+        hash_set(taken, state);
+        hash_map(items_taken, state);
+        hash_map(put_back_reads, state);
+        hash_map(slot_homes, state);
+        hash_map(path_taken, state);
+        hash_map(path_waits, state);
+        hash_set(path_waiting, state);
+        hash_set(loop_taken, state);
+        hash_map(places_taken, state);
+        hash_map(place_parts, state);
+        hash_map(place_paths, state);
+        hash_set(places_waiting, state);
+        hash_map(field_of, state);
+        hash_map(slice_keys, state);
+        hash_set(unmade, state);
+        hash_map(aliases, state);
+        alone_in_loops.hash(state);
+        hash_set(steady_lengths, state);
+        hash_map(adjacent_reads, state);
+        hash_map(reservations, state);
+        hash_set(zero_filled, state);
+        hash_map(zero_counts, state);
+        hash_set(room_enough, state);
+        hash_map(length_kept, state);
+        hash_set(last_copies, state);
+        hash_set(last_reads, state);
+        hash_set(last_made, state);
+        hash_map(enumerated, state);
+        hash_map(map_walks, state);
+        hash_map(walk_items, state);
+        hash_set(walk_keys, state);
+        hash_map(pairs, state);
+        hash_set(guarded_reads, state);
+        param_ranges.hash(state);
+    }
+}
+
 /// What's known about every function, and which can fail.
 #[expect(clippy::struct_excessive_bools, reason = "each is a fact of its own about the whole program")]
 pub(crate) struct Whole<'p> {
@@ -3060,7 +3165,7 @@ fn loop_blocks(function: &Function, header: usize, body: usize) -> HashSet<usize
 /// A loop that changes lists or `Table`s held in locals, each of which nothing in the loop can
 /// give another owner: one check on the way in that each is alone does for every change in the
 /// loop, where today each change checks again.
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub(crate) struct AloneInLoop {
     /// The block that goes into the loop, with a jump to its start that nothing else makes.
     pub(crate) entry: usize,

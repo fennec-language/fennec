@@ -99,6 +99,7 @@ pub(in crate::embed) fn audit_outside_tasks(state: &State, held: &[u64]) -> Audi
 /// `audit`, of the blocks `judged` picks. The others are roots: never said, and holders of what
 /// they hold.
 fn audit_of(state: &State, held: &[u64], judged: impl Fn(&[u64]) -> bool) -> Audit {
+    state.heap.blocks.check_agrees();
     let mut tallies = Tallies::default();
     let mut children = Vec::new();
     let mut roots = held.to_vec();

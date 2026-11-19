@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use fennec_ir::{Function, GeneratorDef};
 
 use crate::analysis::{Analysis, Whole};
+use crate::keys::{Key, Stable, hash_set, ir_key, key_of};
 use crate::uniqueness::{Callees, FieldPath, Summaries, Unsettled};
 
 /// What a read was of.
@@ -210,6 +211,54 @@ impl<'w, 'p> Reads<'w, 'p> {
     /// Whether the program has tests built into it. It's part of every unit's settings.
     pub(crate) fn tested(&self) -> bool {
         self.whole.tested
+    }
+}
+
+impl Reads<'_, '_> {
+    /// What a read gives now, hashed, without noting it: `None` for a read of nothing, as a
+    /// name that isn't there, or that isn't in a set, is. A build uses a kept unit again only
+    /// if every read it made gives what it gave then.
+    pub(crate) fn value_of(&self, what: What, name: &str, layouts: &fennec_layout::Layouts) -> Option<Key> {
+        let whole = self.whole;
+        let member = |set: &HashSet<&str>| set.contains(name).then(|| key_of("member", &true));
+        let keyed = |value: &dyn Fn(&mut Stable)| {
+            let mut state = Stable::new("fennec unit read 2026-11-17");
+            value(&mut state);
+            state.key()
+        };
+        match what {
+            What::Function => whole.functions.get(name).map(|function| ir_key(function)),
+            What::Analysis => whole.analyses.get(name).map(|analysis| keyed(&|state| analysis.stable(state))),
+            What::CanFail => member(&whole.can_fail),
+            What::Generator => whole.generators.get(name).map(|def| key_of("generator", def)),
+            What::Settles => whole.settles.get(name).map(|summary| key_of("settles", summary)),
+            What::Lengths => whole.lengths.get(name).map(|summary| key_of("lengths", summary)),
+            What::Builders => whole.builders.get(name).map(|locals| keyed(&|state| hash_set(locals, state))),
+            What::Needs => whole.needs.get(name).map(|paths| key_of("needs", paths)),
+            What::UnderLocks => member(&whole.under_locks),
+            What::Constant => member(&whole.constants),
+            What::OnWorkers => member(&whole.on_workers),
+            What::Task => member(&whole.tasks),
+            What::NonNegative => {
+                whole.non_negative.get(name).map(|places| keyed(&|state| hash_set(places, state)))
+            }
+            What::Waiting => self.waiting.contains(name).then(|| key_of("member", &true)),
+            What::Constants => {
+                let mut constants: Vec<&str> = whole.constants.iter().copied().collect();
+                constants.sort_unstable();
+                Some(key_of("constants", &constants))
+            }
+            What::Native => {
+                // In the numbers' order, as a unit walks them, by the types' names.
+                let names: Vec<Option<&str>> = self
+                    .native
+                    .iter()
+                    .map(|id| layouts.get(*id).map(|layout| layout.name.as_str()))
+                    .collect();
+                Some(key_of("native", &names))
+            }
+            What::WaitingClosures => Some(key_of("waiting closures", &self.waiting_closures)),
+        }
     }
 }
 

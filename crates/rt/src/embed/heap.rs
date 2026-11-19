@@ -442,10 +442,13 @@ const ADOPTED_HASHED: usize = 64;
 /// fewest it lets go of. A list this long is 32 KB.
 pub(crate) const MADE_LISTED: usize = 4096;
 
-/// How many of a table's places a look through it reads in about the time handing one listed
-/// block over takes: the look reads a place and moves on, where a listed block is found in the
-/// table, checked, taken out, and forgotten by what remembers strings.
-const PLACES_A_LISTED_BLOCK: usize = 16;
+/// How many of a table's entries a look through it reads in about the time handing one listed
+/// block over takes: the look reads an entry and a word of its block, where a listed block is
+/// found in the table, checked, taken out, and forgotten by what remembers strings. Measured on
+/// tables of 10,000, 100,000 and a million blocks spread through the allocator's memory, it was
+/// 44, 37 and 27: an entry read 0.7 to 13 ns and a block handed over 33 to 350 ns, both slower
+/// once the blocks are past the caches. It was 16 when the look read pages' places, most empty.
+const ENTRIES_A_LISTED_BLOCK: usize = 32;
 
 /// Where a block's shape word holds which task on its thread made it, in the bits below the thread.
 const TASK_SHIFT: u32 = 24;
@@ -1104,11 +1107,11 @@ impl Heap {
     /// block, by looking through its thread's table.
     ///
     /// It lets the list go once handing the list over would cost about what that look does: when
-    /// the list is a sixteenth as long as the table has places to read (`PLACES_A_LISTED_BLOCK`).
+    /// the list is a 32nd as long as the table has entries to read (`ENTRIES_A_LISTED_BLOCK`).
     /// Until then the list is the cheaper way to find its blocks, and it's kept: a task that
     /// makes a few thousand blocks and ends would otherwise pay for a look through the whole
     /// table, which costs far more than its list. So a task's end costs about what its list would
-    /// have at most, and the list is never longer than a sixteenth of the table's own places,
+    /// have at most, and the list is never longer than a 32nd of the table's own entries,
     /// whatever the task has made.
     ///
     /// The list is looked at every `MADE_LISTED` blocks. Between looks a block made costs one
@@ -1141,7 +1144,7 @@ impl Heap {
     /// Lets the list go if it's as long as a look through the table is, with no range or chunk
     /// running that marked it. Says whether it did.
     fn let_go_if_long(&mut self) -> bool {
-        let as_a_look = self.blocks.places_to_look_through() / PLACES_A_LISTED_BLOCK;
+        let as_a_look = self.blocks.entries_to_look_through() / ENTRIES_A_LISTED_BLOCK;
         if self.made.len() < MADE_LISTED.max(as_a_look) {
             return false;
         }
@@ -1160,7 +1163,7 @@ impl Heap {
     /// The most blocks a task running here lists before it lets its list go, as things stand.
     #[cfg(test)]
     pub(crate) fn most_listed(&self) -> usize {
-        MADE_LISTED.max(self.blocks.places_to_look_through() / PLACES_A_LISTED_BLOCK) + MADE_LISTED
+        MADE_LISTED.max(self.blocks.entries_to_look_through() / ENTRIES_A_LISTED_BLOCK) + MADE_LISTED
     }
 
     /// How many blocks this heap has listed as made since it last handed them over.
@@ -1291,6 +1294,12 @@ impl Heap {
         self.blocks.pages()
     }
 
+    /// How many entries its table's list of blocks has room for.
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn table_entries(&self) -> usize {
+        self.blocks.room()
+    }
+
     /// Its worker is going to sleep with nothing to do: its table looks for empty pages to give
     /// back sooner than a busy one does (`Table::look_while_idle`).
     #[cfg(any(test, feature = "threads"))]
@@ -1406,11 +1415,8 @@ impl Heap {
             || self.behind.iter().any(|(table, _)| table.get(address).is_some())
     }
 
-    /// Takes the current table back out, leaving the one behind it current.
-    #[expect(
-        clippy::unnecessary_box_returns,
-        reason = "the box goes back to be reused, so a lock doesn't move a table"
-    )]
+    /// Takes the current table back out, leaving the one behind it current. The box goes back to
+    /// be reused, so a lock doesn't move a table.
     pub(super) fn leave_table(&mut self) -> Box<super::table::Table> {
         self.forget_cursor();
         super::guarded::rollback::tables_changing();

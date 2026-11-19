@@ -52,8 +52,9 @@ if [ -n "$exe" ]; then
 else
   tools="$work/tools"
   mkdir -p "$tools"
-  # `echo` too, which an example's program runs.
-  for tool in bash sh env diff cat sed grep awk sort paste tr mkdir rm cp mv ls find dirname basename uname mktemp head tail sleep kill wc echo; do
+  # And what examples' programs run for real: `echo`, and `true`, `printf`, `sleep` and `yes`
+  # in `std_process_hostile.fen`, which this list lacked until its dry run failed on them.
+  for tool in bash sh env diff cat sed grep awk sort paste tr mkdir rm cp mv ls find dirname basename uname mktemp head tail sleep kill wc echo true printf yes; do
     found=$(type -P "$tool") && ln -s "$found" "$tools/$tool"
   done
   reach="$bin:$tools"

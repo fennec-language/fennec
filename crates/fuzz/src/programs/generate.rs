@@ -18,12 +18,13 @@ use super::ast::{
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
+use super::ast::{Between, Looping, Reading, loops_back};
 use super::ast::{
     CAPTURE_WAYS, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_STARTS,
     REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
     Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
-use super::ast::{InOrder, ORDER_STEPS, OrderStep, Reading};
+use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
 /// from a source or failing partway (`ZipSumming`): the loop owns it since #2041.
@@ -1297,6 +1298,11 @@ impl Writer<'_> {
                 held.push(Held::Holder);
                 continue;
             }
+            if loops_back(kind) && self.choice(5) == 0 {
+                let looping = self.looping(from, kind);
+                steps.push(Alias::Looped(looping));
+                continue;
+            }
             let ways: &[Writing] = match kind {
                 Held::Numbers => &[Writing::Append, Writing::Set, Writing::ForRef, Writing::Ref],
                 Held::Holders => {
@@ -1385,6 +1391,27 @@ impl Writer<'_> {
             steps.push((step, i64::from(self.byte() % 10)));
         }
         body.push(Stmt::Ordered(InOrder { id, base, steps }));
+    }
+
+    /// A `Looped` step taking an item out of `to`, which holds `kind`.
+    fn looping(&mut self, to: usize, kind: Held) -> Looping {
+        let tabled = matches!(kind, Held::Table | Held::Entries | Held::Ledger | Held::Rooms);
+        let between = match self.choice(3) {
+            0 => Between::Changed,
+            1 => Between::Grown([2, 6, 20].get(self.choice(3)).copied().unwrap_or(2)),
+            // A table's item taken out stops the program on the next turn, so that's rare.
+            _ if tabled && self.choice(6) != 0 => Between::Changed,
+            _ => Between::Removed,
+        };
+        Looping {
+            to,
+            at: self.choice(2),
+            n: i64::from(self.byte() % 19) - 9,
+            turns: 2 + i64::from(self.byte() % 2),
+            between,
+            inside: self.choice(3) == 0,
+            items: matches!(kind, Held::Holders | Held::Keepers) && self.choice(2) == 0,
+        }
     }
 
     /// A loop whose int is at least 0 on its first turn and changes sign later, used as an index,

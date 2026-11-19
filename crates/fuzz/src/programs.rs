@@ -931,6 +931,64 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every way of writing a `Looped` step checks, and the evaluator prints what the oracle
+    /// prints: an item taken out of a list, a dict, a table, a ledger's table field or rooms, or
+    /// its `items`, put back in a `while True:` loop whose exit comes after the put-back, read once
+    /// before the loop or on each turn, with the item changed, what holds it grown, or the item
+    /// taken out between turns. A table's item taken out stops the program on the next turn.
+    #[test]
+    fn the_put_back_loop_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Alias, Aliasing, Between, LEDGER, Looping, Program, Stmt};
+        let program = |steps: Vec<Alias>| {
+            let program =
+                Program { body: vec![Stmt::Aliased(Aliasing { id: 1, base: 4, steps })], threadless: true };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some((printed, succeeded, said)) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure:\n{source}")
+            };
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            assert_eq!(oracle.exit_code() == Some(0), succeeded, "{source}\n{:?}", oracle.ended);
+            assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+            (printed, said)
+        };
+        // The starting holders, lists, spots, table, keepers, ledger and rooms, by their names'
+        // places, then the ledger's table taken out by the first step.
+        let tables = [4, 7, 9, 10];
+        let mut steps = vec![Alias::Part { from: LEDGER, at: 0 }];
+        let mut stopping = Vec::new();
+        let mut made = 0_i64;
+        for to in [1, 2, 3, 4, 6, 7, 9, 10] {
+            for between in [Between::Changed, Between::Grown(2), Between::Grown(20), Between::Removed] {
+                for (inside, items) in [(false, false), (true, false), (false, true), (true, true)] {
+                    if items && !matches!(to, 1 | 6) {
+                        continue;
+                    }
+                    made += 1;
+                    let at = usize::from(made % 2 == 0);
+                    let looping =
+                        Looping { to, at, n: made % 7 - 3, turns: 2 + made % 2, between, inside, items };
+                    if between == Between::Removed && tables.contains(&to) {
+                        stopping.push(looping);
+                    } else {
+                        steps.push(Alias::Looped(looping));
+                    }
+                }
+            }
+        }
+        let (printed, _) = program(steps);
+        assert!(printed.contains("g2x19"), "{printed}");
+        assert_eq!(stopping.len(), 8);
+        for looping in stopping {
+            let (_, said) = program(vec![Alias::Part { from: LEDGER, at: 0 }, Alias::Looped(looping)]);
+            assert_eq!(said.as_deref(), Some("this Id refers to something that's been removed"));
+        }
+    }
+
     /// Every way of writing a `Listened` statement checks, and the evaluator is sure what it
     /// prints: inboxes kept up or behind, read one at a time or in a loop, and a loop dropping
     /// the oldest, with a message sent before any of them listens or not.

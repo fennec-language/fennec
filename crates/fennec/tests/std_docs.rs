@@ -141,6 +141,13 @@ fn examples_in(file: &'static str, comment: &[DocLine]) -> Result<Vec<Example>, 
                 let Some(example) = examples.last_mut().filter(|_| after_code) else {
                     return Err(format!("{file}.fen:{}: an output fence has to follow code", open.line));
                 };
+                // What it printed is checked once it's run to its end, which a `return` would skip.
+                if example.code.iter().any(|line| line.trim_start().starts_with("return")) {
+                    return Err(format!(
+                        "{file}.fen:{}: an example with an output fence can't `return`, which would skip checking it",
+                        example.line
+                    ));
+                }
                 example.output = Some(body);
             }
             _ => {}
@@ -537,6 +544,9 @@ fn a_doc_comments_examples_are_its_fennec_fences() {
     assert!(examples.len() == 1 && examples[0].checked);
     let after_checked = format!("{checked}## ```output\n## 1\n## ```\n");
     assert!(examples_in("printed", &doc_comments(&after_checked)[0]).is_err());
+    // A `return` would leave before what it printed is checked.
+    let leaves = "## ```fennec\n## x = 1\n## if x == 1:\n##     return\n## ```\n## ```output\n## 1\n## ```\n";
+    assert!(examples_in("leaves", &doc_comments(leaves)[0]).is_err());
 }
 
 /// An example's lines go where a program would write them, and it's given only the capabilities

@@ -2670,7 +2670,8 @@ fn a_method_through_a_types_own_index_not_known_to_change_or_read_is_refused() {
     assert_eq!(
         ended,
         Ended::Unsupported(
-            "the method `hex` through a type's own `def []`, not known to change its value or only read it".to_owned()
+            "the method `hex` through a type's own `def []`, not known to change its value or only read it"
+                .to_owned()
         )
     );
 }

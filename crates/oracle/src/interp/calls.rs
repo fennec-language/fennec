@@ -201,7 +201,12 @@ impl Interp {
     /// Whether a call can change what it reaches through places: a method that takes `self` as a
     /// `ref`, a built-in method that changes its value, or a `ref` argument. `None` for a built-in
     /// method on a place that's neither known to change its value nor known only to read it.
-    fn changes_what_it_reaches(&mut self, target: &Target, given: &[ArgVal], span: Span) -> Run<Option<bool>> {
+    fn changes_what_it_reaches(
+        &mut self,
+        target: &Target,
+        given: &[ArgVal],
+        span: Span,
+    ) -> Run<Option<bool>> {
         if given.iter().any(|arg| matches!(arg, ArgVal::Ref(..))) {
             return Ok(Some(true));
         }

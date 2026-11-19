@@ -5063,6 +5063,7 @@ fn build_in(kit: &Path, home: &Path, daemon: bool, ci: bool) -> std::io::Result<
 }
 
 /// What a build printed, with how long each step took left out: it's never the same twice.
+#[cfg(unix)]
 fn without_times(printed: &[u8]) -> String {
     let mut out = String::new();
     let mut digits = String::new();

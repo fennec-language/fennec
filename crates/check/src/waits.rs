@@ -17,6 +17,10 @@ use crate::checker::Checker;
 use crate::function::FnCx;
 use crate::types::Type;
 
+/// What a function waits on that calls a function value it can't follow: one held in a list or a
+/// field, say, which could be any function at all.
+const UNFOLLOWED: &str = "a function value that can't be followed";
+
 /// What to do instead, on every message about waiting inside a lock.
 /// What to do instead, on every message about a lock taken inside another.
 const TOGETHER: &str =
@@ -165,6 +169,33 @@ impl FnCx<'_> {
         }
     }
 
+    /// A function parameter, of a function's type or an optional one, read where the read isn't
+    /// followed (see `direct_read`): kept in a list or a field, returned, unwrapped into another
+    /// name, matched, or passed where what's passed isn't followed. Wherever it's called from
+    /// then, it counts as called right here, with the lock held here, as a nested function's read
+    /// of one does (see `captured_values`). An alias of one, `job = work`, is the parameter.
+    pub(crate) fn note_function_read(&mut self, name: &str, span: Span) {
+        if self.direct_read == Some((span.start, span.end)) {
+            return;
+        }
+        let Some((owner, param)) = self.param_key(name) else { return };
+        if !self.declared_type(name).is_some_and(|ty| self.takes_function(&ty)) {
+            return;
+        }
+        // In an arrow function, as a call there is, it's something the arrow may call that can't
+        // be followed.
+        if !self.arrows_open.is_empty() {
+            for arrow in &self.arrows_open {
+                self.checker.values.calls.entry(*arrow).or_default().insert(None);
+            }
+            return;
+        }
+        if owner != self.key {
+            self.checker.values.through.push((self.key.clone(), (owner.clone(), param.clone())));
+        }
+        self.checker.values.called.push((owner, param, self.lock.clone()));
+    }
+
     /// A call through a function value, as `work()` with `work: () -> nothing`. A parameter is
     /// followed to what each caller passes for it; anything else can't be known, so inside a
     /// lock it's refused.
@@ -172,7 +203,7 @@ impl FnCx<'_> {
         // A parameter of this function, or of one around it that a nested function captured it
         // from, by its function's key.
         let param = match &callee.kind {
-            ExprKind::Name(name) => self.param_owner(name).map(|owner| (owner, name.clone())),
+            ExprKind::Name(name) => self.param_key(name),
             _ => None,
         };
         let held = self.lock.clone();
@@ -201,6 +232,12 @@ impl FnCx<'_> {
             _ => {
                 for arrow in &self.arrows_open {
                     self.checker.values.calls.entry(*arrow).or_default().insert(None);
+                }
+                // Outside a lock, and not in an arrow function, which may never run here, this
+                // function may wait on whatever the value does: called inside a lock, it's refused
+                // for it, as the call would be inside one.
+                if held.is_none() && self.arrows_open.is_empty() {
+                    self.checker.unfollowed.insert(self.key.clone());
                 }
                 if let Some(held) = held
                     && self.report
@@ -241,9 +278,10 @@ impl FnCx<'_> {
             // Nothing, for an optional one: there's no function to call.
             ExprKind::None => return,
             ExprKind::Lambda { .. } => Given::Arrow((value.span.start, value.span.end), true),
-            // A parameter of this function, or of one around it that a nested function captured.
-            ExprKind::Name(name) if let Some(owner) = self.param_owner(name) => {
-                Given::Param(owner, name.clone())
+            // A parameter of this function, of one around it that a nested function captured, or one
+            // a local name holds.
+            ExprKind::Name(name) if let Some((owner, param)) = self.param_key(name) => {
+                Given::Param(owner, param)
             }
             ExprKind::Name(name) if let Some(arrow) = self.local_arrow(name) => Given::Arrow(arrow, false),
             ExprKind::Name(name) => match self.lookup(name) {
@@ -303,7 +341,17 @@ impl Checker {
         let mut pending: Vec<String> = found.keys().cloned().collect();
         while let Some(key) = pending.pop() {
             let what = found.get(&key).cloned().unwrap_or_default();
-            for caller in self.own_callers.get(&key).into_iter().flatten() {
+            // A type's method is called by every call of an interface's method of its name, on a
+            // value of a type parameter, as `napper.nap(clock)`.
+            let through_interface = self
+                .program
+                .functions
+                .get(&key)
+                .filter(|entry| entry.owner.is_some())
+                .and_then(|_| key.rsplit_once('.'))
+                .and_then(|(_, method)| self.own_callers.get(&format!("*.{method}")));
+            let callers = self.own_callers.get(&key).into_iter().chain(through_interface).flatten();
+            for caller in callers {
                 if !found.contains_key(caller) {
                     found.insert(caller.clone(), what.clone());
                     pending.push(caller.clone());
@@ -478,7 +526,12 @@ impl Checker {
     /// call graph from what waits itself.
     pub(crate) fn waits_under_locks(&mut self) {
         self.follow_captured_arrows();
-        let waiting = self.up_the_calls(&self.waits);
+        let mut waiting = self.up_the_calls(&self.waits);
+        // What can't be followed, where nothing known to wait is reached: a known wait says more.
+        let unfollowed = self.unfollowed.iter().map(|key| (key.clone(), UNFOLLOWED.to_owned())).collect();
+        for (key, what) in self.up_the_calls(&unfollowed) {
+            waiting.entry(key).or_insert(what);
+        }
         let locking = self.up_the_calls(&self.takes_locks);
         self.lock_verdicts = lock_verdicts(&waiting, &locking);
         self.values_under_locks(&waiting, &locking);

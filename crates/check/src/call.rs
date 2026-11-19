@@ -133,7 +133,12 @@ impl FnCx<'_> {
             }
             _ => {}
         }
-        match self.expr(callee) {
+        // A function value called right here is followed by the call (see `note_value_call`).
+        let outer = self.direct_read;
+        self.direct_read = Some((callee.span.start, callee.span.end));
+        let callee_ty = self.expr(callee);
+        self.direct_read = outer;
+        match callee_ty {
             Type::Function(key) => {
                 let name = key.rsplit('.').next().unwrap_or_default().to_owned();
                 self.call_function(&key, &name, args, span)
@@ -477,7 +482,17 @@ impl FnCx<'_> {
                 Some(Type::Arrow(receives, _)) => receives,
                 _ => Vec::new(),
             };
+            // A function value passed for a function parameter of a function called by name is
+            // followed to where that function calls it (see `note_passed_function`); one passed
+            // through a function value, or to an interface's method, isn't.
+            let followed = found.is_some_and(|(_, param)| self.takes_function(&param.ty))
+                && self.calling.last().is_some_and(|callee| !callee.is_empty());
+            let outer = self.direct_read;
+            if followed {
+                self.direct_read = Some((arg.value.span.start, arg.value.span.end));
+            }
             let ty = self.arg_as(arg, &receives, found.map(|(_, param)| &param.ty));
+            self.direct_read = outer;
             self.handle_passed(&arg.value, &ty);
             if arg.is_mut
                 && let Some(callee) = self.calling.last().filter(|callee| !callee.is_empty()).cloned()
@@ -925,6 +940,11 @@ impl FnCx<'_> {
         (types, args): (&[Type], &[Arg]),
         span: Span,
     ) -> Type {
+        // Any type's function of this name could be the one called, inside a lock or not, as for
+        // a method called on a value of the type parameter in `interface_call`.
+        let any = format!("*.{method}");
+        self.checker.own_callers.entry(any.clone()).or_default().insert(self.key.clone());
+        self.note_lock_call(&any, method, span);
         let owner = Type::Param(param.to_owned());
         let Some((_, def)) = self.bound_method(param, method) else {
             let message = format!("`{param}` has nothing called `{method}`");
@@ -941,7 +961,11 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         let signature = self.interface_method_with(&def, &owner, types, span);
+        // Any type's function of this name could be the one called, so what's passed can't be
+        // followed by its parameters.
+        self.calling.push(String::new());
         self.bind_args(method, &signature.params, args, span);
+        self.calling.pop();
         signature.returns
     }
 
@@ -949,8 +973,11 @@ impl FnCx<'_> {
     /// interfaces and no others.
     fn interface_call(&mut self, call: &MethodCall<'_>, name: &str) -> Type {
         let MethodCall { object, method, types, args, span } = *call;
-        // Any type's method of this name could be the one called.
-        self.note_lock_call(&format!("*.{method}"), method, span);
+        // Any type's method of this name could be the one called, inside a lock or not: what any
+        // of them waits on or locks reaches this function (see `up_the_calls`).
+        let any = format!("*.{method}");
+        self.checker.own_callers.entry(any.clone()).or_default().insert(self.key.clone());
+        self.note_lock_call(&any, method, span);
         let owner = Type::Param(name.to_owned());
         let Some((_, def)) = self.bound_method(name, method) else {
             let help = match self.bounds_of(name).as_slice() {
@@ -980,7 +1007,11 @@ impl FnCx<'_> {
         }
         let values: Vec<&Expr> = std::iter::once(object).chain(args.iter().map(|arg| &arg.value)).collect();
         self.note_handed(crate::holds::To::Interface(method.to_owned()), span, &values);
+        // Any type's method of this name could be the one called, so what's passed can't be
+        // followed by its parameters.
+        self.calling.push(String::new());
         self.bind_args(method, signature.params.get(1..).unwrap_or_default(), args, span);
+        self.calling.pop();
         signature.returns
     }
 

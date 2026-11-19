@@ -235,11 +235,23 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     {
         return refused(400);
     }
-    let headers = match headers(input, at, first.len()) {
+    // A target is a path, `*` for an `OPTIONS` of the server as a whole, or a whole `http` or
+    // `https` URL, whose host stands for the `host` header.
+    let (target, host) = if target.starts_with('/') || (*target == "*" && *method == "OPTIONS") {
+        ((*target).to_owned(), None)
+    } else {
+        let Some((host, rest)) = whole_target(target) else { return refused(400) };
+        (rest, Some(host))
+    };
+    let mut headers = match headers(input, at, first.len()) {
         Ok(headers) => headers,
         Err(Early::Refused(status)) => return refused(status),
         Err(Early::Stop(stop)) => return Err(stop),
     };
+    if let Some(host) = host {
+        headers.retain(|(name, _)| name != "host");
+        headers.push(("host".to_owned(), host));
+    }
     let header =
         |wanted: &str| headers.iter().find(|(name, _)| name == wanted).map(|(_, value)| value.as_str());
     // Both, or a coding that isn't plainly `chunked`, never; `chunked` alone, not yet.
@@ -265,7 +277,7 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     if *method == "HEAD" {
         return Ok((Wanted::Head, keep));
     }
-    let (path, query_text) = target.split_once('?').unwrap_or((target, ""));
+    let (path, query_text) = target.split_once('?').unwrap_or((&target, ""));
     let (path, query) =
         (decoded(path, false), if target.contains('?') { query(query_text) } else { Vec::new() });
     // A NUL decoded into the path or the query is refused.
@@ -274,6 +286,27 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     }
     let answer = Wanted::Echoed { method: (*method).to_owned(), path, query, headers, body };
     Ok((answer, keep))
+}
+
+/// The host of a whole `http` or `https` URL, in any case, and the rest from the `/` or `?` after
+/// it, `/` when there's none: a URL with a user before its host isn't taken.
+fn whole_target(target: &str) -> Option<(String, String)> {
+    let lower = target.to_ascii_lowercase();
+    let start = if lower.starts_with("http://") {
+        7
+    } else if lower.starts_with("https://") {
+        8
+    } else {
+        return None;
+    };
+    let after = target.get(start..)?;
+    let end = after.find(['/', '?']).unwrap_or(after.len());
+    let (host, rest) = after.split_at(end);
+    if host.is_empty() || host.contains('@') {
+        return None;
+    }
+    let rest = if rest.starts_with('/') { rest.to_owned() } else { format!("/{rest}") };
+    Some((host.to_owned(), rest))
 }
 
 /// How reading headers ended early.
@@ -514,6 +547,18 @@ mod tests {
         assert_eq!(query, &[("x".to_owned(), "1 2".to_owned())]);
         assert_eq!(headers, &[("host".to_owned(), "h".to_owned()), ("x-y".to_owned(), "z".to_owned())]);
         assert_eq!(body, b"hi");
+        // A whole URL's host stands for the `host` header, and its path is the path.
+        let (answers, _) =
+            wanted(b"GET HTTP://h:8/a?b=c HTTP/1.1\r\nHost: other\r\n\r\nGET http://h HTTP/1.1\r\n\r\n");
+        let [Wanted::Echoed { path, query, headers, .. }, Wanted::Echoed { path: bare, .. }] =
+            answers.as_slice()
+        else {
+            assert_eq!(answers.len(), 2, "{answers:?}");
+            return;
+        };
+        assert_eq!((path.as_str(), bare.as_str()), ("/a", "/"));
+        assert_eq!(query, &[("b".to_owned(), "c".to_owned())]);
+        assert_eq!(headers, &[("host".to_owned(), "h:8".to_owned())]);
         // A first line longer than a whole head may be, and one longer than the runtime reads,
         // whatever ends it.
         let long_target = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(MOST_HEADER_BYTES));
@@ -528,6 +573,11 @@ mod tests {
             (b"GET / HTTP/1.1\nHost: a\r\n\r\n", 400),
             (b"\nGET / HTTP/1.1\r\n\r\n", 400),
             (long_target.as_bytes(), 414),
+            (b"GET abc HTTP/1.1\r\n\r\n", 400),
+            (b"GET * HTTP/1.1\r\n\r\n", 400),
+            (b"GET http://u@h/ HTTP/1.1\r\n\r\n", 400),
+            (b"GET http:///a HTTP/1.1\r\n\r\n", 400),
+            (b"GET ftp://h/a HTTP/1.1\r\n\r\n", 400),
             (long_line.as_bytes(), 414),
         ] {
             let (answers, _) = wanted(asked);

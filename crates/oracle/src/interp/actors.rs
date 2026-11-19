@@ -82,6 +82,11 @@ const TASK_STACK: usize = 64 << 20;
 /// The most tasks one run may launch.
 const MOST_TASKS: usize = 1_000;
 
+// The runtime reports a deadlock through at most 1,024 stuck ranges on one thread (`MOST_RANGES`
+// in `crates/rt/src/embed/serve.rs`), and past that the program hangs. A run with more tasks
+// than that could be said to stop where compiled code hangs, so the oracle refuses first.
+const _: () = assert!(MOST_TASKS <= 1024);
+
 /// Who runs, and the channels they share.
 #[derive(Default)]
 pub(crate) struct Sched {

@@ -591,15 +591,6 @@ impl Interp {
             if !def.takes_self() {
                 return unsupported("calling a type's function on a value");
             }
-            // One that doesn't change what it's called on is given it as it is now, before its
-            // arguments are worked out: evaluation is left to right, so `tally.show(tally.grow())`
-            // shows the tally before it grew.
-            let receiver = match receiver {
-                Receiver::Place(place) if !super::own_index::takes_ref_self(def) => {
-                    Receiver::Value(self.read_place(&place, span)?)
-                }
-                other => other,
-            };
             return Ok(Some(Target::Def {
                 def,
                 parent: None,

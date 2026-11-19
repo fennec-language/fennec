@@ -2442,48 +2442,41 @@ fn what_is_indexed_is_read_before_its_index() {
     assert!(said.contains("index 1 is out of range for length 1"), "{said}");
 }
 
-/// What a method is called on is read before its arguments, left to right, as `docs/decisions.md`
-/// says: a method taking its value as a copy, through a name or a field, sees it as it was before
-/// an argument changed it, and so does a dict's `get`. The compiled program prints the same for
-/// `get`; it reads a copy's receiver after its arguments until #546's fix for compiled code.
+/// A built-in method that only reads what it's called on reads it before its arguments, left to
+/// right, as a method the program writes does (`a_call_reads_what_it_is_made_on_before_its_arguments`):
+/// a dict's `get`, a list's `count` and a string's `split`, each given an argument that changes
+/// what it's called on, see it as it was. What it prints is what the compiled program printed.
 #[test]
-fn what_a_method_is_called_on_is_read_before_its_arguments() {
-    prints(RECEIVER_BEFORE_ITS_ARGUMENTS, "[1] 0 1\n1\n1 7 2\n");
-}
-
-const RECEIVER_BEFORE_ITS_ARGUMENTS: &str = "
+fn a_built_in_method_that_only_reads_reads_what_it_is_called_on_first() {
+    prints(
+        "
         struct Tally:
             items: list[int]
-            count: int
             names: dict[str, int]
-
-            def grow(ref self) -> int:
-                self.items.append(self.count + 5)
-                self.count += 1
-                return self.count
+            text: str
 
             def key(ref self) -> str:
                 self.names['a'] = self.names['a'] + 100
                 return 'a'
 
-            def show(self, given: int) -> str:
-                return f'{self.items} {self.count} {given}'
+            def grow(ref self) -> int:
+                self.items.append(1)
+                return 1
 
-        struct Pair:
-            left: Tally
-            right: int
-
-            def shown(self, given: int) -> str:
-                return f'{self.left.count} {self.right} {given}'
+            def renamed(ref self) -> str:
+                self.text = 'b,b'
+                return ','
 
         def main(stdout: Stdout):
-            mut tally = Tally(items=[1], count=0, names={'a': 1})
-            stdout.print(tally.show(tally.grow()))
-            stdout.print(tally.names.get(tally.key()))
-            mut pair = Pair(left=tally, right=7)
-            stdout.print(pair.shown(pair.left.grow()))
+            mut tally = Tally(items=[1, 1], names={'a': 1}, text='a,a,a')
+            stdout.print(tally.names.get(tally.key()), tally.names)
+            stdout.print(tally.items.count(tally.grow()), tally.items)
+            stdout.print(tally.text.split(tally.renamed()), tally.text)
             return
-        ";
+        ",
+        "1 {\"a\": 101}\n2 [1, 1, 1]\n[\"a\", \"a\", \"a\"] b,b\n",
+    );
+}
 
 const INDEXED_BEFORE_ITS_INDEX: &str = "
         struct Tally:

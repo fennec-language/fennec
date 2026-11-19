@@ -95,6 +95,10 @@ says they are, at the version the workspace pins.
   parameter, a `for ref` loop's name and a local `ref` stand for a place, written where it is. A
   `case` with `ref` binds a copy of the field it names, put back where the case ends however it
   ends, as the checker writes it in for the compiled program.
+- Evaluation is left to right, as `docs/decisions.md` says. What's indexed is read before its
+  index, and what a method is called on before its arguments, when it takes its value as a copy
+  or is a string's method or one of a dict's or a list's that only looks things up. A method that
+  changes its value where it is, a `ref self` one or a list's `append`, reaches it as it is then.
 - A failure passes up as a Rust error, `except` handles only the failure of the call it follows,
   and `else` the missing value at the end of a chain.
 - A generator runs on a thread of its own, and it and its reader take turns, so a run is the same
@@ -143,17 +147,32 @@ says they are, at the version the workspace pins.
   Printing, and reaching the file system, from two tasks has to be in an order their messages,
   launches and ends make: one that could come before or after another task's is refused as hanging
   on time. A channel to every listener gives each listener every message from when it started
-  listening, and a plain `receive()` on one stops the program, as `docs/language.md` says. The
+  listening, and a plain `receive()` on one stops the program, as `docs/language.md` says. It keeps
+  the last `size`: a listener that hadn't read the one let go falls behind, and its next receive
+  fails as a crash does, or with `when_behind=.DropOldest` goes on from the oldest kept. The
   `with` ends as the task does, with its failure, or `Crashed(why="the task crashed")` for a crash.
-  Refused: two tasks taking from one channel to one receiver at once, where neither had heard of
-  the other's last take; several senders to a listener whose
-  next messages differ; a channel to every listener sent more than it keeps; a send waiting for room
+  A listener started beside sends, neither before nor after them, is tried at each place it could
+  start among them, as racing senders are. A timed wait that times out is taken to come after
+  every other task got as far as it could, its listeners started included: one that exists then
+  started before what's sent after.
+  Refused: two tasks taking from one channel to one receiver, or from one listener, at once, where
+  neither had heard of the other's last take; several senders to a listener whose
+  next messages differ; a channel to every listener letting go of a message a listener read, the
+  read not before the send, or a listener finding one gone, its receive not after the send that let
+  it go; a send waiting for room
   when its channel closes; a send to the inbox of a task that's ended, on a run that didn't try the
   task ending first; a `shared` value one side changes and the other reaches; a block that fails,
   which cuts its task short at once, unless it's a send failing with `Closed` to a task that's
   failed, whose failure the block ends with; waiting inside a `lock`; `stop_after=`; and every task
   waiting on another, which hangs. A wait given a timeout times out only when nothing else can go
-  on. A task that ends with messages left in its inbox that its block sent as it ran: whether each
+  on, however short its time, even `1ns`: only a wait of no time, `0ms`, looks once, as the
+  runtime's does. That one is refused unless nothing else holding an end of its channel could still
+  send, take or close, a task waiting for room behind a send beside its own counting as one that
+  could, and a task that doesn't know the channel was made, by a launch or a message, holding none;
+  what it finds, a
+  message, room, the messages filling it or the close, was there before it; and it isn't in a
+  `parallel` round beside others, which could use any channel, one the round made included. A task that ends with messages left in its inbox that its block sent as it
+  ran: whether each
   send came before the task ended or after, and failed with `Closed`, hangs on time, so a later run
   tries the task going on first at that send, and the runs have to end the same.
 - `std.json`'s `dumps` and `loads[T]` are written here on their own, by the type the checker gave

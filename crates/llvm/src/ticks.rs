@@ -98,7 +98,7 @@ fn closures_run_here(function: &Function) -> impl Iterator<Item = &str> {
 impl Emit<'_, '_, '_> {
     /// Whether this function counts its loops' turns.
     pub(crate) fn ticks(&self) -> bool {
-        self.module.whole.tasks.contains(self.function.name.as_str())
+        self.module.reads.task(self.function.name.as_str())
     }
 
     /// The counter of turns until the next tick, a word in the frame that LLVM keeps in a register.

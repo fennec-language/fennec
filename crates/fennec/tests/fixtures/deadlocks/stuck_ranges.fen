@@ -1,0 +1,15 @@
+# A waiting `parallel` call from main whose four ranges each receive on a channel nobody sends to.
+# (From Fable 5.2's review of the phase 2 design.)
+from std.concurrent import Channel, channel
+
+def takes(pipe: Channel[int]) -> int:
+    got = pipe.receive() else -1
+    return got
+
+def all_take(pipe: Channel[int]) -> int:
+    got = [takes(pipe) for at in parallel(range(4))]
+    return sum(got)
+
+def main(stdout: Stdout):
+    with channel[int](size=1) as pipe:
+        stdout.print(all_take(pipe))

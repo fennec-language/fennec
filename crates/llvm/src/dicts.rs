@@ -117,7 +117,7 @@ impl Emit<'_, '_, '_> {
             crate::kinds::word_named(layouts, key),
             crate::kinds::word_named(layouts, value)
         );
-        self.module.shared.dicts.insert(symbol.clone(), (key, value));
+        self.module.add_dict(&symbol, (key, value));
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         let shape = self.temp();
         self.line(&format!("{shape} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
@@ -407,10 +407,14 @@ impl Emit<'_, '_, '_> {
         Ok(value)
     }
 
-    /// A value as the word a dict keeps, handing over an owner if it's a block.
-    fn dict_word(&mut self, kind: &Kind, value: &str, retain: bool) -> String {
+    /// A value as the word a dict keeps, handing over an owner if it's a block. Every kind is
+    /// named, so a new one is a compile error here rather than a word of the wrong type.
+    fn dict_word(&mut self, kind: &Kind, value: &str, retain: bool) -> Result<String, String> {
         let word = self.temp();
         match kind {
+            // Already a word.
+            Kind::Int | Kind::U64 => return Ok(value.to_owned()),
+            Kind::Unit => return Ok("0".to_owned()),
             Kind::Float | Kind::F32 => self.line(&format!("{word} = bitcast double {value} to i64")),
             Kind::Bool => self.line(&format!("{word} = zext i1 {value} to i64")),
             // A header becomes a block of its own, the dict's.
@@ -427,9 +431,9 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("{word} = ptrtoint ptr {value} to i64"));
             }
-            // A generator's or closure's block is owned as any block is, a closure's through what
-            // it captures.
-            Kind::Maybe(_) | Kind::Gen | Kind::Closure(..) => {
+            // A generator's, closure's or capability's block is owned as any block is, a
+            // closure's through what it captures.
+            Kind::Maybe(_) | Kind::Gen | Kind::Closure(..) | Kind::Cap => {
                 if retain {
                     self.retain_value(value, kind);
                 }
@@ -437,16 +441,18 @@ impl Emit<'_, '_, '_> {
             }
             // A plain struct or enum as a value: a block of its own, with owners of what it holds.
             Kind::Struct(id) | Kind::Enum(id) => {
-                if let Ok(block) = self.key_block(*id, value) {
-                    let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
-                    self.retain_inline(kind, &fields);
-                    self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
-                }
+                let block = self.key_block(*id, value)?;
+                let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                self.retain_inline(kind, &fields);
+                self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
             }
-            Kind::Unit => return "0".to_owned(),
-            _ => return value.to_owned(),
+            // A text's block where texts aren't headers isn't made, and an optional text is a
+            // header no word holds: a dict holds no optional values.
+            Kind::TextBlock | Kind::MaybeText => {
+                return Err(format!("a dict's value is a {kind:?}, which isn't held as a word"));
+            }
         }
-        word
+        Ok(word)
     }
 
     /// A plain struct key as a block of its own, owned once, as a dict keeps it.
@@ -476,7 +482,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{held} = ptrtoint ptr {block} to i64"));
                 held
             }
-            Word::Str => self.dict_word(&Kind::Str, key, true),
+            Word::Str => self.dict_word(&Kind::Str, key, true)?,
             _ => key.to_owned(),
         })
     }
@@ -770,7 +776,7 @@ impl Emit<'_, '_, '_> {
             let add = self.add_plain_key_helper();
             let hash = self.hash(key_word, &key);
             let key_held = self.key_word(key_word, &key)?;
-            let word = self.dict_word(&value_kind, &held, false);
+            let word = self.dict_word(&value_kind, &held, false)?;
             let (added, not_added) = (self.temp(), self.label("not_added"));
             self.line(&format!(
                 "{added} = call i1 @{add}(ptr {dict}, i64 {hash}, i64 {key_held}, i64 {word})"
@@ -787,7 +793,7 @@ impl Emit<'_, '_, '_> {
             self.start_block(&absent);
             let add = self.add_short_key_helper(KeyBytes::Header);
             let (bytes, length) = (self.header_bytes(&key), self.header_byte_length(&key));
-            let word = self.dict_word(&value_kind, &held, false);
+            let word = self.dict_word(&value_kind, &held, false)?;
             let added = self.temp();
             self.line(&format!(
                 "{added} = call i1 @{add}(ptr {dict}, ptr {bytes}, i64 {length}, i64 {word})"
@@ -816,7 +822,7 @@ impl Emit<'_, '_, '_> {
             self.store_field(&value_kind, &held, &fields, "");
             self.line(&format!("br label %{done}"));
             self.start_block(&fresh);
-            let word = self.dict_word(&value_kind, &held, true);
+            let word = self.dict_word(&value_kind, &held, true)?;
             let block = self.temp();
             self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
             self.line(&format!("store ptr {block}, ptr {value_at}"));
@@ -837,7 +843,7 @@ impl Emit<'_, '_, '_> {
         }
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
-        let value_held = self.dict_word(&value_kind, &held, true);
+        let value_held = self.dict_word(&value_kind, &held, true)?;
         let changed = self.temp();
         if key_word == Word::Text {
             // The key's header goes in as its words, with an owner of its block if it has one.
@@ -1895,7 +1901,7 @@ found:
         self.line(&format!("br i1 {quick}, label %{change}, label %{add}"));
         self.start_block(&change);
         if value_kind.in_memory() {
-            let word = self.dict_word(&value_kind, &held, true);
+            let word = self.dict_word(&value_kind, &held, true)?;
             let (old, block) = (self.temp(), self.temp());
             self.line(&format!("{old} = load ptr, ptr {value_at}"));
             self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
@@ -1927,7 +1933,7 @@ found:
         // The value as the dict keeps it, with an owner for the dict: a string's is a block of
         // the dict's own, made from its header even when it's inline, never the header's words.
         // It's made once, for whichever path below adds it.
-        let word = self.dict_word(&value_kind, &held, !fresh);
+        let word = self.dict_word(&value_kind, &held, !fresh)?;
         // A short new key of an ASCII string, held in a block or inline, goes straight in, for
         // a value holding no block or a string's block, which the entry owns as the runtime's
         // would. Anything else is the runtime's: a dict held elsewhere too or marked by a lock's

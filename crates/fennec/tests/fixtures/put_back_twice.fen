@@ -1,0 +1,45 @@
+# An item read out of a `Table` once and put back by its `Id` in a loop that comes round to the
+# put-back again, with no read between: each put-back looks the `Id` up again, and puts back what
+# was read, whatever happened to the `Table` in between.
+
+from std.collections import Id, Table
+
+struct Unit:
+    health: int
+    tags: list[str]
+
+# The item changed in place between the turns: the second put-back puts back what was read.
+def changed_between(ref units: Table[Unit], id: Id[Unit]):
+    mut unit = units[id]
+    unit.health -= 1
+    mut turn = 0
+    while True:
+        units[id] = unit
+        turn += 1
+        if turn == 2: break
+        units[id].health = 90
+        units[id].tags.append("changed")
+    return
+
+# The `Table` grown between the turns, past what its items' list had room for.
+def grown_between(ref units: Table[Unit], id: Id[Unit]):
+    mut unit = units[id]
+    unit.health -= 2
+    mut turn = 0
+    while True:
+        units[id] = unit
+        turn += 1
+        if turn == 2: break
+        for more in range(50):
+            _ = units.add(Unit(health=more, tags=[]))
+    return
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    first = units.add(Unit(health=10, tags=["a"]))
+    second = units.add(Unit(health=20, tags=["b"]))
+    changed_between(ref units, first)
+    stdout.print(units[first].health, units[first].tags)
+    grown_between(ref units, second)
+    stdout.print(units[second].health, units[second].tags, len(units))
+    return

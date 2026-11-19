@@ -578,7 +578,7 @@ impl FnCx<'_> {
     }
 
     /// An assignment, with the arrow function it gives a name noted: what it may capture, and, for
-    /// a name declared with it, the arrow itself (see `keep_arrow`).
+    /// a name declared with it, the arrow itself (see `keep_function_value`).
     fn assign_noting_arrows(
         &mut self,
         target: &Expr,
@@ -589,23 +589,12 @@ impl FnCx<'_> {
     ) {
         self.note_arrow(target, value);
         self.assign(target, op, value, declare_mut, ty);
-        self.keep_arrow(target, value);
+        self.keep_function_value(target, value);
     }
 
     /// A function defined inside this one. It can read the names around it, but not change them.
     /// `work = () => ...`: an arrow function given to a name, which may capture a handle.
     fn note_arrow(&mut self, target: &Expr, value: &Expr) {
-        if let ExprKind::Name(name) = &target.kind {
-            let arrow =
-                matches!(value.kind, ExprKind::Lambda { .. }).then_some((value.span.start, value.span.end));
-            let held = match self.arrow_locals.get(name) {
-                Some(_) => None,
-                None => arrow,
-            };
-            if arrow.is_some() || self.arrow_locals.contains_key(name) {
-                self.arrow_locals.insert(name.clone(), held);
-            }
-        }
         let (ExprKind::Name(name), ExprKind::Lambda { params, body }) = (&target.kind, &value.kind) else {
             return;
         };
@@ -635,12 +624,12 @@ impl FnCx<'_> {
             if !self.checker.holds_function_value(&ty, &mut Vec::new()) {
                 continue;
             }
-            // By the type it's declared with: an optional one narrowed here, as inside `if work is
-            // not None:`, is still one no caller's value is followed for.
-            let declared = self.declared_type(name).map(|declared| self.checker.settled(&declared));
-            let param = self.param_owner(name).filter(|_| matches!(declared, Some(Type::Arrow(..))));
-            if let Some(owner) = param {
-                self.checker.values.note_captured_param(key, owner, name);
+            // By the type it's declared with, a function's or an optional one's, as callers' values
+            // are followed (see `takes_function`), not by what it's narrowed to here.
+            let declared = self.declared_type(name);
+            let param = self.param_key(name).filter(|_| declared.is_some_and(|ty| self.takes_function(&ty)));
+            if let Some((owner, param)) = param {
+                self.checker.values.note_captured_param(key, owner, &param);
             } else if let Some(arrow) = self.local_arrow(name) {
                 self.checker.values.captured_arrows.push((key.to_owned(), arrow));
             } else {
@@ -680,6 +669,7 @@ impl FnCx<'_> {
             to_every: false,
             param_of: None,
             arrow: None,
+            alias: None,
         });
         let report = self.report;
         let inherited = self.generics.clone();

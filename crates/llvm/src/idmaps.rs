@@ -7,6 +7,8 @@
 //! used again, so a generation never comes round. The first free slot is used first, and the map says how
 //! far up there's none, so filling a map doesn't look again at what it's filled already.
 
+use std::fmt::Write as _;
+
 use fennec_ir::{LocalId, Operand};
 use fennec_syntax::Span;
 
@@ -1023,6 +1025,14 @@ impl Emit<'_, '_, '_> {
             self.part(&block, parts.items, false).1
         };
         let at = self.item_address(&items, &memory, &id.0);
+        // Kept in a slot, so the put-back can read it wherever it is: a register only where
+        // LLVM sees the read come first.
+        if alone {
+            let slot = self.label("%taken");
+            let _ = writeln!(self.allocas, "  {slot} = alloca ptr");
+            self.line(&format!("store ptr {at}, ptr {slot}"));
+            self.taken_places.insert(dest, slot);
+        }
         self.read_into(dest, &held, &at, ITEM_ACCESS)
     }
 
@@ -1085,18 +1095,46 @@ impl Emit<'_, '_, '_> {
         // A `for ref` item taken out of its slot coming home: the slot still points at what was
         // taken, which the item owned meanwhile, so it's moved back with nothing let go of.
         let put_back = matches!(value, Operand::Local(local) if self.known.is_taken(*local));
+        // Where it was taken from, when it was read by `Id` out of this place: the analysis put it
+        // back by the same key, with nothing reaching the `Table` on any way from the read to
+        // here, so that read's lookup still holds, and its checks, its `Table` and items made
+        // alone, and, in a lock's body, its item noted.
+        let taken_from = match value {
+            Operand::Local(local) if put_back => {
+                self.known.put_back_read(*local).and_then(|read| self.taken_places.get(&read).cloned())
+            }
+            _ => None,
+        };
         let value_operand = value;
         let (value, fresh) = self.value_for(value, &held)?;
-        let id = self.id_parts(id)?;
-        let block = self.table_to_change(place);
-        let found = self.finds(&block, &parts, &id);
-        let (yes, no) = (self.label("store"), self.label("stale"));
-        self.line(&format!("br i1 {found}, label %{yes}, label %{no}, !prof !8"));
-        self.start_block(&no);
-        self.stop_missing(&block, &parts, &id, span);
-        self.start_block(&yes);
-        let items = self.list_for_item(&block, parts.items, &id.0);
-        let at = self.item_address(&items, &memory, &id.0);
+        let taken_from = taken_from.map(|slot| {
+            let at = self.temp();
+            self.line(&format!("{at} = load ptr, ptr {slot}"));
+            at
+        });
+        let at = match taken_from {
+            Some(at) if !self.checks_proofs() => at,
+            taken_from => {
+                let id = self.id_parts(id)?;
+                let block = self.table_to_change(place);
+                let found = self.finds(&block, &parts, &id);
+                let (yes, no) = (self.label("store"), self.label("stale"));
+                self.line(&format!("br i1 {found}, label %{yes}, label %{no}, !prof !8"));
+                self.start_block(&no);
+                self.stop_missing(&block, &parts, &id, span);
+                self.start_block(&yes);
+                let items = self.list_for_item(&block, parts.items, &id.0);
+                let at = self.item_address(&items, &memory, &id.0);
+                // A build that checks proofs looks it up again, and checks it finds the item
+                // where the read did.
+                if let Some(taken) = taken_from {
+                    let elsewhere = self.temp();
+                    self.line(&format!("{elsewhere} = icmp ne ptr {at}, {taken}"));
+                    self.proof_held(&elsewhere, "an item taken by Id goes back where it was read", span);
+                }
+                at
+            }
+        };
         if put_back && held.counted() {
             self.proof_goes_back(value_operand, &at);
             let text = self.text_of(&held);

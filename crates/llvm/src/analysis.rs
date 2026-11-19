@@ -2,7 +2,7 @@
 //! `fennec_ir::facts`, which lists keep one length, who a value can move to, and so which
 //! functions can fail at all.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
@@ -102,6 +102,9 @@ pub(crate) struct Analysis {
     /// Locals standing for a list that a `for` loop goes through while changing only the item
     /// it's on: a copy of the list would say the same, and cost a whole list.
     aliases: HashMap<usize, LocalId>,
+    /// Loops that change a list or a `Table` nothing in them can give another owner, which is
+    /// made alone once on the way in rather than at every change (see [`find_alone_in_loops`]).
+    pub(crate) alone_in_loops: Vec<AloneInLoop>,
     /// List locals whose length nothing in the function changes: their length is read where
     /// they're given their value and kept, so checks against it can leave a loop (see
     /// `steady_lengths`).
@@ -645,6 +648,7 @@ fn analyze(
     find_unmade_enumerates(function, &mut known);
     find_counts_inside(function, &mut known);
     find_adjacent_reads(function, &mut known);
+    find_alone_in_loops(function, &mut known);
     known
 }
 
@@ -2690,6 +2694,7 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
             let Some((root, path)) = put_back_to(function, known, *item, index) else { continue };
             if comes_from(function, known, *from, (root, &path))
                 && stays_apart(function, known, (start, at + 2), (*item, *from, index), (root, &path))
+                && read_before_put_back_again(function, (start, at), *item)
             {
                 for local in [*read, *item] {
                     known.taken.insert(local.0);
@@ -2699,6 +2704,54 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
             }
         }
     }
+}
+
+/// Whether every way on from where `item` is put back reaches the read at `read` again, or leaves,
+/// before it can come to the put-back again. `stays_apart` follows each way from the read only as
+/// far as the put-back, so a loop around the put-back alone, as `while True:` with its way out
+/// after it makes, would put the item back twice from one read: the second time into a slot
+/// that may be gone, and with what the first put back changed in place since showing through.
+fn read_before_put_back_again(function: &Function, read: (usize, usize), item: LocalId) -> bool {
+    let is_back = |inst: &InstKind| matches!(inst, InstKind::SetIndex { value: Operand::Local(put), .. } if *put == item);
+    let backs: Vec<(usize, usize)> = function
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(at, block)| {
+            block
+                .insts
+                .iter()
+                .enumerate()
+                .filter(|(_, inst)| is_back(&inst.kind))
+                .map(move |(index, _)| (at, index))
+        })
+        .collect();
+    for (back_block, back_at) in backs {
+        let mut seen = HashSet::new();
+        let mut waiting = vec![(back_block, back_at + 1)];
+        while let Some((at, first)) = waiting.pop() {
+            let Some(block) = function.blocks.get(at) else { return false };
+            let mut ended = false;
+            for (index, inst) in block.insts.iter().enumerate().skip(first) {
+                if (at, index) == read {
+                    ended = true;
+                    break;
+                }
+                if is_back(&inst.kind) {
+                    return false;
+                }
+            }
+            if ended {
+                continue;
+            }
+            for target in block.end.targets() {
+                if seen.insert(target.0) {
+                    waiting.push((target.0, 0));
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Where a local is put back, when that's one place and by a key equal to `index`: the same
@@ -2998,6 +3051,221 @@ fn loop_blocks(function: &Function, header: usize, body: usize) -> HashSet<usize
         }
     }
     found
+}
+
+/// A loop that changes lists or `Table`s held in locals, each of which nothing in the loop can
+/// give another owner: one check on the way in that each is alone does for every change in the
+/// loop, where today each change checks again.
+#[derive(Debug)]
+pub(crate) struct AloneInLoop {
+    /// The block that goes into the loop, with a jump to its start that nothing else makes.
+    pub(crate) entry: usize,
+    /// The loop's blocks, its start among them.
+    pub(crate) blocks: BTreeSet<usize>,
+    /// The locals made alone on the way in.
+    pub(crate) locals: Vec<LocalId>,
+}
+
+/// For each loop with one way in, a plain jump to its start, the lists and `Table`s held in
+/// locals that it changes and that nothing in it can give another owner. A value gets another
+/// owner by being copied, passed to a call or a closure, captured, put inside another value, or
+/// yielded; a local written anew in the loop might hold a block another owner has; and a list a
+/// lock's log may have marked never reads as alone. Reading items and fields, setting them, and
+/// a collection's own builtins on it give it no owner, so a value made alone before the loop is
+/// still alone at every change in it.
+fn find_alone_in_loops(function: &Function, known: &mut Analysis) {
+    let mut coming_from: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        for target in block.end.targets() {
+            coming_from.entry(target.0).or_default().push(at);
+        }
+    }
+    let mut back: Vec<(usize, usize)> = crate::emit::back_edges(function).into_iter().collect();
+    back.sort_unstable();
+    let mut starts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (from, start) in back {
+        starts.entry(start).or_default().push(from);
+    }
+    for (start, ends) in starts {
+        let mut blocks = BTreeSet::from([start]);
+        let mut waiting = ends;
+        while let Some(at) = waiting.pop() {
+            if blocks.insert(at) {
+                waiting.extend(coming_from.get(&at).into_iter().flatten().copied());
+            }
+        }
+        // Where control flow isn't reducible, as in a generator's resume, walking back from a
+        // jump to the start can reach the function's first block without passing the start:
+        // there's a way in that doesn't go through the entry, so the loop is left as it is.
+        if blocks.contains(&0) {
+            continue;
+        }
+        let outside: Vec<usize> = coming_from
+            .get(&start)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|from| !blocks.contains(from))
+            .collect();
+        let [entry] = outside.as_slice() else { continue };
+        if !matches!(function.blocks.get(*entry).map(|block| &block.end), Some(Terminator::Jump(to)) if to.0 == start)
+        {
+            continue;
+        }
+        let inside: Vec<&Block> = blocks.iter().filter_map(|at| function.blocks.get(*at)).collect();
+        let locals: Vec<LocalId> = function
+            .locals
+            .iter()
+            .enumerate()
+            .filter(|(at, local)| {
+                matches!(local.ty, Type::List(_) | Type::Table(_)) && !known.maybe_marked.contains(at)
+            })
+            .map(|(at, _)| LocalId(at))
+            .filter(|held| {
+                changes_in(&inside, known, *held)
+                    && gives_no_owner(function, &inside, known, *held)
+                    && !copy_read_in(function, &blocks, &inside, known, *held)
+            })
+            .collect();
+        if !locals.is_empty() {
+            known.alone_in_loops.push(AloneInLoop { entry: *entry, blocks, locals });
+        }
+    }
+}
+
+/// Whether a loop reads a copy of `held` made before it, as a loop through `items[k:]` holds the
+/// list as it was while its body changes it. `held` then has another owner on every way in, so
+/// making it alone there would copy all of it, where its first change in the loop does that work
+/// anyway: an append to a list held twice grows it into a block of its own, with no copy made
+/// first. So such a loop is left to check at each change. A local that only stands for `held`,
+/// with no count of its own (see [`Analysis::alias`]), is no other owner.
+fn copy_read_in(
+    function: &Function,
+    loop_blocks: &BTreeSet<usize>,
+    inside: &[&Block],
+    known: &Analysis,
+    held: LocalId,
+) -> bool {
+    let mut copies = BTreeSet::from([held]);
+    let mut grew = true;
+    while grew {
+        grew = false;
+        let before: Vec<&Block> = function
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| !loop_blocks.contains(at))
+            .map(|(_, block)| block)
+            .collect();
+        for inst in before.iter().flat_map(|block| &block.insts) {
+            if let InstKind::Copy { dest, value: Operand::Local(from) } = &inst.kind
+                && copies.contains(from)
+                && known.alias(*dest).is_none()
+                && copies.insert(*dest)
+            {
+                grew = true;
+            }
+        }
+    }
+    copies.remove(&held);
+    inside.iter().any(|block| {
+        copies.iter().any(|copy| {
+            block.insts.iter().any(|inst| reads_local(&inst.kind, *copy)) || reads_in_end(&block.end, *copy)
+        })
+    })
+}
+
+/// The builtins on a list or a `Table` that give it no other owner, called on it: what each gives
+/// back, if anything, is an item, a count, a flag, an `Id` or a list of those, never what it's
+/// called on. A builtin added to either has to be added here to keep a loop's values alone.
+const GIVE_NO_OWNER: [&str; 28] = [
+    "list.append",
+    "list.insert",
+    "list.extend",
+    "list.pop",
+    "list.remove",
+    "list.clear",
+    "list.remove_where",
+    "list.sort",
+    "list.sort.key",
+    "list.len",
+    "list.contains",
+    "list.reverse",
+    "list.swap",
+    "Table.add",
+    "Table.remove",
+    "Table.get",
+    "Table.modify",
+    "Table.remove_where",
+    "Table.values",
+    "Table.ids",
+    "Table.items",
+    "Table.clear",
+    "Table.len",
+    "Table.contains",
+    "Table.slots",
+    "Table.slot_live",
+    "Table.slot_id",
+    "Table.at_slot",
+];
+
+/// Whether a loop's blocks change `held`, or an item taken out of it.
+fn changes_in(inside: &[&Block], known: &Analysis, held: LocalId) -> bool {
+    inside.iter().flat_map(|block| &block.insts).any(|inst| match &inst.kind {
+        InstKind::SetIndex { object, .. } | InstKind::SetField { object, .. } => *object == held,
+        InstKind::Builtin { args, changes: true, .. } => args.first() == Some(&Operand::Local(held)),
+        InstKind::GetIndex { dest, .. } | InstKind::Builtin { dest: Some(dest), .. } => {
+            known.items_taken.get(&dest.0).is_some_and(|(root, _)| *root == held)
+        }
+        _ => false,
+    })
+}
+
+/// Whether nothing in a loop's blocks can give `held`, or a local standing for it, another owner
+/// (see [`find_alone_in_loops`]).
+fn gives_no_owner(function: &Function, inside: &[&Block], known: &Analysis, held: LocalId) -> bool {
+    let is_held = |local: LocalId| local == held || known.alias(local) == Some(held);
+    let held_operand = |operand: &Operand| matches!(operand, Operand::Local(local) if is_held(*local));
+    let ty = function.locals.get(held.0).map(|local| &local.ty);
+    for block in inside {
+        for inst in &block.insts {
+            let allowed = match &inst.kind {
+                InstKind::GetIndex { object, index, .. } => held_operand(object) && !held_operand(index),
+                InstKind::GetField { object, .. } => held_operand(object),
+                InstKind::SetIndex { object, index, value, .. } => {
+                    is_held(*object) && !held_operand(index) && !held_operand(value)
+                }
+                InstKind::SetField { object, value, .. } => is_held(*object) && !held_operand(value),
+                // A collection's own builtins on it, each of which gives back nothing that holds it.
+                InstKind::Builtin { dest, name, args, .. } => {
+                    args.first().is_some_and(held_operand)
+                        && args.iter().skip(1).all(|arg| !held_operand(arg))
+                        && GIVE_NO_OWNER.contains(&name.as_str())
+                        && dest.is_none_or(|dest| {
+                            !is_held(dest) && function.locals.get(dest.0).map(|local| &local.ty) != ty
+                        })
+                }
+                _ => false,
+            };
+            let (mut read, mut written) = (false, false);
+            visit(&inst.kind, |operand| read |= held_operand(operand), |dest| written |= is_held(dest));
+            if (read || written) && !allowed {
+                return false;
+            }
+        }
+        // Handing it on out of the function leaves the loop; anything else that names it doesn't.
+        let named = match &block.end {
+            Terminator::Branch { cond: value, .. } | Terminator::NoMatch { value, .. } => held_operand(value),
+            Terminator::Jump(_)
+            | Terminator::Return(_)
+            | Terminator::Stop { .. }
+            | Terminator::Unreachable => false,
+        };
+        if named {
+            return false;
+        }
+    }
+    true
 }
 
 /// Whether anything in a loop does more to a list than change the item at the loop's count.
@@ -3447,6 +3715,7 @@ impl Analysis {
             slice_keys: HashMap::new(),
             unmade: HashSet::new(),
             aliases: HashMap::new(),
+            alone_in_loops: Vec::new(),
             steady_lengths: HashSet::new(),
             adjacent_reads: HashMap::new(),
             reservations: HashMap::new(),
@@ -4355,80 +4624,150 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let every = || program.functions.iter().chain(&program.constants);
     let functions: HashMap<&str, &Function> =
         every().map(|function| (function.name.as_str(), function)).collect();
-    let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
-    let kept = parameters_kept(&functions);
-    let keeps = |callee: &str, at: usize| {
-        kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
-    };
-    let params = param_ranges(program, &changes, &keeps);
-    // Without layouts, which a program that builds always has, any dict that isn't of plain words
-    // may hold its values in its entries.
-    let layouts = crate::layouts_of(program).ok();
-    let in_entries = |dict: &Type| match &layouts {
-        Some(layouts) => matches!(
-            crate::kinds::Kind::of(layouts, dict),
-            Ok(crate::kinds::Kind::Dict(_, fennec_rt::embed::dicts::Word::InPlace(_)))
-        ),
-        None => fennec_layout::dict_values_in_place(),
-    };
-    let analyses: HashMap<&str, Analysis> = every()
-        .map(|function| {
-            let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
-            (function.name.as_str(), analyze(function, &changes, &keeps, given, &in_entries))
-        })
-        .collect();
-    let mut generators = HashMap::new();
-    for def in &program.generators {
-        generators.insert(def.name.as_str(), def);
-        generators.insert(def.resume.as_str(), def);
-        if let Some(abandon) = &def.abandon {
-            generators.insert(abandon.as_str(), def);
+    // What needs only the program is worked out on threads of its own beside the rest, each giving
+    // what it would on its own. A panic in one is the build's, as it would be on this thread.
+    let whole = std::thread::scope(|scope| {
+        let signs = scope.spawn(|| crate::signs::non_negative(program));
+        let builders = scope.spawn(|| crate::builders::builders(program, &functions));
+        let tasks = scope.spawn(|| crate::ticks::tasks(program, &functions));
+        let layouts = scope.spawn(|| crate::layouts_of(program).ok());
+        let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
+        let kept = parameters_kept(&functions);
+        let keeps = |callee: &str, at: usize| {
+            kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
+        };
+        let params = param_ranges(program, &changes, &keeps);
+        let held = in_entries_of(program, joined(layouts).as_ref());
+        // Without layouts, which a program that builds always has, any dict that isn't of plain
+        // words may hold its values in its entries.
+        let in_entries = |dict: &Type| {
+            held.iter()
+                .find(|(ty, _)| *ty == dict)
+                .map_or_else(fennec_layout::dict_values_in_place, |(_, held)| *held)
+        };
+        let analyses = analyzed(program, (&changes, &keeps), &params, &in_entries);
+        let mut generators = HashMap::new();
+        for def in &program.generators {
+            generators.insert(def.name.as_str(), def);
+            generators.insert(def.resume.as_str(), def);
+            if let Some(abandon) = &def.abandon {
+                generators.insert(abandon.as_str(), def);
+            }
+        }
+        // A generator's functions are called through its block, so all the same way: with the flag.
+        let mut can_fail: HashSet<&str> = every()
+            .filter(|function| {
+                analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
+            })
+            .map(|function| function.name.as_str())
+            .collect();
+        for def in &program.generators {
+            can_fail.insert(def.resume.as_str());
+            can_fail.extend(def.abandon.as_deref());
+        }
+        let (settles, lengths) = std::thread::scope(|inner| {
+            let lengths = inner.spawn(|| summarized(&functions, &analyses, Tracked::Lengths));
+            (summarized(&functions, &analyses, Tracked::Owners), joined(lengths))
+        });
+        let under_locks = crate::rollback::changing_under_locks(&functions);
+        let needs = needed(program, &functions, &analyses, &under_locks);
+        let constants = every()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.insts)
+            .filter_map(|inst| match &inst.kind {
+                InstKind::Constant { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let on_workers = crate::parallel::run_on_workers(program);
+        Whole {
+            // Put in below, once no thread borrows them.
+            functions: HashMap::new(),
+            analyses,
+            can_fail,
+            generators,
+            settles,
+            lengths,
+            builders: joined(builders),
+            non_negative: joined(signs),
+            needs,
+            under_locks,
+            constants,
+            on_workers,
+            cells: crate::parallel::has_cells(program),
+            tasks: joined(tasks),
+            runtime_closures: crate::closures::runtime_holds_closures(program),
+            tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
+        }
+    });
+    Whole { functions, ..whole }
+}
+
+/// What a thread of [`whole`]'s gave, or its panic, carried on in this thread.
+fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    thread.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Whether each `dict[str, _]` a function of the program has a local of holds its values in its
+/// entries, as `layouts` lay it out, asked here before the analyses run on threads: asking the
+/// layouts may number a kind of block, which only one thread can do. `None` without layouts.
+fn in_entries_of<'p>(
+    program: &'p Program,
+    layouts: Option<&fennec_layout::Layouts>,
+) -> Vec<(&'p Type, bool)> {
+    let Some(layouts) = layouts else { return Vec::new() };
+    let mut held: Vec<(&Type, bool)> = Vec::new();
+    let locals = program.functions.iter().chain(&program.constants).flat_map(|function| &function.locals);
+    for local in locals {
+        let keyed_by_text = matches!(&local.ty, Type::Dict(key, _) if **key == Type::Str);
+        if keyed_by_text && !held.iter().any(|(ty, _)| **ty == local.ty) {
+            let in_place = matches!(
+                crate::kinds::Kind::of(layouts, &local.ty),
+                Ok(crate::kinds::Kind::Dict(_, fennec_rt::embed::dicts::Word::InPlace(_)))
+            );
+            held.push((&local.ty, in_place));
         }
     }
-    // A generator's functions are called through its block, so all the same way: with the flag.
-    let mut can_fail: HashSet<&str> = every()
-        .filter(|function| {
-            analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
-        })
-        .map(|function| function.name.as_str())
-        .collect();
-    for def in &program.generators {
-        can_fail.insert(def.resume.as_str());
-        can_fail.extend(def.abandon.as_deref());
-    }
-    let settles = summarized(&functions, &analyses, Tracked::Owners);
-    let lengths = summarized(&functions, &analyses, Tracked::Lengths);
-    let under_locks = crate::rollback::changing_under_locks(&functions);
-    let needs = needed(program, &functions, &analyses, &under_locks);
-    let builders = crate::builders::builders(program, &functions);
-    let constants = every()
-        .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.insts)
-        .filter_map(|inst| match &inst.kind {
-            InstKind::Constant { name, .. } => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
-    let on_workers = crate::parallel::run_on_workers(program);
-    let tasks = crate::ticks::tasks(program, &functions);
-    Whole {
-        functions,
-        analyses,
-        can_fail,
-        generators,
-        settles,
-        lengths,
-        builders,
-        non_negative: crate::signs::non_negative(program),
-        needs,
-        under_locks,
-        constants,
-        on_workers,
-        cells: crate::parallel::has_cells(program),
-        tasks,
-        runtime_closures: crate::closures::runtime_holds_closures(program),
-        tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
-    }
+    held
+}
+
+/// Which of a callee's parameters a call may change, as the analyses on threads ask it.
+type ChangesOn<'f> = &'f (dyn Fn(&str) -> Vec<usize> + Sync);
+
+/// Whether a callee keeps the parameter at a place, as the analyses on threads ask it.
+type KeepsOn<'f> = &'f (dyn Fn(&str, usize) -> bool + Sync);
+
+/// Every function's [`analyze`], on as many threads as a build compiles with: each depends only
+/// on its function and what it's given here, so the order they run in changes nothing.
+fn analyzed<'p>(
+    program: &'p Program,
+    (changes, keeps): (ChangesOn<'_>, KeepsOn<'_>),
+    params: &HashMap<&str, Vec<Range>>,
+    in_entries: &(dyn Fn(&Type) -> bool + Sync),
+) -> HashMap<&'p str, Analysis> {
+    let all: Vec<&Function> = program.functions.iter().chain(&program.constants).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = crate::build::workers().min(all.len()).max(1);
+    std::thread::scope(|scope| {
+        let parts: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(function) = all.get(at) else { break };
+                        let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
+                        mine.push((
+                            function.name.as_str(),
+                            analyze(function, changes, keeps, given, in_entries),
+                        ));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        parts.into_iter().flat_map(joined).collect()
+    })
 }
 
 #[cfg(all(test, not(windows)))]
@@ -4447,6 +4786,74 @@ mod tests {
         let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
         let at = function.locals.iter().position(|local| local.name.as_deref() == Some("unit"));
         Ok(known.taken_over_loop(LocalId(at.ok_or("no `unit`")?)))
+    }
+
+    /// Whether the local called `name` in a function called `go` is made alone on the way into a
+    /// loop, with `imports` before the types.
+    fn alone_in_a_loop(imports: &str, body: &str, name: &str) -> Result<bool, String> {
+        let source = format!("{imports}{TYPES}{body}");
+        let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked =
+            fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}\n{source}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "go")
+            .ok_or_else(|| format!("no `go` among {names:?}"))?;
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
+        let at = function.locals.iter().position(|local| local.name.as_deref() == Some(name));
+        let held = LocalId(at.ok_or_else(|| format!("no `{name}`"))?);
+        Ok(known.alone_in_loops.iter().any(|alone| alone.locals.contains(&held)))
+    }
+
+    /// A list or a `Table` a loop changes is made alone on the way in, once, when nothing in the
+    /// loop can give it another owner, however it's shared before or after. Copied in the loop,
+    /// given to a call or a closure, put inside another value, written anew, held by a task, or
+    /// held as it was by a loop through it from a place, it isn't: each change in the loop checks
+    /// for itself.
+    #[test]
+    fn a_value_a_loop_gives_no_owner_is_made_alone_on_the_way_in() -> Result<(), String> {
+        let summed = "def summed(items: list[int]) -> int:\n    return sum(items)\n\n";
+        let around = |inside: &str| {
+            format!(
+                "{summed}def go(count: int) -> int:\n    mut items = list[int]()\n    mut seen = 0\n    mut lists = list[list[int]]()\n    for at in range(count):\n        items.append(at)\n{inside}    return seen + summed(items) + len(lists)\n"
+            )
+        };
+        assert!(alone_in_a_loop("", &around(""), "items")?, "shared only after the loop");
+        for (what, inside) in [
+            ("copied", "        kept = items\n        seen += len(kept)\n"),
+            ("given to a call", "        seen += summed(items)\n"),
+            ("given to a closure", "        length = () => len(items)\n        seen += length()\n"),
+            ("put inside another value", "        lists.append(items)\n"),
+            ("written anew", "        if at == 3:\n            items = [at]\n"),
+        ] {
+            assert!(
+                !alone_in_a_loop("", &around(inside), "items").map_err(|err| format!("{what}: {err}"))?,
+                "{what}"
+            );
+        }
+        // A loop through it from a place holds it as it was, so it's held twice on the way in:
+        // the body's first append grows it into a block of its own, with no copy made first.
+        let walked = "def go(count: int) -> int:\n    mut items = [1, 2, 3]\n    for item in items[1:]:\n        items.append(item + count)\n    return len(items)\n";
+        assert!(!alone_in_a_loop("", walked, "items")?, "held as it was by a loop through it from a place");
+        let tables = "from std.collections import Id, Table\nfrom std.concurrent import Crashed\n\n";
+        let units = |inside: &str| {
+            format!(
+                "def report(units: Table[Unit]) -> int:\n    return len(units)\n\ndef go(ref units: Table[Unit], ids: list[Id[Unit]]) fails Crashed:\n    for id in ids:\n        units[id].hp += 1\n{inside}    return\n"
+            )
+        };
+        assert!(
+            alone_in_a_loop(tables, &units(""), "units").map_err(|err| format!("a `Table`: {err}"))?,
+            "a `Table` changed by `Id`"
+        );
+        let task = "        with launch(() => report(units))?:\n            pass\n";
+        assert!(
+            !alone_in_a_loop(tables, &units(task), "units").map_err(|err| format!("a task: {err}"))?,
+            "held by a task"
+        );
+        Ok(())
     }
 
     #[test]

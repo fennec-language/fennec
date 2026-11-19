@@ -1324,6 +1324,13 @@ impl Io {
         let outer = RESUMED.replace(Some(task));
         let step = resume(self);
         RESUMED.set(outer);
+        // In a recording or a replay, what the task printed goes out under its own name before its
+        // name is put away: a task that makes way at a tick, or ends, parks without writing it, and
+        // written after, with no task running here, it was logged as `main`'s, so a replay could
+        // put it among `main`'s own lines or tear a line in two (#2033).
+        if crate::replay::active() {
+            super::write_kept_output();
+        }
         super::swap_temporaries(&mut own);
         if !matches!(step, Step::Parked(_)) {
             // A replayed round its recording says a stop or a cancel cut short ends quietly, as a
@@ -1828,9 +1835,10 @@ pub(crate) fn park_stuck(token: Token, note: super::deadlock::Note) -> Parked {
 
 /// Parks this task on `token` until `wake_token` is sent it, whatever it's told meanwhile: a stop
 /// wakes it, as cancelled, without failing it. For a task waiting for work it handed to other
-/// threads, which read what it lent them until they've finished.
-pub(in crate::embed) fn park_through_a_stop(token: Token) -> Parked {
-    park_on_token(token, None, false, None)
+/// threads, which read what it lent them until they've finished. A `stuck` wait, a waiting
+/// `parallel` call's join, leaves its note for the deadlock check.
+pub(in crate::embed) fn park_through_a_stop(token: Token, stuck: Option<super::deadlock::Note>) -> Parked {
+    park_on_token(token, None, false, stuck)
 }
 
 /// `park_on`, which a stop cuts short only if `stoppable`. When it isn't, a stop wakes it, as

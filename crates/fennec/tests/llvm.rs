@@ -3706,6 +3706,55 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
     Ok(())
 }
 
+/// Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
+/// under its error, a number that doesn't fit its size, and a pick from a range given backwards.
+/// Each ends its task as a crash and the program goes on, with nothing left of the messages. The
+/// blocks made for them once outlived the task: 11 of them (#2170).
+#[test]
+fn a_task_that_stops_with_a_message_made_as_it_ran_leaves_nothing() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stops_in_tasks_let_go_of_their_messages")?;
+    let program = dir.join("stops_in_tasks_let_go_of_their_messages.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/stops_in_tasks_let_go_of_their_messages.fen"))?;
+    let (program, executable) =
+        (program.to_string_lossy().into_owned(), dir.join("stops_in_tasks_let_go_of_their_messages"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+            let wanted = include_str!("fixtures/workers/stops_in_tasks_let_go_of_their_messages.out");
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(printed, wanted, "{how:?}, {threads} threads: {errors}");
+            assert!(ran.status.success(), "{how:?}, {threads} threads: {errors}");
+            for said in [
+                "this was expected to succeed (a short word), but it failed",
+                "note: while reading a long word",
+                "it doesn't fit in u8, which holds 0 to 255: 300",
+                "can't pick a number from 22 to 11",
+            ] {
+                assert!(errors.contains(said), "{how:?}, {threads} threads: {errors}");
+            }
+            let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+            assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads: {counts}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Appends written straight in a lock's body, to a list in a dict's value and in a list's item, 300
 /// under one lock and one under each of 300: the dict's lists are changed where they are, taken
 /// out through the lock's handle and saved by its log first. Each of those 600 appends copied its

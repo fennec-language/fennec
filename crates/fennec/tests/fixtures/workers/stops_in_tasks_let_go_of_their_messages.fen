@@ -1,0 +1,61 @@
+# Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
+# under its error, a number that doesn't fit its size, and a pick from a range given backwards.
+# Each task ends as a crash and the program goes on, so the blocks made for each message have to
+# be let go of as it stops, or they outlive the task (#2170).
+from std.concurrent import Crashed
+from std.random import random_int
+
+error Bad:
+    Wrong(why: str)
+
+def parsed(text: str) -> int fails Bad:
+    if len(text) > 3: fail .Wrong(why=f"{text} is longer than three letters")
+    return len(text)
+
+def noted(text: str) -> int fails Bad:
+    return parsed(text) except why:
+        mut noted_why = why
+        noted_why.add_note(f"while reading {text}")
+        fail noted_why
+
+def expected(text: str, stdout: Stdout):
+    letters = parsed(text).expect("a short word")
+    stdout.print(letters)
+
+def expected_with_notes(text: str, stdout: Stdout):
+    letters = noted(text).expect("a short word, noted")
+    stdout.print(letters)
+
+def sized(hundreds: int, stdout: Stdout):
+    stdout.print(u8(hundreds * 100))
+
+def picked(lowest: int, highest: int, stdout: Stdout):
+    value, drawn = random_int(7, 3, highest, lowest)
+    stdout.print(value, drawn)
+
+def expected_in_a_task(text: str, stdout: Stdout) fails Crashed:
+    with launch(() => expected(text, stdout)):
+        pass
+
+def noted_in_a_task(text: str, stdout: Stdout) fails Crashed:
+    with launch(() => expected_with_notes(text, stdout)):
+        pass
+
+def sized_in_a_task(hundreds: int, stdout: Stdout) fails Crashed:
+    with launch(() => sized(hundreds, stdout)):
+        pass
+
+def picked_in_a_task(lowest: int, highest: int, stdout: Stdout) fails Crashed:
+    with launch(() => picked(lowest, highest=highest, stdout=stdout)):
+        pass
+
+def main(stdout: Stdout):
+    word = "a long word"
+    expected_in_a_task(word, stdout) except Crashed():
+        stdout.print("expect crashed")
+    noted_in_a_task(word, stdout) except Crashed():
+        stdout.print("expect with notes crashed")
+    sized_in_a_task(len(word) // 3, stdout) except Crashed():
+        stdout.print("a size crashed")
+    picked_in_a_task(len(word), highest=len(word) * 2, stdout=stdout) except Crashed():
+        stdout.print("a pick crashed")

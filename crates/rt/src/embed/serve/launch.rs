@@ -218,6 +218,9 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
     let thread = with(|state| state.heap.owner_number());
     FAILED_WITH.set(None);
     let how = body(i64::try_from(env).unwrap_or(0), thread);
+    // The generators it let go of partway that wait to be closed are closed as it ends, as its
+    // own: one whose cleanup fails is this task's crash, said here, and never another task's.
+    heap::run_abandons();
     let failure = FAILED_WITH.take().unwrap_or(0);
     let how = match how {
         ENDED if super::super::failed() => CRASHED,

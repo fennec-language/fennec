@@ -141,7 +141,7 @@ impl Emit<'_, '_, '_> {
                 self.retain_inline(&kind, &fields);
                 let word = self.temp();
                 self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
-                (word, "1", Box::new(move |emit: &mut Self| emit.release(&block)))
+                (word, "1", Box::new(move |emit: &mut Self| emit.release_block(&block, &kind)))
             }
             Kind::List(_) | Kind::Str | Kind::Bytes | Kind::Boxed(_) | Kind::Dict(..) => {
                 let word = self.temp();
@@ -182,7 +182,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
                 let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
                 self.read_into(dest, &kind, &fields, "")?;
-                self.release(&block);
+                self.release_block(&block, &kind);
                 Ok(())
             }
             Kind::List(_) | Kind::Str | Kind::Bytes | Kind::Boxed(_) | Kind::Dict(..) => {

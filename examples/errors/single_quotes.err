@@ -1,0 +1,7 @@
+error: a string is written in double quotes
+ --> examples/errors/single_quotes.fen:2:18
+  |
+2 |     stdout.print('hello')
+  |                  ^^^^^^^
+  |
+  = help: write `"hello"`

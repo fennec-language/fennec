@@ -1,0 +1,7 @@
+error: `total` doesn't exist
+ --> examples/errors/used_before_assigned.fen:2:18
+  |
+2 |     stdout.print(total)
+  |                  ^^^^^
+  |
+  = help: give it a value first, as `total = ...`, or check the spelling

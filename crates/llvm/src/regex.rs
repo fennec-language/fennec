@@ -155,7 +155,7 @@ impl Emit<'_, '_, '_> {
                     Ok(())
                 });
                 at_match?;
-                self.release(&places);
+                self.release_quietly(&places);
                 self.assign(dest, &found)
             }
             "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
@@ -173,7 +173,7 @@ impl Emit<'_, '_, '_> {
                 self.leave_if_failed();
                 let groups = self.group_count(&pattern);
                 self.optional_match(dest, &whole, &places, &groups, span)?;
-                self.release(&places);
+                self.release_quietly(&places);
                 Ok(())
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),

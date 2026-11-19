@@ -1,0 +1,7 @@
+error: `open` doesn't exist
+ --> examples/errors/open.fen:2:10
+  |
+2 |     with open("notes.txt") as notes:
+  |          ^^^^
+  |
+  = help: import it from std.sqlite, like `from std.sqlite import open`

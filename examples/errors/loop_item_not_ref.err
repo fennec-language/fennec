@@ -1,0 +1,7 @@
+error: `player` isn't `ref`
+ --> examples/errors/loop_item_not_ref.fen:7:9
+  |
+7 |         player.score += 1
+  |         ^^^^^^^^^^^^
+  |
+  = help: loop with `for ref player in ...` to change each item

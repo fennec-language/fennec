@@ -135,7 +135,7 @@ fn a_name_with_two_underscores_in_a_row_is_the_compilers() {
         ("x = f\"{len(a__b)}\"", "a__b"),
         ("x = f\"{ a} { a__b:>3}\"", "a__b"),
         ("x = t\"{ a__b}\"", "a__b"),
-        ("x = __init__", "__init__"),
+        ("x = __held", "__held"),
     ] {
         let error = fennec_syntax::parse(&format!("{source}\n")).err();
         let said =
@@ -153,6 +153,14 @@ fn a_name_with_two_underscores_in_a_row_is_the_compilers() {
         );
     }
     assert!(fennec_syntax::parse("x = \"a__b is text\"\n").is_ok());
+    // One of Python's special names says what it's written as in Fennec, with no fix: `_init_`
+    // would be wrong.
+    let python = fennec_syntax::parse("x = __init__\n").err();
+    assert_eq!(
+        python.as_ref().map(|diagnostic| diagnostic.message.as_str()),
+        Some("Fennec doesn't have `__init__`")
+    );
+    assert!(python.is_some_and(|diagnostic| diagnostic.fixes.is_empty() && diagnostic.help.is_some()));
     // What's in braces is read as the parser reads it, past a leading space, and pointed at there.
     assert!(fennec_syntax::parse("x = f\"{ a} { b:>3}\"\n").is_ok());
     let spaced = "x = f\"{  a__b}\"\n";

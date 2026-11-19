@@ -1,0 +1,12 @@
+struct Circle:
+    radius: float
+
+struct Square:
+    side: float
+
+type Shape = Circle | Square
+
+def main(stdout: Stdout):
+    shape: Shape = Circle(radius=1.0)
+    if isinstance(shape, Circle):
+        stdout.print(shape.radius)

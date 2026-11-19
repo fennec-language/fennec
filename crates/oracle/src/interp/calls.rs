@@ -176,12 +176,55 @@ impl Interp {
         given: Vec<ArgVal>,
         expr: &'static Expr,
     ) -> Run<Value> {
-        let changes = changes_what_it_reaches(&target, &given);
+        let changes = match self.changes_what_it_reaches(&target, &given, expr.span)? {
+            Some(changes) => changes,
+            // Nothing read through a type's own `def []` waits to be written back, so it doesn't
+            // matter.
+            None if self.write_backs.len() <= mark => false,
+            None => {
+                let name = match &target {
+                    Target::Method { name, .. } => name.as_str(),
+                    _ => "",
+                };
+                return unsupported(format!(
+                    "the method `{name}` through a type's own `def []`, not known to change its value or only read it"
+                ));
+            }
+        };
         let called = self.invoke(target, given, expr);
         if !changes {
             self.settle_write_backs(mark, false, expr.span)?;
         }
         self.settled(mark, called, expr.span)
+    }
+
+    /// Whether a call can change what it reaches through places: a method that takes `self` as a
+    /// `ref`, a built-in method that changes its value, or a `ref` argument. `None` for a built-in
+    /// method on a place that's neither known to change its value nor known only to read it.
+    fn changes_what_it_reaches(
+        &mut self,
+        target: &Target,
+        given: &[ArgVal],
+        span: Span,
+    ) -> Run<Option<bool>> {
+        if given.iter().any(|arg| matches!(arg, ArgVal::Ref(..))) {
+            return Ok(Some(true));
+        }
+        Ok(match target {
+            Target::Def { def, receiver: Some(Receiver::Place(_)), .. } => {
+                Some(super::own_index::takes_ref_self(def))
+            }
+            Target::Method { receiver: Receiver::Place(place), name, .. } => {
+                if super::methods::changes(name) {
+                    Some(true)
+                } else if self.peek_place(place, span, |held| super::methods::reads(held, name))? {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            _ => Some(false),
+        })
     }
 
     /// Works out what a call calls and its arguments, left to right, without calling it.
@@ -1017,19 +1060,6 @@ fn type_names(ty: &Type, names: &mut Vec<String>) {
 /// A type as a generator prints it, with the program's own type names as they're written.
 pub(crate) fn shown_type(ty: &Type) -> String {
     ty.to_string().replace(fennec_syntax::rename::RENAMED, "")
-}
-
-/// Whether a call can change what it reaches through places: a method that takes `self` as a
-/// `ref`, a built-in method that changes its value, or a `ref` argument.
-fn changes_what_it_reaches(target: &Target, given: &[ArgVal]) -> bool {
-    let receiver_changes = match target {
-        Target::Def { def, receiver: Some(Receiver::Place(_)), .. } => super::own_index::takes_ref_self(def),
-        Target::Method { receiver: Receiver::Place(_), name, .. } => {
-            super::methods::CHANGES.contains(&name.as_str())
-        }
-        _ => false,
-    };
-    receiver_changes || given.iter().any(|arg| matches!(arg, ArgVal::Ref(..)))
 }
 
 /// The intrinsics that answer for the type they're called with, `T` in `shape_hash[T]()`: what

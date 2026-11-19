@@ -355,14 +355,14 @@ impl Emit<'_, '_, '_> {
             self.line(&format!(
                 "{result} = call ptr @fennec_list_sorted_by_keys_with(ptr {list}, ptr {keys}, ptr {compare})"
             ));
-            self.release(&keys);
+            self.release_quietly(&keys);
             return self.assign(dest, &result);
         }
         let how = Self::sort_kind(&kind)?;
         self.declare("declare ptr @fennec_list_sorted_by(ptr, ptr, i64) nounwind");
         let result = self.temp();
         self.line(&format!("{result} = call ptr @fennec_list_sorted_by(ptr {list}, ptr {keys}, i64 {how})"));
-        self.release(&keys);
+        self.release_quietly(&keys);
         self.assign(dest, &result)
     }
 
@@ -404,14 +404,14 @@ impl Emit<'_, '_, '_> {
             self.line(&format!(
                 "call void @fennec_list_sort_by_keys_with(ptr {owned}, ptr {keys}, ptr {compare})"
             ));
-            self.release(&keys);
+            self.release_quietly(&keys);
             self.leave_if_failed();
             return Ok(());
         }
         let how = Self::sort_kind(&kind)?;
         self.declare("declare void @fennec_list_sort_by(ptr, ptr, i64) nounwind");
         self.line(&format!("call void @fennec_list_sort_by(ptr {owned}, ptr {keys}, i64 {how})"));
-        self.release(&keys);
+        self.release_quietly(&keys);
         Ok(())
     }
 
@@ -515,7 +515,7 @@ impl Emit<'_, '_, '_> {
         let (let_go, kept) = (self.label("keys_let_go"), self.label("keys_kept"));
         self.line(&format!("br i1 {failed}, label %{let_go}, label %{kept}, !prof !0"));
         self.start_block(&let_go);
-        self.release(&keys);
+        self.release_quietly(&keys);
         self.leave_traced("true", span);
         self.line("unreachable");
         self.start_block(&kept);

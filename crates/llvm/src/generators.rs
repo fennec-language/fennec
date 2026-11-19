@@ -233,6 +233,23 @@ impl<'p> Emit<'_, '_, 'p> {
         self.stop_then(text, span, "");
     }
 
+    /// Ends the program with a string's text, letting go of what `let_go` does once the runtime
+    /// has taken the text, as the failure's set.
+    pub(crate) fn stop_letting_go(&mut self, text: &str, span: Span, let_go: impl FnOnce(&mut Self)) {
+        self.declare("declare void @fennec_stop(ptr, i64, i64) #1");
+        let label = self.label("stop");
+        let (place, args) = self.span_values(&label, span);
+        for line in place.lines() {
+            self.line(line.trim_start());
+        }
+        self.line(&format!("call void @fennec_stop(ptr {text}, {args})"));
+        let_go(self);
+        // Stopping is what the program says to do, not a check.
+        self.next_check(span, None);
+        let failed = self.failed_exit();
+        self.line(&failed);
+    }
+
     /// Ends the program with a string's text, doing `then` once the failure's set.
     pub(crate) fn stop_then(&mut self, text: &str, span: Span, then: &str) {
         self.declare("declare void @fennec_stop(ptr, i64, i64) #1");

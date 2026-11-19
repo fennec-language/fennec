@@ -515,6 +515,9 @@ impl Run {
         } else {
             body()
         };
+        // The generators it let go of partway that wait to be closed are closed as it ends, as a
+        // task's are, where it ran rather than in whatever this thread runs next.
+        super::heap::run_abandons();
         if code != 0 && off_its_caller {
             with(|state| {
                 state.temps.clear();

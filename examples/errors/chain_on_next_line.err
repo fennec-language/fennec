@@ -1,0 +1,7 @@
+error: a chain of calls goes on to the next line only inside brackets
+ --> examples/errors/chain_on_next_line.fen:4:9
+  |
+4 |         .strip()
+  |         ^^^^^^
+  |
+  = help: open a `(` before the chain's first value and close it after its last call, as `short = (text` with `.upper())` on the last line

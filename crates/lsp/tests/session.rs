@@ -838,7 +838,7 @@ fn copies_in_loops_are_marked_and_none_is_a_mistake() {
     let mut editor = Editor::new("inlay-copies").unwrap();
     let once = format!(
         "{MAIN}\ndef once(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    for at in range(n):\n        \
-         xs[0] = at\n    snapshot.len() + xs.len()\n"
+         xs[0] = at\n    return len(snapshot) + len(xs)\n"
     );
     let published = editor.open("src/main.fen", &once);
     assert!(
@@ -853,7 +853,7 @@ fn copies_in_loops_are_marked_and_none_is_a_mistake() {
     assert!(hints.iter().any(|(label, line, _)| label == "copies once" && *line == 14), "{hints:?}");
     let each = format!(
         "{MAIN}\ndef each(n: int) -> int:\n    mut xs = [n]\n    mut total = 0\n    for at in range(n):\n        \
-         snapshot = xs\n        xs[0] = at\n        total += snapshot.len()\n    total\n"
+         snapshot = xs\n        xs[0] = at\n        total += len(snapshot)\n    return total\n"
     );
     let published = editor.change("src/main.fen", &each);
     let found = for_file(&published, "main.fen").unwrap();

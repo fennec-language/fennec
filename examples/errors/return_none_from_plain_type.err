@@ -1,0 +1,7 @@
+error: this might be None
+ --> examples/errors/return_none_from_plain_type.fen:4:12
+  |
+4 |     return None
+  |            ^^^^
+  |
+  = help: check with `if x is None:` first, or give a default with `else`

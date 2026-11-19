@@ -23,6 +23,7 @@ use super::ast::{
     SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
 use super::ast::{FILE_PIECES, FileWay, Filing};
+use super::ast::{GenericStep, Genericking};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
@@ -1948,6 +1949,7 @@ impl Machine {
             Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::Turned(turning) => self.turned(turning)?,
             Stmt::Filed(filing) => self.filed(filing),
+            Stmt::Generic(generic) => self.generic(generic),
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
@@ -3021,6 +3023,64 @@ impl Machine {
         let _ = writeln!(self.out, "rows [{}] {rows_writes}", lists.join(", "));
         let _ = writeln!(self.out, "slots {}", shown(&Value::Ints(slots.to_vec())));
         Ok(())
+    }
+
+    /// What `generic{id}` prints: generic code given values of one type, each value its text alone,
+    /// since generic code can't look inside it. Copies change apart, and a `ref` changes the place
+    /// it names.
+    fn generic(&mut self, generic: &Genericking) {
+        #[derive(Clone)]
+        struct Held {
+            item: String,
+            items: Vec<String>,
+        }
+        impl Held {
+            fn put(&mut self, value: &str) {
+                self.items.push(std::mem::replace(&mut self.item, value.to_owned()));
+            }
+        }
+        let id = generic.id;
+        let shown =
+            |held: &Held| format!("Holder{id}(item={}, items=[{}])", held.item, held.items.join(", "));
+        let values = generic.ty.values(id);
+        let value = |at: usize| values.get(at).map_or(String::new(), |(_, printed)| printed.clone());
+        let mut holder = Held { item: value(0), items: Vec::new() };
+        let mut other = Held { item: value(1), items: vec![value(2)] };
+        let mut outer = holder.clone();
+        let mut pair = [holder.clone(), other.clone()];
+        let mut table = other.clone();
+        for &(step, which, count) in &generic.steps {
+            let v = value(which);
+            match step {
+                GenericStep::Put => holder.put(&v),
+                GenericStep::Grown => holder.items.extend(std::iter::repeat_n(v, count)),
+                GenericStep::Swapped => std::mem::swap(&mut holder.item, &mut other.item),
+                GenericStep::SwappedItems => std::mem::swap(&mut holder.items, &mut other.items),
+                GenericStep::Copied => {
+                    let mut copy = holder.clone();
+                    copy.put(&v);
+                    let _ = writeln!(self.out, "{}", shown(&copy));
+                }
+                GenericStep::Doubled => {
+                    let _ = writeln!(self.out, "[{0}, {0}]", holder.item);
+                }
+                GenericStep::Oldest => {
+                    let _ = writeln!(self.out, "[{}]", holder.items.first().unwrap_or(&holder.item));
+                }
+                GenericStep::Nested => outer.put(&v),
+                GenericStep::ForRef => pair.iter_mut().for_each(|each| each.put(&v)),
+                GenericStep::Popped => {
+                    let taken = holder.items.pop().unwrap_or_else(|| holder.item.clone());
+                    let _ = writeln!(self.out, "[{taken}]");
+                }
+                GenericStep::DictPut => table.put(&v),
+            }
+        }
+        let _ = writeln!(self.out, "{}", shown(&holder));
+        let _ = writeln!(self.out, "{}", shown(&other));
+        let _ = writeln!(self.out, "Holder{id}(item={}, items=[])", shown(&outer));
+        let _ = writeln!(self.out, "[{}, {}]", shown(&pair[0]), shown(&pair[1]));
+        let _ = writeln!(self.out, "{{\"k\": {}}}", shown(&table));
     }
 
     /// What `ordered{id}` prints: each line read left to right, as `ordered_written` writes it,

@@ -2,18 +2,36 @@
 ## operations the engines provide.
 extend list[T]:
     ## Adds every item of `more` to the end, in order.
+    ##
+    ## ```fennec
+    ## mut items = [1, 2]
+    ## items.extend([3, 4])
+    ## assert items == [1, 2, 3, 4]
+    ## ```
     def extend(ref self, more: list[T]):
         for item in more:
             self.append(item)
 
     ## The item at `at`, counting from the end when it's negative as `self[at]` does, or `None`
     ## when there's no item there, where `self[at]` would stop the program.
+    ##
+    ## ```fennec
+    ## items = ["a", "b", "c"]
+    ## assert items.get(-1) == "c"
+    ## assert items.get(5) is None
+    ## ```
     def get(self, at: int) -> T?:
         size = len(self)
         if at >= size or at < -size: return None
         return self[at]
 
     ## Reverses the items in place.
+    ##
+    ## ```fennec
+    ## mut items = [1, 2, 3]
+    ## items.reverse()
+    ## assert items == [3, 2, 1]
+    ## ```
     def reverse(ref self):
         mut low = 0
         mut high = len(self) - 1
@@ -27,6 +45,12 @@ extend list[T]:
     ## Swaps the items at `i` and `j`, in place, counting from the end when either is negative, as
     ## `self[at]` does. Each has to be there. It's how two items of one list change places, since
     ## `f(ref xs[i], ref xs[j])` is refused: `i` and `j` may be the same.
+    ##
+    ## ```fennec
+    ## mut items = ["a", "b", "c"]
+    ## items.swap(0, -1)
+    ## assert items == ["c", "b", "a"]
+    ## ```
     def swap(ref self, i: int, j: int):
         held = self[i]
         self[i] = self[j]
@@ -35,6 +59,10 @@ extend list[T]:
 ## Methods for lists whose items can be compared with `==`.
 extend list[T: Eq]:
     ## How many items equal `item`.
+    ##
+    ## ```fennec
+    ## assert [1, 2, 1, 1].count(1) == 3
+    ## ```
     def count(self, item: T) -> int:
         mut found = 0
         for each in self:
@@ -43,15 +71,30 @@ extend list[T: Eq]:
         return found
 
     ## Where `item` first is, or None when it isn't there.
+    ##
+    ## ```fennec
+    ## assert ["a", "b", "a"].index("a") == 0
+    ## assert ["a"].index("z") is None
+    ## ```
     def index(self, item: T) -> int?:
         for at, each in enumerate(self):
             if each == item: return at
         return None
 
 extend list[T: Serializable]:
+    ## Writes the list for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps([1, 2]) == "[1, 2]"
+    ## ```
     def serialize(self, ref out: Serializer):
         out.sequence(self)
 
 extend list[T: Deserializable]:
+    ## Reads a list for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[list[int]]("[1, 2]")? == [1, 2]
+    ## ```
     def deserialize(ref src: Deserializer) -> list[T] fails ParseError:
         return src.sequence[T]()?

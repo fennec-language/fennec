@@ -82,8 +82,14 @@ export struct Response:
 ## `std.net`, and the key is a `Secret`, so it can't be printed, logged or saved by accident.
 ##
 ## ```fennec
+## from std.crypto import Secret
+## from std.net import Certificate
+##
+## fs.write_text("cert.pem", "-----BEGIN CERTIFICATE-----")?
+## fs.write_text("key.pem", "-----BEGIN PRIVATE KEY-----")?
 ## key = Secret.of(fs.read_text("key.pem")?)
 ## certificate = Certificate(chain=fs.read_text("cert.pem")?, key=key)
+## assert certificate.chain.startswith("-----BEGIN CERTIFICATE")
 ## ```
 export struct Certificate:
     chain: str
@@ -372,10 +378,19 @@ NOT_FOUND = Response(status=404, body="there's nothing here".encode())
 ## Sends each request to the handler of the route its method and path match:
 ##
 ## ```fennec
+## from std.net import Request, Response, Router
+##
 ## mut router = Router()
-## router.handle("GET /notes/{id}", (request, found) => shown(notes, request, found))
-## server.serve(router)
+## router.handle(
+##     "GET /notes/{id}",
+##     (request, found) => Response(status=200, body=f"{request.method} {found.text_at(0)}".encode()),
+## )
+## answer = router.respond(Request(method="GET", path="/notes/7"))
+## assert answer.status == 200 and answer.text() == "GET 7"
+## assert router.respond(Request(method="GET", path="/elsewhere")).status == 404
 ## ```
+##
+## `server.serve(router)` answers each request a server gets with it.
 ##
 ## A route's `{name}` matches one segment of the path, which its handler reads from `Captured` by
 ## its place among the route's parameters. A handler gives `Response.not_found()` for a segment

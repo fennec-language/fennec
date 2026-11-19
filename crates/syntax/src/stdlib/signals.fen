@@ -7,11 +7,12 @@
 ## which waits until one is; a task parks on it. A test's `Signals` is a fake that stops only when
 ## the test calls `stop()`. Only `main` and tests are given one: it can't be made.
 ##
-## ```fennec
+## ```fennec check
 ## def main(signals: Signals, stdout: Stdout):
+##     mut frames = 0
 ##     while not signals.stopping():
-##         frame()
-##     stdout.print("saved and stopped")
+##         frames += 1
+##     stdout.print(f"stopped after {frames} frames")
 ## ```
 export struct Signals:
     _given: int

@@ -22,5 +22,6 @@ mod projects;
 mod reached_runs;
 mod replay;
 mod selfhost;
+mod std_docs;
 mod syntax_errors;
 mod unchanged_tests;

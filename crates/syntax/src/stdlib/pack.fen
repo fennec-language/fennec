@@ -10,8 +10,14 @@
 ## ```fennec
 ## from std import pack
 ##
+## struct World:
+##     name: str
+##     size: int
+##
+## world = World(name="dune", size=3)
 ## data = pack.dumps(world)
 ## back = pack.loads[World](data)?
+## assert back == world
 ## ```
 ##
 ## Loading checks every length against what's left and against `Limits` before it takes
@@ -86,10 +92,17 @@ export def loads[T: Deserializable](data: bytes, limits: Limits? = None) -> T fa
 ## each beyond the values themselves.
 ##
 ## ```fennec
+## from std import pack
+##
+## struct Entry:
+##     path: str
+##     size: int
+##
 ## mut out = pack.Packer()
-## for entry in entries:
+## for entry in [Entry(path="a.txt", size=10), Entry(path="b.txt", size=20)]:
 ##     out.add(entry)
-## fs.write_bytes(path, out.bytes())?
+## fs.write_bytes("entries.pack", out.bytes())?
+## assert len(fs.read_bytes("entries.pack")?) > 0
 ## ```
 ##
 ## The bytes start with `FPKS`, or `FPKT` with `Table`s slot for slot. Then each record starts
@@ -150,9 +163,20 @@ export struct Packer:
 ## earlier version of the program's type.
 ##
 ## ```fennec
-## mut src = pack.Unpacker.of(fs.read_bytes(path)?)
+## from std import pack
+##
+## struct Note:
+##     text: str
+##
+## mut out = pack.Packer()
+## out.add(Note(text="one"))
+## out.add(Note(text="two"))
+## mut src = pack.Unpacker.of(out.bytes())
+## mut read = list[str]()
 ## while True:
-##     entry = src.next[Entry]()? else break
+##     note = src.next[Note]()? else break
+##     read.append(note.text)
+## assert read == ["one", "two"]
 ## ```
 export struct Unpacker:
     _data = bytes(list[int]())

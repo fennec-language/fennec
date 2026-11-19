@@ -305,13 +305,14 @@ fn written(text: &str, indent: usize) -> String {
 }
 
 /// The `##` doc comment on the lines just above the line starting at `line_start`, without
-/// its markers.
+/// its markers. An annotation between it and the declaration, like `@hot`, is passed over.
 pub(crate) fn doc_comment(text: &str, line_start: usize) -> String {
     let above = text.get(..line_start).unwrap_or("");
     let mut lines: Vec<&str> = above
         .lines()
         .rev()
         .map(str::trim_start)
+        .skip_while(|line| line.starts_with('@'))
         .take_while(|line| line.starts_with("##"))
         .map(|line| {
             line.trim_start_matches("##").strip_prefix(' ').unwrap_or_else(|| line.trim_start_matches("##"))

@@ -175,3 +175,59 @@ extend str:
 
     def deserialize(ref src: Deserializer) -> str fails ParseError:
         return src.text()?
+
+## `str`'s methods the engines provide. Each is declared here for its signature and its doc, and a
+## test holds it to the checker's own.
+extend str:
+    ## How many characters the text has: `len("café")` is 4.
+    @intrinsic
+    def len(self) -> int
+
+    ## The text in upper case, as Unicode has it: `"Straße".upper()` is `"STRASSE"`.
+    @intrinsic
+    def upper(self) -> str
+
+    ## The text in lower case, as Unicode has it.
+    @intrinsic
+    def lower(self) -> str
+
+    ## The text without the whitespace at either end.
+    @intrinsic
+    def strip(self) -> str
+
+    ## The text without the whitespace at its start.
+    @intrinsic
+    def lstrip(self) -> str
+
+    ## The text without the whitespace at its end.
+    @intrinsic
+    def rstrip(self) -> str
+
+    ## The parts of the text between each `separator`, as many as there are separators and one
+    ## more. Left out, it splits on runs of whitespace and drops what's empty, as Python does.
+    @intrinsic
+    def split(self, separator: str? = None) -> list[str]
+
+    ## The text with each `old` replaced by `new`.
+    @intrinsic
+    def replace(self, old: str, new: str) -> str
+
+    ## Where the first `part` in the text starts, or `None` if it isn't there.
+    @intrinsic
+    def find(self, part: str) -> int?
+
+    ## `parts` joined with this text between each two: `", ".join(["a", "b"])` is `"a, b"`.
+    @intrinsic
+    def join(self, parts: list[str]) -> str
+
+    ## The text's UTF-8 bytes.
+    @intrinsic
+    def encode(self) -> bytes
+
+    ## The Unicode code point of a text of one character: `"A".code()` is 65.
+    @intrinsic
+    def code(self) -> int
+
+    ## The Unicode code point of each character, in order.
+    @intrinsic
+    def codes(self) -> list[int]

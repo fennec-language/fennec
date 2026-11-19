@@ -597,6 +597,35 @@ fn the_standard_librarys_declarations_are_found_in_a_copy_of_its_files() {
     assert_eq!(editor.request("textDocument/rename", params), Json::string("no result"));
 }
 
+/// A method the engines provide is declared in std's files too, for its signature and its doc, so a
+/// hover shows them and going to it goes to its declaration, as for a method written in Fennec.
+#[test]
+fn an_engine_methods_declaration_is_shown_and_found() {
+    let mut editor = Editor::new("engine-methods").unwrap();
+    let text =
+        "def main(stdout: Stdout):\n    name = \"ana\"\n    stdout.print(name.upper(), name.split(\",\"))\n";
+    editor.open("src/main.fen", text);
+    let hover = editor.at("textDocument/hover", "src/main.fen", text, "upper()", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert_eq!(
+        shown,
+        "```fennec\ndef upper(self) -> str\n```\n\nThe text in upper case, as Unicode has it: `\"Straße\".upper()` is `\"STRASSE\"`."
+    );
+    let found = editor.at("textDocument/definition", "src/main.fen", text, "split(", 0);
+    let found = &found.as_array().unwrap()[0];
+    let uri = found.get("uri").and_then(Json::as_str).unwrap();
+    assert!(uri.ends_with("/str.fen"), "{uri}");
+    let copy = std::fs::read_to_string(fennec_lsp::path_of(uri).unwrap()).unwrap();
+    let line = copy.lines().nth(line_of(found)).unwrap();
+    assert!(line.starts_with("    def split(self, separator: str? = None)"), "{line}");
+    // An annotation between a declaration and its doc, as a program's `@hot` is, is passed over.
+    let hot = "## Twice `n`.\n@hot\ndef twice(n: int) -> int:\n    return n * 2\n\ndef main(stdout: Stdout):\n    stdout.print(twice(2))\n";
+    editor.change("src/main.fen", hot);
+    let hover = editor.at("textDocument/hover", "src/main.fen", hot, "twice(2)", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert_eq!(shown, "```fennec\ndef twice(n: int) -> int\n```\n\nTwice `n`.");
+}
+
 /// A request about the place in `file` where `needle` starts, plus `into` characters, with more
 /// parameters.
 fn params_at(editor: &Editor, file: &str, text: &str, needle: &str, more: Vec<(&str, Json)>) -> Json {

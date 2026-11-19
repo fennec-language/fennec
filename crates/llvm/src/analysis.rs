@@ -2693,6 +2693,7 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
             let Some((root, path)) = put_back_to(function, known, *item, index) else { continue };
             if comes_from(function, known, *from, (root, &path))
                 && stays_apart(function, known, (start, at + 2), (*item, *from, index), (root, &path))
+                && read_before_put_back_again(function, (start, at), *item)
             {
                 for local in [*read, *item] {
                     known.taken.insert(local.0);
@@ -2702,6 +2703,54 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
             }
         }
     }
+}
+
+/// Whether every way on from where `item` is put back reaches the read at `read` again, or leaves,
+/// before it can come to the put-back again. `stays_apart` follows each way from the read only as
+/// far as the put-back, so a loop around the put-back alone, as `while True:` with its way out
+/// after it makes, would put the item back twice from one read: the second time into a slot
+/// that may be gone, and with what the first put back changed in place since showing through.
+fn read_before_put_back_again(function: &Function, read: (usize, usize), item: LocalId) -> bool {
+    let is_back = |inst: &InstKind| matches!(inst, InstKind::SetIndex { value: Operand::Local(put), .. } if *put == item);
+    let backs: Vec<(usize, usize)> = function
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(at, block)| {
+            block
+                .insts
+                .iter()
+                .enumerate()
+                .filter(|(_, inst)| is_back(&inst.kind))
+                .map(move |(index, _)| (at, index))
+        })
+        .collect();
+    for (back_block, back_at) in backs {
+        let mut seen = HashSet::new();
+        let mut waiting = vec![(back_block, back_at + 1)];
+        while let Some((at, first)) = waiting.pop() {
+            let Some(block) = function.blocks.get(at) else { return false };
+            let mut ended = false;
+            for (index, inst) in block.insts.iter().enumerate().skip(first) {
+                if (at, index) == read {
+                    ended = true;
+                    break;
+                }
+                if is_back(&inst.kind) {
+                    return false;
+                }
+            }
+            if ended {
+                continue;
+            }
+            for target in block.end.targets() {
+                if seen.insert(target.0) {
+                    waiting.push((target.0, 0));
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Where a local is put back, when that's one place and by a key equal to `index`: the same

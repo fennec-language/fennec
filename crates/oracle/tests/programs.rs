@@ -3183,6 +3183,86 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
                         hits.send(2)?
         ";
 
+/// A listener started in a task beside the block's sends hears them or not by time: each place it
+/// could start among them is tried, and here they print differently, so the run is refused. One
+/// started before the sends, which its task says before they go, hears them all. A timed wait that
+/// times out comes after every other task got as far as it could, so a listener that exists then
+/// started before what's sent after, and a handshake repeating its send until it's heard has an
+/// end, as the fuzzer's does. An untimed wait says nothing about that: a listener whose task
+/// waits beside the sends, untimed, is still tried at each place, and here one way hangs (#2115).
+#[test]
+fn a_listener_started_beside_a_send_is_tried_at_each_place_it_could_start() {
+    prints(LISTENER_STARTED_FIRST, "heard 1 2\n");
+    let (printed, ended) = ran(LISTENER_STARTED_BESIDE_SENDS);
+    let refused = "what it prints, or how it ends, hangs on the order its tasks' messages come in: line 1 is \"heard []\" in one order and \"heard [2]\" in another";
+    assert_eq!(ended, Ended::Unsupported(refused.to_owned()), "{printed}");
+    let (printed, ended) = ran(LISTENER_STARTED_BESIDE_SENDS_AFTER_AN_UNTIMED_WAIT);
+    let hangs = "every task waits on another, so the program hangs";
+    assert_eq!(ended, Ended::Unsupported(hangs.to_owned()), "{printed}");
+}
+
+const LISTENER_STARTED_BESIDE_SENDS_AFTER_AN_UNTIMED_WAIT: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Sender, channel
+
+        def listening(hits: Channel[int], stdout: Stdout):
+            inbox = hits.inbox()
+            first = inbox.receive() else -1
+            stdout.print('heard', first)
+
+        def signalling(ready: Sender[int]) fails Closed:
+            ready.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=4, to=.Every) as hits, channel[int](size=1) as ready:
+                with launch(() => listening(hits, stdout=stdout))?:
+                    with launch(() => signalling(ready.sender())?)?:
+                        _ = ready.receive() else -1
+                        hits.send(1)?
+                        hits.send(2)?
+        ";
+
+const LISTENER_STARTED_FIRST: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Sender, channel
+
+        def listening(hits: Channel[int], ready: Sender[int], stdout: Stdout) fails Closed:
+            inbox = hits.inbox()
+            ready.send(0)?
+            first = inbox.receive() else -1
+            second = inbox.receive() else -1
+            stdout.print('heard', first, second)
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=4, to=.Every) as hits, channel[int](size=1) as ready:
+                with launch(() => listening(hits, ready=ready.sender(), stdout=stdout)?)?:
+                    _ = ready.receive() else -1
+                    hits.send(1)?
+                    hits.send(2)?
+        ";
+
+const LISTENER_STARTED_BESIDE_SENDS: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Sender, Timeout, channel
+
+        def listening(hits: Channel[int], replies: Sender[int], stdout: Stdout) fails Closed:
+            mut got: list[int] = []
+            for hit in hits.listen():
+                if hit < 0:
+                    replies.send(0)?
+                    break
+                got.append(hit)
+            stdout.print('heard', got)
+
+        def main(stdout: Stdout) fails Closed | Crashed | Timeout:
+            with channel[int](size=8, to=.Every) as hits, channel[int](size=1) as replies:
+                with launch(() => listening(hits, replies=replies.sender(), stdout=stdout)?)?:
+                    hits.send(1)?
+                    hits.send(2)?
+                    while True:
+                        hits.send(-1)?
+                        heard = replies.receive_within(2ms) except Timeout(): continue
+                        if heard is not None:
+                            break
+        ";
+
 /// A wait of no time looks once, as the runtime's does: what it finds is the same on every run
 /// only when nothing else could still send, take or close, and what it finds was there before it.
 /// A receive of no time beside a task that sends, which the compiled program finds empty, was read

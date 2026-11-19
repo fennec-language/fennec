@@ -651,7 +651,7 @@ impl Lowering<'_> {
                 };
                 let items = self.temporary(Type::List(item.clone()));
                 self.emit(InstKind::Call { dest: Some(items), function, args: vec![value] }, span);
-                return self.count_through(names, (items, *item), (Operand::Int(0), back), span, body);
+                return self.count_through(names, (items, *item), back, span, body);
             }
             other => return Err(format!("it has a `for` loop over {other}")),
         };
@@ -668,7 +668,105 @@ impl Lowering<'_> {
             },
             span,
         );
-        self.count_through(names, (items, item), (Operand::Int(0), back), span, body)
+        self.count_through(names, (items, item), back, span, body)
+    }
+
+    /// `for x in xs[a:b]`: the list's own items from where the slice starts to where it ends,
+    /// with no list made of them. The bounds are the slice's, as [`Self::slice_bound`] places
+    /// them, and the loop goes while its count is short of the end, so an end before the start
+    /// makes no turns, as that slice is empty. What the slice is of and its bounds are worked out
+    /// first, in order, as the slice works them out. The list goes into the loop as any list a
+    /// loop goes through does, so the body changing `xs` changes nothing here.
+    fn through_part_of<F>(
+        &mut self,
+        names: &[String],
+        (object, (start, end), item): (&Expr, (Option<&Expr>, Option<&Expr>), Type),
+        span: Span,
+        body: F,
+    ) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
+        let list = Type::List(Box::new(item.clone()));
+        let mut reads = super::order::Reads::default();
+        let value = self.expr(object)?;
+        reads.add(self, value);
+        for bound in [start, end].into_iter().flatten() {
+            let bound = self.expr(bound)?;
+            reads.add(self, bound);
+        }
+        let mut values = reads.finish(self, span).into_iter();
+        let value = values.next().ok_or("a slice lost what it's of")?;
+        let start = if start.is_some() { values.next() } else { None };
+        let end = if end.is_some() { values.next() } else { None };
+        let items = self.temporary(list);
+        self.emit(InstKind::Copy { dest: items, value }, span);
+        let length = self.temporary(Type::Int);
+        let args = vec![Operand::Local(items)];
+        self.emit(
+            InstKind::Builtin { dest: Some(length), name: "list.len".to_owned(), args, changes: false },
+            span,
+        );
+        let first = match start {
+            Some(at) => self.slice_bound(at, (length, false), span),
+            None => Operand::Int(0),
+        };
+        let limit = match end {
+            Some(at) => self.slice_bound(at, (length, true), span),
+            None => Operand::Local(length),
+        };
+        let counting = Counting { names, first, limit, down: false, items: Some((items, item)), back: None };
+        self.counting(counting, span, body)
+    }
+
+    /// Where a slice's bound puts a loop's count in a list `length` long: one below 0 counts from
+    /// the end. Only what the loop's test, its count short of the end, leaves open is held: a
+    /// start at 0 or past it, so no item before the list's first is read, and an end at the
+    /// length or before it, so none past its last is. A start past the end makes no turns, as
+    /// that slice is empty, and a start written as a number that isn't negative is taken as it
+    /// is.
+    fn slice_bound(&mut self, at: Operand, (length, end): (LocalId, bool), span: Span) -> Operand {
+        let written = matches!(at, Operand::Int(written) if written >= 0);
+        if written && !end {
+            return at;
+        }
+        let bound = self.temporary(Type::Int);
+        self.emit(InstKind::Copy { dest: bound, value: at.clone() }, span);
+        if !written {
+            let negative = self.temporary(Type::Bool);
+            let (lhs, rhs) = (at.clone(), Operand::Int(0));
+            self.emit(InstKind::Binary { dest: negative, op: BinOp::Lt, lhs, rhs }, span);
+            let (from_end, held) = (self.new_block(), self.new_block());
+            self.finish(Terminator::Branch {
+                cond: Operand::Local(negative),
+                then: from_end,
+                otherwise: held,
+            });
+            self.current = from_end;
+            // It's below 0 and the length isn't, so this can't overflow.
+            let (lhs, rhs) = (at, Operand::Local(length));
+            self.emit(InstKind::Binary { dest: bound, op: BinOp::Add, lhs, rhs }, span);
+            if !end {
+                let lowest = self.extreme("max", (Operand::Local(bound), Operand::Int(0)), span);
+                self.emit(InstKind::Copy { dest: bound, value: lowest }, span);
+            }
+            self.finish(Terminator::Jump(held));
+            self.current = held;
+        }
+        if end {
+            self.extreme("min", (Operand::Local(bound), Operand::Local(length)), span)
+        } else {
+            Operand::Local(bound)
+        }
+    }
+
+    /// The larger or smaller of two ints, as `max` and `min` give it.
+    fn extreme(&mut self, name: &str, (a, b): (Operand, Operand), span: Span) -> Operand {
+        let dest = self.temporary(Type::Int);
+        let kind =
+            InstKind::Builtin { dest: Some(dest), name: name.to_owned(), args: vec![a, b], changes: false };
+        self.emit(kind, span);
+        Operand::Local(dest)
     }
 
     /// Goes through a `Table`'s slots in place, with nothing made for it: each slot in use, in
@@ -796,7 +894,7 @@ impl Lowering<'_> {
         &mut self,
         names: &[String],
         (items, item): (LocalId, Type),
-        (first, back): (Operand, Option<Back>),
+        back: Option<Back>,
         span: Span,
         body: F,
     ) -> Lowered<()>
@@ -814,7 +912,8 @@ impl Lowering<'_> {
             self.emit(kind, span);
             Operand::Local(limit)
         };
-        let counting = Counting { names, first, limit, down: false, items: Some((items, item)), back };
+        let counting =
+            Counting { names, first: Operand::Int(0), limit, down: false, items: Some((items, item)), back };
         self.counting(counting, span, body)
     }
 
@@ -1013,8 +1112,8 @@ impl Lowering<'_> {
 
 /// A loop that goes through what it's over with no list made for it.
 enum Unlisted<'e> {
-    /// `for x in items[k:]`, a list from a place written as a number, `k`.
-    From { items: &'e Expr, item: Type, first: i64 },
+    /// `for x in items[start:end]`, a slice of a list, either bound left out or not.
+    Part { items: &'e Expr, bounds: (Option<&'e Expr>, Option<&'e Expr>), item: Type },
     /// `for part in text.split(separator)`, the call written at `call`.
     Split { text: &'e Expr, separator: &'e Expr, call: Span },
 }
@@ -1023,13 +1122,14 @@ impl Lowering<'_> {
     /// How a `for` over `iter` can go through it with no list made, if it can.
     fn walk_of<'e>(&self, iter: &'e Expr) -> Option<Unlisted<'e>> {
         match &iter.kind {
-            // A list from a place written as a number: its own items from there, with no list
-            // copied for the slice. From the end, the slice is made as before.
-            ExprKind::Slice { object, start, end: None } => {
+            // A slice of a list: the list's own items between its bounds, with no list copied
+            // for the slice.
+            ExprKind::Slice { object, start, end } => {
                 let Some(Type::List(item)) = self.type_at(object.span).and_then(|ty| self.held(&ty)) else {
                     return None;
                 };
-                Some(Unlisted::From { items: object, item: *item, first: counted_from(start.as_deref())? })
+                let bounds = (start.as_deref(), end.as_deref());
+                Some(Unlisted::Part { items: object, bounds, item: *item })
             }
             // A text split by a separator given: a part at a time.
             ExprKind::Call { .. } => {
@@ -1059,13 +1159,8 @@ impl Lowering<'_> {
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
         match walk {
-            // The loop holds the list as it was, as the slice would have, whatever its body does
-            // to the name. Past the end there's nothing, as the slice would have been empty.
-            Unlisted::From { items, item, first } => {
-                let value = self.expr(items)?;
-                let held = self.temporary(Type::List(Box::new(item.clone())));
-                self.emit(InstKind::Copy { dest: held, value }, span);
-                self.count_through(names, (held, item), (Operand::Int(first), None), span, body)
+            Unlisted::Part { items, bounds, item } => {
+                self.through_part_of(names, (items, bounds, item), span, body)
             }
             // The text as it was read, even if working out the separator changes its name, as
             // `split`'s own arguments are read.
@@ -1476,14 +1571,3 @@ pub(super) fn owned_name(read: &Expr) -> bool {
 
 /// What starts the name `made_inside` gives a generator the loop owns.
 const OWNED: &str = "\0owned";
-
-/// Where a loop over `items[start:]` starts counting: 0 with no start, or the start when it's
-/// written as a number that isn't negative. Anything else, like a start counted from the end,
-/// is left to the slice.
-fn counted_from(start: Option<&Expr>) -> Option<i64> {
-    match start.map(|start| &start.kind) {
-        None => Some(0),
-        Some(ExprKind::Int(first)) if *first >= 0 => Some(*first),
-        Some(_) => None,
-    }
-}

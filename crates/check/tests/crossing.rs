@@ -10,10 +10,12 @@ use fennec_check::{Crossing, Signatures, Type};
 fn crossing(source: &str) -> Result<(Crossing, Crossing), String> {
     let mut module = fennec_syntax::parse(source).map_err(|problem| problem.message)?;
     let shown = |problems: Vec<fennec_syntax::Diagnostic>| format!("{problems:?}");
-    let ran = fennec_check::check_to_run(&mut module.clone()).map_err(shown)?.crossing().clone();
-    fennec_check::check_and_resolve(&mut module).map_err(shown)?;
-    let built = fennec_check::check_to_emit(&module).map_err(shown)?.crossing().clone();
-    Ok((ran, built))
+    fennec_check::with_crossing(|| {
+        let ran = fennec_check::check_to_run(&mut module.clone()).map_err(shown)?.crossing().clone();
+        fennec_check::check_and_resolve(&mut module).map_err(shown)?;
+        let built = fennec_check::check_to_emit(&module).map_err(shown)?.crossing().clone();
+        Ok((ran, built))
+    })
 }
 
 /// Says each of `crossing_names` crosses and each of `staying` doesn't, in both checks.
@@ -199,4 +201,34 @@ fn nothing_crosses_without_tasks_and_everything_without_the_check() {
     let unknown = Signatures::default();
     assert!(!unknown.crossing().worked_out());
     assert!(unknown.crossing().crosses(&Type::Named("Point".to_owned())));
+}
+
+/// A check works out what crosses only inside `with_crossing`, which a build doesn't ask for
+/// while nothing it lowers reads it: outside, every type is said to cross, and leaving it, however
+/// it's left, puts back whether it was asked for before.
+#[test]
+fn what_crosses_is_worked_out_only_when_asked_for() {
+    let source = "struct Point:\n    x: int\n\ndef main(stdout: Stdout):\n    stdout.print(Point(x=1).x)\n";
+    let checked = || {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        fennec_check::check_to_run(&mut module).unwrap().crossing().clone()
+    };
+    let point = Type::Named("Point".to_owned());
+    let plain = checked();
+    assert!(!plain.worked_out());
+    assert!(plain.crosses(&point));
+    let (outer, inner, after_inner) = fennec_check::with_crossing(|| {
+        let inner = fennec_check::with_crossing(checked);
+        (checked(), inner, checked())
+    });
+    for found in [&outer, &inner, &after_inner] {
+        assert!(found.worked_out());
+        assert!(!found.crosses(&point));
+    }
+    // Left by unwinding, as a failed check in a test would leave it.
+    let unwound = std::panic::catch_unwind(|| {
+        fennec_check::with_crossing::<()>(|| std::panic::resume_unwind(Box::new("left")));
+    });
+    assert!(unwound.is_err());
+    assert!(!checked().worked_out());
 }

@@ -485,7 +485,7 @@ impl FnCx<'_> {
                 self.note_lent(&arg.value, &callee);
             }
             if let Some((_, param)) = found
-                && matches!(self.checker.settled(&param.ty), Type::Arrow(..))
+                && self.takes_function(&param.ty)
             {
                 self.note_passed_function(&param.name, &arg.value);
             }

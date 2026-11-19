@@ -852,12 +852,55 @@ mod tests {
         start(Tables::default(), crate::Inputs::default());
         free_many(400_000, 7);
         with(|state| {
-            let sevens = state.heap.spare.get(7).map_or(0, Vec::len) * 7;
+            let sevens = state.heap.spare.get(7).map_or(0, super::super::Spare::len) * 7;
             assert!(sevens <= super::super::SPARE_SIZE_WORDS, "{sevens} words of one size");
             assert!(sevens > super::super::SPARE_SIZE_WORDS - 7, "it kept less than its share");
         });
         free_many(1_000, 4);
-        with(|state| assert_eq!(state.heap.spare.get(4).map_or(0, Vec::len), 1_000, "room for the next"));
+        with(|state| {
+            assert_eq!(
+                state.heap.spare.get(4).map_or(0, super::super::Spare::len),
+                1_000,
+                "room for the next"
+            );
+        });
+        finish();
+    }
+
+    /// Blocks of a size a heap frees and never makes again go back to the allocator once a look
+    /// finds nothing has taken them since the last, while a size freed and made in turns keeps
+    /// what it reuses, and its list gives back the room it no longer needs.
+    #[test]
+    fn what_a_heap_keeps_and_never_reuses_goes_back_to_the_allocator() {
+        start(Tables::default(), crate::Inputs::default());
+        let kept =
+            |words: usize| with(|state| state.heap.spare.get(words).map_or(0, super::super::Spare::len));
+        // Nines, as a thread that frees what others made keeps, never asked for again.
+        free_many(1_000, 9);
+        assert_eq!(kept(9), 1_000);
+        // Fours made and freed in turns, enough for three looks: one comes with each
+        // `LOOK_AFTER_WORDS` freed, and the second gives the nines back.
+        let turns = super::super::LOOK_AFTER_WORDS / (4 * 100_000) + 1;
+        for _ in 0..3 * turns {
+            free_many(100_000, 4);
+        }
+        assert_eq!(kept(9), 0, "kept for good though nothing took them");
+        assert_eq!(kept(4) * 4, super::super::SPARE_SIZE_WORDS, "the fours it reuses stay kept");
+        with(|state| {
+            let left: usize =
+                state.heap.spare.iter().enumerate().map(|(size, spare)| size * spare.len()).sum();
+            assert_eq!(left, state.heap.spare_words);
+            assert_eq!(
+                state.heap.spare.get(9).map_or(0, |spare| spare.blocks.capacity()),
+                0,
+                "its list's room"
+            );
+        });
+        // What's freed after a look stays until the next, for a program that frees a lot at once
+        // and then makes as much again.
+        free_many(1_000, 9);
+        free_many(100_000, 4);
+        assert_eq!(kept(9), 1_000);
         finish();
     }
 
@@ -885,19 +928,54 @@ mod tests {
             free_many(400_000, words);
             with(|state| {
                 let kept: usize =
-                    state.heap.spare.iter().enumerate().map(|(size, blocks)| size * blocks.len()).sum();
+                    state.heap.spare.iter().enumerate().map(|(size, spare)| size * spare.len()).sum();
                 assert_eq!(kept, state.heap.spare_words);
                 assert!(kept <= super::super::SPARE_TOTAL_WORDS, "{kept} words kept");
                 assert!(kept > 0, "nothing's kept for reuse");
             });
         }
-        // A block taken back out counts as gone, so the limit is what's kept now, not ever.
+        // A block taken back out counts as gone, so the limit is what's kept now, not ever: one of
+        // the last size freed, as the fours, unused since, have gone back to the allocator.
         with(|state| {
             let before = state.heap.spare_words;
-            let block = state.heap.fresh(4);
-            assert_eq!(block.len(), 4);
-            assert_eq!(state.heap.spare_words, before - 4);
+            let block = state.heap.fresh(100);
+            assert_eq!(block.len(), 100);
+            assert_eq!(state.heap.spare_words, before - 100);
         });
         finish();
+    }
+
+    /// Words of all ones, for telling a word that was zeroed from one that wasn't.
+    fn marked(words: usize) -> Box<[u64]> {
+        vec![u64::MAX; words].into_boxed_slice()
+    }
+
+    #[test]
+    fn zeroing_clears_every_word_of_any_length_and_none_before_it() {
+        for length in (0..=40).chain([63, 64, 65, 100, 256, 257, 1_000]) {
+            for before in [0, 1, 3, 6] {
+                let mut block = marked(before + length);
+                super::super::zero(&mut block[before..]);
+                assert!(block[before..].iter().all(|word| *word == 0), "{length} words after {before}");
+                assert!(
+                    block[..before].iter().all(|word| *word == u64::MAX),
+                    "{length} words after {before}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reused_block_is_zeroed_past_what_is_written_and_all_of_it_when_that_is_past_its_end() {
+        let mut heap = Heap::default();
+        for _ in 0..3 {
+            heap.recycle(marked(4));
+        }
+        let some = heap.fresh_written(4, 1);
+        assert_eq!(*some, [u64::MAX, 0, 0, 0], "the word to be written is left; the rest are zero");
+        let all = heap.fresh_written(4, 4);
+        assert_eq!(*all, [u64::MAX; 4], "every word is to be written");
+        let past = heap.fresh_written(4, 9);
+        assert_eq!(*past, [0; 4], "more said to be written than it has: none of a freed block's words");
     }
 }

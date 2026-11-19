@@ -145,6 +145,7 @@ impl Program {
             prelude,
             inherited: Vec::new(),
             extension: extension.to_vec(),
+            nested: false,
         };
         self.functions.insert(key, entry);
     }

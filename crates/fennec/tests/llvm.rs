@@ -5711,6 +5711,38 @@ def main(stdout: Stdout):
     stdout.print(h)
 "#;
 
+/// Lists and `Table`s a loop changes are made alone once, on the way into the loop, when nothing in
+/// it can give them another owner, and not checked again inside it. Shared before the loop, copied
+/// in it, given to a closure in it, written anew in it, changed by `Id`, and held by a task in it:
+/// each prints what the reference evaluator prints, with nothing left, built either way and built
+/// checking proofs, which checks each value is still alone where the check was left out.
+#[test]
+fn a_value_a_loop_gives_no_owner_is_made_alone_once_on_the_way_in() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/alone_in_loops.fen");
+    let wanted = include_str!("fixtures/alone_in_loops.out");
+    prints_in_both_builds("alone_in_loops", source, wanted)?;
+    assert!(counts_of("alone_in_loops_counts", source)?.ends_with(" live 0"));
+    let dir = folder("alone_in_loops_proofs")?;
+    let (program, executable) = (dir.join("alone.fen"), dir.join("alone"));
+    std::fs::write(&program, source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_CHECK_PROOFS", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
 /// A `for mut` item is taken out for the whole of the body, so what it holds changes in place.
 /// What's shared, and a body that reads the list, see what they should.
 #[test]
@@ -9205,9 +9237,15 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
 
 /// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
 /// threads, wanting what it prints, what it says and its exit code every time.
-fn deadlock_fixture_runs_as(
+fn deadlock_fixture_runs_as(name: &str, runs: usize, wanted: (&str, &str, i32)) -> std::io::Result<()> {
+    deadlock_fixture_runs_with(name, runs, &[], wanted)
+}
+
+/// `deadlock_fixture_runs_as`, with `env` set for each run.
+fn deadlock_fixture_runs_with(
     name: &str,
     runs: usize,
+    env: &[(&str, &str)],
     (out, err, code): (&str, &str, i32),
 ) -> std::io::Result<()> {
     let dir = folder(&format!("deadlocks-{name}"))?;
@@ -9222,7 +9260,10 @@ fn deadlock_fixture_runs_as(
     assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
     for threads in ["1", "4", "16"] {
         for _ in 0..runs {
-            let ran = Command::new(&executable).env("FENNEC_THREADS", threads).output_within()?;
+            let ran = Command::new(&executable)
+                .env("FENNEC_THREADS", threads)
+                .envs(env.iter().copied())
+                .output_within()?;
             let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
             assert_eq!(
                 (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
@@ -9272,6 +9313,89 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
         deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
     }
     Ok(())
+}
+
+/// A waiting `parallel` call's join is a stuck wait too, so a deadlock through its ranges stops the
+/// program and says each range, by its call and where it starts: four ranges receiving on a channel
+/// nobody sends to, from `main` and from a launched task; a range whose call of its own runs its
+/// ranges in it, there being no other worker to give them to; three ranges in a ring of channels;
+/// and a range waiting on one that failed or crashed first, which the join's line says: the lowest,
+/// when two have.
+#[test]
+fn a_deadlock_through_a_parallel_calls_ranges_says_each_range() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let error = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
+    let receives = |ranges: std::ops::Range<u32>, call: &str| -> String {
+        ranges.fold(String::new(), |mut lines, range| {
+            let _ = writeln!(
+                lines,
+                "  range {range} of {call}'s `parallel` call is waiting to receive on a channel that's empty"
+            );
+            lines
+        })
+    };
+    let joins = "  main is waiting for the ranges of its `parallel` call";
+    let in_task = format!(
+        "  main is waiting at the end of a `with launch` block, for task 1\n  \
+         task 1 is waiting for the ranges of its `parallel` call\n{}",
+        receives(0..4, "task 1")
+    );
+    let cases = [
+        ("stuck_ranges", "", format!("{joins}\n{}", receives(0..4, "main"))),
+        ("stuck_ranges_in_task", "", in_task),
+        ("nested_call", "", format!("{joins}\n{}", receives(1..2, "main"))),
+        ("ring", "made the ring\n", format!("{joins}\n{}", receives(0..3, "main"))),
+        ("sibling_fails", "", format!("{joins}, whose range 1 failed\n{}", receives(0..1, "main"))),
+        ("two_fail", "", format!("{joins}, whose range 1 failed\n{}", receives(0..1, "main"))),
+        (
+            "sibling_crashes",
+            "",
+            format!("{joins}, whose range 1 crashed: division by zero\n{}", receives(0..1, "main")),
+        ),
+    ];
+    for (name, printed, lines) in cases {
+        deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
+    }
+    Ok(())
+}
+
+/// A waiting `parallel` call's join is never taken for a deadlock while something can still end
+/// it: later ranges still queued that send to earlier ones waiting, from `main` and from a task;
+/// ranges waiting on a task that sends after a nap; a reduction whose ranges pass a token round; a
+/// task's call stopped while its ranges wait; ranges waiting when a task their caller launched
+/// crashes; and calls one after another, each a quick hand-off,
+/// the workers asleep as each call's first job is pushed. Napping before each call, each woken
+/// worker is held 20 ms before it says it's awake (`FENNEC_TEST_SLOW_WAKE_MS`, which only a debug
+/// build reads), so the check finds every worker asleep while the call's job is queued: its look
+/// at the queues is what keeps it from a report then. (From Fable 5.2's review of the design.)
+#[test]
+fn a_parallel_call_that_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let refused = "Refused(why=\"leaving this way stops the task\")\n".repeat(5);
+    let cases = [
+        ("queued", "4600\n"),
+        ("task_queued", "4600\n"),
+        ("late_sender", "490\n"),
+        ("reduce_waiting", "24600\n"),
+        ("stopped_partway", &refused),
+        ("two_calls", "2100\n"),
+    ];
+    for (name, printed) in cases {
+        deadlock_fixture_runs_as(name, 5, (printed, "", 0))?;
+    }
+    // A crash of a task main launched, while a call's ranges wait, cuts their waits short: the call
+    // ends, and the block's end says the crash.
+    let mut crashed = String::new();
+    for turn in 0..8 {
+        let _ = writeln!(crashed, "{turn} it crashed");
+    }
+    let said = "error: index 5 is out of range for length 2\n".repeat(8);
+    deadlock_fixture_runs_as("crash_under_join", 5, (&crashed, &said, 0))?;
+    deadlock_fixture_runs_with("two_calls_napping", 5, &[("FENNEC_TEST_SLOW_WAKE_MS", "20")], ("42\n", "", 0))
 }
 
 /// A wait that something can still end is never taken for a deadlock: a receive with a time limit;
@@ -12268,6 +12392,61 @@ def main(stdout: Stdout):
     mut aa = "a"
     mut ab = [aa]
     stdout.print(ab, ab.pop(), aa)
+"#,
+    )
+}
+
+/// What a method is called on is read before its arguments, and a closure before its own: an
+/// argument that changes it, like `tally.show(tally.grow())`, leaves the call made on it as it was.
+#[test]
+fn a_call_reads_what_it_is_made_on_before_its_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "receiver_first",
+        r#"struct Box:
+    items: list[int]
+    count: int
+
+    def show(self, given: int) -> str:
+        return f"{self.items} {self.count} {given}"
+
+    def grow(ref self) -> int:
+        self.items.append(9)
+        self.count += 1
+        return self.count
+
+    def again(ref self) -> str:
+        return self.show(self.grow())
+
+struct Pair:
+    left: Box
+    right: int
+
+    def shown(self, given: int) -> str:
+        return f"{self.left.count} {self.right} {given}"
+
+def swap(ref called: (int) -> int) -> int:
+    first = called(0)
+    called = (x) => x * 10
+    return first
+
+def main(stdout: Stdout):
+    mut tally = Box(items=[1], count=0)
+    stdout.print(tally.show(tally.grow()))
+    stdout.print(tally.show(given=tally.grow()))
+    stdout.print(tally.again(), tally.count)
+    stdout.print(tally.show(0) + " " + tally.show(tally.grow()))
+    stdout.print(tally.show(tally.grow()).upper(), tally.count)
+    mut pair = Pair(left=Box(items=[], count=0), right=7)
+    stdout.print(pair.shown(pair.left.grow()))
+    stdout.print(pair.left.show(pair.left.grow()))
+    mut boxes = [Box(items=[], count=0)]
+    stdout.print(boxes[0].show(boxes[0].grow()))
+    mut called: (int) -> int = (x) => x + 1
+    stdout.print(called(swap(ref called)), called(1))
+    return
 "#,
     )
 }
@@ -16516,6 +16695,207 @@ fn a_loop_over_a_variables_field_leaves_it_alone_for_the_next_change() -> std::i
     Ok(())
 }
 
+/// What the next test builds: loops over lists from a place, `for x in items[k:]`.
+const LOOP_FROM: &str = r#"struct Lines:
+    items: list[str]
+
+    ## The items after the first, joined, read through a field.
+    def rest(self) -> str:
+        mut joined = ""
+        for item in self.items[1:]:
+            joined += item
+        return joined
+
+## A list made for the loop, which nothing else holds.
+def made(count: int) -> list[str]:
+    padding = "x" * 30
+    return [f"made-{at}-{padding}" for at in range(count)]
+
+def main(stdout: Stdout):
+    mut lines = ["a", "bb", "ccc", "dddd"]
+    mut seen = list[str]()
+    for line in lines[1:]:
+        seen.append(line)
+    for line in lines[0:]:
+        seen.append(line)
+    for line in lines[:]:
+        seen.append(line)
+    stdout.print(seen)
+    # Past the end, and from the end, which the slice works out.
+    mut after = 0
+    for _ in lines[4:]:
+        after += 1
+    for _ in lines[9:]:
+        after += 1
+    mut ends = list[str]()
+    for line in lines[-2:]:
+        ends.append(line)
+    stdout.print(after, ends)
+    # The loop goes through the list as it was, whatever its body does to it.
+    mut rounds = 0
+    for line in lines[1:]:
+        lines.append(line + "!")
+        rounds += 1
+    stdout.print(rounds, lines)
+    # Leaving early and going round again.
+    mut kept = list[str]()
+    for line in lines[1:]:
+        if line == "ccc": continue
+        if line == "bb!": break
+        kept.append(line)
+    stdout.print(kept)
+    # Unpacked items, a list a call made, a field, and loops inside loops.
+    pairs = [(1, "one"), (2, "two"), (3, "three")]
+    mut total = 0
+    for number, name in pairs[1:]:
+        total += number * len(name)
+    mut sizes = 0
+    for item in made(5)[2:]:
+        sizes += len(item)
+    held = Lines(items=["skip", "kept ", "and kept"])
+    grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    mut corner = 0
+    for row in grid[1:]:
+        for value in row[1:]:
+            corner += value
+    stdout.print(total, sizes, held.rest(), corner)
+    # Long items, each a block of its own.
+    stem = "y" * 40
+    long = [f"{stem}-{at}" for at in range(6)]
+    mut longest = 0
+    for item in long[3:]:
+        longest = max(longest, len(item))
+    empty = list[str]()
+    for item in empty[1:]:
+        longest += len(item)
+    stdout.print(longest)
+    return
+"#;
+
+/// A loop over a list from a place written as a number, `for x in items[k:]`, goes through the
+/// list's own items from there, with no list made for the slice: past the end there's nothing,
+/// and from the end, `[-2:]`, the slice is made as before. The loop sees the list as it was,
+/// whatever its body does to it, leaving early or going round again; over a list a call made,
+/// a field, tuples it unpacks, a list in a list, and items that are blocks, with nothing left.
+/// It makes 15 fewer blocks than with a slice for each loop.
+#[test]
+fn a_loop_over_a_list_from_a_place_makes_no_slice() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by("loop_from", LOOP_FROM)?,
+        "[\"bb\", \"ccc\", \"dddd\", \"a\", \"bb\", \"ccc\", \"dddd\", \"a\", \"bb\", \"ccc\", \"dddd\"]\n0 [\"ccc\", \"dddd\"]\n3 [\"a\", \"bb\", \"ccc\", \"dddd\", \"bb!\", \"ccc!\", \"dddd!\"]\n[\"bb\", \"dddd\"]\n21 111 kept and kept 28\n42\n"
+    );
+    let counts = counts_of("loop_from_counts", LOOP_FROM)?;
+    assert!(counts.contains(" allocations 32 ") && counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+/// What the next test builds: loops over a text's parts, `for part in text.split(separator)`.
+const LOOP_SPLIT: &str = r#"struct Log:
+    text: str
+
+    ## The lines that have a word in them, counted through a field.
+    def busy(self) -> int:
+        mut count = 0
+        for line in self.text.split("\n"):
+            if line != "":
+                count += 1
+        return count
+
+## Each part between brackets, so empty ones show.
+def shown(text: str, separator: str) -> str:
+    mut out = ""
+    for part in text.split(separator):
+        out += f"[{part}]"
+    return out
+
+## A text made for the loop, which nothing else holds.
+def made(count: int) -> str:
+    padding = "z" * 30
+    return ",".join([f"{at}-{padding}" for at in range(count)])
+
+def main(stdout: Stdout):
+    # Empty parts at either end and between, a separator not there, and an empty text.
+    stdout.print(
+        shown("a,b,,c", separator=","),
+        shown("a,b,", separator=","),
+        shown(",a", separator=","),
+    )
+    stdout.print(shown("abc", separator=","), shown("", separator=","), shown(",", separator=","))
+    # Separators of two bytes, of more than eight, and ones that overlap themselves.
+    stdout.print(
+        shown("x::y::::z", separator="::"),
+        shown("aaaa", separator="aa"),
+        shown("aaaaa", separator="aa"),
+    )
+    long = "<--separator-->"
+    stdout.print(
+        shown(f"one{long}two{long}{long}three", separator=long),
+        shown("<--separator", separator=long),
+    )
+    # Text that isn't ASCII, split on it and around it.
+    stdout.print(
+        shown("é,ü,ß", separator=","),
+        shown("aébéc", separator="é"),
+        shown("日本語の日本", separator="日本"),
+    )
+    # Parts long enough to be blocks of their own, from a text a call made.
+    mut sizes = 0
+    mut parts = 0
+    for item in made(500).split(","):
+        sizes += len(item)
+        parts += 1
+    stdout.print(parts, sizes)
+    # Loops inside loops, leaving early and going round again, from a name and a field.
+    text = "GET /a 200\nPOST /b 500\n\nGET /c 404\nPUT /d 200"
+    mut words = 0
+    mut seen = list[str]()
+    for line in text.split("\n"):
+        if line == "": continue
+        if line.startswith("PUT"): break
+        for word in line.split(" "):
+            words += 1
+            seen.append(word)
+    held = Log(text=text)
+    stdout.print(words, seen, held.busy())
+    # The loop goes through the text as it was, whatever its body does to the name.
+    mut grown = "a-b-c"
+    mut rounds = 0
+    for part in grown.split("-"):
+        grown = grown + "-" + part
+        rounds += 1
+    stdout.print(rounds, grown)
+    # A separator from a name.
+    separator = ";"
+    mut total = 0
+    for number in "1;22;333".split(separator):
+        total += len(number)
+    stdout.print(total)
+    return
+"#;
+
+/// A loop over a text's parts, `for part in text.split(separator)`, takes them a part at a time
+/// with no list of them all: empty parts at either end and between, a separator that isn't
+/// there, an empty text, separators of two bytes and of more than eight, ones that overlap
+/// themselves, text that isn't ASCII, parts that are blocks of their own from a text a call
+/// made, loops inside loops leaving early and going round again, a field, a text its own loop
+/// changes, and a separator from a name. It prints what `split`'s list gives, with nothing left.
+#[test]
+fn a_loop_over_a_split_makes_no_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by("loop_split", LOOP_SPLIT)?,
+        "[a][b][][c] [a][b][] [][a]\n[abc] [] [][]\n[x][y][][z] [][][] [][][a]\n[one][two][][three] [<--separator]\n[é][ü][ß] [a][b][c] [][語の][]\n500 16890\n9 [\"GET\", \"/a\", \"200\", \"POST\", \"/b\", \"500\", \"GET\", \"/c\", \"404\"] 4\n3 a-b-c-a-b-c\n6\n"
+    );
+    let counts = counts_of("loop_split_counts", LOOP_SPLIT)?;
+    assert!(counts.contains(" allocations 1022 ") && counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
 /// What a borrowed field can't outlast: the variable written while the loop runs, given away
 /// before it's done, or the list grown from inside the loop. Each still says what it did.
 #[test]
@@ -18039,7 +18419,12 @@ fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(!partial, "the file written beside big.txt was left behind");
-    if let Some(peak) = measured(peak) {
+    // What the program holds, which a sanitizer's own share is no part of: AddressSanitizer adds
+    // about 20 MB to every run, and keeps back what's freed to catch a use after it, so under it
+    // the bound measured the sanitizer. The builds without one hold every program to it.
+    if let Some(peak) = measured(peak)
+        && std::env::var_os("FENNEC_SANITIZE").is_none()
+    {
         assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())

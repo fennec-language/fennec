@@ -3,12 +3,25 @@
 //! made near each other sit near each other here too, which a hash table can't give, and
 //! finding one is a few array reads with no hashing.
 //!
-//! REVIEW SKETCH of design A (table-index-design-2026-11-18-runtime2.md), by Fable 5.2: a page's
-//! places hold indices into a dense list of the placed blocks. Not the runtime lane's code.
-//! This is the third writing, "in the entries": as the second ("tight"), but the spare indices
-//! are kept in the empty entries themselves, each holding the next, where the design has a
-//! list of them beside the blocks. Taking a block out then writes its entry and one number, and
-//! nothing has to grow.
+//!
+//! A page's places hold numbers, not blocks: each is 0 for none, or one more than its block's
+//! index in a dense list, `live`. A place is 4 bytes where a block's pointer is 8 or 16, so a page
+//! is a quarter the size to make and read, and a look through every block reads the list, not
+//! every place of every page: peak memory is 12% to 46% lower on the scoreboard's programs.
+//!
+//! - **A block is found only at its own address.** A lookup reads the place, then the entry it
+//!   points at, and gives the block only when its address is the one asked for. Whatever a place
+//!   holds, a block elsewhere is a miss, never a find.
+//! - **Nothing outside this file sees an index.** Callers pass addresses and get blocks, so an
+//!   index can't be held past its block's leaving.
+//! - **The spare entries chain through themselves.** An empty entry holds the number of the next
+//!   spare one, and the table the first, so taking a block out writes its entry and one number,
+//!   and nothing grows or calls out.
+//! - **The list shrinks.** A new block takes the index freed last, wherever it is, so the list's
+//!   end stays in use. When pages are given back and fewer than half the entries hold a block,
+//!   the blocks at its end move down into its holes, each place rewritten, and its room is let go.
+//!   That's safe because an index is only ever in its block's place, and it runs under `&mut`, so
+//!   never on a table that's lent.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -29,6 +42,21 @@ const PLACES: usize = 1 << (PAGE_BITS - PLACE_BITS);
 /// of reading for each page made, and a table holds at most about twice the pages its blocks
 /// are on.
 const PAGES_BEFORE_LOOKING: usize = 64;
+
+/// The same, for a worker going to sleep with nothing to do (`look_while_idle`).
+///
+/// A server's tables make pages slowly once it's warm, as its blocks wander through the
+/// allocator's memory, so with 64 a table's first look came half an hour into a soak, and each
+/// heap held up to 4 MB of empty 64 KB pages until then: `web_backend`'s memory rose for 25
+/// minutes, past the soak's warm-up, and held at that high-water mark. A worker that's idle has
+/// time to look sooner. A busy one keeps 64, which some programs reuse: `pathfind`, never idle,
+/// ran 6.7% more instructions with 8 for every table, making pages again that it had given back.
+#[cfg(any(test, feature = "threads"))]
+const PAGES_BEFORE_LOOKING_IDLE: usize = 8;
+
+/// How many entries `live` may have past twice the blocks it holds before it's cut down
+/// (`cut_down`): 16 KB, so a small table isn't moved about for little.
+const ENTRIES_KEPT_SPARE: usize = 1_024;
 
 /// The shortest block, in words, that has a page's place to itself.
 const PLACED_WORDS: usize = 2;
@@ -80,15 +108,19 @@ pub(super) struct Table {
     /// pages back the table would grow by a page for each place they'd ever been.
     made: usize,
     kept: usize,
-    /// The placed blocks, each at the index its place holds, less one. An entry never moves.
+    /// Every page it has, by its region's number and its place among the region's pages, for a
+    /// look to read: a region has room for 65,536 pages, and reading them all for each look cost
+    /// more than the pages it made.
+    made_pages: Vec<(usize, usize)>,
+    /// The placed blocks, each at the index its place holds, less one. An entry moves only when
+    /// the list is cut down (`compact`), with its place rewritten.
     live: Vec<Held>,
     /// The number of the spare entry of `live` used next, which holds the number of the one after
     /// it: 0 for none.
     first_spare: u32,
-    /// REVIEW: whether giving pages back also moves the list's last blocks down into its holes,
-    /// which the design doesn't have. Only a test sets it.
+    /// The most entries `live` may have, in place of the most a place can number, for a test.
     #[cfg(test)]
-    review_compacts: bool,
+    most_entries: Option<usize>,
 }
 
 /// What taking an owner off a block found.
@@ -152,34 +184,32 @@ fn pages_of_mut(regions: &mut [(usize, Pages)], region: usize) -> Option<&mut Pa
     }
 }
 
-/// `pages_of_mut`, for a block made here: a region that had to be searched for becomes the
-/// first, so the region in use is the one looked at before any search.
-fn pages_of_fronted(regions: &mut [(usize, Pages)], region: usize) -> Option<&mut Pages> {
-    if regions.first()?.0 != region {
-        bring_to_front(regions, region)?;
-    }
-    regions.first_mut().map(|(_, pages)| pages)
-}
-
-/// Makes `region` the first, when the table has it.
+/// Stops the program: the table's places and its list of blocks disagree. Only a bug in Fennec
+/// gets here.
+#[cfg(all(feature = "audit", not(test)))]
 #[cold]
 #[inline(never)]
-fn bring_to_front(regions: &mut [(usize, Pages)], region: usize) -> Option<()> {
-    let found = regions.iter().position(|(number, _)| *number == region)?;
-    regions.swap(0, found);
-    Some(())
+fn disagrees(wrong: &str) -> ! {
+    use std::io::Write as _;
+    super::write_kept_output();
+    let _ = writeln!(
+        std::io::stderr(),
+        "error: the runtime's table of blocks disagrees with itself: {wrong}\n  \
+         = help: this is a bug in Fennec; please report it"
+    );
+    super::aot::stop_now(1)
+}
+
+/// [`disagrees`] in a test, which goes on to be caught, where a program stops.
+#[cfg(test)]
+fn disagrees(wrong: &str) -> ! {
+    panic!("the table disagrees with itself: {wrong}");
 }
 
 /// The place for `address`, on a page that's been made, whatever it holds.
 fn place_mut(regions: &mut [(usize, Pages)], address: usize) -> Option<&mut u32> {
     let (region, page, place) = split(address);
     pages_of_mut(regions, region)?.get_mut(page)?.as_mut()?.get_mut(place)
-}
-
-/// `place_mut`, for a block made here (`pages_of_fronted`).
-fn place_fronted(regions: &mut [(usize, Pages)], address: usize) -> Option<&mut u32> {
-    let (region, page, place) = split(address);
-    pages_of_fronted(regions, region)?.get_mut(page)?.as_mut()?.get_mut(place)
 }
 
 /// Where in `live` a place's number points. An empty place's 0 points past any list's end.
@@ -209,17 +239,25 @@ fn take_found(place: &mut u32, held: &mut Held, first_spare: &mut u32) -> Option
 }
 
 /// Puts a block in `live`, at a spare index or else a new one, and its index in its place.
-/// Gives the block back when `live` has as many entries as a place can number.
-fn hold(live: &mut Vec<Held>, first_spare: &mut u32, place: &mut u32, block: Box<[u64]>) -> Result<(), Box<[u64]>> {
+/// Gives the block back when `live` has `most` entries, for the hash map to hold.
+fn hold(
+    live: &mut Vec<Held>,
+    first_spare: &mut u32,
+    place: &mut u32,
+    block: Box<[u64]>,
+    most: usize,
+) -> Result<(), Box<[u64]>> {
     let number = *first_spare;
     if let Some(held) = live.get_mut(index_of(number))
         && let Held::Spare(next) = *held
     {
-        // A spare entry holds no block, so there's nothing of it to let go.
-        std::mem::forget(std::mem::replace(held, Held::Block(block)));
+        *held = Held::Block(block);
         *first_spare = next;
         *place = number;
         return Ok(());
+    }
+    if live.len() >= most {
+        return Err(block);
     }
     let Ok(number) = u32::try_from(live.len() + 1) else { return Err(block) };
     live.push(Held::Block(block));
@@ -248,15 +286,31 @@ impl Table {
         self.live.into_iter().filter_map(Held::into_block).chain(self.short.into_values())
     }
 
+    /// The most entries `live` may have: as many as a place can number, 4,294,967,295. Past
+    /// them a block goes in the hash map, which every look falls back to.
+    #[cfg_attr(not(test), expect(clippy::unused_self, reason = "only a test's table sets its own"))]
+    fn most_entries(&self) -> usize {
+        let most = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
+        #[cfg(test)]
+        let most = self.most_entries.unwrap_or(most);
+        most
+    }
+
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.len
     }
 
-    /// How many entries looking through all of it reads (`all`). Kept as it goes, so asking costs
-    /// nothing.
-    pub(super) fn places_to_look_through(&self) -> usize {
+    /// How many entries looking through all of it reads (`all`): a block each, but those the
+    /// list has spare. Kept as it goes, so asking costs nothing.
+    pub(super) fn entries_to_look_through(&self) -> usize {
         self.live.len() + self.short.len()
+    }
+
+    /// How many entries its list has room for, for counting what's cached.
+    #[cfg(any(test, feature = "threads"))]
+    pub(super) fn room(&self) -> usize {
+        self.live.capacity()
     }
 
     /// How many pages it holds, for counting what's live.
@@ -272,7 +326,8 @@ impl Table {
     pub(super) fn sizes(&self) -> (std::collections::BTreeMap<usize, usize>, usize) {
         let mut sizes = std::collections::BTreeMap::new();
         let mut never_freed = 0;
-        for block in self.live.iter().filter_map(Held::block).chain(self.short.values().map(|block| &**block)) {
+        for block in self.live.iter().filter_map(Held::block).chain(self.short.values().map(|block| &**block))
+        {
             if super::heap::is_never_freed(block) {
                 never_freed += 1;
             } else {
@@ -353,7 +408,7 @@ impl Table {
         {
             two_owners(address);
         }
-        match place_fronted(&mut self.regions, address) {
+        match place_mut(&mut self.regions, address) {
             Some(place) => {
                 if *place != 0 {
                     two_owners(address);
@@ -362,8 +417,7 @@ impl Table {
                 if let Some(held) = self.live.get_mut(index_of(number))
                     && let Held::Spare(next) = *held
                 {
-                    // A spare entry holds no block, so there's nothing of it to let go.
-                    std::mem::forget(std::mem::replace(held, Held::Block(block)));
+                    *held = Held::Block(block);
                     self.first_spare = next;
                     *place = number;
                     self.len += 1;
@@ -380,8 +434,11 @@ impl Table {
     #[inline(never)]
     fn insert_at_the_end(&mut self, block: Box<[u64]>) {
         let address = at(&block);
-        let Some(place) = place_mut(&mut self.regions, address) else { return self.insert_in_new_page(block) };
-        match hold(&mut self.live, &mut self.first_spare, place, block) {
+        let most = self.most_entries();
+        let Some(place) = place_mut(&mut self.regions, address) else {
+            return self.insert_in_new_page(block);
+        };
+        match hold(&mut self.live, &mut self.first_spare, place, block, most) {
             Ok(()) => self.len += 1,
             Err(block) => self.insert_short(address, block),
         }
@@ -412,13 +469,14 @@ impl Table {
             self.insert_short(address, block);
             return;
         }
+        let most = self.most_entries();
         match place_mut(&mut self.regions, address) {
             Some(place) => {
                 // One taken over before its page was made is in the hash map, not the place.
                 if *place != 0 || (!self.short.is_empty() && self.short.contains_key(&address)) {
                     two_owners(address);
                 }
-                match hold(&mut self.live, &mut self.first_spare, place, block) {
+                match hold(&mut self.live, &mut self.first_spare, place, block, most) {
                     Ok(()) => self.len += 1,
                     Err(block) => self.insert_short(address, block),
                 }
@@ -432,23 +490,26 @@ impl Table {
     #[inline(never)]
     fn insert_in_new_page(&mut self, block: Box<[u64]>) {
         let address = at(&block);
-        let (region, page, place) = split(address);
+        let most = self.most_entries();
+        let (region, at_page, place) = split(address);
         if pages_of(&self.regions, region).is_none() {
             let Some(pages) = empty() else { return };
             self.regions.push((region, pages));
         }
-        let Some(page) = pages_of_fronted(&mut self.regions, region).and_then(|pages| pages.get_mut(page)) else {
+        let Some(page) = pages_of_mut(&mut self.regions, region).and_then(|pages| pages.get_mut(at_page))
+        else {
             return;
         };
         if page.is_none() {
             *page = empty_page();
             self.made += 1;
+            self.made_pages.push((region, at_page));
         }
         if let Some(place) = page.as_mut().and_then(|page| page.get_mut(place)) {
             if *place != 0 {
                 two_owners(address);
             }
-            match hold(&mut self.live, &mut self.first_spare, place, block) {
+            match hold(&mut self.live, &mut self.first_spare, place, block, most) {
                 Ok(()) => self.len += 1,
                 Err(block) => self.insert_short(address, block),
             }
@@ -458,36 +519,87 @@ impl Table {
         }
     }
 
-    /// Lets go of every page with no block on it, and of `live`'s end past its last block.
-    #[cold]
-    #[inline(never)]
-    fn give_back_empty_pages(&mut self) {
-        let mut kept = 0;
-        for (_, pages) in &mut self.regions {
-            for page in pages.iter_mut().filter(|page| page.is_some()) {
-                if page.as_ref().is_some_and(|places| places.iter().all(|place| *place == 0)) {
-                    *page = None;
-                } else {
-                    kept += 1;
-                }
-            }
-        }
-        self.kept = kept;
-        self.made = 0;
-        let before = self.live.len();
-        while matches!(self.live.last(), Some(Held::Spare(_))) {
-            self.live.pop();
-        }
-        if self.live.len() < before {
-            self.chain_spares();
-        }
-        #[cfg(test)]
-        if self.review_compacts {
-            self.review_compact();
+    /// Looks for empty pages to give back, as `insert_in_new_page` does, for a worker going to sleep
+    /// with nothing to do: once it's made a few pages, not 64. Each look still costs about a page's
+    /// reading for each page made since the last.
+    #[cfg(any(test, feature = "threads"))]
+    pub(super) fn look_while_idle(&mut self) {
+        if self.made >= self.kept.max(PAGES_BEFORE_LOOKING_IDLE) {
+            self.give_back_empty_pages();
         }
     }
 
-    /// Has each spare entry hold the next again, lowest first, after some have gone.
+    /// Lets go of every page with no block on it, reading only the pages it has, and cuts `live`
+    /// down to what it holds.
+    #[cold]
+    #[inline(never)]
+    fn give_back_empty_pages(&mut self) {
+        let regions = &mut self.regions;
+        self.made_pages.retain(|&(region, at_page)| {
+            let Some(page) = pages_of_mut(regions, region).and_then(|pages| pages.get_mut(at_page)) else {
+                return false;
+            };
+            if page.as_ref().is_none_or(|places| places.iter().all(|place| *place == 0)) {
+                *page = None;
+                return false;
+            }
+            true
+        });
+        self.kept = self.made_pages.len();
+        self.made = 0;
+        self.cut_down();
+    }
+
+    /// Cuts `live` down to what it holds. A new block takes the index freed last, wherever that
+    /// is, so after a burst is freed the list's end stays in use, and popping its spare end alone
+    /// almost never shortens it: a burst of 200,000 blocks, nearly all freed, left it 200,000
+    /// entries long. So where fewer than half its entries hold a block, the blocks at its end move
+    /// down into its holes. Its room is let go of too, which popping keeps.
+    fn cut_down(&mut self) {
+        let held = self.len.saturating_sub(self.short.len());
+        if self.live.len() >= 2 * held + ENTRIES_KEPT_SPARE {
+            self.compact(held);
+        } else if matches!(self.live.last(), Some(Held::Spare(_))) {
+            while matches!(self.live.last(), Some(Held::Spare(_))) {
+                self.live.pop();
+            }
+            self.chain_spares();
+        }
+        let room = self.live.len() + self.live.len() / 4;
+        if self.live.capacity() >= 2 * room + ENTRIES_KEPT_SPARE {
+            self.live.shrink_to(room);
+        }
+    }
+
+    /// Moves the blocks past the first `held` entries down into the holes below, each with its
+    /// place rewritten: two stores a block. An index is only ever in its block's place, so no
+    /// look can find a stale one.
+    fn compact(&mut self, held: usize) {
+        let mut hole = 0;
+        while self.live.len() > held {
+            let Some(Held::Block(block)) = self.live.pop() else { continue };
+            while matches!(self.live.get(hole), Some(Held::Block(_))) {
+                hole += 1;
+            }
+            let address = at(&block);
+            let place = place_mut(&mut self.regions, address);
+            match (place, self.live.get_mut(hole), u32::try_from(hole + 1)) {
+                (Some(place), Some(entry), Ok(number)) => {
+                    *place = number;
+                    *entry = Held::Block(block);
+                }
+                // There's a hole below for each block past `held`, and every placed block's page is
+                // made, so this can't happen. Were it to, the block is kept in the hash map, where
+                // a look goes once its place points past the list or at another block.
+                _ => {
+                    self.short.insert(address, block);
+                }
+            }
+        }
+        self.chain_spares();
+    }
+
+    /// Has each spare entry hold the next again, lowest first, after some have gone or moved.
     fn chain_spares(&mut self) {
         let mut first = 0;
         for (index, held) in self.live.iter_mut().enumerate().rev() {
@@ -499,31 +611,12 @@ impl Table {
         self.first_spare = first;
     }
 
-    /// REVIEW: not in the design. Moves the blocks at the list's end down into its holes, each
-    /// with its place rewritten, when fewer than half its entries hold a block. An index is only
-    /// ever in its block's place, so the move is two stores a block, and after it the list is as
-    /// long as what it holds, with no index spare.
-    #[cfg(test)]
-    fn review_compact(&mut self) {
-        let held = self.live.iter().filter(|held| held.block().is_some()).count();
-        if self.live.len() < 2 * held + 1_024 {
-            return;
-        }
-        let mut holes: Vec<usize> = (0..held).filter(|index| self.live[*index].block().is_none()).collect();
-        while self.live.len() > held {
-            let Some(Held::Block(block)) = self.live.pop() else { continue };
-            let hole = holes.pop().expect("a hole for every block past the end");
-            *place_mut(&mut self.regions, at(&block)).expect("a placed block's page") = u32::try_from(hole + 1).unwrap();
-            self.live[hole] = Held::Block(block);
-        }
-        assert!(holes.is_empty());
-        self.first_spare = 0;
-        self.live.shrink_to(held + held / 4);
-    }
-
     /// Takes one owner off the block at `address`, and takes the block out when that was its last,
     /// in one look.
-    #[expect(clippy::inline_always, reason = "REVIEW: main's is inlined, and the sketch's wasn't")]
+    #[expect(
+        clippy::inline_always,
+        reason = "every free goes through it, and it stopped being inlined once it reads the list too"
+    )]
     #[inline(always)]
     pub(super) fn release_one(&mut self, address: usize) -> Released {
         let Some((place, held)) = found_mut(&mut self.regions, &mut self.live, address) else {
@@ -583,7 +676,11 @@ impl Table {
     ) -> Option<Box<[u64]>> {
         let taken = match found_mut(&mut self.regions, &mut self.live, address) {
             Some((place, held)) => {
-                if held.block().is_some_and(wanted) { take_found(place, held, &mut self.first_spare) } else { None }
+                if held.block().is_some_and(wanted) {
+                    take_found(place, held, &mut self.first_spare)
+                } else {
+                    None
+                }
             }
             None if self.short.get(&address).is_some_and(|block| wanted(block)) => {
                 self.short.remove(&address)
@@ -608,15 +705,15 @@ impl Table {
         removed
     }
 
-    /// REVIEW: how many entries the list has, how many of them are spare, and its room.
+    /// How many entries the list has, how many of them are spare, and its room.
     #[cfg(test)]
-    fn review_entries(&self) -> (usize, usize, usize) {
-        (self.live.len(), self.review_chain().map_or(usize::MAX, |chain| chain.len()), self.live.capacity())
+    fn entries(&self) -> (usize, usize, usize) {
+        (self.live.len(), self.spare_chain().map_or(usize::MAX, |chain| chain.len()), self.live.capacity())
     }
 
-    /// REVIEW: the spare entries' indices, in the order they'd be used, or what's wrong with them.
-    #[cfg(test)]
-    fn review_chain(&self) -> Result<Vec<usize>, String> {
+    /// The spare entries' indices, in the order they'd be used, or what's wrong with them.
+    #[cfg(any(test, feature = "audit"))]
+    fn spare_chain(&self) -> Result<Vec<usize>, String> {
         let mut chain = Vec::new();
         let mut number = self.first_spare;
         while number != 0 {
@@ -636,12 +733,20 @@ impl Table {
         Ok(chain)
     }
 
-    /// REVIEW: whether every place and every entry of `live` agree, for a test to ask after any
-    /// step: each place that isn't empty points at the block whose address is that place's, each
+    /// Stops the program where a place and the list disagree, for the heap's audit: a stale place
+    /// is a block that's never found, which nothing else would say.
+    #[cfg(any(test, feature = "audit"))]
+    pub(super) fn check_agrees(&self) {
+        if let Err(wrong) = self.agrees() {
+            disagrees(&wrong);
+        }
+    }
+
+    /// Whether every place and every entry of `live` agree, for a test to ask after any step: each place that isn't empty points at the block whose address is that place's, each
     /// block in `live` is pointed at by its own place, each spare index is an empty entry named
     /// once, and `len` counts what's held.
-    #[cfg(test)]
-    fn review_agrees(&self) -> Result<(), String> {
+    #[cfg(any(test, feature = "audit"))]
+    fn agrees(&self) -> Result<(), String> {
         let mut pointed = 0_usize;
         for (region, pages) in &self.regions {
             for (page, places) in pages.iter().enumerate().filter_map(|(n, page)| Some((n, page.as_ref()?))) {
@@ -650,7 +755,10 @@ impl Table {
                         return Err(format!("a place points at index {number}, which holds no block"));
                     };
                     if split(at(block)) != (*region, page, place) {
-                        return Err(format!("a place points at the block at {:#x}, another place's", at(block)));
+                        return Err(format!(
+                            "a place points at the block at {:#x}, another place's",
+                            at(block)
+                        ));
                     }
                     pointed += 1;
                 }
@@ -660,7 +768,7 @@ impl Table {
         if pointed != held {
             return Err(format!("{pointed} places point at blocks, and `live` holds {held}"));
         }
-        let mut spare = self.review_chain()?;
+        let mut spare = self.spare_chain()?;
         spare.sort_unstable();
         if spare.windows(2).any(|pair| pair.first() == pair.get(1)) {
             return Err("an index is spare twice".to_owned());
@@ -722,6 +830,32 @@ mod tests {
         assert_eq!(table.len(), 0);
         assert!(table.get(placed_at).is_none() && table.get(short_at).is_none());
         assert!(table.take_if(placed_at, |_| true).is_none(), "a block's taken once");
+    }
+
+    /// A table of few blocks, looked at as its worker goes idle, holds few empty pages: it looks for
+    /// them once it's made a few, so a server's tables, making pages slowly as their blocks wander,
+    /// give them back within minutes rather than the half hour 64 took.
+    #[test]
+    fn a_table_of_few_blocks_holds_few_empty_pages_when_looked_at_idle() {
+        let mut table = Table::default();
+        // Kept outside the table, so each block lands where no earlier one did.
+        let mut elsewhere = Vec::new();
+        // One block that lives all along, as a server's own state does.
+        table.insert(vec![1; 1 << 13].into());
+        for _ in 0..100 {
+            // 64 KB each, so each starts on a page of its own.
+            let block: Box<[u64]> = vec![1; 1 << 13].into();
+            let address = at(&block);
+            table.insert(block);
+            elsewhere.extend(table.remove(address));
+            table.look_while_idle();
+            assert!(
+                table.pages() <= 2 + PAGES_BEFORE_LOOKING_IDLE,
+                "{} pages kept for one block",
+                table.pages()
+            );
+        }
+        assert_eq!(table.len(), 1);
     }
 
     #[test]
@@ -946,13 +1080,10 @@ mod tests {
         assert_eq!(table.len(), 2);
     }
 
-    // ---- Review of design A (table-index-design-2026-11-18-runtime2.md), by Fable 5.2. These run
-    // ---- on the review's own sketch of the design, not on the runtime lane's code.
-
     /// A sequence of numbers from a seed, the same on every machine.
-    struct ReviewSeeded(u64);
+    struct Seeded(u64);
 
-    impl ReviewSeeded {
+    impl Seeded {
         fn next(&mut self) -> u64 {
             self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             self.0 >> 33
@@ -964,9 +1095,9 @@ mod tests {
     }
 
     /// What the model knows of a block: its tag, its owner count and its length in words.
-    type ReviewKnown = (u64, u64, usize);
+    type Known = (u64, u64, usize);
 
-    fn review_check(table: &Table, model: &HashMap<usize, ReviewKnown>, address: usize) {
+    fn check_against(table: &Table, model: &HashMap<usize, Known>, address: usize) {
         match (table.get(address), model.get(&address)) {
             (Some(block), Some((tag, count, len))) => {
                 assert_eq!(at(block), address, "found a block at another address");
@@ -977,7 +1108,9 @@ mod tests {
                 }
             }
             (None, None) => {}
-            (found, known) => panic!("at {address:#x} the table has {:?}, the model {known:?}", found.map(<[u64]>::len)),
+            (found, known) => {
+                panic!("at {address:#x} the table has {:?}, the model {known:?}", found.map(<[u64]>::len))
+            }
         }
     }
 
@@ -987,20 +1120,20 @@ mod tests {
     /// found by its own address with its own words, and none at an address that's gone. Every so
     /// often every place and every entry of the dense list are checked against each other.
     #[test]
-    fn review_the_table_agrees_with_a_model_through_random_work() {
+    #[expect(clippy::too_many_lines, reason = "one model's steps, each beside the others")]
+    fn the_table_agrees_with_a_model_through_random_work() {
         for seed in [1_u64, 2042, 53, 64, 99_999, 20_261_118] {
-            let mut random = ReviewSeeded(seed);
-            let mut table = Table { review_compacts: seed % 2 == 1, ..Table::default() };
-            let mut model: HashMap<usize, ReviewKnown> = HashMap::new();
+            let mut random = Seeded(seed);
+            let mut table = Table::default();
+            let mut model: HashMap<usize, Known> = HashMap::new();
             let mut live: Vec<usize> = Vec::new();
             let mut gone: Vec<usize> = Vec::new();
             let (mut hashed_under_pages, mut misses, mut most_pages) = (0_usize, 0_usize, 0_usize);
-            let (mut reused, mut grew, mut shrank, mut fronts) = (0_usize, 0_usize, 0_usize, 0_usize);
-            let mut regions_seen = std::collections::BTreeSet::new();
+            let (mut reused, mut shrank) = (0_usize, 0_usize);
             let page_of = |address: usize| address >> PAGE_BITS;
             for step in 0..120_000_u64 {
                 let tag = step + 1;
-                let (entries, front) = (table.review_entries().0, table.regions.first().map(|(number, _)| *number));
+                let entries = table.entries().0;
                 match random.below(100) {
                     // Make one here, or take one over: short, a few words, 64 words, or a page's worth.
                     0..=44 => {
@@ -1015,7 +1148,6 @@ mod tests {
                         words[0] = count;
                         let block: Box<[u64]> = words.into();
                         let address = at(&block);
-                        regions_seen.insert(split(address).0);
                         assert!(!model.contains_key(&address), "the allocator gave a live address twice");
                         // Early on, and in bursts after, most are taken over: before their pages are made.
                         let adopted = if step < 4_000 || (step / 3_000) % 4 == 3 {
@@ -1023,17 +1155,16 @@ mod tests {
                         } else {
                             random.below(10) < 3
                         };
-                        let spare = table.review_entries().1;
+                        let spare = table.entries().1;
                         if adopted {
                             table.insert_adopted(block);
                         } else {
                             table.insert(block);
                         }
                         // An index that's spare is used before the list grows.
-                        if table.review_entries().0 > entries {
+                        if table.entries().0 > entries {
                             assert_eq!(spare, 0, "the list grew with an index spare");
-                            grew += 1;
-                        } else if table.review_entries().1 < spare {
+                        } else if table.entries().1 < spare {
                             reused += 1;
                         }
                         model.insert(address, (tag, count, len));
@@ -1056,7 +1187,9 @@ mod tests {
                                 live.swap_remove(which);
                                 gone.push(address);
                             }
-                            Released::Missing => panic!("a live block at {address:#x} wasn't found to release"),
+                            Released::Missing => {
+                                panic!("a live block at {address:#x} wasn't found to release")
+                            }
                         }
                     }
                     // Take one out whole, by `remove` or `take_if`.
@@ -1068,7 +1201,7 @@ mod tests {
                             table.remove(address)
                         } else {
                             assert!(table.take_if(address, |_| false).is_none());
-                            review_check(&table, &model, address);
+                            check_against(&table, &model, address);
                             table.take_if(address, |block| block.len() == len)
                         };
                         let block = taken.expect("a live block wasn't found to take out");
@@ -1080,7 +1213,7 @@ mod tests {
                     // Ask at an address that's gone, unless something's there again, and inside a block.
                     85..=94 if !gone.is_empty() => {
                         let address = gone[random.below(gone.len())];
-                        review_check(&table, &model, address);
+                        check_against(&table, &model, address);
                         if !model.contains_key(&address) {
                             let before = table.len();
                             assert!(matches!(table.release_one(address), Released::Missing));
@@ -1106,28 +1239,27 @@ mod tests {
                     _ => {}
                 }
                 assert_eq!(table.len(), model.len());
-                shrank += usize::from(table.review_entries().0 < entries);
-                fronts += usize::from(front.is_some() && front != table.regions.first().map(|(number, _)| *number));
+                shrank += usize::from(table.entries().0 < entries);
                 if gone.len() > 4_096 {
                     gone.drain(..2_048);
                 }
-                // Now and then pages are given back whether or not enough were made, so the list's
-                // end is let go, and on odd seeds its blocks moved down, in the middle of the work.
+                // Now and then pages are given back whether or not enough were made, so the list is
+                // cut down, its blocks moved, in the middle of the work.
                 if step % 7_000 == 6_999 || step % 30_000 == 29_999 {
                     table.give_back_empty_pages();
-                    table.review_agrees().unwrap_or_else(|wrong| panic!("seed {seed}, step {step}: {wrong}"));
+                    table.agrees().unwrap_or_else(|wrong| panic!("seed {seed}, step {step}: {wrong}"));
                     for address in &live {
-                        review_check(&table, &model, *address);
+                        check_against(&table, &model, *address);
                     }
                 }
                 // Often, every place against every entry.
                 if step % 500 == 0 {
-                    table.review_agrees().unwrap_or_else(|wrong| panic!("seed {seed}, step {step}: {wrong}"));
+                    table.agrees().unwrap_or_else(|wrong| panic!("seed {seed}, step {step}: {wrong}"));
                 }
                 // Now and then, everything: each block by its address, and the table's own list.
                 if step % 2_500 == 0 {
                     for address in &live {
-                        review_check(&table, &model, *address);
+                        check_against(&table, &model, *address);
                     }
                     assert_eq!(table.all().count(), model.len());
                     let mut listed = std::collections::HashSet::new();
@@ -1141,14 +1273,20 @@ mod tests {
                         .regions
                         .iter()
                         .flat_map(|(region, pages)| {
-                            pages.iter().enumerate().filter(|(_, page)| page.is_some()).map(move |(page, _)| (*region, page))
+                            pages
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, page)| page.is_some())
+                                .map(move |(page, _)| (*region, page))
                         })
                         .map(|(region, page)| (region << (REGION_BITS - PAGE_BITS)) | page)
                         .collect();
                     hashed_under_pages += table
                         .short
                         .iter()
-                        .filter(|(address, block)| block.len() >= PLACED_WORDS && made.contains(&page_of(**address)))
+                        .filter(|(address, block)| {
+                            block.len() >= PLACED_WORDS && made.contains(&page_of(**address))
+                        })
                         .count();
                     most_pages = most_pages.max(table.pages());
                 }
@@ -1162,32 +1300,24 @@ mod tests {
                         model.remove(&address);
                         gone.push(address);
                     }
-                    table.review_agrees().unwrap_or_else(|wrong| panic!("seed {seed}, step {step}: {wrong}"));
+                    table.agrees().unwrap_or_else(|wrong| panic!("seed {seed}, step {step}: {wrong}"));
+                    // With most of it gone, giving pages back cuts the list down.
+                    let before = table.entries().0;
+                    table.give_back_empty_pages();
+                    shrank += usize::from(table.entries().0 < before);
+                    table.agrees().unwrap_or_else(|wrong| panic!("seed {seed}, step {step}: {wrong}"));
+                    for address in &live {
+                        check_against(&table, &model, *address);
+                    }
                 }
             }
-            eprintln!(
-                "REVIEW seed {seed}, compacting {}: {} live at the end, {} pages at most, {} now, {} hashed blocks seen under made pages, \
-                 {} misses; indices: {} new, {} reused, the list shrank {} times, is {} long with {} spare; \
-                 {} regions, the first changed {} times",
-                seed % 2 == 1,
-                model.len(),
-                most_pages,
-                table.pages(),
-                hashed_under_pages,
-                misses,
-                grew,
-                reused,
-                shrank,
-                table.review_entries().0,
-                table.review_entries().1,
-                regions_seen.len(),
-                fronts
-            );
             assert!(hashed_under_pages > 0, "no hashed block was ever under a page that was made");
             assert!(misses > 1_000);
-            assert!(reused > 1_000, "indices were hardly reused");
+            assert!(reused > 1_000, "indices were hardly used again");
+            assert!(shrank > 0, "the list was never cut down");
             // What's left comes out through `into_blocks`, each block once.
-            let left: std::collections::HashSet<usize> = table.into_blocks().map(|block| at(&block)).collect();
+            let left: std::collections::HashSet<usize> =
+                table.into_blocks().map(|block| at(&block)).collect();
             assert_eq!(left.len(), model.len());
             assert!(live.iter().all(|address| left.contains(address)));
         }
@@ -1196,23 +1326,23 @@ mod tests {
     /// Indices are used again after frees, and a block is never found through an index another
     /// block now holds.
     #[test]
-    fn review_indices_are_reused_and_never_find_another_block() {
+    fn indices_are_used_again_and_never_find_another_block() {
         let mut table = Table::default();
         let first: Vec<Box<[u64]>> = (0..5_000_u64).map(|n| vec![1, n, 7].into()).collect();
         let first_at: Vec<usize> = first.iter().map(|block| at(block)).collect();
         for block in first {
             table.insert(block);
         }
-        assert_eq!((table.review_entries().0, table.review_entries().1), (5_000, 0));
+        assert_eq!((table.entries().0, table.entries().1), (5_000, 0));
         // Kept, so the second lot's addresses are all new.
         let kept: Vec<Box<[u64]>> = first_at.iter().map(|address| table.remove(*address).unwrap()).collect();
-        assert_eq!((table.review_entries().0, table.review_entries().1, table.len()), (5_000, 5_000, 0));
+        assert_eq!((table.entries().0, table.entries().1, table.len()), (5_000, 5_000, 0));
         let second: Vec<Box<[u64]>> = (0..5_000_u64).map(|n| vec![1, n + 10_000, 9].into()).collect();
         let second_at: Vec<usize> = second.iter().map(|block| at(block)).collect();
         for block in second {
             table.insert(block);
         }
-        assert_eq!((table.review_entries().0, table.review_entries().1), (5_000, 0), "every index was used again");
+        assert_eq!((table.entries().0, table.entries().1), (5_000, 0), "every index was used again");
         for address in &first_at {
             assert!(table.get(*address).is_none(), "an address that's gone finds the block at its old index");
             assert!(matches!(table.release_one(*address), Released::Missing));
@@ -1220,38 +1350,33 @@ mod tests {
         for (n, address) in (0..5_000_u64).zip(&second_at) {
             assert_eq!(table.get(*address).map(|block| block[1]), Some(n + 10_000));
         }
-        table.review_agrees().unwrap();
+        table.agrees().unwrap();
         drop(kept);
     }
 
-    /// What the dense list holds after a burst: it's as long as the most blocks ever placed at
-    /// once, until its last entries are free and pages are given back.
+    /// After a burst is freed, nearly all of it, the list comes down to about what it still holds
+    /// once pages are given back, and lets its room go, wherever the blocks left are. A new block
+    /// takes the index freed last, so without moving blocks down the list stayed 200,000 entries
+    /// long, 3.1 MB, whatever it held.
     #[test]
-    fn review_what_the_list_holds_after_a_burst() {
-        for (name, kept_every, compacts) in [
-            ("the last block made is kept", 0_usize, false),
-            ("one block in 100 is kept", 100, false),
-            ("none is kept", usize::MAX, false),
-            ("the last block made is kept, compacting", 0, true),
-            ("one block in 100 is kept, compacting", 100, true),
-            ("none is kept, compacting", usize::MAX, true),
-        ] {
-            let mut table = Table { review_compacts: compacts, ..Table::default() };
+    fn the_list_comes_down_after_a_burst_wherever_its_blocks_are_left() {
+        for kept_every in [0_usize, 100, usize::MAX] {
+            let keep = |n: usize| match kept_every {
+                0 => n == 199_999,
+                usize::MAX => false,
+                every => n.is_multiple_of(every),
+            };
+            let mut table = Table::default();
             let burst: Vec<Box<[u64]>> = (0..200_000_u64).map(|n| vec![1, n, 7, 8].into()).collect();
             let addresses: Vec<usize> = burst.iter().map(|block| at(block)).collect();
             for block in burst {
                 table.insert(block);
             }
-            let (pages_at_peak, entries_at_peak) = (table.pages(), table.review_entries().0);
+            assert_eq!(table.entries().0, 200_000);
             let mut elsewhere = Vec::new();
             for (n, address) in addresses.iter().enumerate() {
-                let keep = match kept_every {
-                    0 => n == addresses.len() - 1,
-                    usize::MAX => false,
-                    every => n % every == 0,
-                };
-                if !keep {
-                    elsewhere.push(table.remove(*address).unwrap());
+                if !keep(n) {
+                    elsewhere.extend(table.remove(*address));
                 }
             }
             let held = table.len();
@@ -1260,86 +1385,82 @@ mod tests {
             let mut wandered = Vec::new();
             for round in 0..400_u64 {
                 let blocks: Vec<Box<[u64]>> = (0..3).map(|n| vec![round + n; 1 << 13].into()).collect();
-                let at_these: Vec<usize> = blocks.iter().map(|block| at(block)).collect();
+                let these: Vec<usize> = blocks.iter().map(|block| at(block)).collect();
                 for block in blocks {
                     table.insert(block);
                 }
-                wandered.extend(at_these.into_iter().filter_map(|address| table.remove(address)));
+                wandered.extend(these.into_iter().filter_map(|address| table.remove(address)));
             }
-            table.review_agrees().unwrap();
+            table.agrees().unwrap_or_else(|wrong| panic!("keeping every {kept_every}: {wrong}"));
+            let (entries, _, room) = table.entries();
+            assert!(entries <= held + 3, "{entries} entries for {held} blocks, keeping every {kept_every}");
+            assert!(room <= 4 * held + 2 * ENTRIES_KEPT_SPARE, "room for {room} entries for {held} blocks");
             for (n, address) in addresses.iter().enumerate() {
-                let keep = match kept_every {
-                    0 => n == addresses.len() - 1,
-                    usize::MAX => false,
-                    every => n % every == 0,
-                };
-                assert_eq!(table.get(*address).map(|block| block[1]), keep.then_some(u64::try_from(n).unwrap()));
+                let tag = u64::try_from(n).unwrap_or(u64::MAX);
+                assert_eq!(table.get(*address).map(|block| block[1]), keep(n).then_some(tag));
             }
-            eprintln!(
-                "REVIEW burst, {name}: at the peak {entries_at_peak} entries ({} KB) and {pages_at_peak} pages ({} KB); \
-                 after, holding {held} blocks: {} entries ({} KB, room for {}), {} spare indices ({} KB, room for {}), {} pages ({} KB)",
-                entries_at_peak * 16 / 1024,
-                pages_at_peak * 16,
-                table.review_entries().0,
-                table.review_entries().0 * 16 / 1024,
-                table.review_entries().2,
-                table.review_entries().1,
-                table.review_entries().1 * 4 / 1024,
-                table.review_entries().1,
-                table.pages(),
-                table.pages() * 16
-            );
         }
     }
 
-    /// The list shrinks from its end as pages are given back, and no further than its last block.
+    /// A list of few entries isn't moved about for little: under `ENTRIES_KEPT_SPARE` past twice
+    /// what it holds, only its spare end goes.
     #[test]
-    fn review_the_list_shrinks_from_its_end_with_pages_given_back() {
-        for compacts in [false, true] {
-        let mut table = Table { review_compacts: compacts, ..Table::default() };
-        let blocks: Vec<Box<[u64]>> = (0..10_000_u64).map(|n| vec![1, n, 7].into()).collect();
+    fn a_short_list_only_loses_its_spare_end() {
+        let mut table = Table::default();
+        let blocks: Vec<Box<[u64]>> = (0..600_u64).map(|n| vec![1, n, 7].into()).collect();
         let addresses: Vec<usize> = blocks.iter().map(|block| at(block)).collect();
         for block in blocks {
             table.insert(block);
         }
-        // All but the 100th go: the list can shrink to 100 entries, with 99 of them spare.
-        let mut elsewhere: Vec<Box<[u64]>> = Vec::new();
+        let mut elsewhere = Vec::new();
+        // The first and the last 100 go: the end is spare, the start a hole.
+        for address in addresses.iter().take(100).chain(addresses.iter().skip(500)) {
+            elsewhere.extend(table.remove(*address));
+        }
+        table.give_back_empty_pages();
+        table.agrees().unwrap();
+        assert_eq!((table.entries().0, table.entries().1), (500, 100), "the end goes and the hole stays");
         for (n, address) in addresses.iter().enumerate() {
-            if n != 99 {
-                elsewhere.push(table.remove(*address).unwrap());
-            }
+            assert_eq!(table.get(*address).is_some(), (100..500).contains(&n));
         }
-        assert_eq!(table.review_entries().0, 10_000, "nothing shrinks until pages are given back");
-        for round in 0..200_u64 {
-            let block: Box<[u64]> = vec![round; 1 << 13].into();
-            let address = at(&block);
+    }
+
+    /// Past the most entries a place can number, a block goes in the hash map, and is found,
+    /// released and taken out from there as any other is.
+    #[test]
+    fn past_the_most_entries_blocks_go_in_the_hash_map() {
+        let mut table = Table { most_entries: Some(4), ..Table::default() };
+        let blocks: Vec<Box<[u64]>> = (0..10_u64).map(|n| vec![2, n, 7].into()).collect();
+        let addresses: Vec<usize> = blocks.iter().map(|block| at(block)).collect();
+        for block in blocks {
             table.insert(block);
-            elsewhere.push(table.remove(address).unwrap());
         }
-        table.review_agrees().unwrap();
-        eprintln!(
-            "REVIEW shrink, compacting {compacts}: {} entries, {} spare, {} pages",
-            table.review_entries().0,
-            table.review_entries().1,
-            table.pages()
-        );
-        // As the design has it, the block whose insert gives pages back holds the index freed
-        // last, which is the list's last here: the list can't shrink.
-        if compacts {
-            assert!(table.review_entries().0 <= 101, "{} entries for one block", table.review_entries().0);
+        assert_eq!((table.entries().0, table.short.len(), table.len()), (4, 6, 10));
+        table.agrees().unwrap();
+        for (n, address) in (0..10_u64).zip(&addresses) {
+            assert_eq!(table.get(*address).map(|block| block[1]), Some(n));
+            assert!(matches!(table.release_one(*address), Released::Held));
         }
-        assert_eq!(table.get(addresses[99]).map(|block| block[1]), Some(99));
+        let mut taken = Vec::new();
+        for address in &addresses {
+            taken.extend(table.remove(*address));
         }
+        assert_eq!((taken.len(), table.len()), (10, 0));
+        table.agrees().unwrap();
     }
 
     /// A lent table's lookups match the owner's, from four threads at once.
     #[test]
-    fn review_a_lent_table_is_read_as_the_owner_reads_it() {
+    fn a_lent_table_is_read_as_its_owner_reads_it() {
         let mut table = Table::default();
         let blocks: Vec<Box<[u64]>> = (0..20_000_u64).map(|n| vec![1, n, 7].into()).collect();
         let addresses: Vec<usize> = blocks.iter().map(|block| at(block)).collect();
         for (n, block) in blocks.into_iter().enumerate() {
-            if n % 5 == 0 { table.insert_adopted(block) } else { table.insert(block) }
+            if n % 5 == 0 {
+                table.insert_adopted(block);
+            } else {
+                table.insert(block);
+            }
         }
         // Holes, and indices used again, before it's lent.
         let mut gone = Vec::new();
@@ -1351,14 +1472,19 @@ mod tests {
         for block in more {
             table.insert(block);
         }
-        let owner: Vec<Option<u64>> = addresses.iter().chain(&more_at).map(|address| table.get(*address).map(|block| block[1])).collect();
+        let owner: Vec<Option<u64>> = addresses
+            .iter()
+            .chain(&more_at)
+            .map(|address| table.get(*address).map(|block| block[1]))
+            .collect();
         let lent = std::sync::Arc::new(table);
         let asked: Vec<usize> = addresses.iter().chain(&more_at).copied().collect();
         std::thread::scope(|scope| {
             for _ in 0..4 {
                 scope.spawn(|| {
                     for _ in 0..20 {
-                        let seen: Vec<Option<u64>> = asked.iter().map(|address| lent.get(*address).map(|block| block[1])).collect();
+                        let seen: Vec<Option<u64>> =
+                            asked.iter().map(|address| lent.get(*address).map(|block| block[1])).collect();
                         assert_eq!(seen, owner);
                         assert_eq!(lent.all().count(), lent.len());
                     }
@@ -1366,7 +1492,7 @@ mod tests {
             }
         });
         let table = std::sync::Arc::try_unwrap(lent).ok().unwrap();
-        table.review_agrees().unwrap();
+        table.agrees().unwrap();
         drop(gone);
     }
 }

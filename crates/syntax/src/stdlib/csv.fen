@@ -5,11 +5,23 @@
 from std.io import Reader, Writer, read_all
 
 ## The rows of `text`. Text that isn't CSV fails with a `ParseError`.
+##
+## ```fennec
+## from std import csv
+## assert csv.loads("name,age\nAna,31\n")? == [["name", "age"], ["Ana", "31"]]
+## assert csv.loads("a,\"b,c\"\n")? == [["a", "b,c"]]
+## ```
 export def loads(text: str, delimiter = ",") -> list[list[str]]:
     return [row for _, row in rows_in(text, delimiter)?]
 
 ## The rows after the first as dicts, with the first row's fields as their keys. A row
 ## with a different number of fields fails with a `ParseError`.
+##
+## ```fennec
+## from std import csv
+## rows = csv.records("name,age\nAna,31\nBo,40\n")?
+## assert rows[1]["name"] == "Bo" and rows[1]["age"] == "40"
+## ```
 export def records(text: str, delimiter = ",") -> list[dict[str, str]]:
     rows = rows_in(text, delimiter)?
     if len(rows) == 0: return []
@@ -29,6 +41,11 @@ export def records(text: str, delimiter = ",") -> list[dict[str, str]]:
 ## written as it is, so what's read back is what was given. A spreadsheet opening the file may
 ## run a field that starts with `=`, `+`, `-` or `@` as a formula: a program writing text from
 ## outside for a spreadsheet puts something in front of such a field itself, like a `'`.
+##
+## ```fennec
+## from std import csv
+## assert csv.dumps([["name", "note"], ["Ana", "says \"hi\", then goes"]])? == "name,note\nAna,\"says \"\"hi\"\", then goes\"\n"
+## ```
 export def dumps(rows: list[list[str]], delimiter = ",") -> str fails InvalidValue:
     wrong = delimiter_problem(delimiter)
     if wrong != "": fail InvalidValue(message=wrong)
@@ -41,6 +58,12 @@ export def dumps(rows: list[list[str]], delimiter = ",") -> str fails InvalidVal
 
 ## CSV text with `names` as its first row, then each record's value for each name, which
 ## is empty when it has none. Other keys aren't written.
+##
+## ```fennec
+## from std import csv
+## records = [{"name": "Ana", "age": "31"}, {"name": "Bo"}]
+## assert csv.dumps_records(names=["name", "age"], entries=records)? == "name,age\nAna,31\nBo,\n"
+## ```
 export def dumps_records(
     names: list[str],
     entries: list[dict[str, str]],
@@ -170,6 +193,15 @@ def rows_in(text: str, delimiter: str) -> list[(int, list[str])]:
     return rows
 
 ## Writes `rows` as CSV to `out`, any `Writer` from `std.io`, as `dumps` gives them.
+##
+## ```fennec
+## from std import csv
+## from std.io import MemoryStream
+##
+## mut out = MemoryStream()
+## csv.dump([["a", "b"]], ref out)?
+## assert out.text()? == "a,b\n"
+## ```
 export def dump[W: Writer](
     rows: list[list[str]],
     ref out: W,
@@ -178,6 +210,14 @@ export def dump[W: Writer](
     out.write_text(dumps(rows, delimiter)?)?
 
 ## The rows of what's left in `src`, any `Reader` from `std.io`, as `loads` reads them.
+##
+## ```fennec
+## from std import csv
+## from std.io import MemoryStream
+##
+## mut src = MemoryStream.of("a,b\n".encode())
+## assert csv.load(ref src)? == [["a", "b"]]
+## ```
 export def load[R: Reader](ref src: R, delimiter = ",") -> list[
     list[str]
 ] fails ParseError | IoError:

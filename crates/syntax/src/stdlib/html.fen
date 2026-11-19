@@ -1,21 +1,51 @@
 ## A page made by `render`, safe to send: each value in it went where it can't change what the
 ## page does. One `Html` inside another's template goes in as it is, so pages are built from
 ## pieces. It's never loaded from saved data, which would let text in that `render` never saw.
+##
+## ```fennec
+## from std import html
+## name = "<b>Ana</b>"
+## page = html.render(t"<p>Hello, {name}</p>")?
+## assert page.text() == "<p>Hello, &lt;b&gt;Ana&lt;/b&gt;</p>"
+## ```
 export struct Html:
     _text = ""
 
     ## The page as text, to send.
+    ##
+    ## The page as text, to send.
+    ## ```fennec
+    ## from std import html
+    ## assert html.render(t"<p>hi</p>")?.text() == "<p>hi</p>"
+    ## ```
     def text(self) -> str:
         return self._text
 
+    ## Writes the page as it is, as `text()` gives it.
+    ## ```fennec
+    ## from std import html
+    ## assert str(html.render(t"<p>hi</p>")?) == "<p>hi</p>"
+    ## ```
     def str(self, ref out: StrWriter):
         out.write(self._text)
 
 ## What a page's template can hold: text, numbers and yes-or-no, each escaped, and pieces made
 ## by `render`.
+##
+## ```fennec
+## from std import html
+## count = 3
+## assert html.render(t"<p>{count} new</p>")?.text() == "<p>3 new</p>"
+## ```
 export type HtmlValue = str | int | float | bool | Html
 
 ## Why a page couldn't be made. Each names the value by how it's written in its `{}`.
+##
+## ```fennec
+## from std import html
+## link = "javascript:alert(1)"
+## assert html.render(t"<a href=\"{link}\">go</a>") fails .Misplaced()
+## ```
 export error HtmlError:
     ## A value where escaping can't keep it from changing what the page does: inside a
     ## `<script>` or `<style>`, an `on...` or `style` attribute, an attribute without quotes, a
@@ -27,6 +57,18 @@ export error HtmlError:
     ## The template ends inside a tag, an attribute or a comment, so it can't go into another.
     Unfinished(reason: str)
 
+    ## What's wrong, in words.
+    ## ```fennec
+    ## from std import html
+    ## script = "alert(1)"
+    ## page = html.render(t"<script>{script}</script>") except why:
+    ##     stdout.print(why.message())
+    ##     html.join([])
+    ## assert page.text() == ""
+    ## ```
+    ## ```output
+    ## `{script}` can't go there: text inside a `<script>` or `<style>` is code; pass it in a `data-` attribute
+    ## ```
     def message(self) -> str:
         match self:
             case .Misplaced(expression, reason):
@@ -46,6 +88,12 @@ export error HtmlError:
 ##   `http`, `https`, `mailto` or relative, like `javascript:`, fails with `Misplaced` too. To
 ##   show something else instead, check the URL before rendering.
 ## An `Html` between tags goes in as it is.
+##
+## ```fennec
+## from std import html
+## name = "Ana & Bo"
+## assert html.render(t"<p title=\"{name}\">{name}</p>")?.text() == "<p title=\"Ana &amp; Bo\">Ana &amp; Bo</p>"
+## ```
 export def render(page: Template[HtmlValue]) -> Html fails HtmlError:
     mut scan = PageScan()
     mut out = ""
@@ -66,6 +114,12 @@ export def render(page: Template[HtmlValue]) -> Html fails HtmlError:
     return Html(_text=out)
 
 ## Pieces of a page one after another, like the rows of a list made in a loop.
+##
+## ```fennec
+## from std import html
+## items = [html.render(t"<li>{n}</li>")? for n in [1, 2]]
+## assert html.join(items).text() == "<li>1</li><li>2</li>"
+## ```
 export def join(pieces: list[Html]) -> Html:
     mut out = ""
     for piece in pieces:
@@ -73,6 +127,11 @@ export def join(pieces: list[Html]) -> Html:
     return Html(_text=out)
 
 ## `text` with `& < > " '` escaped, so it reads as text between tags and in a quoted attribute.
+##
+## ```fennec
+## from std import html
+## assert html.escape("a < b & \"c\"") == "a &lt; b &amp; &quot;c&quot;"
+## ```
 export def escape(text: str) -> str:
     mut out = ""
     for c in text:

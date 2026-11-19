@@ -956,6 +956,9 @@ fn emitted_reusing(
     };
     let key = fennec_blake3::hash(named.as_os_str().as_encoded_bytes()).to_hex();
     let tools = fennec_llvm::Tools::find()?;
+    // Every object the program held last time is marked used at once, by marking its list: the
+    // units used again are found without marking each (`fennec_llvm::has_object`).
+    cache.mark(fennec_build::HOLDS, &key);
     let has_object = fennec_llvm::has_object(&cache, &tools)?;
     let reuse = std::cell::RefCell::new(fennec_llvm::Reuse {
         kept: cache.read(UNITS, &key),
@@ -969,6 +972,11 @@ fn emitted_reusing(
     let emitted = emitted_with(reached, &emit, false, checked)?;
     if let Some(index) = reuse.borrow_mut().keep.take() {
         fennec_build::kept("keep what the build's units read", cache.write(UNITS, &key, &index));
+        // Every unit's object, as the next build may use any of them again: those compiled this
+        // build are new, and so used now, till this list is marked.
+        let held =
+            fennec_llvm::hold_objects(&cache, &tools, &key, &emitted.units).map_err(std::io::Error::other);
+        fennec_build::kept("keep the program's list of objects", held);
     }
     Ok(emitted)
 }

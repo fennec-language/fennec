@@ -17,7 +17,8 @@
 //!
 //! `llvm` and the targets in `targets::NATIVE` build what they run natively, so they need `fennec`
 //! beside this program and LLVM's tools. Those that read outside input, `json-rules`, `toml-rules`,
-//! `pack`, `csv`, `url`, `http-server`, `http-client`, `postgres`, `router` and `html`, hold what
+//! `pack`, `csv`, `url`, `http-server`, `http-client`, `postgres`, `router`, `html`, `numbers`,
+//! `time` and `base64`, hold what
 //! they read to the format's own rules, each in its own module, not only to not crashing. Running with no targets
 //! named runs every one but `llvm`, which builds every input twice and runs only when named, and
 //! leaves out the other native ones, saying so, where nothing can be built. `programs` runs only
@@ -31,6 +32,7 @@
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 
+mod base64_rules;
 mod csv_rules;
 mod engines;
 mod generate;
@@ -40,6 +42,7 @@ mod json_rules;
 mod llvm;
 mod minimize;
 mod mutate;
+mod numbers_rules;
 mod pack_rules;
 mod parked;
 mod postgres_rules;
@@ -48,6 +51,7 @@ mod replay_rules;
 mod router_rules;
 mod supervise;
 mod targets;
+mod time_rules;
 mod toml_rules;
 mod url_rules;
 

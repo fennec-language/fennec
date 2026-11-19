@@ -95,26 +95,32 @@ fn a_short_run_of_every_target_finds_nothing() {
         "url",
         "runtime",
         "utf8",
+        "numbers",
+        "time",
+        "base64",
     ];
     // Those that run natively are left out, saying so, where nothing can be built.
     let native = [
+        "base64",
         "csv",
         "html",
         "http-client",
         "http-server",
         "json",
         "json-rules",
+        "numbers",
         "pack",
         "postgres",
         "router",
+        "time",
         "toml",
         "toml-rules",
         "url",
         "utf8",
     ];
     let left_out = printed.contains(
-        "csv, html, http-client, http-server, json, json-rules, pack, postgres, router, toml, toml-rules, url, \
-         utf8: left out",
+        "base64, csv, html, http-client, http-server, json, json-rules, numbers, pack, postgres, router, time, \
+         toml, toml-rules, url, utf8: left out",
     );
     for target in targets {
         if left_out && native.contains(&target) {
@@ -130,7 +136,9 @@ fn a_short_run_of_every_target_finds_nothing() {
 /// 512 MB, so one gone quadratic fails here rather than in a server.
 ///
 /// Fuzzing's own inputs are a few hundred bytes, too small for that to show. These found that
-/// `json-rules` looked for each key among every key before it, the target's own mistake.
+/// `json-rules` looked for each key among every key before it, the target's own mistake. Lengths
+/// that lie, past what any integer holds or below zero, lines and headers past each limit, text
+/// that isn't UTF-8 and offsets that take a time past the years it holds are among them too.
 /// Where nothing can be built natively, each passes without running.
 #[test]
 fn large_hostile_inputs_run_clean() {
@@ -173,6 +181,94 @@ fn large_hostile_inputs_run_clean() {
             format!("GET / HTTP/1.1\r\n{}\r\n", "x-a: b\r\n".repeat(10_000)).into_bytes(),
         ),
         ("http-server", "20,000 requests in a row", "GET / HTTP/1.1\r\n\r\n".repeat(20_000).into_bytes()),
+        (
+            "http-server",
+            "a header line of a million bytes",
+            format!("GET / HTTP/1.1\r\nx-a: {}\r\n\r\n", "b".repeat(1_000_000)).into_bytes(),
+        ),
+        (
+            "http-server",
+            "a request line of a million bytes",
+            format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(1_000_000)).into_bytes(),
+        ),
+        (
+            "http-server",
+            "a body said to be 2^63 bytes",
+            b"POST / HTTP/1.1\r\nContent-Length: 9223372036854775807\r\n\r\nab".to_vec(),
+        ),
+        (
+            "http-server",
+            "a body said to be 2^64 bytes",
+            b"POST / HTTP/1.1\r\nContent-Length: 18446744073709551616\r\n\r\nab".to_vec(),
+        ),
+        ("http-server", "a negative length", b"POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\nab".to_vec()),
+        (
+            "http-server",
+            "two lengths",
+            b"POST / HTTP/1.1\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nabc".to_vec(),
+        ),
+        (
+            "http-server",
+            "a chunk said to be 2^72 bytes",
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffffff\r\nab".to_vec(),
+        ),
+        ("http-server", "a header that isn't UTF-8", b"GET / HTTP/1.1\r\nx-a: \xff\xfe\r\n\r\n".to_vec()),
+        ("http-server", "a path that isn't UTF-8", b"GET /\xff\xfe HTTP/1.1\r\n\r\n".to_vec()),
+        (
+            "http-client",
+            "a status line of a million bytes",
+            format!("HTTP/1.1 200 {}\r\n\r\n", "a".repeat(1_000_000)).into_bytes(),
+        ),
+        (
+            "http-client",
+            "a million headers",
+            format!("HTTP/1.1 200 OK\r\n{}\r\n", "x-a: b\r\n".repeat(1_000_000)).into_bytes(),
+        ),
+        (
+            "http-client",
+            "a header line of a million bytes",
+            format!("HTTP/1.1 200 OK\r\nx-a: {}\r\n\r\n", "b".repeat(1_000_000)).into_bytes(),
+        ),
+        (
+            "http-client",
+            "a body said to be 2^63 bytes",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 9223372036854775807\r\n\r\nab".to_vec(),
+        ),
+        (
+            "http-client",
+            "a chunk said to be 2^72 bytes",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffffff\r\nab".to_vec(),
+        ),
+        ("postgres", "a message said to be 2 GB", b"R\x7f\xff\xff\xff".to_vec()),
+        ("postgres", "a message said to be -1 bytes", b"R\xff\xff\xff\xff".to_vec()),
+        ("url", "a million characters", format!("http://a/{}", "a".repeat(1_000_000)).into_bytes()),
+        ("url", "a million escapes", "%41".repeat(1_000_000).into_bytes()),
+        ("url", "a port of a million digits", format!("http://a:{}/", "9".repeat(1_000_000)).into_bytes()),
+        ("csv", "a million quotes", "\"".repeat(1_000_000).into_bytes()),
+        ("csv", "a 5 MB field", format!("\"{}\"", "a".repeat(5_000_000)).into_bytes()),
+        ("csv", "a million rows", "a,b\n".repeat(1_000_000).into_bytes()),
+        ("toml", "a 5 MB string", format!("a = \"{}\"", "x".repeat(5_000_000)).into_bytes()),
+        (
+            "toml-rules",
+            "100,000 tables",
+            (0..100_000).map(|n| format!("[t{n}]\nk = 1\n")).collect::<String>().into_bytes(),
+        ),
+        ("toml-rules", "100,000 inline tables open", format!("a = {}", "{b = ".repeat(100_000)).into_bytes()),
+        ("json-rules", "a million items", format!("[{}1]", "1,".repeat(999_999)).into_bytes()),
+        ("numbers", "a million digits", "1".repeat(1_000_000).into_bytes()),
+        ("numbers", "a float of a million digits", format!("0.{}", "1".repeat(1_000_000)).into_bytes()),
+        ("numbers", "an exponent of a million digits", format!("1e{}", "9".repeat(1_000_000)).into_bytes()),
+        ("numbers", "a million digits that aren't ASCII", "\u{663}".repeat(1_000_000).into_bytes()),
+        (
+            "time",
+            "a fraction of a million digits",
+            format!("2026-11-06T21:55:56.{}Z", "1".repeat(1_000_000)).into_bytes(),
+        ),
+        ("time", "a million characters that aren't ASCII", "é".repeat(1_000_000).into_bytes()),
+        ("time", "an offset past the first year", b"1678-01-01T00:00:00+23:59".to_vec()),
+        ("time", "an offset past the last year", b"2261-12-31T23:59:59.999999999-23:59".to_vec()),
+        ("base64", "5 MB", "QUJD".repeat(1_250_000).into_bytes()),
+        ("base64", "a million `=`", "=".repeat(1_000_000).into_bytes()),
     ];
     let dir = std::env::temp_dir().join(format!("fennec-fuzz-large-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

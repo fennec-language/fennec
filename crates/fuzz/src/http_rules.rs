@@ -518,6 +518,12 @@ mod tests {
     }
 }
 
+/// The most a response's status line and headers may take together, the most headers it may have,
+/// and the most its body may be, as `std.net`'s client reads one.
+const CLIENT_MOST_IN_HEADERS: usize = 1 << 20;
+const CLIENT_MOST_HEADERS: usize = 1000;
+const CLIENT_MOST_BODY: usize = 64 << 20;
+
 /// What a response should give the client: its status and body, or failing, or nothing certain.
 #[derive(Debug, PartialEq, Eq)]
 enum Answer {
@@ -567,8 +573,15 @@ fn answer(input: &[u8]) -> Result<Answer, Answer> {
         let mut headers: Vec<(String, String)> = Vec::new();
         loop {
             let line = crlf_line(input, &mut at)?;
+            // Every line of the head so far, interim responses' too, counts against its limit.
+            if at > CLIENT_MOST_IN_HEADERS {
+                return Err(Answer::Fails);
+            }
             if line.is_empty() {
                 break;
+            }
+            if headers.len() == CLIENT_MOST_HEADERS {
+                return Err(Answer::Fails);
             }
             let line = String::from_utf8(line).map_err(|_| Answer::Unpromised)?;
             let (name, value) = line.split_once(':').ok_or(Answer::Unpromised)?;
@@ -597,7 +610,11 @@ fn answer(input: &[u8]) -> Result<Answer, Answer> {
     match lengths.as_slice() {
         [] => Ok(Answer::Read(i64::from(status), input.get(at..).unwrap_or_default().to_vec())),
         [length] if !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit()) => {
-            let length: usize = length.parse().map_err(|_| Answer::Unpromised)?;
+            // A length past the most a body may be is refused before any of it's read.
+            let length: usize = length.parse().map_err(|_| Answer::Fails)?;
+            if length > CLIENT_MOST_BODY {
+                return Err(Answer::Fails);
+            }
             input
                 .get(at..at + length)
                 .map(|body| Answer::Read(i64::from(status), body.to_vec()))

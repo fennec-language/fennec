@@ -5023,14 +5023,15 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
 #[test]
 fn status_and_stop_reach_the_daemon_of_every_environment() {
     let (_folder, kit, home) = small_kit("daemons").unwrap();
-    // Commands whose environments differ in one variable, so each has a daemon of its own.
+    // Commands whose environments differ in one variable, so each has a daemon of its own. It's
+    // none of Fennec's, so `docs/environment.md` doesn't list it.
     let run_in = |environment: &str, args: &[&str]| {
         crate::executables::fennec_command()
             .args(args)
             .current_dir(&kit)
             .env("FENNEC_HOME", &home)
             .env("FENNEC_DAEMON_IDLE", "30")
-            .env("FENNEC_DAEMON_TEST_ENVIRONMENT", environment)
+            .env("DAEMON_TEST_SIDE", environment)
             .env_remove("FENNEC_NO_DAEMON")
             .output()
             .unwrap()

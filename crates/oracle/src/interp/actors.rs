@@ -310,12 +310,11 @@ impl State {
     /// stuck in one is refused rather than said to stop.
     fn stuck_said(&self) -> &'static str {
         let caught = self.actors.iter().all(|actor| match actor.state {
-            Doing::Ended => true,
+            Doing::Ended | Doing::Waiting(Wait::Room(_) | Wait::Task(_), false) => true,
             Doing::Waiting(Wait::Message(number), false) => {
                 !self.listeners.contains_key(&number)
                     && self.channels.get(&number).is_some_and(|chan| !chan.every)
             }
-            Doing::Waiting(Wait::Room(_) | Wait::Task(_), false) => true,
             _ => false,
         });
         if caught { DEADLOCK } else { HANGS }

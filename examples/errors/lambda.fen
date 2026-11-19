@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    names = ["bo", "ana"]
+    longest = sorted(names, key=lambda name: len(name))
+    stdout.print(longest)

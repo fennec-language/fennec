@@ -197,6 +197,10 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("call void {code}(ptr {closure})"));
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
+        // What it captured may be a generator that closes something as it's let go partway.
+        if self.module.reads.abandons() {
+            self.owe_free_check();
+        }
     }
 
     /// `==` on functions: each is equal only to itself, however many times it's been named.
@@ -309,6 +313,8 @@ impl Emit<'_, '_, '_> {
                     format!(
                         "  %f{at}_at = getelementptr inbounds i8, ptr %h{at}, i64 {LET_GO}\n  %f{at} = load ptr, ptr %f{at}_at\n  call void %f{at}(ptr %h{at})\n"
                     )
+                } else if self.lets_go_quietly(kind) {
+                    format!("  call void @fennec_free_plain(ptr %h{at})\n")
                 } else {
                     format!("  call void @fennec_free(ptr %h{at})\n")
                 };
@@ -362,6 +368,7 @@ impl Emit<'_, '_, '_> {
         self.module.add_helper(&code, thunk);
         if held.iter().any(Kind::counted) {
             self.declare("declare void @fennec_free(ptr) nounwind");
+            self.declare("declare void @fennec_free_plain(ptr) nounwind");
             self.owner_gone_helper();
             self.closure_helpers();
         }

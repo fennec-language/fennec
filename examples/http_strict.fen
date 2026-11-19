@@ -3,10 +3,10 @@
 # A proxy and a server that disagree on where a request ends let one request hide inside another.
 # So anything the grammar doesn't allow gets a 400: a second `content-length`, a length that isn't
 # only digits, a space before a header's `:`, a header folded onto the next line, a version that
-# isn't 1.0 or 1.1, a control character in the method, or a line ended by a bare line feed. A
-# header line over a mebibyte gets a 431, and a request line longer than a whole head may be a
-# 414. A value with a line break can't go into a response's headers, where it would start a header
-# of its own.
+# isn't 1.0 or 1.1, a control character in the method, a target that isn't a path, `*` or a whole
+# URL, or a line ended by a bare line feed. A header line over a mebibyte gets a 431, and a request
+# line longer than a whole head may be a 414. A value with a line break can't go into a response's
+# headers, where it would start a header of its own.
 from std.net import NetError, Request, Response
 
 def respond(request: Request) -> Response:
@@ -66,6 +66,31 @@ test "a header's value is what's between the spaces and tabs around it"(net: Net
         header_read(net, f"GET / HTTP/1.1\r\nx-a: \u00a0kept\u00a0\r\n{END}")?
         == "[\u00a0kept\u00a0]"
     )
+
+## The host and path a request was read with.
+def host_and_path(request: Request) -> Response:
+    host = request.headers.get("host") else ""
+    return Response(status=200, body=f"{host} {request.path}".encode())
+
+## The host and path a server read from `raw`, as its handler answers them.
+def target_read(net: Net, raw: str) -> str fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write(raw)?
+            server.serve(host_and_path)
+            return list(client.lines()?)[-1]
+    return ""
+
+test "a target is a path, a star for OPTIONS, or a whole URL whose host is the request's"(net: Net):
+    for target in ["abc", "*", "ftp://h/a", "http://user@h/a", "http:///a"]:
+        assert status_of(net, f"GET {target} HTTP/1.1\r\n{END}")? == BAD
+    assert status_of(net, f"OPTIONS * HTTP/1.1\r\n{END}")? == GOOD
+    # The URL's host stands for the `host` header, as HTTP/1.1 says.
+    assert (
+        target_read(net, f"GET HTTP://h:8/a%20b?echo=1 HTTP/1.1\r\nhost: other\r\n{END}")?
+        == "h:8 /a b"
+    )
+    assert target_read(net, f"GET http://h HTTP/1.1\r\n{END}")? == "h /"
 
 test "a folded header is refused"(net: Net):
     assert status_of(net, f"GET / HTTP/1.1\r\nx-a: 1\r\n  folded: 2\r\n{END}")? == BAD

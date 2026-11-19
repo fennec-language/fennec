@@ -659,8 +659,10 @@ impl<'a> Loader<'a> {
                 Err(err) => {
                     match from {
                         Some(span) => self.errors.push(
-                            Diagnostic::new(format!("there's no module called `{name}`"), span)
-                                .with_help(format!("it would be the file {shown}")),
+                            Diagnostic::new(format!("there's no module called `{name}`"), span).with_help(
+                                fennec_syntax::python_module(name)
+                                    .unwrap_or_else(|| format!("it would be the file {shown}")),
+                            ),
                         ),
                         None => self.unplaced.push(format!("error: couldn't read {shown}: {err}\n")),
                     }

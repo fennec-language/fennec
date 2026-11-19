@@ -168,6 +168,17 @@ fn allocations_say_what_and_how_many_loops_theyre_in() {
 }
 
 #[test]
+fn a_part_of_a_split_is_named_as_the_program_wrote_it() {
+    let source = "def f(texts: list[str]) -> int:\n    mut total = 0\n    for text in texts:\n        \
+                  for part in text.split(\",\"):\n            total += len(part)\n        \
+                  total += len(text.split(\"/\")[1])\n    return total\n";
+    let found = allocations(source).unwrap();
+    let parts = found.iter().filter(|(said, _)| said == "this part of a split may allocate");
+    assert_eq!(parts.map(|(_, loops)| *loops).collect::<Vec<_>>(), [2, 1], "{found:?}");
+    assert!(found.iter().all(|(said, _)| !said.contains("intrinsics")), "{found:?}");
+}
+
+#[test]
 fn hot_code_comes_first() {
     let source = "def f(n: int) -> list[int]:\n    mut out = [n]\n    for at in range(n):\n        \
                   out.append(at)\n    return out\n";

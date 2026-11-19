@@ -17,7 +17,8 @@
 //!
 //! `llvm` and the targets in `targets::NATIVE` build what they run natively, so they need `fennec`
 //! beside this program and LLVM's tools. Those that read outside input, `json-rules`, `toml-rules`,
-//! `pack`, `csv`, `url`, `http-server`, `http-client`, `postgres`, `router` and `html`, hold what
+//! `pack`, `csv`, `url`, `http-server`, `http-client`, `postgres`, `router`, `html`, `numbers`,
+//! `time` and `base64`, hold what
 //! they read to the format's own rules, each in its own module, not only to not crashing. Running with no targets
 //! named runs every one but `llvm`, which builds every input twice and runs only when named, and
 //! leaves out the other native ones, saying so, where nothing can be built. `programs` runs only
@@ -31,15 +32,18 @@
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 
+mod base64_rules;
 mod csv_rules;
 mod engines;
 mod generate;
 mod html_rules;
 mod http_rules;
 mod json_rules;
+mod killed_writes;
 mod llvm;
 mod minimize;
 mod mutate;
+mod numbers_rules;
 mod pack_rules;
 mod parked;
 mod postgres_rules;
@@ -48,6 +52,7 @@ mod replay_rules;
 mod router_rules;
 mod supervise;
 mod targets;
+mod time_rules;
 mod toml_rules;
 mod url_rules;
 
@@ -70,6 +75,7 @@ fn main() -> ExitCode {
         ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
         ["show", "programs", file] => show(Path::new(file), programs::written),
         ["show", "replay", file] => show(Path::new(file), replay_rules::written),
+        ["show", "killed-writes", file] => show(Path::new(file), killed_writes::written),
         ["show", "reader", name] => llvm::reader_source(name).map_or_else(
             || Err(format!("there's no reader for `{name}`; there are {}", llvm::reader_names().join(", "))),
             |source| {
@@ -227,7 +233,8 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
         options.names.iter().map(|name| target_named(name)).collect::<Result<_, _>>()?
     };
     let native = |target: &&Target| {
-        [targets::LLVM.name, targets::RANDOM_PROGRAMS.name, targets::REPLAY.name].contains(&target.name)
+        [targets::LLVM.name, targets::RANDOM_PROGRAMS.name, targets::REPLAY.name, targets::KILLED_WRITES.name]
+            .contains(&target.name)
             || targets::NATIVE.contains(&target.name)
     };
     if chosen.iter().any(native) {

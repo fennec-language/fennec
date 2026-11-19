@@ -1,0 +1,7 @@
+error: Fennec doesn't name a failure with `as`
+ --> examples/errors/except_as.fen:3:36
+  |
+3 |     count = int.parse(text) except InvalidValue as problem:
+  |                                    ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write `except problem:` to name any failure, or `except InvalidValue(): ...` to handle only `InvalidValue`

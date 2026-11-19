@@ -1,0 +1,100 @@
+# A `for` over a slice of a list walks the list's own items between the slice's bounds, with no
+# list made for it. Each bound as a slice has it: from the end when below 0, held within the list,
+# and the end never before the start; worked out once, in order, before the loop; and the list
+# walked as it was, whatever the body does to it.
+
+struct Shelf:
+    labels: list[str]
+
+def joined(words: list[str], start: int, end: int) -> str:
+    mut out = ""
+    for word in words[start:end]:
+        out += word + ","
+    return out
+
+def from_start(words: list[str], start: int) -> str:
+    mut out = ""
+    for word in words[start:]:
+        out += word + ","
+    return out
+
+def to_end(words: list[str], end: int) -> str:
+    mut out = ""
+    for word in words[:end]:
+        out += word + ","
+    return out
+
+def noted(ref log: list[str], name: str, at: int) -> int:
+    log.append(name)
+    return at
+
+def listed(ref log: list[str], items: list[int]) -> list[int]:
+    log.append("list")
+    return items
+
+def summed(items: list[int]) -> int:
+    mut total = 0
+    for item in items[1:]:
+        if item < 0: break
+        total += item
+    return total
+
+def main(stdout: Stdout):
+    words = ["a", "bb", "ccc", "dddd", "eeeee"]
+    # Every pair of bounds from -7 to 7, against slicing into a list and walking that.
+    mut differ = 0
+    for start in range(-7, 8):
+        for end in range(-7, 8):
+            mut wanted = ""
+            part = words[start:end]
+            for word in part:
+                wanted += word + ","
+            if joined(words, start=start, end=end) != wanted:
+                differ += 1
+                stdout.print("differs", start, end)
+    stdout.print("pairs that differ:", differ)
+    stdout.print(
+        joined(words, start=1, end=3),
+        joined(words, start=-2, end=5),
+        joined(words, start=3, end=1),
+        joined(words, start=-9, end=9),
+    )
+    stdout.print(
+        from_start(words, 2),
+        from_start(words, -1),
+        from_start(words, 9),
+        from_start(words, -9),
+    )
+    stdout.print(to_end(words, 2), to_end(words, -1), to_end(words, 0), to_end(words, 9))
+    # An empty list, and one item.
+    empty: list[str] = []
+    stdout.print("[" + from_start(empty, 1) + "]", "[" + joined(["x"], start=0, end=1) + "]")
+    # The body changes the list: the loop walks it as it was.
+    mut numbers = [1, 2, 3, 4]
+    mut total = 0
+    for x in numbers[1:]:
+        numbers.append(x * 10)
+        numbers[0] = 99
+        total += x
+    stdout.print(total, numbers)
+    # What it's of and each bound, worked out once, in order.
+    mut log: list[str] = []
+    mut seen: list[int] = []
+    for x in listed(ref log, [5, 6, 7, 8])[noted(ref log, "start", 1):noted(ref log, "end", -1)]:
+        seen.append(x)
+    stdout.print(seen, log)
+    # A field's list, a list of lists, a loop left early, and the same slice walked twice.
+    shelf = Shelf(labels=["top", "middle", "bottom"])
+    for label in shelf.labels[1:]:
+        stdout.print("label", label)
+    rows = [[1, 2], [3, 4], [5, 6]]
+    for row in rows[-2:]:
+        for cell in row[1:]:
+            stdout.print("cell", cell)
+    stdout.print(summed([100, 1, 2, -1, 50]), summed([7]))
+    mut twice = 0
+    for x in numbers[2:4]:
+        for y in numbers[2:4]:
+            twice += x * y
+    stdout.print(twice)
+    return

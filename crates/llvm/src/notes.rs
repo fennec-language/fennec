@@ -103,8 +103,8 @@ impl Emit<'_, '_, '_> {
         let (notes, joined) = (self.temp(), self.temp());
         self.line(&format!("{notes} = call ptr @fennec_notes_shown(i64 {word})"));
         self.line(&format!("{joined} = call ptr @fennec_str_concat(ptr {text}, ptr {notes})"));
-        self.release(text);
-        self.release(&notes);
+        self.release_quietly(text);
+        self.release_quietly(&notes);
         Ok(joined)
     }
 

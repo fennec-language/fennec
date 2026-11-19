@@ -3706,6 +3706,55 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
     Ok(())
 }
 
+/// Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
+/// under its error, a number that doesn't fit its size, and a pick from a range given backwards.
+/// Each ends its task as a crash and the program goes on, with nothing left of the messages. The
+/// blocks made for them once outlived the task: 11 of them (#2170).
+#[test]
+fn a_task_that_stops_with_a_message_made_as_it_ran_leaves_nothing() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stops_in_tasks_let_go_of_their_messages")?;
+    let program = dir.join("stops_in_tasks_let_go_of_their_messages.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/stops_in_tasks_let_go_of_their_messages.fen"))?;
+    let (program, executable) =
+        (program.to_string_lossy().into_owned(), dir.join("stops_in_tasks_let_go_of_their_messages"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+            let wanted = include_str!("fixtures/workers/stops_in_tasks_let_go_of_their_messages.out");
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(printed, wanted, "{how:?}, {threads} threads: {errors}");
+            assert!(ran.status.success(), "{how:?}, {threads} threads: {errors}");
+            for said in [
+                "this was expected to succeed (a short word), but it failed",
+                "note: while reading a long word",
+                "it doesn't fit in u8, which holds 0 to 255: 300",
+                "can't pick a number from 22 to 11",
+            ] {
+                assert!(errors.contains(said), "{how:?}, {threads} threads: {errors}");
+            }
+            let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+            assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads: {counts}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Appends written straight in a lock's body, to a list in a dict's value and in a list's item, 300
 /// under one lock and one under each of 300: the dict's lists are changed where they are, taken
 /// out through the lock's handle and saved by its log first. Each of those 600 appends copied its
@@ -5711,6 +5760,66 @@ def main(stdout: Stdout):
     stdout.print(h)
 "#;
 
+/// A `for` over a slice of a list walks the list's own items between the slice's bounds, with no
+/// list made for it: every pair of bounds from -7 to 7 against a slice walked, from the end, past
+/// either end and an end before the start; what it's of and its bounds worked out once, in order;
+/// a body that changes the list; a field's list, a list of lists, `break`, and the same slice walked
+/// twice. It prints what the reference evaluator prints, with nothing left, and a loop over
+/// `lines[1:]` run 1,000 times makes no list for any of them.
+#[test]
+fn a_for_over_a_slice_walks_the_list_with_no_list_made() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/for_over_slices.fen");
+    prints_in_both_builds("for_over_slices", source, include_str!("fixtures/for_over_slices.out"))?;
+    assert!(counts_of("for_over_slices_counts", source)?.ends_with(" live 0"));
+    let counts = counts_of(
+        "for_over_a_slice_allocations",
+        "def main(stdout: Stdout):\n    lines = [\"head\", \"a\", \"b\", \"c\"]\n    mut total = 0\n    for round in range(1000):\n        for line in lines[1:]:\n            total += len(line) + round % 2\n    stdout.print(total)\n",
+    )?;
+    let allocations = counts
+        .split_whitespace()
+        .skip_while(|word| *word != "allocations")
+        .nth(1)
+        .and_then(|count| count.parse::<u64>().ok());
+    assert!(allocations.is_some_and(|count| count < 100), "{counts}");
+    Ok(())
+}
+
+/// A list a loop right after fills is made with room for every turn first: written
+/// `mut xs = list[int]()`, several filled in one loop, and filled past a test, as a walk through
+/// a `Table`'s live slots with some removed, or a comprehension with a filter. A list a loop inside
+/// the loop fills keeps growing as it goes. It prints what the reference evaluator prints, with
+/// nothing left, built either way and built checking proofs, which checks each append a room
+/// check was left out of stays inside the room.
+#[test]
+fn a_list_a_loop_fills_is_made_with_room_for_every_turn() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/lists_sized_by_their_loop.fen");
+    let wanted = include_str!("fixtures/lists_sized_by_their_loop.out");
+    prints_in_both_builds("lists_sized_by_their_loop", source, wanted)?;
+    assert!(counts_of("lists_sized_by_their_loop_counts", source)?.ends_with(" live 0"));
+    let dir = folder("lists_sized_by_their_loop_proofs")?;
+    let (program, executable) = (dir.join("sized.fen"), dir.join("sized"));
+    std::fs::write(&program, source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_CHECK_PROOFS", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
 /// Lists and `Table`s a loop changes are made alone once, on the way into the loop, when nothing in
 /// it can give them another owner, and not checked again inside it. Shared before the loop, copied
 /// in it, given to a closure in it, written anew in it, changed by `Id`, and held by a task in it:
@@ -7666,7 +7775,8 @@ def main(stdout: Stdout):
 }
 
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
-/// largest `int` a digit at a time, failing cleanly past the top. And `u64`'s `wrapping_` and
+/// largest `int` a digit at a time, failing cleanly past the top, from the same text `int` reads:
+/// with space around it and a `+` before it. And `u64`'s `wrapping_` and
 /// `saturating_` methods, worked out on its 64 bits without going past them.
 #[test]
 fn a_u64_from_outside_and_its_wrapping_and_saturating_methods() -> std::io::Result<()> {
@@ -7687,6 +7797,7 @@ def main(stdout: Stdout):
     stdout.print(top.wrapping_add(2), u64(1).wrapping_sub(3), top.wrapping_mul(top), half.wrapping_mul(2), u64(3037000500).wrapping_mul(3037000500))
     stdout.print(top.saturating_add(1), u64(1).saturating_sub(2), half.saturating_mul(2), u64(6).saturating_mul(7), top.saturating_mul(0))
     stdout.print(i8(u64(100)), u32(half >> 33), top << 4, u64(3) << 63)
+    stdout.print(said(() => u64.parse(\" 18446744073709551615\\n\")?), said(() => u64.parse(\"+18446744073709551615\")?), said(() => u64.parse(\"+ 18446744073709551615\")?), said(() => u64.parse(\" 18446744073709551616 \")?))
 ",
     )?;
     let too_big = |text: &str| format!("[{text} doesn't fit in u64, which holds 0 to 18446744073709551615]");
@@ -7696,10 +7807,12 @@ def main(stdout: Stdout):
             "18446744073709551615 9223372036854775808 42 7 {} {} {} [\"seven\" isn't an int]\n\
              1 18446744073709551614 1 0 9223372037000250000\n\
              18446744073709551615 0 18446744073709551615 42 0\n\
-             100 1073741824 18446744073709551600 9223372036854775808\n",
+             100 1073741824 18446744073709551600 9223372036854775808\n\
+             18446744073709551615 18446744073709551615 [\"+ 18446744073709551615\" isn't an int] {}\n",
             too_big("-1"),
             too_big("18446744073709551616"),
-            too_big("-3")
+            too_big("-3"),
+            too_big("18446744073709551616")
         )
     );
     Ok(())
@@ -7972,6 +8085,8 @@ def main(stdout: Stdout):
 /// holds, and a dict's set writes a value held in place into its entry's own block: what each
 /// prints, a list shared before it's turned round keeping its order, and the blocks made,
 /// one copy for that shared list and none for a sort, are as pinned, with nothing left held.
+/// The comprehension whose item is `… if … else None` is made with room for every turn, since
+/// every turn appends past the two ways joining.
 #[test]
 fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -> std::io::Result<()> {
     if !ready() {
@@ -7980,7 +8095,7 @@ fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -
     prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
     assert_eq!(
         counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
-        "copies 1 copied_bytes 672 largest_copy 672 allocations 111 allocated_bytes 12032 live 0"
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 110 allocated_bytes 11720 live 0"
     );
     Ok(())
 }
@@ -15708,6 +15823,131 @@ def main(stdout: Stdout):
     stdout.print("kept worked")
 "#;
 
+/// A launched task whose free closes a generator let go partway, whose cleanup then fails, stops
+/// at that line as `main`'s thread does, saying so: nothing after it runs, and its `with launch`
+/// block ends with `Crashed`. It once only held the stop and ran on to its next checked call, so
+/// the line after the call that let go of the generator ran (#2127).
+#[test]
+fn a_task_whose_free_closes_a_generator_that_fails_stops_there() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("task_generator_failing")?;
+    let program = dir.join("task.fen");
+    std::fs::write(&program, TASK_GENERATOR_FAILING)?;
+    let executable = dir.join("task");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(out, "after kept\nclosing kept\nthe task crashed\n", "{err}");
+    assert!(
+        err.contains(
+            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"kept\")"
+        ),
+        "{err}"
+    );
+    Ok(())
+}
+
+const TASK_GENERATOR_FAILING: &str = r#"from std.concurrent import Crashed
+
+error Shut:
+    Stuck(name: str)
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail .Stuck(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def kept(stdout: Stdout) fails Shut:
+    walk = held("kept", stdout)?
+    for n in walk:
+        break
+    stdout.print("after kept")
+
+def in_a_task(stdout: Stdout):
+    kept(stdout) except why:
+        stdout.print("kept failed", why)
+        return
+    stdout.print("ran on past the stop")
+
+def launched(stdout: Stdout) fails Crashed:
+    with launch(() => in_a_task(stdout)):
+        pass
+
+def main(stdout: Stdout):
+    launched(stdout) except Crashed():
+        stdout.print("the task crashed")
+        return
+    stdout.print("the task ended")
+"#;
+
+/// A list cleared in the runtime only queues the generators it lets go of: one let go partway,
+/// whose cleanup crashes, is closed at the line that cleared it, which stops there, rather than
+/// at whatever free came next (#2127).
+#[test]
+fn a_generator_let_go_by_clearing_its_list_is_closed_at_that_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("cleared_generators")?;
+    let program = dir.join("cleared.fen");
+    std::fs::write(&program, CLEARED_GENERATORS)?;
+    let executable = dir.join("cleared");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(out, "closing listed\n", "{err}");
+    assert!(err.contains("index 6 is out of range for length 1"), "{err}");
+    Ok(())
+}
+
+const CLEARED_GENERATORS: &str = r#"struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    stuck = [0]
+    stdout.print(stuck[len(name)])
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def advanced(stdout: Stdout) -> Iterator[int]:
+    walk = held("listed", stdout)
+    for n in walk:
+        break
+    return walk
+
+def listed(stdout: Stdout):
+    mut walks = [advanced(stdout)]
+    walks.clear()
+    stdout.print("ran on past the stop", len(walks))
+
+def main(stdout: Stdout):
+    listed(stdout)
+    stdout.print("listed ended")
+"#;
+
 /// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,
 /// as one that can't fail does, closing what it holds then and not when the function ends.
 #[test]
@@ -16788,12 +17028,12 @@ def main(stdout: Stdout):
     return
 "#;
 
-/// A loop over a list from a place written as a number, `for x in items[k:]`, goes through the
-/// list's own items from there, with no list made for the slice: past the end there's nothing,
-/// and from the end, `[-2:]`, the slice is made as before. The loop sees the list as it was,
-/// whatever its body does to it, leaving early or going round again; over a list a call made,
-/// a field, tuples it unpacks, a list in a list, and items that are blocks, with nothing left.
-/// It makes 15 fewer blocks than with a slice for each loop.
+/// A loop over a list from a place, `for x in items[k:]`, goes through the list's own items from
+/// there, with no list made for the slice: past the end there's nothing, and from the end,
+/// `[-2:]`, it starts that far from the end, with no slice made either. The loop sees the list as
+/// it was, whatever its body does to it, leaving early or going round again; over a list a call
+/// made, a field, tuples it unpacks, a list in a list, and items that are blocks, with nothing
+/// left.
 #[test]
 fn a_loop_over_a_list_from_a_place_makes_no_slice() -> std::io::Result<()> {
     if !ready() {
@@ -16804,7 +17044,7 @@ fn a_loop_over_a_list_from_a_place_makes_no_slice() -> std::io::Result<()> {
         "[\"bb\", \"ccc\", \"dddd\", \"a\", \"bb\", \"ccc\", \"dddd\", \"a\", \"bb\", \"ccc\", \"dddd\"]\n0 [\"ccc\", \"dddd\"]\n3 [\"a\", \"bb\", \"ccc\", \"dddd\", \"bb!\", \"ccc!\", \"dddd!\"]\n[\"bb\", \"dddd\"]\n21 111 kept and kept 28\n42\n"
     );
     let counts = counts_of("loop_from_counts", LOOP_FROM)?;
-    assert!(counts.contains(" allocations 32 ") && counts.ends_with(" live 0"), "{counts}");
+    assert!(counts.contains(" allocations 31 ") && counts.ends_with(" live 0"), "{counts}");
     Ok(())
 }
 
@@ -16976,6 +17216,92 @@ fn a_loop_over_a_split_makes_no_list() -> std::io::Result<()> {
     assert_eq!(lines.next(), Some("error: `split` was called with the wrong arguments"), "{said}");
     assert!(lines.next().is_some_and(|place| place.ends_with("empty.fen:3:17")), "{said}");
     Ok(())
+}
+
+const SPLIT_PART: &str = r#"def swap(ref line: str) -> int:
+    line = f"x {line}"
+    return 1
+
+def part_of(path: str, at: int) -> str:
+    return path.split("/")[at]
+
+def main(stdout: Stdout):
+    path = "/users/12"
+    stdout.print(path.split("/")[0], path.split("/")[1], path.split("/")[2])
+    # A separator from a name and longer than a byte, one that overlaps itself, and text that
+    # isn't ASCII.
+    between = "->"
+    stdout.print("a->b->->c".split(between)[2], "a->b->->c".split(between)[3], "é,ü,ß".split(",")[1])
+    stdout.print("aaaaa".split("aa")[2], "日本語の日本".split("日本")[1])
+    # A place from a name, counting from the end when it's below zero.
+    for at in range(-3, 3):
+        stdout.print(at, part_of("/a/bc", at))
+    stdout.print("x,y,z".split(",")[-1], "x,y,z".split(",")[-3])
+    # Working out the place changes the text's name: the part is of the text as it was read.
+    mut line = "a b c"
+    stdout.print(line.split(" ")[swap(ref line)], line)
+    # Parts that are blocks of their own.
+    long = "a long part of more than twenty-three bytes|and another one just as long as that one"
+    stdout.print(long.split("|")[1], long.split("|")[0])
+    # Texts made as the program runs, a part of each and none of their lists.
+    mut total = 0
+    for i in range(1000):
+        total = total + len(f"/users/{i}".split("/")[2]) + len(f"{i},,{i}".split(",")[1])
+    stdout.print(total)
+"#;
+
+/// `text.split(separator)[place]` finds the part where it is, with no list of them all made: the
+/// parts before it are passed over as a loop over the split goes through them. Places from a name
+/// and written as numbers, from the end, a separator from a name and longer than a byte, one that
+/// overlaps itself, text that isn't ASCII, parts that are blocks of their own, and a place whose
+/// working out changes the text's name each give what `split`'s list gives. Two thousand parts
+/// taken from texts made as it runs make no list, and nothing is left. A place past the last part
+/// stops the program as `items[place]` does, and an empty separator fails as `split` does, before
+/// the place is worked out.
+#[test]
+fn a_part_of_a_split_is_found_with_no_list_made() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by("split_part", SPLIT_PART)?,
+        " users 12\n c ü\na 語の\n-3 \n-2 a\n-1 bc\n0 \n1 a\n2 bc\nz x\nb x a b c\n\
+         and another one just as long as that one a long part of more than twenty-three bytes\n2890\n"
+    );
+    let counts = counts_of("split_part_counts", SPLIT_PART)?;
+    assert!(counts.contains(" allocations 18 ") && counts.ends_with(" live 0"), "{counts}");
+    let past = "def main(stdout: Stdout):\n    at = 3\n    stdout.print(\"a/b\".split(\"/\")[at - 2])\n    \
+                stdout.print(\"a/b\".split(\"/\")[at])\n";
+    let (printed, said) = stopped_by("split_part_past", past)?;
+    assert_eq!(printed, "b\n");
+    let mut lines = said.lines();
+    assert_eq!(lines.next(), Some("error: index 3 is out of range for length 2"), "{said}");
+    assert!(lines.next().is_some_and(|place| place.ends_with("split_part_past.fen:4:18")), "{said}");
+    let empty = "def place(stdout: Stdout) -> int:\n    stdout.print(\"the place\")\n    return 0\n\n\
+                 def main(stdout: Stdout):\n    separator = \"\"\n    \
+                 stdout.print(\"abc\".split(separator)[place(stdout)])\n";
+    let (printed, said) = stopped_by("split_part_empty", empty)?;
+    assert_eq!(printed, "");
+    let mut lines = said.lines();
+    assert_eq!(lines.next(), Some("error: `split` was called with the wrong arguments"), "{said}");
+    assert!(lines.next().is_some_and(|place| place.ends_with("split_part_empty.fen:7:18")), "{said}");
+    Ok(())
+}
+
+/// Builds and runs a program through LLVM that stops, giving back what it printed and what it
+/// said as it stopped.
+fn stopped_by(name: &str, source: &str) -> std::io::Result<(String, String)> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let executable = dir.join(name);
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success(), "{name} ran to its end");
+    Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), String::from_utf8_lossy(&ran.stderr).into_owned()))
 }
 
 /// What a borrowed field can't outlast: the variable written while the loop runs, given away

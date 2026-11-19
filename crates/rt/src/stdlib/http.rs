@@ -770,10 +770,7 @@ fn read_answer(
 
 fn read_head(reader: &mut Reader<'_>) -> Result<(i64, Vec<(String, String)>), Failure> {
     let status_line = reader.head_line()?;
-    let status = status_line
-        .strip_prefix("HTTP/")
-        .and_then(|rest| rest.split_whitespace().nth(1))
-        .and_then(|code| code.parse().ok())
+    let status = status_of(&status_line)
         .ok_or_else(|| Failure::Other(format!("the server answered `{status_line}`, which isn't HTTP")))?;
     let mut headers = Vec::new();
     loop {
@@ -789,6 +786,20 @@ fn read_head(reader: &mut Reader<'_>) -> Result<(i64, Vec<(String, String)>), Fa
             headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
         }
     }
+}
+
+/// The status a response's first line gives: `HTTP/1.` and a digit, then three digits from 100
+/// to 599, with whitespace before each, as HTTP/1.1 lets a client read it. Anything else isn't a
+/// status line, and a status taken from it would be one the server never gave.
+fn status_of(line: &str) -> Option<i64> {
+    let mut words = line.split([' ', '\t', '\x0b', '\x0c']).filter(|word| !word.is_empty());
+    let minor = words.next()?.strip_prefix("HTTP/1.")?;
+    let code = words.next()?;
+    let written = matches!(minor.as_bytes(), [digit] if digit.is_ascii_digit())
+        && code.len() == 3
+        && code.bytes().all(|byte| byte.is_ascii_digit());
+    let status: i64 = code.parse().ok()?;
+    (written && (100..=599).contains(&status)).then_some(status)
 }
 
 /// The failure an I/O error means, for a connection that may have TLS over it.
@@ -1651,6 +1662,29 @@ mod tests {
             let got = get(format!("http://127.0.0.1:{port}/a")).ok().unwrap();
             assert_eq!(got.body.as_slice(), &b"hello"[..], "{answer}");
             done.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_status_is_taken_only_from_a_status_line() {
+        for line in ["HTTP/1.1 200 OK", "HTTP/1.0 599", "HTTP/1.1\t100  Continue", " HTTP/1.1 404"] {
+            assert!(super::status_of(line).is_some(), "{line:?}");
+        }
+        for line in [
+            "HTTP/1.\t1 200",
+            "HTTP/1 0",
+            "HTTP/1.1 999 Odd",
+            "HTTP/1.1 099 Odd",
+            "HTTP/1.1 0200 OK",
+            "HTTP/1.1 20 OK",
+            "HTTP/1.1 +20 OK",
+            "HTTP/1.1x 200",
+            "HTTP/2 200",
+            "HTTP/1.12 200",
+            "ICY 200 OK",
+            "HTTP/1.1",
+        ] {
+            assert_eq!(super::status_of(line), None, "{line:?}");
         }
     }
 

@@ -418,6 +418,10 @@ pub(crate) fn emit_keeping(
     // Each written unit's IR key, by its place in `units`, for the index.
     let mut written = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
+        // A build asked to stop writes no more (`fennec_build::cancel`).
+        if fennec_build::cancelled() {
+            return Err(crate::STOPPED.to_owned());
+        }
         let ir = using.as_ref().map(|_| crate::keys::ir_key(function));
         if let (Some(using), Some(ir)) = (&mut using, ir)
             && let Some(record) = using.usable(&function.name, &ir)
@@ -1021,6 +1025,7 @@ impl<'p> Module<'_, 'p> {
             failed,
             leaves: std::cell::Cell::new(false),
             needs_prop: false,
+            free_owed: false,
             named: if moves { Places::Numbered } else { Places::FromStart(start) },
             start_symbol,
             sites: Vec::new(),
@@ -1152,6 +1157,10 @@ enum Places {
 }
 
 /// One function being written.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each says something of its own about the function being written"
+)]
 pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) module: &'e mut Module<'w, 'p>,
     pub(crate) function: &'p Function,
@@ -1177,6 +1186,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Whether a way out for a failure was written.
     leaves: std::cell::Cell<bool>,
     needs_prop: bool,
+    /// Whether a free since the flag was last read may have run program code, which can fail
+    /// (see [`Emit::owe_free_check`]).
+    free_owed: bool,
     /// How this function's text names the places in the source it may say failed.
     named: Places,
     start_symbol: String,
@@ -1310,7 +1322,10 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn written_apart(&mut self, write: impl FnOnce(&mut Self)) -> String {
         let (hot, current) = (std::mem::take(&mut self.out), self.current.clone());
         let runs = std::mem::replace(&mut self.runs, Runs::Anywhere);
+        // What's written apart reads no flag of this function's.
+        let owed = self.free_owed;
         write(self);
+        self.free_owed = owed;
         self.runs = runs;
         self.current = current;
         std::mem::replace(&mut self.out, hot)
@@ -1623,6 +1638,8 @@ impl Emit<'_, '_, '_> {
                     }
                 }
                 self.let_go_after(&inst.kind);
+                self.close_what_waits(&inst.kind);
+                self.pay_free_check();
                 let mut now = std::mem::take(&mut self.holding_now);
                 step(self, &self.holding, (at, index), &inst.kind, &mut now);
                 self.holding_now = now;
@@ -1631,10 +1648,8 @@ impl Emit<'_, '_, '_> {
             alone_left.insert(at, std::mem::take(&mut self.alone_fields));
             inside_left.insert(at, std::mem::take(&mut self.inside_items));
             done.insert(at);
-            if let Some((list, limit)) = self.known.reservations.get(&at).cloned()
-                && matches!(self.kinds.get(list), Some(Kind::List(_)))
-            {
-                self.reserve(LocalId(list), &limit)?;
+            for reserved in self.reserved_at(at) {
+                self.reserve(LocalId(reserved.list), &reserved.limit)?;
             }
             // Every loop goes back to a block written no later than where it goes from, so that's
             // where a task counts a turn.
@@ -1659,6 +1674,8 @@ impl Emit<'_, '_, '_> {
             }
             self.write_kept_lengths_after_crash();
             self.release_locals_at_prop();
+            // Leaving as it failed already.
+            self.free_owed = false;
             self.line(&leave);
             self.wrote_prop = true;
         }
@@ -1704,9 +1721,100 @@ impl Emit<'_, '_, '_> {
             self.release_text(value);
         } else if matches!(kind, Kind::Closure(..)) {
             self.release_closure(value);
+        } else if self.lets_go_quietly(kind) {
+            self.release_quietly(value);
         } else {
             self.release(value);
         }
+    }
+
+    /// Whether letting go of a value of this kind can't run program code: the program has no
+    /// generator that closes something when it's let go partway, or the kind can't hold or reach
+    /// one (see `dying::lets_go_quietly`). Such a value is freed with `fennec_free_plain`, which
+    /// can't fail.
+    pub(crate) fn lets_go_quietly(&self, kind: &Kind) -> bool {
+        !self.module.reads.abandons() || crate::dying::lets_go_quietly(self.module.layouts, kind)
+    }
+
+    /// Notes that a free just written may have run program code, which can fail: the function
+    /// reads the flag once what it's writing is whole (see [`Self::pay_free_check`]). A function
+    /// that can't fail has nothing to read it with, and the analysis gives the flag to every one
+    /// that may let go of such a value (`analysis::lets_go_loudly`).
+    pub(crate) fn owe_free_check(&mut self) {
+        if self.module.flagged(self.function.name.as_str()) {
+            self.free_owed = true;
+        }
+    }
+
+    /// Reads the failure flag, and leaves on a failure, when a free since it last did may have run
+    /// what closes a generator let go partway, which can fail: so a launched task whose free fails
+    /// stops at that line, as `main`'s thread does, and runs nothing after it. Written once an
+    /// instruction is whole, where `prop` finds each local as it lets go of it.
+    fn pay_free_check(&mut self) {
+        if !std::mem::take(&mut self.free_owed) {
+            return;
+        }
+        let failed = self.flag_set();
+        self.leave_if(&failed);
+    }
+
+    /// Whether the failure flag is set, read.
+    fn flag_set(&mut self) -> String {
+        let flag_at = self.failure_flag();
+        let (flag, failed) = (self.temp(), self.temp());
+        self.line(&format!("{flag} = load i8, ptr {flag_at}"));
+        self.line(&format!("{failed} = icmp ne i8 {flag}, 0"));
+        failed
+    }
+
+    /// After an instruction that changes a list or a dict whose items may be generators that close
+    /// something when they're let go partway: the runtime's change only queues those it lets go
+    /// of, so they're closed here, at the line that let go of them, and a failure leaves from it.
+    fn close_what_waits(&mut self, inst: &InstKind) {
+        let local = match inst {
+            InstKind::Builtin { changes: true, args, .. } => match args.first() {
+                Some(Operand::Local(local)) => *local,
+                _ => return,
+            },
+            InstKind::SetIndex { object, .. } => *object,
+            _ => return,
+        };
+        let Some(kind) = self.kinds.get(local.0).cloned() else { return };
+        if kind == Kind::Gen
+            || self.lets_go_quietly(&kind)
+            || !self.module.flagged(self.function.name.as_str())
+        {
+            return;
+        }
+        self.declare("declare void @fennec_close_waiting() nounwind");
+        self.line("call void @fennec_close_waiting()");
+        self.free_owed = true;
+    }
+
+    /// [`Self::pay_free_check`] at a return, once its locals are let go of: a failure leaves from
+    /// here rather than by `prop`, which would let go of them again, and lets go of what was to be
+    /// given back, which no caller takes.
+    fn pay_free_check_at_return(&mut self, given: Option<(&str, &Kind)>) {
+        if !std::mem::take(&mut self.free_owed) {
+            return;
+        }
+        let failed = self.flag_set();
+        let (leaving, on) = (self.label("free_failed"), self.label("giving_back"));
+        self.line(&format!("br i1 {failed}, label %{leaving}, label %{on}, !prof !0"));
+        self.start_block(&leaving);
+        match given {
+            Some((value, kind)) if kind.in_memory() => self.release_inline(kind, value),
+            Some((value, kind)) if kind.counted() => self.release_kind(value, kind),
+            _ => {}
+        }
+        // Already leaving as it failed.
+        self.free_owed = false;
+        self.leaves.set(true);
+        let leave = self.leave_after_crash.clone().unwrap_or_else(|| self.failed.clone());
+        for line in leave.lines() {
+            self.line(line.trim());
+        }
+        self.start_block(&on);
     }
 
     /// One more owner for a value, unless it's the one that's nothing: an optional's may be.
@@ -1907,11 +2015,41 @@ impl Emit<'_, '_, '_> {
         );
     }
 
-    /// One owner fewer for a block, if there's a block, freeing it when that was the last.
+    /// One owner fewer for a block, if there's a block, freeing it when that was the last, with
+    /// `fennec_free`: what it frees may hold a generator let go partway that closes something,
+    /// which can fail, so the function reads the flag after (see [`Self::owe_free_check`]). A
+    /// block known to hold no such generator goes by [`Self::release_quietly`].
     pub(crate) fn release(&mut self, block: &str) {
-        debug_assert_eq!(COUNT, 0);
+        if !self.module.reads.abandons() {
+            return self.release_quietly(block);
+        }
         // A program's native types are layouts it has, so finding their free can't fail.
         let free = self.free_function().unwrap_or("@fennec_free");
+        self.release_with(block, free);
+        self.owe_free_check();
+    }
+
+    /// [`Self::release`], or [`Self::release_quietly`] for a block of a kind that lets go quietly.
+    pub(crate) fn release_block(&mut self, block: &str, kind: &Kind) {
+        if self.lets_go_quietly(kind) {
+            self.release_quietly(block);
+        } else {
+            self.release(block);
+        }
+    }
+
+    /// One owner fewer for a block whose type can't hold or reach a generator that closes
+    /// something when it's let go partway, freeing it when that was the last, with
+    /// `fennec_free_plain`, which runs no program code and can't fail.
+    pub(crate) fn release_quietly(&mut self, block: &str) {
+        let free = self.plain_free_function().unwrap_or("@fennec_free_plain");
+        self.release_with(block, free);
+    }
+
+    /// One owner fewer for a block, if there's a block, freeing it with `free` when that was the
+    /// last.
+    fn release_with(&mut self, block: &str, free: &str) {
+        debug_assert_eq!(COUNT, 0);
         let (none, held, last, done) =
             (self.temp(), self.label("held"), self.label("last"), self.label("done"));
         self.line(&format!("{none} = icmp eq ptr {block}, null"));
@@ -2030,6 +2168,8 @@ impl Emit<'_, '_, '_> {
         }
         let label = self.label("let_go");
         let (hot, block) = (std::mem::take(&mut self.out), self.current.clone());
+        // What's let go of here is on a way out as the function fails already.
+        let owed = self.free_owed;
         self.start_block(&label);
         for local in short {
             let kind = self.kinds.get(local).cloned().unwrap_or(Kind::Unit);
@@ -2052,6 +2192,7 @@ impl Emit<'_, '_, '_> {
             }
         }
         self.line(&format!("br label %{then}"));
+        self.free_owed = owed;
         let written = std::mem::replace(&mut self.out, hot);
         let last = std::mem::replace(&mut self.current, block);
         self.cold.push_str(&written);
@@ -3257,7 +3398,7 @@ impl Emit<'_, '_, '_> {
             let kind = self.module.kind(&param.ty)?;
             let (value, fresh) = self.value_for(arg, &kind)?;
             if fresh {
-                lent.push(value.clone());
+                lent.push((value.clone(), kind.clone()));
             }
             // Checking proofs, a borrowed block lent to a call is held for it too, to see after
             // that what it was borrowed from still holds it.
@@ -3265,7 +3406,7 @@ impl Emit<'_, '_, '_> {
                 && matches!(arg, Operand::Local(local) if self.known.is_borrowed(*local))
                 && matches!(kind, Kind::List(_) | Kind::Dict(..) | Kind::Boxed(_) | Kind::TextBlock)
             {
-                borrows_lent.push(value.clone());
+                borrows_lent.push((value.clone(), kind.clone()));
             }
             if kind.in_memory() {
                 shown.push(format!("ptr {value}"));
@@ -3287,7 +3428,7 @@ impl Emit<'_, '_, '_> {
         if name == self.function.name || !self.module.defined.contains(name) {
             self.check_stack(span);
         }
-        for borrowed in &borrows_lent {
+        for (borrowed, _) in &borrows_lent {
             self.when_made(borrowed, |emit| emit.retain(borrowed));
         }
         let result = self.temp();
@@ -3296,7 +3437,7 @@ impl Emit<'_, '_, '_> {
         } else {
             self.line(&format!("{result} = call swiftcc {ret} {target}({shown})"));
         }
-        for borrowed in &borrows_lent {
+        for (borrowed, kind) in &borrows_lent {
             self.when_made(borrowed, |emit| {
                 // Its one owner now is the one taken for the call: what it was borrowed from let
                 // go of it while the call ran, and the borrow was read after.
@@ -3306,7 +3447,7 @@ impl Emit<'_, '_, '_> {
                     "what a value lent to a call was borrowed from holds it till the call ends",
                     span,
                 );
-                emit.release(borrowed);
+                emit.release_block(borrowed, kind);
             });
         }
         if flagged && is_attempt(&self.function.name) {
@@ -3340,8 +3481,8 @@ impl Emit<'_, '_, '_> {
                 self.leave_traced(&failed, span);
             }
         }
-        for block in lent {
-            self.release(&block);
+        for (block, kind) in lent {
+            self.release_block(&block, &kind);
         }
         match (dest, returned_at) {
             (Some(dest), Some(at)) => self.assign_memory_owned(dest, &at)?,
@@ -3447,12 +3588,19 @@ impl Emit<'_, '_, '_> {
             }
             "intrinsics.stop" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
-                let block =
-                    if kind == Kind::Str && self.headers() { self.owned_text_block(&value) } else { value };
+                let made = kind == Kind::Str && self.headers();
+                let block = if made { self.owned_text_block(&value) } else { value };
                 self.declare("declare ptr @fennec_block_text(ptr) nounwind");
                 let text = self.temp();
                 self.line(&format!("{text} = call ptr @fennec_block_text(ptr {block})"));
-                self.stop_with(&text, span);
+                // The runtime copies the message, so the blocks made for it are let go of before
+                // leaving: a stop in a launched task ends only that task, and the program goes on.
+                self.stop_letting_go(&text, span, |emit| {
+                    emit.release_quietly(&text);
+                    if made {
+                        emit.release_quietly(&block);
+                    }
+                });
                 Ok(())
             }
             "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
@@ -3707,6 +3855,16 @@ impl Emit<'_, '_, '_> {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
                 if self.known.unmade.contains(&dest.0) =>
+            {
+                Ok(())
+            }
+            // An empty list copied into one a loop right after fills: that one is made at the
+            // block's end, once the loop's count is known, and the empty one never is.
+            InstKind::Copy { dest, value: Operand::Local(from) }
+                if self
+                    .reserved_at(self.at.0)
+                    .iter()
+                    .any(|one| one.list == dest.0 && one.copied_from == Some(from.0)) =>
             {
                 Ok(())
             }
@@ -4414,11 +4572,13 @@ impl Emit<'_, '_, '_> {
                 self.keep_value(&held);
             }
             self.release_locals(moved);
+            self.pay_free_check_at_return(Some(("%ret", &returns)));
             self.line("ret void");
             return Ok(());
         }
         if text == "void" {
             self.release_locals(None);
+            self.pay_free_check_at_return(None);
             self.line("ret void");
             return Ok(());
         }
@@ -4436,6 +4596,7 @@ impl Emit<'_, '_, '_> {
             self.keep_value(&held);
         }
         self.release_locals(moved);
+        self.pay_free_check_at_return(Some((&held, &returns)));
         self.line(&format!("ret {text} {held}"));
         Ok(())
     }
@@ -5138,14 +5299,44 @@ def main(stdout: Stdout):
     }
 
     /// An enum holding strings gets native blocks in a program with no other threads, and its
-    /// drop lets go of each string's block, giving the runtime one with no owner left.
+    /// drop lets go of each string's block, giving the runtime one with no owner left, to free
+    /// plainly: a string holds nothing.
     #[test]
     fn an_enum_holding_strings_has_native_blocks() -> Result<(), String> {
         let source = "enum Named:\n    Leaf(name: str)\n    Pair(left: Named, right: Named, label: str)\n\ndef build(depth: int) -> Named:\n    if depth == 0: return .Leaf(name=\"leaf\")\n    return .Pair(left=build(depth - 1), right=build(depth - 1), label=\"pair\")\n\ndef size(tree: Named) -> int:\n    match tree:\n        case .Leaf(name):\n            return len(name)\n        case .Pair(left, right, label):\n            return size(left) + size(right) + len(label)\n\ndef main(stdout: Stdout):\n    stdout.print(size(build(4)))\n";
         let (units, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Named's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
-        assert!(text.contains("call void @fennec_free(ptr %text"), "{text}");
+        assert!(text.contains("call void @fennec_free_plain(ptr %text"), "{text}");
+        Ok(())
+    }
+
+    /// A program with no generator that closes something when it's let go partway frees every
+    /// block plainly, with nothing to check after (#2127).
+    #[test]
+    fn a_program_whose_generators_close_nothing_frees_everything_plainly() -> Result<(), String> {
+        let source = "def walk(n: int) -> Iterator[str]:\n    for at in range(n):\n        yield f\"a line long enough for a block {at}\"\n\ndef main(stdout: Stdout):\n    lines = [line for line in walk(3)]\n    keyed = {line: len(line) for line in lines}\n    stdout.print(len(lines), len(keyed))\n";
+        let (units, _, _) = emit(&lowered(source)?)?;
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(text.contains("@fennec_free_plain"), "{text}");
+        assert!(!text.contains("@fennec_free("), "{text}");
+        Ok(())
+    }
+
+    /// In a program with a generator that closes something when it's let go partway, only what
+    /// may be or hold one is freed with `fennec_free`, and the flag is read after each such free:
+    /// a string's free is plain, and the generator's is checked, so nothing goes unchecked (#2127).
+    #[test]
+    fn only_what_may_hold_a_generator_that_closes_is_freed_checked() -> Result<(), String> {
+        let source = "error Shut:\n    Stuck(name: str)\n\nstruct Door:\n    name: str\n\ndef opened(name: str) -> with Door fails Shut:\n    door = Door(name=name)\n    lend door\n    fail .Stuck(name=name)\n\ndef held(name: str) -> Iterator[int] fails Shut:\n    with opened(name)? as door:\n        yield 1\n        yield 2\n\ndef kept(name: str) -> int fails Shut:\n    walk = held(name)?\n    for n in walk:\n        break\n    said = f\"{name}, said with more text than a header holds\"\n    return len(said)\n\ndef main(stdout: Stdout):\n    n = kept(\"kept\") except why:\n        stdout.print(why)\n        return\n    stdout.print(n)\n";
+        let text = text_of(source, "kept")?;
+        assert!(text.contains("@fennec_free("), "{text}");
+        assert!(text.contains("@fennec_free_plain"), "{text}");
+        let unchecked: Vec<_> = crate::failure_checks::unchecked_failures(&text, &[])
+            .into_iter()
+            .filter(|missed| missed.callee == "fennec_free")
+            .collect();
+        assert!(unchecked.is_empty(), "{unchecked:?}\n{text}");
         Ok(())
     }
 
@@ -5158,7 +5349,7 @@ def main(stdout: Stdout):
         let (units, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Doc's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
-        assert!(text.contains("call void @fennec_free(ptr %list"), "{text}");
+        assert!(text.contains("call void @fennec_free_plain(ptr %list"), "{text}");
         Ok(())
     }
 
@@ -5295,15 +5486,19 @@ def main(stdout: Stdout):
         Ok(())
     }
 
-    /// A loop over `items[k:]` with `k` a number goes through the list from `k`, slicing
-    /// nothing; one from the end still makes the slice.
+    /// A loop over a slice of a list goes through the list between the slice's bounds, slicing
+    /// nothing, whether a bound is a number, from the end or a name; a slice kept as a list is
+    /// still made.
     #[test]
-    fn a_loop_over_a_list_from_a_place_slices_nothing() -> Result<(), String> {
+    fn a_loop_over_a_slice_slices_nothing() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    lines = [\"a\", \"b\", \"c\"]\n    mut joined = \"\"\n    for line in lines[1:]:\n        joined += line\n    stdout.print(joined)\n";
-        let text = text_of(source, "main")?;
-        assert!(!text.contains("@fennec_list_slice("), "{text}");
-        let from_the_end = source.replace("lines[1:]", "lines[-1:]");
-        let text = text_of(&from_the_end, "main")?;
+        for bounds in ["[1:]", "[-1:]", "[:-1]", "[len(joined):len(lines)]"] {
+            let walked = source.replace("[1:]", bounds);
+            let text = text_of(&walked, "main")?;
+            assert!(!text.contains("@fennec_list_slice("), "{bounds}: {text}");
+        }
+        let kept = "def main(stdout: Stdout):\n    lines = [\"a\", \"b\", \"c\"]\n    rest = lines[1:]\n    stdout.print(rest)\n";
+        let text = text_of(kept, "main")?;
         assert!(text.contains("@fennec_list_slice("), "{text}");
         Ok(())
     }

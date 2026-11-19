@@ -1,0 +1,7 @@
+error: Fennec doesn't have `__init__`
+ --> examples/errors/dunder_init.fen:5:9
+  |
+5 |     def __init__(self, x: int, y: int):
+  |         ^^^^^^^^
+  |
+  = help: a `struct` makes its own constructor from its fields: take out `__init__`, and give a field a default where it's declared, as `count = 0`

@@ -1,0 +1,7 @@
+error: Fennec doesn't unpack with `*`
+ --> examples/errors/star_unpacking.fen:3:12
+  |
+3 |     first, *rest = numbers
+  |            ^^^^^
+  |
+  = help: take the parts by place, as `first = items[0]` and `rest = items[1:]`, or pass the list itself

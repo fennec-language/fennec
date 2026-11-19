@@ -22,8 +22,56 @@ use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
     SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
+use super::ast::{FILE_PIECES, FileWay, Filing};
+use super::ast::{GenericStep, Genericking};
 use super::ast::{InOrder, OrderStep};
+use super::ast::{NarrowWay, Narrowing};
+use super::ast::{OwnIndexing, OwnStep};
 use super::source::LONG_PIECE;
+
+/// A `Narrowed` statement's union as the evaluator holds it: a `Crate{id}`'s list or a `Heap{id}`'s
+/// int.
+#[derive(Clone, Debug)]
+enum Member {
+    Crate(Vec<i64>),
+    Heap(i64),
+}
+
+impl Member {
+    /// What `grow` does to it, and what it gives back.
+    fn grow(&mut self) -> i64 {
+        match self {
+            Member::Crate(items) => {
+                let length = |items: &Vec<i64>| i64::try_from(items.len()).unwrap_or(i64::MAX);
+                items.push(length(items) + 7);
+                length(items)
+            }
+            Member::Heap(held) => {
+                *held += 3;
+                *held
+            }
+        }
+    }
+
+    /// What `shown{id}` gives back for it.
+    fn shown(&self) -> String {
+        match self {
+            Member::Crate(items) => {
+                let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+                format!("crate [{}]", items.join(", "))
+            }
+            Member::Heap(held) => format!("heap {held}"),
+        }
+    }
+
+    /// The other member, holding what `swapped{id}` gives it: `grown`.
+    fn swapped(&self, grown: i64) -> Member {
+        match self {
+            Member::Crate(_) => Member::Heap(grown),
+            Member::Heap(_) => Member::Crate(vec![grown]),
+        }
+    }
+}
 
 /// A `Swapped`'s struct as the evaluator holds it: its counts and its lists, each in the order
 /// their keys went in.
@@ -740,6 +788,50 @@ fn drained(value: &mut Kept, at: usize, n: i64) -> Option<String> {
             Some(shown(&Value::Ints(counts.iter().map(|(_, count)| *count).collect())))
         }
         _ => None,
+    }
+}
+
+/// A `Part{id}` of an `Owned` statement as the evaluator keeps it.
+#[derive(Clone)]
+struct OwnPart {
+    name: &'static str,
+    x: i64,
+    marks: Vec<i64>,
+}
+
+impl OwnPart {
+    fn new(name: &'static str, x: i64) -> OwnPart {
+        OwnPart { name, x, marks: Vec::new() }
+    }
+
+    /// `moved(by)`: adds `by` twice, noting it between.
+    fn moved(&mut self, by: i64) -> Ran<()> {
+        self.x = checked(self.x.checked_add(by))?;
+        self.marks.push(by);
+        self.x = checked(self.x.checked_add(by))?;
+        Ok(())
+    }
+
+    /// `shift(by)`: adds `by` and notes it, then fails past 5, and otherwise adds 100. Whether it
+    /// failed.
+    fn shift(&mut self, by: i64) -> Ran<bool> {
+        self.x = checked(self.x.checked_add(by))?;
+        self.marks.push(by);
+        if by > 5 {
+            return Ok(true);
+        }
+        self.x = checked(self.x.checked_add(100))?;
+        Ok(false)
+    }
+
+    /// How it prints, as `Part{id}(name="a", x=1, marks=[2])`.
+    fn shown(&self, id: usize) -> String {
+        format!(
+            "Part{id}(name=\"{}\", x={}, marks={})",
+            self.name,
+            self.x,
+            shown(&Value::Ints(self.marks.clone()))
+        )
     }
 }
 
@@ -1856,7 +1948,10 @@ impl Machine {
             Stmt::GuardAll(items) => self.guard_all(items),
             Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::Turned(turning) => self.turned(turning)?,
+            Stmt::Filed(filing) => self.filed(filing),
+            Stmt::Generic(generic) => self.generic(generic),
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
+            Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
             Stmt::Constants(constants) => self.constants(constants)?,
@@ -1868,6 +1963,7 @@ impl Machine {
             Stmt::Listened(listening) => self.listened(listening),
             Stmt::RefCased(casing) => self.ref_cased(*casing),
             Stmt::Captured(capturing) => self.captured(*capturing),
+            Stmt::Narrowed(narrowing) => self.narrowed(*narrowing),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -2410,6 +2506,81 @@ impl Machine {
         }
     }
 
+    /// What `narrowed{id}` prints: each `grow` changes the member the union holds, whether it's
+    /// called on a narrowed name, a `match` case, a `for ref` item, a field or a `ref` parameter, and
+    /// a `ref` call taking the union leaves it the other member.
+    fn narrowed(&mut self, narrowing: Narrowing) {
+        let Narrowing { way, crate_first, n, .. } = narrowing;
+        let start = if crate_first { Member::Crate(vec![n]) } else { Member::Heap(n) };
+        let other = if crate_first { Member::Heap(n + 1) } else { Member::Crate(vec![n + 1]) };
+        let mut shape = start.clone();
+        let mut lines: Vec<String> = Vec::new();
+        match way {
+            NarrowWay::Given => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+                shape = other;
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Is => {
+                let grown = shape.grow();
+                let read = match &shape {
+                    Member::Crate(_) => shape.shown().replacen("crate ", "", 1),
+                    Member::Heap(held) => held.to_string(),
+                };
+                lines.push(format!("{grown} {read}"));
+                lines.push(shape.shown());
+            }
+            NarrowWay::Left => {
+                let grown = shape.grow();
+                let added = if crate_first { 100 } else { 0 };
+                lines.push((grown + added).to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Whole | NarrowWay::Field => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Matched => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::ForRef => {
+                let mut shapes = [start, other];
+                for each in &mut shapes {
+                    lines.push(each.grow().to_string());
+                    if matches!(each, Member::Crate(_)) {
+                        lines.push(each.grow().to_string());
+                    }
+                }
+                lines.extend(shapes.iter().map(Member::shown));
+            }
+            NarrowWay::RefMember => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+                let mut given = start;
+                lines.push(given.grow().to_string());
+                lines.push(given.shown());
+            }
+            NarrowWay::RefUnion | NarrowWay::RefUnionGrown => {
+                let grown = shape.grow();
+                shape = shape.swapped(grown);
+                lines.push(grown.to_string());
+                if way == NarrowWay::RefUnion {
+                    lines.push(shape.shown());
+                }
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+        }
+        for line in lines {
+            let _ = writeln!(self.out, "{line}");
+        }
+    }
+
     /// Each name meaning what it does where it's written: the nested function's, the loop's, the
     /// case's or the arrow's own parameter or name, and the function the source calls, not the
     /// caller's parameter of that name.
@@ -2682,6 +2853,234 @@ impl Machine {
             let _ = writeln!(self.out, "{} {}", alias_name(n), kept_shown(aliasing.id, value));
         }
         Ok(())
+    }
+
+    /// What `filed{id}` prints: a write through `with fs.create(...)` that fails, passes a failure
+    /// up or crashes before its end leaves the file as it was, one that ends replaces it whole, and
+    /// a narrowed `Fs` refuses to write.
+    fn filed(&mut self, filing: &Filing) {
+        let id = filing.id;
+        // Both files are cleared at the start.
+        let mut files: [Option<String>; 2] = [None, None];
+        let shown = |held: &Option<String>| {
+            held.as_ref().map_or_else(|| "nothing".to_owned(), |text| format!("[{text}]"))
+        };
+        for step in &filing.steps {
+            let at = usize::from(step.second);
+            let whole: String =
+                step.pieces.iter().map(|at| FILE_PIECES.get(*at).copied().unwrap_or("")).collect();
+            let finishes = step.stop_at >= step.pieces.len();
+            let mut lines = Vec::new();
+            match step.way {
+                FileWay::Saved | FileWay::Questioned | FileWay::Tasked => {
+                    if finishes {
+                        if let Some(file) = files.get_mut(at) {
+                            *file = Some(whole);
+                        }
+                    } else if step.way == FileWay::Tasked {
+                        lines.push("crashed".to_owned());
+                    } else {
+                        lines.push(format!("failed Halt{id}(at={})", step.stop_at));
+                    }
+                }
+                FileWay::Both => {
+                    if finishes {
+                        files = [Some(whole.clone()), Some(whole)];
+                    } else {
+                        lines.push(format!("failed Halt{id}(at={})", step.stop_at));
+                    }
+                }
+                FileWay::Plain => {
+                    if let Some(file) = files.get_mut(at) {
+                        *file = Some(whole);
+                    }
+                }
+                FileWay::ReadOnly => {
+                    let name = if step.second { "g" } else { "f" };
+                    lines.push(format!(
+                        "refused IoError.PermissionDenied(reason=\"this Fs only reads, so it can't change \
+                         `d{id}/{name}.txt`\")"
+                    ));
+                }
+                FileWay::Outside => lines.push("refused outside".to_owned()),
+                FileWay::Removed => match files.get_mut(at) {
+                    Some(file @ Some(_)) => *file = None,
+                    _ => lines.push("not there".to_owned()),
+                },
+            }
+            match step.way {
+                FileWay::Both => lines.push(format!("{} {}", shown(&files[0]), shown(&files[1]))),
+                FileWay::Outside => {}
+                _ => lines.push(shown(files.get(at).unwrap_or(&None))),
+            }
+            for line in lines {
+                let _ = writeln!(self.out, "{line}");
+            }
+        }
+    }
+
+    /// What `owned{id}` prints: each change through a type's own `def []` written back once
+    /// through its `def []=`, as far as it got when it fails, and each `ref` form's place changed
+    /// where it is, then what each value holds and how often its `def []=` ran.
+    fn owned(&mut self, owning: &OwnIndexing) -> Ran<()> {
+        let OwnIndexing { id, base, ref steps } = *owning;
+        let mut shelved = [OwnPart::new("a", base), OwnPart::new("b", base + 1)];
+        let mut keyed = OwnPart::new("k", base);
+        let mut room = [OwnPart::new("c", base), OwnPart::new("d", base + 1)];
+        let mut rows = [vec![base + 2, base, base + 2], vec![base + 4, base + 3, base + 5]];
+        let mut slots = [base, base + 1, base + 2];
+        let (mut shelf_writes, mut keyed_writes, mut room_shelf_writes, mut room_writes, mut rows_writes) =
+            (0, 0, 0, 0, 0);
+        let add = |held: &mut i64, by: i64| -> Ran<()> {
+            *held = checked(held.checked_add(by))?;
+            Ok(())
+        };
+        for &(step, at, n) in steps {
+            let pair = at % 2;
+            let other = 1 - pair;
+            let slot = slots.get_mut(at).ok_or(Stop::Unsure)?;
+            let part = shelved.get_mut(pair).ok_or(Stop::Unsure)?;
+            match step {
+                OwnStep::Plus | OwnStep::RefField => add(&mut part.x, n)?,
+                OwnStep::Set => part.x = n,
+                OwnStep::Moved => part.moved(n)?,
+                OwnStep::Appended => part.marks.push(n),
+                OwnStep::Shifted | OwnStep::Passed => {
+                    if part.shift(n)? {
+                        let _ = writeln!(self.out, "failed {n}");
+                    } else if step == OwnStep::Passed {
+                        add(&mut part.x, 1000)?;
+                        shelf_writes += 1;
+                    }
+                }
+                OwnStep::PlusOther => {
+                    let read = shelved.get(other).ok_or(Stop::Unsure)?.x;
+                    add(&mut shelved.get_mut(pair).ok_or(Stop::Unsure)?.x, read)?;
+                }
+                OwnStep::Keyed => add(&mut keyed.x, n)?,
+                OwnStep::KeyedMoved => keyed.moved(n)?,
+                OwnStep::Nested | OwnStep::NestedRef => {
+                    add(&mut room.get_mut(pair).ok_or(Stop::Unsure)?.x, n)?;
+                }
+                OwnStep::NestedMoved => room.get_mut(pair).ok_or(Stop::Unsure)?.moved(n)?,
+                OwnStep::Counted => {
+                    let row = rows.get(pair).ok_or(Stop::Unsure)?;
+                    let count = row.iter().filter(|item| **item == n).count();
+                    let got = usize::try_from(n).ok().and_then(|at| row.get(at));
+                    let got = got.map_or_else(|| "None".to_owned(), ToString::to_string);
+                    let _ = writeln!(self.out, "counted {count} {got} {rows_writes}");
+                }
+                OwnStep::Sorted => rows.get_mut(pair).ok_or(Stop::Unsure)?.sort_unstable(),
+                OwnStep::SortedKey => rows.get_mut(pair).ok_or(Stop::Unsure)?.sort_by(|a, b| b.cmp(a)),
+                OwnStep::Removed => rows.get_mut(pair).ok_or(Stop::Unsure)?.retain(|item| *item <= n),
+                OwnStep::SlotSet => *slot = n,
+                OwnStep::SlotPlus | OwnStep::SlotRef => add(slot, n)?,
+                OwnStep::ForRef | OwnStep::ParallelRef => {
+                    // The middle position is empty, so `for ref` passes it over.
+                    for (place, held) in slots.iter_mut().enumerate() {
+                        if place == 1 {
+                            continue;
+                        }
+                        *held = if step == OwnStep::ForRef {
+                            checked(held.checked_mul(2).and_then(|twice| twice.checked_add(n)))?
+                        } else {
+                            checked(held.checked_add(n))?
+                        };
+                    }
+                }
+            }
+            match step {
+                OwnStep::Plus
+                | OwnStep::Set
+                | OwnStep::Moved
+                | OwnStep::Appended
+                | OwnStep::Shifted
+                | OwnStep::Passed
+                | OwnStep::RefField
+                | OwnStep::PlusOther => shelf_writes += 1,
+                OwnStep::Keyed | OwnStep::KeyedMoved => keyed_writes += 1,
+                OwnStep::Nested | OwnStep::NestedMoved | OwnStep::NestedRef => {
+                    room_shelf_writes += 1;
+                    room_writes += 1;
+                }
+                OwnStep::Sorted | OwnStep::SortedKey | OwnStep::Removed => rows_writes += 1,
+                OwnStep::Counted
+                | OwnStep::SlotSet
+                | OwnStep::SlotPlus
+                | OwnStep::SlotRef
+                | OwnStep::ForRef
+                | OwnStep::ParallelRef => {}
+            }
+        }
+        let parts = |parts: &[OwnPart]| {
+            let parts: Vec<String> = parts.iter().map(|part| part.shown(id)).collect();
+            format!("[{}]", parts.join(", "))
+        };
+        let lists: Vec<String> = rows.iter().map(|row| shown(&Value::Ints(row.clone()))).collect();
+        let _ = writeln!(self.out, "shelf {} {shelf_writes}", parts(&shelved));
+        let _ = writeln!(self.out, "keyed {{\"k\": {}}} {keyed_writes}", keyed.shown(id));
+        let _ = writeln!(self.out, "room {} {room_shelf_writes} {room_writes}", parts(&room));
+        let _ = writeln!(self.out, "rows [{}] {rows_writes}", lists.join(", "));
+        let _ = writeln!(self.out, "slots {}", shown(&Value::Ints(slots.to_vec())));
+        Ok(())
+    }
+
+    /// What `generic{id}` prints: generic code given values of one type, each value its text alone,
+    /// since generic code can't look inside it. Copies change apart, and a `ref` changes the place
+    /// it names.
+    fn generic(&mut self, generic: &Genericking) {
+        #[derive(Clone)]
+        struct Held {
+            item: String,
+            items: Vec<String>,
+        }
+        impl Held {
+            fn put(&mut self, value: &str) {
+                self.items.push(std::mem::replace(&mut self.item, value.to_owned()));
+            }
+        }
+        let id = generic.id;
+        let shown =
+            |held: &Held| format!("Holder{id}(item={}, items=[{}])", held.item, held.items.join(", "));
+        let values = generic.ty.values(id);
+        let value = |at: usize| values.get(at).map_or(String::new(), |(_, printed)| printed.clone());
+        let mut holder = Held { item: value(0), items: Vec::new() };
+        let mut other = Held { item: value(1), items: vec![value(2)] };
+        let mut outer = holder.clone();
+        let mut pair = [holder.clone(), other.clone()];
+        let mut table = other.clone();
+        for &(step, which, count) in &generic.steps {
+            let v = value(which);
+            match step {
+                GenericStep::Put => holder.put(&v),
+                GenericStep::Grown => holder.items.extend(std::iter::repeat_n(v, count)),
+                GenericStep::Swapped => std::mem::swap(&mut holder.item, &mut other.item),
+                GenericStep::SwappedItems => std::mem::swap(&mut holder.items, &mut other.items),
+                GenericStep::Copied => {
+                    let mut copy = holder.clone();
+                    copy.put(&v);
+                    let _ = writeln!(self.out, "{}", shown(&copy));
+                }
+                GenericStep::Doubled => {
+                    let _ = writeln!(self.out, "[{0}, {0}]", holder.item);
+                }
+                GenericStep::Oldest => {
+                    let _ = writeln!(self.out, "[{}]", holder.items.first().unwrap_or(&holder.item));
+                }
+                GenericStep::Nested => outer.put(&v),
+                GenericStep::ForRef => pair.iter_mut().for_each(|each| each.put(&v)),
+                GenericStep::Popped => {
+                    let taken = holder.items.pop().unwrap_or_else(|| holder.item.clone());
+                    let _ = writeln!(self.out, "[{taken}]");
+                }
+                GenericStep::DictPut => table.put(&v),
+            }
+        }
+        let _ = writeln!(self.out, "{}", shown(&holder));
+        let _ = writeln!(self.out, "{}", shown(&other));
+        let _ = writeln!(self.out, "Holder{id}(item={}, items=[])", shown(&outer));
+        let _ = writeln!(self.out, "[{}, {}]", shown(&pair[0]), shown(&pair[1]));
+        let _ = writeln!(self.out, "{{\"k\": {}}}", shown(&table));
     }
 
     /// What `ordered{id}` prints: each line read left to right, as `ordered_written` writes it,

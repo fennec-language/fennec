@@ -153,11 +153,35 @@ pub(crate) fn errors_shown(path: &str) -> String {
     }
     let diagnostics: Vec<_> = errors.iter().map(|lint| lint.diagnostic.clone()).collect();
     let fixable = errors.iter().filter(|lint| !lint.diagnostic.fixes.is_empty()).count();
-    format!(
-        "{}{} lints, {fixable} of which `fennec fix` can fix\n",
-        program.sources.render_all(&diagnostics),
-        errors.len()
-    )
+    format!("{}{}\n", program.sources.render_all(&diagnostics), counted(errors.len(), fixable))
+}
+
+/// The line under lints shown: how many, and how many of them `fennec fix` can fix.
+fn counted(lints: usize, fixable: usize) -> String {
+    match (lints, fixable) {
+        (1, 1) => "1 lint, which `fennec fix` can fix".to_owned(),
+        (1, _) => "1 lint".to_owned(),
+        (_, 0) => format!("{lints} lints"),
+        _ => format!("{lints} lints, {fixable} of which `fennec fix` can fix"),
+    }
+}
+
+/// Lint errors as a run or a test shows them: each a `lint:`, since the run goes on, saying that
+/// `fennec lint` fails on it, so a check that runs it later surprises nobody. Every message in
+/// `shown` is a lint error, and each starts a line with `error: `.
+fn as_a_run_shows(shown: &str) -> String {
+    let mut said = String::new();
+    for line in shown.split_inclusive('\n') {
+        match line.strip_prefix("error: ") {
+            Some(message) => {
+                said.push_str("lint: ");
+                said.push_str(message.trim_end_matches('\n'));
+                said.push_str(" (`fennec lint` fails on this)\n");
+            }
+            None => said.push_str(line),
+        }
+    }
+    said
 }
 
 /// The lint errors in the program at `path`, as `errors_shown` gives them, from the cache when
@@ -183,7 +207,7 @@ pub(crate) fn find_errors_beside(path: &str) {
         *FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(finding);
     } else {
         lend_loaded(None, path);
-        eprint!("{}", errors_remembered(path));
+        eprint!("{}", as_a_run_shows(&errors_remembered(path)));
     }
 }
 
@@ -207,7 +231,7 @@ pub(crate) fn show_errors_found() {
     lend_loaded(None, "");
     let finding = FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     if let Some(found) = finding.and_then(|finding| finding.join().ok()) {
-        eprint!("{found}");
+        eprint!("{}", as_a_run_shows(&found));
     }
 }
 
@@ -458,7 +482,7 @@ fn shown_errors(mut errors: Vec<(u32, String, bool, String)>) -> String {
     }
     let fixable = errors.iter().filter(|error| error.2).count();
     let shown: Vec<String> = errors.into_iter().map(|error| error.3).collect();
-    format!("{}{} lints, {fixable} of which `fennec fix` can fix\n", shown.join("\n"), shown.len())
+    format!("{}{}\n", shown.join("\n"), counted(shown.len(), fixable))
 }
 
 fn linted(path: &str, json: bool) -> ExitCode {
@@ -492,7 +516,7 @@ fn linted(path: &str, json: bool) -> ExitCode {
         }
         if !found.is_empty() {
             let fixable = found.iter().filter(|lint| !lint.diagnostic.fixes.is_empty()).count();
-            eprintln!("{} lints, {fixable} of which `fennec fix` can fix", found.len());
+            eprintln!("{}", counted(found.len(), fixable));
         }
     }
     if found.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE }

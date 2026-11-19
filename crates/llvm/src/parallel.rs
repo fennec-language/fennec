@@ -753,7 +753,7 @@ impl Emit<'_, '_, '_> {
             Kind::Struct(_) | Kind::Enum(_) => {
                 let fields = self.offset(block, crate::lists::FIELDS_OFFSET);
                 self.read_into(dest, &kind, &fields, "")?;
-                self.release(block);
+                self.release_block(block, &kind);
                 Ok(())
             }
             Kind::Boxed(_) => self.assign(dest, block),

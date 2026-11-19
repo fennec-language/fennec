@@ -30,7 +30,7 @@ pub(super) mod shown;
 mod tests;
 #[cfg(test)]
 pub(super) use freeing::free_waiting;
-pub use freeing::{free, free_text, set_abandon};
+pub use freeing::{close_waiting, free, free_plain, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons, share_abandons, strays};
 pub(super) use named::packable;
 pub use shown::{own_text, own_text_written};
@@ -244,6 +244,10 @@ pub(super) fn share_statics(state: &mut State) {
         return;
     }
     state.heap.shared_statics = true;
+    // The table is built again here, and a stale place would go with the old one, unseen by any
+    // later audit.
+    #[cfg(any(test, feature = "audit"))]
+    state.heap.blocks.check_agrees();
     let mut shared = super::table::Table::default();
     let mut kept = super::table::Table::default();
     let mut moved = 0;
@@ -1203,6 +1207,13 @@ impl Heap {
         } else {
             self.made.clear();
         }
+    }
+
+    /// Puts `abandoning` in place of the generators waiting here to be closed, and those in its
+    /// place: for a parked range or task, which keeps its own.
+    #[cfg(any(test, feature = "threads"))]
+    pub(super) fn swap_abandoning(&mut self, abandoning: &mut Vec<u64>) {
+        std::mem::swap(&mut self.abandoning, abandoning);
     }
 
     /// Puts `made` in place of the blocks this heap's made since it last handed them over, and

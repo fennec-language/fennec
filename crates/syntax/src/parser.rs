@@ -34,11 +34,84 @@ fn written_by_hand(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
     Ok(tokens)
 }
 
+/// Python's `*name` or `**name` parameter, at `span`: a list, or a parameter with a default for
+/// each option.
+fn python_star_param(star: Punct, name: &str, span: Span) -> Diagnostic {
+    if star == Punct::StarStar {
+        return Diagnostic::new(format!("Fennec doesn't have `**{name}`"), span).with_help(
+            "give each option a parameter with a default, as `width = 80`: a call names the ones it sets, as `configure(width=3)`",
+        );
+    }
+    Diagnostic::new(format!("Fennec doesn't have `*{name}`"), span)
+        .with_help(format!("take a list, as `{name}: list[int]`, and pass one, as `[1, 2, 3]`"))
+}
+
+/// What to write instead of a Python decorator that Fennec has no annotation for, or `None` for
+/// any other name.
+fn python_decorator(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "dataclass" => {
+            "a `struct` is one already, and makes its own constructor from its fields: take out `@dataclass`"
+        }
+        "staticmethod" | "classmethod" => {
+            "a `def` in a type with no `self` is called on the type, as `Point.origin()`: take out the decorator"
+        }
+        "property" => {
+            "a field is read as `point.x`, and a method that works something out is called as `point.area()`: take out `@property`"
+        }
+        "abstractmethod" => {
+            "an `interface` lists what a type must have, as `def area(self) -> float` under `interface Shape:`"
+        }
+        _ => return None,
+    })
+}
+
+/// Whether `name` is one of Python's special names, as `__init__` or `__name__`: two underscores,
+/// a word, and two more.
+fn is_python_dunder(name: &str) -> bool {
+    name.strip_prefix("__").and_then(|rest| rest.strip_suffix("__")).is_some_and(|word| {
+        !word.is_empty() && word.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    })
+}
+
+/// What a Python special name is written as in Fennec. There's no fix: `_init_`, the name with
+/// one underscore, would be wrong.
+fn python_dunder(name: &str, span: Span) -> Diagnostic {
+    let word = name.trim_matches('_');
+    // The operator each stands for, and what it gives back.
+    let operator = match word {
+        "add" => Some(("+", "T")),
+        "sub" => Some(("-", "T")),
+        "mul" => Some(("*", "T")),
+        "truediv" => Some(("/", "T")),
+        "floordiv" => Some(("//", "T")),
+        "mod" => Some(("%", "T")),
+        "eq" => Some(("==", "bool")),
+        "lt" => Some(("<", "bool")),
+        _ => None,
+    };
+    let help = match (word, operator) {
+        ("init", _) => "a `struct` makes its own constructor from its fields: take out `__init__`, and give a field a default where it's declared, as `count = 0`".to_owned(),
+        ("str" | "repr", _) => "write `def str(self, ref out: StrWriter)`, which `str(x)`, f-strings and `print` call, and add its text with `out.write(...)`".to_owned(),
+        ("len", _) => "write `def len(self) -> int`, which `len(x)` calls".to_owned(),
+        ("contains", _) => "write `def in(self, item: T) -> bool`, which `item in x` calls".to_owned(),
+        ("getitem", _) => "write `def [](self, at: int) -> T`, which `x[at]` calls".to_owned(),
+        ("name" | "main", _) => "Fennec runs `main` by itself: take out the `if __name__ == \"__main__\":` and the call under it".to_owned(),
+        ("del" | "enter" | "exit", _) => "nothing runs when a value goes away: open what needs cleaning up with `with`, from a `def` that gives `-> with T` and `lend`s it".to_owned(),
+        (_, Some((operator, gives))) => {
+            format!("write `def {operator}(self, other: T) -> {gives}`, which `{operator}` calls")
+        }
+        _ => "Python's special names are written as what they stand for in Fennec, as `def str(self, ref out: StrWriter)` or `def +(self, other: T) -> T`".to_owned(),
+    };
+    Diagnostic::new(format!("Fennec doesn't have `{name}`"), span).with_help(help)
+}
+
 /// The first name among `tokens` with two underscores in a row, refused, with what's inside an
 /// f-string's braces looked through too.
 fn no_double_underscores(tokens: &[Token]) -> Result<(), Diagnostic> {
     for token in tokens {
         match &token.tok {
+            Tok::Name(name) if is_python_dunder(name) => return Err(python_dunder(name, token.span)),
             Tok::Name(name) if name.contains("__") => {
                 let mut one = name.clone();
                 while one.contains("__") {
@@ -502,6 +575,10 @@ impl Parser {
         while self.at_p(Punct::At) {
             let start = self.advance().span;
             let name = self.name("an annotation's name")?;
+            if let Some(help) = python_decorator(&name) {
+                let message = format!("Fennec doesn't have `@{name}`");
+                return Err(Diagnostic::new(message, start.to(self.prev_span())).with_help(help));
+            }
             let args = if self.eat_p(Punct::LParen) {
                 let args = self.call_args()?;
                 self.expect_p(Punct::RParen)?;
@@ -798,6 +875,12 @@ impl Parser {
 
     fn param(&mut self) -> Result<Param, Diagnostic> {
         let start = self.span();
+        if let Tok::P(star @ (Punct::Star | Punct::StarStar)) = *self.peek()
+            && let Tok::Name(name) = self.peek_at(1)
+        {
+            let span = start.to(self.tokens.get(self.pos + 1).map_or(start, |token| token.span));
+            return Err(python_star_param(star, name, span));
+        }
         let is_mut = self.eat_ref("a parameter");
         let name = self.name("a parameter name")?;
         if name == "self" {

@@ -898,6 +898,142 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every way of narrowing a union and changing it (`NarrowWay`), starting as each member,
+    /// checks, and the evaluator prints what the oracle prints: each `grow` changes the member
+    /// the union holds, and a `ref` call taking the union leaves it the other one.
+    #[test]
+    fn the_narrowed_union_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{NARROW_WAYS, Narrowing, Program, Stmt};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for way in NARROW_WAYS {
+            for crate_first in [true, false] {
+                for n in [0, 4, 9] {
+                    id += 1;
+                    body.push(Stmt::Narrowed(Narrowing { id, way, crate_first, n }));
+                }
+            }
+        }
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
+    /// Every way of a `Filed` step checks, and the evaluator prints what the oracle prints: a write
+    /// through `with fs.create(...)` that fails, passes a failure up or crashes partway leaves the
+    /// file as it was, byte for byte, one that ends replaces it, and a narrowed `Fs` refuses.
+    #[test]
+    fn the_file_write_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, Filing, Program, Stmt};
+        let body = (0..3_usize)
+            .map(|round| {
+                let steps = FILE_WAYS
+                    .iter()
+                    .enumerate()
+                    .map(|(at, way)| {
+                        let pieces: Vec<usize> = (0..=(at + round) % 4)
+                            .map(|piece| (piece + at + round) % FILE_PIECES.len())
+                            .collect();
+                        let stop_at = (at * 3 + round) % (pieces.len() + 1);
+                        FileStep { way: *way, second: (at + round) % 2 == 1, pieces, stop_at }
+                    })
+                    .collect();
+                Stmt::Filed(Filing { id: round + 1, steps })
+            })
+            .collect();
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("crashed\n") && printed.contains("failed Halt"), "{printed}");
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
+    /// Every step of an `Owned` statement checks, and the evaluator prints what the oracle prints:
+    /// each change through a type's own `def []` written back once through its `def []=`, nested,
+    /// failing partway and given by `ref`, the built-in methods that change a list and those that
+    /// only read it, and the `ref` form's places reached by `=`, `ref`, `for ref` and `parallel`.
+    #[test]
+    fn the_own_index_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{OWN_STEPS, OwnIndexing, Program, Stmt};
+        let body = (0..3_i64)
+            .map(|round| {
+                let steps = OWN_STEPS.iter().enumerate().map(|(at, step)| {
+                    let at = i64::try_from(at).unwrap_or(0);
+                    (*step, usize::try_from((at + round) % 3).unwrap_or(0), (at + round * 4) % 10)
+                });
+                OwnIndexing {
+                    id: usize::try_from(round).unwrap_or(0) + 1,
+                    base: round * 3,
+                    steps: steps.collect(),
+                }
+            })
+            .map(Stmt::Owned)
+            .collect();
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("failed 9\n"), "{printed}");
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
+    /// Every step of a `Generic` statement, for each type, checks, and the evaluator prints what
+    /// the oracle prints: copies made in generic code change apart, and each `ref` changes the
+    /// place it names.
+    #[test]
+    fn the_generic_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{GENERIC_STEPS, GENERIC_TYS, Genericking, Program, Stmt};
+        let body = GENERIC_TYS
+            .iter()
+            .enumerate()
+            .map(|(round, ty)| {
+                let steps = GENERIC_STEPS
+                    .iter()
+                    .chain(GENERIC_STEPS.iter())
+                    .enumerate()
+                    .map(|(at, step)| (*step, (at + round) % 3, (at * 2 + round) % 3))
+                    .collect();
+                Stmt::Generic(Genericking { id: round + 1, ty: *ty, steps })
+            })
+            .collect();
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
     /// Every step of an `Ordered` statement checks, and the evaluator prints what the oracle
     /// prints, each line read left to right: a receiver, a field's receiver, a list's and a dict's
     /// method, an index's base, arguments, operators, a list, a text, and writes, each changed by

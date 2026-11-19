@@ -530,6 +530,9 @@ pub(crate) struct Accounts {
     range_name: Option<super::deadlock::RangeName>,
     /// Whether it's a range's, run as its own task (see `OWN_RANGE`).
     own_range: bool,
+    /// The generators it let go of partway that wait to be closed: its own, so that closing one,
+    /// which can fail, is never done in another task's free, and its failure never said there.
+    abandoning: Vec<u64>,
 }
 
 /// Whose accounts they are: a launched task's, or those of a range of a `parallel` call whose body
@@ -597,7 +600,11 @@ impl Accounts {
 
     /// Whether nothing's left in them: a range that ended has handed everything over.
     pub(crate) fn is_empty(&self) -> bool {
-        self.made.is_empty() && self.lent.is_none() && self.lent_owners.is_empty() && self.printed.is_empty()
+        self.made.is_empty()
+            && self.lent.is_none()
+            && self.lent_owners.is_empty()
+            && self.printed.is_empty()
+            && self.abandoning.is_empty()
     }
 }
 
@@ -616,6 +623,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         std::mem::swap(&mut state.heap.lent, &mut accounts.lent);
         std::mem::swap(&mut state.heap.lent_owners, &mut accounts.lent_owners);
         std::mem::swap(&mut state.heap.serving, &mut accounts.serving);
+        state.heap.swap_abandoning(&mut accounts.abandoning);
         std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
         STOP.with_borrow_mut(|stop| std::mem::swap(stop, &mut accounts.stop));
         LAUNCHER.with_borrow_mut(|launcher| std::mem::swap(launcher, &mut accounts.launcher));

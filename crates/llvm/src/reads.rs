@@ -38,6 +38,8 @@ pub(crate) enum What {
     Native,
     /// Whether any closure the program makes may wait.
     WaitingClosures,
+    /// Whether any generator the program has closes something when it's let go partway.
+    Abandons,
     /// A type's layout, by its name: its size and its fields' kinds and places, read through
     /// `Layouts::get` (see `Layouts::note_reads`).
     Layout,
@@ -172,6 +174,13 @@ impl<'w, 'p> Reads<'w, 'p> {
         self.waiting_closures
     }
 
+    /// Whether any generator the program has closes something when it's let go partway: without
+    /// one, letting go of a value never runs program code, so every free is plain.
+    pub(crate) fn abandons(&self) -> bool {
+        self.note(What::Abandons, Cow::Borrowed(""));
+        self.whole.abandons
+    }
+
     /// The layouts of the types whose blocks generated code makes and frees itself, in their
     /// numbers' order, which is how a unit walks them.
     pub(crate) fn native(&self) -> &'w BTreeSet<u32> {
@@ -252,6 +261,7 @@ impl Reads<'_, '_> {
                 Some(key_of("native", &names))
             }
             What::WaitingClosures => Some(key_of("waiting closures", &self.waiting_closures)),
+            What::Abandons => Some(key_of("abandons", &whole.abandons)),
             What::Layout => layouts.layout_fingerprint(name).map(|text| key_of("layout", &text)),
         }
     }

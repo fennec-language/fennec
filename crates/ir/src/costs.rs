@@ -257,6 +257,10 @@ fn allocation(
         {
             Some(format!("growing it with `{name}`"))
         }
+        // A part of a split taken where it is in the text, by a loop over the split or by `[place]`.
+        InstKind::Builtin { name, .. } if name == "intrinsics.text_part" => {
+            Some("this part of a split".to_owned())
+        }
         InstKind::Builtin { dest: Some(dest), name, .. } if of(dest).is_some_and(on_the_heap) => {
             Some(format!("what `{name}` gives back"))
         }

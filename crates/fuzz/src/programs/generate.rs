@@ -24,7 +24,11 @@ use super::ast::{
     REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
     Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
+use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, FileWay, Filing};
+use super::ast::{GENERIC_STEPS, GENERIC_TYS, GenericStep, GenericTy, Genericking};
 use super::ast::{InOrder, ORDER_STEPS, OrderStep};
+use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
+use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
 /// from a source or failing partway (`ZipSumming`): the loop owns it since #2041.
@@ -44,10 +48,29 @@ const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 /// can be taken out without changing what any other input writes.
 const PARALLEL_STREAMS: bool = true;
 
+/// Whether random programs write files in a folder of their own (`Filed`): through `with
+/// fs.create(...)` failing, passing a failure up with `?` or crashing partway, which leaves the old
+/// file byte for byte, or ending well, which replaces it whole; two files in one `with`; a plain
+/// write; and an `Fs` narrowed with `read_only` or `only` refusing. The second row of the coverage
+/// map: nothing wrote a file before.
+const FILE_WRITES: bool = true;
+
+/// Whether random programs give values of one type, an int, a text, a list or a struct holding a
+/// list, to a generic holder and generic functions (`Generic`): `ref self` and `ref T` changes,
+/// copies made inside generic code, a holder in a holder, in a list and in a dict. Map row 4:
+/// nothing generic was written before.
+const GENERICS: bool = true;
+
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
 /// code and the oracle both read a receiver before its arguments (#546).
 const EVALUATION_ORDER: bool = true;
+
+/// Whether random programs change values of types with their own `def []` through it (`Owned`):
+/// the plain form beside a `def []=`, nested, failing partway and given by `ref`, every built-in
+/// method that changes a list or only reads it, and the `ref` form's places reached by `=`, `ref`
+/// and `for ref`. On since the oracle writes back every change through it (#2192).
+const OWN_INDEXES: bool = true;
 
 /// Whether random programs make copies of collections and their parts, change each through every
 /// way of writing in place, and print them all: the shape that shows an in-place write reaching a
@@ -94,6 +117,17 @@ const LOOKUPS_SWAPPED: bool = true;
 /// found them, held to the compiled program. On since #2017 put each case back by its fields'
 /// names, and #2038 wrote a `for ref` item back before its case.
 const REF_CASES: bool = true;
+
+/// Whether random programs narrow a union of two structs to one member and change it through a
+/// `ref self` method, a `match` case, a `for ref` loop, a field, or a `ref` call taking the member or
+/// the union (`Narrowed`). The method was given the whole union, so compiled code crashed (#2157).
+const NARROWED_UNIONS: bool = true;
+
+/// Whether a `Narrowed` statement grows a name narrowed by what it was given right after a `ref`
+/// call that gave it the other member (`NarrowWay::RefUnionGrown`). The checker kept the narrowing,
+/// so compiled code ran the other member's method on it (#2163). On since #2177 ended the
+/// narrowing at the call.
+const REF_ENDS_NARROWING: bool = true;
 
 /// Whether random programs write a name where another of the same name and type is in sight, each
 /// way the checker renamed by text rather than by what the name means where it's written
@@ -683,6 +717,7 @@ impl Writer<'_> {
             26 if REF_CASES && self.choice(4) == 0 => self.ref_cases(body),
             26 if NAME_CAPTURE && self.choice(4) == 0 => self.captures(body),
             26 if EVALUATION_ORDER && self.choice(4) == 0 => self.in_order(body),
+            26 if FILE_WRITES && self.choice(4) == 0 => self.files(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
             // each of their cases still comes up as often.
@@ -692,6 +727,9 @@ impl Writer<'_> {
             27 if YIELDS && !self.threadless && self.choice(4) == 0 => self.yields(body),
             27 if CRASH_WAKES && !self.threadless && self.choice(4) == 0 => self.wakes(body),
             27 if EVERY_LISTENER && !self.threadless && self.choice(4) == 0 => self.listens(body),
+            27 if NARROWED_UNIONS && self.choice(4) == 0 => self.narrows(body),
+            27 if OWN_INDEXES && self.choice(4) == 0 => self.own_indexes(body),
+            27 if GENERICS && self.choice(4) == 0 => self.generics(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1136,6 +1174,20 @@ impl Writer<'_> {
         body.push(Stmt::RefCased(RefCasing { id, way, start, text }));
     }
 
+    /// A union narrowed to one member and changed through it, one of `NARROW_WAYS`, starting
+    /// from 0 to 9.
+    fn narrows(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut way = NARROW_WAYS.get(self.choice(NARROW_WAYS.len())).copied().unwrap_or(NarrowWay::Given);
+        if way == NarrowWay::RefUnionGrown && !REF_ENDS_NARROWING {
+            way = NarrowWay::RefUnion;
+        }
+        let crate_first = self.choice(2) == 0;
+        let n = i64::from(self.byte() % 10);
+        body.push(Stmt::Narrowed(Narrowing { id, way, crate_first, n }));
+    }
+
     /// A name written where another of its name and type is in sight, one of `CAPTURE_WAYS`.
     fn captures(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
@@ -1377,6 +1429,58 @@ impl Writer<'_> {
             steps.push(Alias::Written { to: from, how, at, n });
         }
         body.push(Stmt::Aliased(Aliasing { id, base, steps }));
+    }
+
+    /// A `Filed` statement: 2 to 8 steps, each writing 1 to 4 pieces and stopping at a piece from
+    /// the first to one past the last, so some finish. A program without threads
+    /// can't launch, so it saves plainly where it would in a task.
+    fn files(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut steps = Vec::new();
+        for _ in 0..2 + self.choice(7) {
+            let mut way = FILE_WAYS.get(self.choice(FILE_WAYS.len())).copied().unwrap_or(FileWay::Saved);
+            if way == FileWay::Tasked && self.threadless {
+                way = FileWay::Saved;
+            }
+            let pieces: Vec<usize> = (0..=self.choice(4)).map(|_| self.choice(FILE_PIECES.len())).collect();
+            let stop_at = self.choice(pieces.len() + 1);
+            steps.push(FileStep { way, second: self.choice(2) == 0, pieces, stop_at });
+        }
+        body.push(Stmt::Filed(Filing { id, steps }));
+    }
+
+    /// An `Owned` statement: 3 to 10 steps, each at a position from 0 to 2 and with what it adds,
+    /// from 0 to 9. A program without threads loops over the slots plainly where it would over
+    /// `parallel`.
+    fn own_indexes(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 10);
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let mut step = OWN_STEPS.get(self.choice(OWN_STEPS.len())).copied().unwrap_or(OwnStep::Plus);
+            if step == OwnStep::ParallelRef && self.threadless {
+                step = OwnStep::ForRef;
+            }
+            steps.push((step, self.choice(3), i64::from(self.byte() % 10)));
+        }
+        body.push(Stmt::Owned(OwnIndexing { id, base, steps }));
+    }
+
+    /// A `Generic` statement: one type, then 3 to 10 steps, each with a value and a count from 0
+    /// to 2.
+    fn generics(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let ty = GENERIC_TYS.get(self.choice(GENERIC_TYS.len())).copied().unwrap_or(GenericTy::Int);
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let step =
+                GENERIC_STEPS.get(self.choice(GENERIC_STEPS.len())).copied().unwrap_or(GenericStep::Put);
+            steps.push((step, self.choice(3), self.choice(3)));
+        }
+        body.push(Stmt::Generic(Genericking { id, ty, steps }));
     }
 
     /// An `Ordered` statement: 3 to 10 steps, each with what its call adds, from 0 to 9.

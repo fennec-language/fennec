@@ -877,6 +877,63 @@ impl RefWay {
     }
 }
 
+/// A union of `Crate{id}`, holding a list, and `Heap{id}`, holding an int, each with a `ref self`
+/// method `grow` that changes it and gives back its size, grown through a name narrowed to one
+/// member, written `way`. It starts as a `Crate{id}` holding `[n]` when `crate_first`, else as a
+/// `Heap{id}` holding `n`; where it's given the other member, that one holds `n + 1`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Narrowing {
+    pub(crate) id: usize,
+    pub(crate) way: NarrowWay,
+    pub(crate) crate_first: bool,
+    pub(crate) n: i64,
+}
+
+/// The ways a `Narrowed` statement narrows its union and changes it. A `ref self` method called on
+/// a union narrowed to one member was given the whole union (#2157), and a narrowing outlived a
+/// `ref` call that gave the name the other member (#2163).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NarrowWay {
+    /// Narrowed by what it's given: grown twice, given the other member, and grown again.
+    Given,
+    /// Narrowed by `if shape is ...:` for each member, grown and read inside.
+    Is,
+    /// Given by `ref` to a function where it's grown, narrowed to what's left after
+    /// `if shape is Heap{id}: return shape.grow()`.
+    Left,
+    /// Not narrowed: the union's own `grow`, which runs its member's.
+    Whole,
+    /// Grown in the `match` case naming its member.
+    Matched,
+    /// Each item of a list of both, grown in a `for ref` loop, and grown again where `is` narrows
+    /// it to a `Crate{id}`.
+    ForRef,
+    /// Grown as a struct's field, which `is` doesn't narrow.
+    Field,
+    /// Narrowed, by `is` and by what it's given, and given by `ref` to a function taking the member.
+    RefMember,
+    /// Narrowed by `is` and given by `ref` to a function taking the union, which grows it and gives
+    /// it the other member, then grown after the `if`.
+    RefUnion,
+    /// Narrowed by what it's given, given by `ref` to the same function, and grown right after,
+    /// where the narrowing has to have ended (#2163).
+    RefUnionGrown,
+}
+
+/// Every `NarrowWay`.
+pub(crate) const NARROW_WAYS: [NarrowWay; 10] = [
+    NarrowWay::Given,
+    NarrowWay::Is,
+    NarrowWay::Left,
+    NarrowWay::Whole,
+    NarrowWay::Matched,
+    NarrowWay::ForRef,
+    NarrowWay::Field,
+    NarrowWay::RefMember,
+    NarrowWay::RefUnion,
+    NarrowWay::RefUnionGrown,
+];
+
 /// A name that another of the same name and type could capture, written `way`, with `n` the value
 /// it adds or lends.
 #[derive(Clone, Copy, Debug)]
@@ -1023,6 +1080,263 @@ pub(crate) const ORDER_STEPS: [OrderStep; 15] = [
     OrderStep::FieldWrite,
     OrderStep::IndexWrite,
     OrderStep::Added,
+];
+
+/// A `Filed` statement: `filed{id}(fs, stdout)`, a folder `d{id}` of its own holding two files,
+/// `f.txt` and `g.txt`, cleared at the start, then written a step at a time, each step followed by
+/// what the file holds. A write through `with fs.create(...)` that fails, passes a failure up with
+/// `?` or crashes partway leaves the file as it was, byte for byte, and one that ends well
+/// replaces it whole.
+#[derive(Clone, Debug)]
+pub(crate) struct Filing {
+    pub(crate) id: usize,
+    pub(crate) steps: Vec<FileStep>,
+}
+
+/// A step of a `Filed` statement: how it writes, to `g.txt` rather than `f.txt` when `second`
+/// says, the pieces it writes, from `FILE_PIECES`, and the piece it stops at, which lets it finish
+/// when it's past the last.
+#[derive(Clone, Debug)]
+pub(crate) struct FileStep {
+    pub(crate) way: FileWay,
+    pub(crate) second: bool,
+    pub(crate) pieces: Vec<usize>,
+    pub(crate) stop_at: usize,
+}
+
+/// How a `Filed` step writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileWay {
+    /// `saved{id}`: `with fs.create(path)?`, failing with `Halt{id}` before the piece it stops at.
+    Saved,
+    /// `questioned{id}`: `with fs.create(path, durable=False)?`, syncing each piece, then passing a
+    /// failure up with `?` after the piece it stops at.
+    Questioned,
+    /// `tasked{id}`: the write in a launched task, which crashes after the piece it stops at. In
+    /// programs with threads.
+    Tasked,
+    /// `both{id}`: `f.txt` and `g.txt` in one `with`, failing between the two writes of the piece
+    /// it stops at, so neither changes.
+    Both,
+    /// `fs.write_text(path, text)`.
+    Plain,
+    /// `fs.read_only().write_text(path, text)`, refused.
+    ReadOnly,
+    /// `fs.only("d{id}").write_text("elsewhere.txt", text)`, refused as outside it.
+    Outside,
+    /// `fs.remove(path)`, which says when nothing's there.
+    Removed,
+}
+
+/// Every `FileWay`, for the generator to pick from.
+pub(crate) const FILE_WAYS: [FileWay; 8] = [
+    FileWay::Saved,
+    FileWay::Questioned,
+    FileWay::Tasked,
+    FileWay::Both,
+    FileWay::Plain,
+    FileWay::ReadOnly,
+    FileWay::Outside,
+    FileWay::Removed,
+];
+
+/// What a `Filed` step writes, a piece at a time: lines, text with no line's end, nothing, a
+/// letter past ASCII and an emoji, and quotes.
+pub(crate) const FILE_PIECES: [&str; 6] = ["one\n", "tw\u{f8} \u{1f98a}\n", "", "three", "\n", "a \"b\" c\n"];
+
+/// An `Owned` statement: `owned{id}(stdout)`, values of types with their own `def []`, each
+/// changed through it a step at a time, then printed with how often each `def []=` ran. Through the
+/// plain form beside a `def []=`, a change reads the part, changes the copy and writes it back
+/// once, nested too, and still once when what changed it fails partway. Through the `ref` form a
+/// position is a place, which `=`, a `ref` argument and `for ref` reach, its empty positions
+/// skipped. `docs/decisions.md` sets these out, and #2192 wrote back every built-in method.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnIndexing {
+    pub(crate) id: usize,
+    /// What the parts' `x`, the rows and the slots start from.
+    pub(crate) base: i64,
+    /// Each step, with the position it's at, from 0 to 2, and what it adds, from 0 to 9.
+    pub(crate) steps: Vec<(OwnStep, usize, i64)>,
+}
+
+/// A line of an `Owned` statement. A `Shelf{id}` holds two `Part{id}`s in a list, a `Keyed{id}`
+/// one in a dict, a `Room{id}` a shelf, and a `Rows{id}` two lists, each with the plain form of
+/// `def []` and a `def []=` that counts its writes. `Slots{id}` has the `ref` form, `len` and
+/// `is_live`, its middle position empty. The shelf's and the rows' position is the step's, from 0
+/// to 1, and the slots' is from 0 to 2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnStep {
+    /// `shelf[at].x += n`.
+    Plus,
+    /// `shelf[at].x = n`.
+    Set,
+    /// `shelf[at].moved(n)`: a `ref self` method changing it twice, written back once.
+    Moved,
+    /// `shelf[at].marks.append(n)`: a built-in method on a part's field.
+    Appended,
+    /// `shelf[at].shift(n) except why:`: a method that fails past 5, after changing the part, which
+    /// is written back as far as it got.
+    Shifted,
+    /// `passed{id}(ref shelf, at=at, by=n) except why:`: the same failure passed up with `?`, so the
+    /// change after it is skipped.
+    Passed,
+    /// `bumped{id}(ref shelf[at].x, by=n)`: a `ref` argument through the plain form.
+    RefField,
+    /// `shelf[at].x += shelf[other].x`: a read through `def []` beside a write through it.
+    PlusOther,
+    /// `keyed["k"].x += n`, over a dict.
+    Keyed,
+    /// `keyed["k"].moved(n)`.
+    KeyedMoved,
+    /// `room["back"][at].x += n`: two own indexes, each written back once.
+    Nested,
+    /// `room["back"][at].moved(n)`.
+    NestedMoved,
+    /// `bumped{id}(ref room["back"][at].x, by=n)`.
+    NestedRef,
+    /// `rows[at].count(n)` and `rows[at].get(n)`: methods that only read, so nothing's written back.
+    Counted,
+    /// `rows[at].sort()`.
+    Sorted,
+    /// `rows[at].sort(key=item => 0 - item)`.
+    SortedKey,
+    /// `rows[at].remove_where(item => item > n)`.
+    Removed,
+    /// `slots[at] = n`, through the `ref` form.
+    SlotSet,
+    /// `slots[at] += n`.
+    SlotPlus,
+    /// `bumped{id}(ref slots[at], by=n)`.
+    SlotRef,
+    /// `for ref slot in slots: slot = slot * 2 + n`, the empty position skipped.
+    ForRef,
+    /// `for ref slot in parallel(slots): slot += n`, in programs with threads.
+    ParallelRef,
+}
+
+/// Every `OwnStep`, for the generator to pick from.
+pub(crate) const OWN_STEPS: [OwnStep; 22] = [
+    OwnStep::Plus,
+    OwnStep::Set,
+    OwnStep::Moved,
+    OwnStep::Appended,
+    OwnStep::Shifted,
+    OwnStep::Passed,
+    OwnStep::RefField,
+    OwnStep::PlusOther,
+    OwnStep::Keyed,
+    OwnStep::KeyedMoved,
+    OwnStep::Nested,
+    OwnStep::NestedMoved,
+    OwnStep::NestedRef,
+    OwnStep::Counted,
+    OwnStep::Sorted,
+    OwnStep::SortedKey,
+    OwnStep::Removed,
+    OwnStep::SlotSet,
+    OwnStep::SlotPlus,
+    OwnStep::SlotRef,
+    OwnStep::ForRef,
+    OwnStep::ParallelRef,
+];
+
+/// A `Generic` statement: `generic{id}(stdout)`, a generic `Holder{id}[T]` and generic functions
+/// given one type, a holder, a second one, a holder of the first, a list of both and a dict holding
+/// the second, then a step at a time, each a generic call. Generic code can't look inside a `T`, so
+/// each value's text is all the evaluator needs. Copies of `T` made inside generic code must change
+/// apart, and a `ref` into a `T` must change the one it names.
+#[derive(Clone, Debug)]
+pub(crate) struct Genericking {
+    pub(crate) id: usize,
+    pub(crate) ty: GenericTy,
+    /// Each step, with the value it uses, from 0 to 2 in `GenericTy::values`, and a count, from 0
+    /// to 2.
+    pub(crate) steps: Vec<(GenericStep, usize, usize)>,
+}
+
+/// The type a `Generic` statement's `T` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenericTy {
+    Int,
+    Str,
+    Ints,
+    /// `Point{id}`: a struct holding a list.
+    Point,
+}
+
+impl GenericTy {
+    /// The type as written, for statement `id`.
+    pub(crate) fn written(self, id: usize) -> String {
+        match self {
+            GenericTy::Int => "int".to_owned(),
+            GenericTy::Str => "str".to_owned(),
+            GenericTy::Ints => "list[int]".to_owned(),
+            GenericTy::Point => format!("Point{id}"),
+        }
+    }
+
+    /// Three values of the type for statement `id`, each as written and as it prints inside a
+    /// struct.
+    pub(crate) fn values(self, id: usize) -> [(String, String); 3] {
+        let same = |text: &str| (text.to_owned(), text.to_owned());
+        match self {
+            GenericTy::Int => [same("0"), same("7"), same("-3")],
+            GenericTy::Str => [same("\"a\""), same("\"\""), same("\"\u{e9}\u{1f98a}\"")],
+            GenericTy::Ints => [same("[1, 2]"), ("list[int]()".to_owned(), "[]".to_owned()), same("[5]")],
+            GenericTy::Point => [
+                same(&format!("Point{id}(x=1, tags=[\"a\"])")),
+                (format!("Point{id}(x=2, tags=list[str]())"), format!("Point{id}(x=2, tags=[])")),
+                same(&format!("Point{id}(x=-4, tags=[\"b\", \"c\"])")),
+            ],
+        }
+    }
+}
+
+/// Every `GenericTy`, for the generator to pick from.
+pub(crate) const GENERIC_TYS: [GenericTy; 4] =
+    [GenericTy::Int, GenericTy::Str, GenericTy::Ints, GenericTy::Point];
+
+/// A step of a `Generic` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenericStep {
+    /// `holder.put(v)`: a `ref self` method keeping the old item and taking the new.
+    Put,
+    /// `grown(ref holder.items, value=v, times=count)`: a `ref list[T]` parameter grown.
+    Grown,
+    /// `swapped(ref holder.item, ref other.item)`: two `ref T` parameters in two holders.
+    Swapped,
+    /// `swapped(ref holder.items, ref other.items)`.
+    SwappedItems,
+    /// `changed_copy(holder, value=v)`, printed: a copy made and changed inside generic code,
+    /// leaving the holder as it was.
+    Copied,
+    /// `doubled(holder.item)`, printed: a list of two copies.
+    Doubled,
+    /// `holder.oldest()`, printed.
+    Oldest,
+    /// `outer.item.put(v)`: a holder held in a holder, changed through its field.
+    Nested,
+    /// `for ref each in pair: each.put(v)`.
+    ForRef,
+    /// `holder.items.pop() else holder.item`, printed.
+    Popped,
+    /// `table["k"].put(v)`: a holder in a dict, changed where it is.
+    DictPut,
+}
+
+/// Every `GenericStep`, for the generator to pick from.
+pub(crate) const GENERIC_STEPS: [GenericStep; 11] = [
+    GenericStep::Put,
+    GenericStep::Grown,
+    GenericStep::Swapped,
+    GenericStep::SwappedItems,
+    GenericStep::Copied,
+    GenericStep::Doubled,
+    GenericStep::Oldest,
+    GenericStep::Nested,
+    GenericStep::ForRef,
+    GenericStep::Popped,
+    GenericStep::DictPut,
 ];
 
 /// How a `Turned` loop's int changes sign after its first turn.
@@ -1295,6 +1609,12 @@ pub(crate) enum Stmt {
     Turned(Turning),
     /// `ordered{id}(stdout)`: lines whose parts change what's read before them, read left to right.
     Ordered(InOrder),
+    /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.
+    Generic(Genericking),
+    /// `filed{id}(fs, stdout)`: files written whole or left as they were, a step at a time.
+    Filed(Filing),
+    /// `owned{id}(stdout)`: values of types with their own `def []`, changed through it.
+    Owned(OwnIndexing),
     /// `streamed{id}(stdout)`: a generator over `parallel(xs)`, read in one of the ways a stream is.
     Streamed(Streaming),
     /// `aliased{id}(stdout)`: copies of collections and their parts, each changed in place, then
@@ -1322,6 +1642,9 @@ pub(crate) enum Stmt {
     /// `captured{id}(stdout)`: a name written where another of the same name and type is in
     /// sight, in a way the checker once renamed into the other.
     Captured(Capturing),
+    /// `narrowed{id}(stdout)`: a union narrowed to one member and changed through it, by a `ref self`
+    /// method or a `ref` call.
+    Narrowed(Narrowing),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

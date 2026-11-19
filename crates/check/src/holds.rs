@@ -31,7 +31,7 @@ use crate::function::FnCx;
 use crate::types::Type;
 
 /// Where the values a call, a build or a write hands over go.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum To {
     /// A function or method, by its key.
     Function(String),
@@ -63,7 +63,7 @@ impl To {
 }
 
 /// One value handed over.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Value {
     pub(crate) span: Span,
     /// The arrow function it is, or that the local name it's read from holds, by its span.
@@ -84,14 +84,14 @@ impl Value {
 }
 
 /// The values one call or build hands over.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Handed {
     pub(crate) to: To,
     pub(crate) values: Vec<Value>,
 }
 
 /// An arrow function, by what it reads from around it and what its parameters take.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Arrow {
     /// Where it reads names that aren't its own parameters.
     pub(crate) reads: Vec<Span>,
@@ -102,12 +102,43 @@ pub(crate) struct Arrow {
 pub(crate) type Calls = BTreeMap<((u32, u32), String), Handed>;
 
 /// What the program's code hands from kit to kit, noted as it's checked.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Handovers {
     /// Each call, build or write, by the function it's in, its span, and where it hands to.
     pub(crate) handed: BTreeMap<String, Calls>,
     /// Each arrow function, by the function it's in and its span.
     pub(crate) arrows: BTreeMap<String, BTreeMap<(u32, u32), Arrow>>,
+}
+
+impl Handovers {
+    /// Adds what one function's check found it hands over.
+    pub(crate) fn add(&mut self, other: &Handovers) {
+        // Named in full, so a field added to `Handovers` can't be left out of what's carried over.
+        let Handovers { handed, arrows } = other;
+        for (key, calls) in handed {
+            self.handed.entry(key.clone()).or_default().extend(calls.clone());
+        }
+        for (key, arrows) in arrows {
+            self.arrows.entry(key.clone()).or_default().extend(arrows.clone());
+        }
+    }
+
+    /// The same, with every type in it settled, for a later check to carry over.
+    pub(crate) fn settled(mut self, settle: &dyn Fn(&Type) -> Type) -> Handovers {
+        for calls in self.handed.values_mut() {
+            for handed in calls.values_mut() {
+                for value in &mut handed.values {
+                    value.ty = value.ty.as_ref().map(settle);
+                }
+            }
+        }
+        for arrows in self.arrows.values_mut() {
+            for arrow in arrows.values_mut() {
+                arrow.params = arrow.params.iter().map(settle).collect();
+            }
+        }
+        self
+    }
 }
 
 /// The places a place is inside, itself first: `bag.items[0]`, `bag.items`, then `bag`.
@@ -201,7 +232,9 @@ impl FnCx<'_> {
     }
 
     fn note_values(&mut self, to: To, span: Span, values: Vec<Value>) {
-        if !self.report {
+        // A round's check of what lowering rewrote judges no handover: `refused` holds the
+        // program as written to its kits' lists, in the first check.
+        if !self.report || self.checker.again {
             return;
         }
         let calls = self.checker.handovers.handed.entry(self.key.clone()).or_default();
@@ -235,7 +268,8 @@ impl FnCx<'_> {
         body: &fennec_syntax::Expr,
         takes: &[Type],
     ) {
-        if !self.report {
+        // As for `note_values`: nothing reads it after the first check.
+        if !self.report || self.checker.again {
             return;
         }
         let mut reads = Vec::new();

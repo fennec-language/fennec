@@ -345,8 +345,21 @@ pub(crate) const REPLAY: Target = Target {
     stuck: Duration::from_secs(60),
 };
 
+/// A program putting a new file in place of an old one, killed partway, which must leave the old
+/// file or the new one, never a torn one.
+pub(crate) const KILLED_WRITES: Target = Target {
+    name: "killed-writes",
+    corpus: &["crates/fuzz/seeds/killed-writes"],
+    tokens: &ANYTHING,
+    run: crate::killed_writes::killed_writes,
+    stuck: Duration::from_secs(60),
+};
+
 pub(crate) fn find(name: &str) -> Option<&'static Target> {
-    TARGETS.iter().chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY]).find(|target| target.name == name)
+    TARGETS
+        .iter()
+        .chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY, &KILLED_WRITES])
+        .find(|target| target.name == name)
 }
 
 impl Target {

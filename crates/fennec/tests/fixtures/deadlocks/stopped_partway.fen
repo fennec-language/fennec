@@ -1,0 +1,36 @@
+# A launched task's waiting call, stopped while its ranges wait on a channel nobody sends to: each
+# range says it's about to wait, main naps, then leaves the block by a failure, which stops the task
+# and its ranges. While main naps everything else is in a stuck wait. Never a deadlock.
+# (From Fable 5.2's review of the phase 2 design.)
+from std.concurrent import Channel, Closed, Crashed, channel
+
+error Refused:
+    why: str
+
+def waits(number: int, ready: Channel[int], never: Channel[int]) -> int:
+    ready.send(number) except Closed():
+        return -1
+    got = never.receive() else -2
+    return got
+
+def all_waiting(ready: Channel[int], never: Channel[int]) -> int:
+    heard = [waits(number, ready=ready, never=never) for number in parallel(range(4))]
+    return len(heard)
+
+def stopped(clock: Clock) fails Refused | Crashed:
+    with channel[int](size=4) as ready:
+        with channel[int](size=1) as never:
+            with launch(() => all_waiting(ready, never=never))?:
+                for _ in range(4):
+                    _ = ready.receive() else 0
+                clock.sleep(4ms)
+                fail Refused(why="leaving this way stops the task")
+
+def once(clock: Clock) -> str:
+    stopped(clock) except why:
+        return f"{why}"
+    return "it wasn't stopped"
+
+def main(stdout: Stdout, clock: Clock):
+    for turn in range(5):
+        stdout.print(once(clock))

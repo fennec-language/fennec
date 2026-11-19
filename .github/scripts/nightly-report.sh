@@ -10,8 +10,8 @@
 # this Mac's flake ledger (see `flakes.sh`), listed by test with `fennec-flakes` and
 # each entry whole under it, as `flakes-<date>.md`, so every flake the gates saw is there to read.
 #
-# It says too whether main's CI is green on every system, naming each job that isn't, with
-# `main-ci.sh`, and warns when GitHub holds more than 25 branches.
+# It says too whether main's CI is green on every system, `CI` and `CI macOS` each in a line,
+# naming each job that isn't, with `main-ci.sh`, and warns when GitHub holds more than 25 branches.
 #
 # It says how the night's Fuzzing run ended too. Under each run that failed, it names each job that
 # failed and the step it failed at, a line each, as `failed: <job> :: <step>`, and those lines head
@@ -49,8 +49,8 @@ if ! gh api rate_limit > /dev/null 2>&1; then
   echo "GitHub isn't answering, so the night can't be read: try again in a while"
   exit 1
 fi
-# Main's CI on every system, in a line: a job red on one, like Windows, is said here, and fails the
-# report, the day it goes red.
+# Main's CI on every system, a line for `CI` and one for `CI macOS`: a job red on one, like
+# Windows, is said here, and fails the report, the day it goes red.
 main_ci=0
 "$here/main-ci.sh" "$repository" || main_ci=1
 # The weekly sweep (`sweep-branches.yml`) deletes the branches nothing needs, so past 25 something

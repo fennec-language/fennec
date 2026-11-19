@@ -1,0 +1,22 @@
+# A waiting reduction from main, 30 a run, whose ranges pass a token round a channel as they go.
+# Never a deadlock. (From Fable 5.2's review of the phase 2 design.)
+from std.concurrent import Channel, Closed, channel
+
+def passes(at: int, pipe: Channel[int]) -> int:
+    held = pipe.receive() else -1
+    pipe.send(held + 1) except Closed():
+        return -100
+    return at
+
+def summed(pipe: Channel[int]) -> int:
+    return sum(passes(at, pipe=pipe) for at in parallel(range(40)))
+
+def main(stdout: Stdout):
+    mut total = 0
+    for turn in range(30):
+        with channel[int](size=1) as pipe:
+            pipe.send(0) except Closed():
+                return
+            total += summed(pipe)
+            total += pipe.receive() else -1000
+    stdout.print(total)

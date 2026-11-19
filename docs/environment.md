@@ -38,6 +38,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_EXPECT_STATIC`: the static-link test fails rather than skips when musl is missing.
 - `FENNEC_PARALLEL_STRESS`: every parallel loop runs on the pool, split one item a range.
 - `FENNEC_STREAM_RUN_AHEAD`: set, a parallel stream's reader waits for the workers to run every chunk in its window before it takes one, so chunks always run ahead of it, as a test of what runs past a `break` needs. Off on a worker and in a replay.
+- `FENNEC_TEST_SLOW_WAKE_MS`: a debug build's runtime holds a woken idle worker this many milliseconds before its slot says it's awake, so a test finds every worker asleep while a `parallel` call's first job is queued: the moment the deadlock check's look at the pools' queues is for. A release build never reads it.
 - `FENNEC_UNDER_MUTANTS`: slow tests sample fewer inputs under cargo-mutants.
 - `FENNEC_TEST_POSTGRES`: the URL of a real Postgres for `std.postgres`'s tests.
 - `FENNEC_PIN_OUTPUTS`: rewrites `crates/fennec/tests/fixtures/pinned` from this build's results.

@@ -858,6 +858,7 @@ impl<'p> Module<'_, 'p> {
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
+            taken_places: HashMap::new(),
             walks: HashMap::new(),
             saving: crate::rollback::saving_handles(function),
             on_crash: crate::rollback::given_back_on_crash(function),
@@ -1094,6 +1095,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) inside_slots: HashMap<FieldPath, String>,
     /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
     pub(crate) pair_slots: HashMap<usize, String>,
+    /// The slot holding where each item taken out of a `Table` to be put back is, by the local it
+    /// was read into: its put-back goes there with no second lookup (see `id_map_store`).
+    pub(crate) taken_places: HashMap<LocalId, String>,
     /// Where each map's walk has got to, and where the slot a walk is on and its generation are.
     pub(crate) walks: HashMap<usize, (String, String)>,
 }
@@ -4826,6 +4830,29 @@ def main(stdout: Stdout):
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
         let said: Vec<&String> = shared.strings.values().chain(shared.literals.values()).collect();
         assert!(text.contains(proof) || said.iter().any(|said| said.contains(proof)), "{text}");
+        Ok(())
+    }
+
+    /// An item read out of a `Table` by `Id`, changed and put back by the same `Id` is put back
+    /// where it was read: one lookup, which fails if the `Id` finds nothing. A call given the
+    /// `Table` in between could change it, so there the put-back looks it up again.
+    #[test]
+    fn an_item_put_back_by_the_id_it_was_read_by_is_looked_up_once() -> Result<(), String> {
+        let source = "from std.collections import Id, Table\n\nstruct Unit:\n    hp: int\n    bag: dict[str, int]\n\ndef hurt(ref units: Table[Unit], ids: list[Id[Unit]], at: int):\n    mut unit = units[ids[at]]\n    unit.hp -= 1\n    if unit.hp <= 0:\n        unit.bag[\"bone\"] = 1\n    units[ids[at]] = unit\n    return\n\ndef heal(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.hp += 1\n    units[id] = unit\n    return\n\ndef hurt_around_a_call(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.hp -= 1\n    heal(ref units, id)\n    units[id] = unit\n    return\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    ids = [units.add(Unit(hp=1, bag={\"gold\": 1}))]\n    hurt(ref units, ids, at=0)\n    hurt_around_a_call(ref units, ids[0])\n    stdout.print(units[ids[0]].hp)\n";
+        // Counted in the function's own definition, apart from the copies of others its unit has
+        // for inlining.
+        let lookups = |text: &str, function: &str| {
+            let own = format!("@\"f_{function}\"(");
+            text.split("\ndefine ")
+                .filter(|definition| definition.lines().next().is_some_and(|first| first.contains(&own)))
+                .flat_map(str::lines)
+                .filter(|line| line.starts_with("stale") && line.ends_with(':'))
+                .count()
+        };
+        let once = text_of(source, "hurt")?;
+        assert_eq!(lookups(&once, "hurt"), 1, "{once}");
+        let twice = text_of(source, "hurt_around_a_call")?;
+        assert_eq!(lookups(&twice, "hurt_around_a_call"), 2, "{twice}");
         Ok(())
     }
 

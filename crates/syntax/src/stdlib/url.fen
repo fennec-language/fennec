@@ -10,6 +10,14 @@ from std.string import cut_input, quoted_input
 ## and printing a `Url` writes it back with what needs escaping escaped. A part that wasn't
 ## given is "", with `port` 0 when none was given, and a URL with no `scheme` or `host`, like
 ## `/search?q=fox`, is relative.
+##
+## ```fennec
+## from std import url
+## link = url.parse("https://ann@example.com:8443/a%20b?q=fox#top")?
+## assert link.scheme == "https" and link.user == "ann" and link.host == "example.com"
+## assert link.port == 8443 and link.path == "/a b" and link.query["q"] == "fox"
+## assert link.fragment == "top"
+## ```
 export struct Url:
     scheme = ""
     ## Who's named before an `@`, like `user:password`, as it's written.
@@ -32,6 +40,12 @@ export struct Url:
 
     ## Every value the query gives `name`, in the order the URL has them, where `query` keeps
     ## only the first: `?tag=a&tag=b` gives `["a", "b"]`. A name it doesn't have gives none.
+    ##
+    ## ```fennec
+    ## from std import url
+    ## link = url.parse("/search?tag=a&tag=b")?
+    ## assert link.query_all("tag") == ["a", "b"] and link.query["tag"] == "a"
+    ## ```
     def query_all(self, name: str) -> list[str]:
         # As it was written, unless the query has been changed since.
         if self._raw_query != "" and decode_query(self._raw_query) == self.query:
@@ -40,6 +54,11 @@ export struct Url:
         return []
 
     ## `host`, then `:port` when a port was given: what the URL says to connect to.
+    ##
+    ## ```fennec
+    ## from std import url
+    ## assert url.parse("http://example.com:8080/")?.address() == "example.com:8080"
+    ## ```
     def address(self) -> str:
         host = f"[{self.host}]" if self.host.find(":") is not None else self.host
         return f"{host}:{self.port}" if self.port > 0 else host
@@ -47,6 +66,11 @@ export struct Url:
     ## Written so it reads back as the same URL, never as another: a host or scheme that would
     ## change what it says stops the program, as a bug in the program that set it, and the rest
     ## is escaped or led in so its parts stay where they are.
+    ##
+    ## ```fennec
+    ## from std.url import Url
+    ## assert str(Url(scheme="https", host="example.com", path="/a b")) == "https://example.com/a%20b"
+    ## ```
     def str(self, ref out: StrWriter):
         if self.scheme != "":
             if not is_scheme(self.scheme):
@@ -99,6 +123,12 @@ export struct Url:
 ##   `127.1`, `0x7f.1`, `0177.0.0.1` or `2130706433`;
 ## - brackets around anything but an IPv6 address, a zone like `%25en0` included;
 ## - a port that isn't a number from 1 to 65535, or a host longer than 253 characters.
+##
+## ```fennec
+## from std import url
+## assert url.parse("http://example.com/")?.host == "example.com"
+## assert url.parse("http://127.1/") fails InvalidValue()
+## ```
 export def parse(text: str) -> Url fails InvalidValue:
     for c in text:
         if c == " " or c.code() < 32 or c.code() == 127:
@@ -301,6 +331,12 @@ def host_and_port(authority: str, text: str) -> (str, int) fails InvalidValue:
 
 ## `text` with each byte URLs can't hold as it is written as `%` and two hex digits, like `%20`
 ## for a space. Letters, digits and `-._~` are left as they are, and so is anything in `keep`.
+##
+## ```fennec
+## from std import url
+## assert url.quote("red fox/den") == "red%20fox%2Fden"
+## assert url.quote("a/b c", keep="/") == "a/b%20c"
+## ```
 export def quote(text: str, keep = "") -> str:
     return quoted(text, keep=keep)
 
@@ -318,11 +354,22 @@ def quoted(text: str, keep: str) -> str:
 
 ## `text` with each `%` and two hex digits read as the byte they write. One that doesn't, like
 ## `%zz`, stays as it is, and so does text whose bytes aren't UTF-8 once read.
+##
+## ```fennec
+## from std import url
+## assert url.unquote("red%20fox") == "red fox"
+## assert url.unquote("100%zz") == "100%zz"
+## ```
 export def unquote(text: str) -> str:
     return decoded(text, plus=False)
 
 ## `params` as a query, `name=value` pairs joined by `&`, each part escaped as an HTML form
 ## sends it, with `+` for a space: `{"q": "red fox"}` is `q=red+fox`.
+##
+## ```fennec
+## from std import url
+## assert url.encode_query({"q": "red fox", "page": "2"}) == "q=red+fox&page=2"
+## ```
 export def encode_query(params: dict[str, str]) -> str:
     return "&".join([
         form_quoted(name) + "=" + form_quoted(value) for name,
@@ -332,6 +379,11 @@ export def encode_query(params: dict[str, str]) -> str:
 ## A query's pairs, with their escapes read and `+` read as a space, in the order the query
 ## has them. A name with no `=` has the value "", and a name given twice keeps its first value,
 ## as `Url.query` does.
+##
+## ```fennec
+## from std import url
+## assert url.decode_query("q=red+fox&page=2&q=x") == {"q": "red fox", "page": "2"}
+## ```
 export def decode_query(text: str) -> dict[str, str]:
     mut found = dict[str, str]()
     for name, value in query_pairs(text):

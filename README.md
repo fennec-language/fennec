@@ -68,14 +68,10 @@ Until then, install it from a checkout of this repository. This builds `fennec` 
 .github/scripts/install.sh
 ```
 
-Or work in the checkout. Build `fennec` and the runtime library it links programs with together, and again after pulling: `fennec` refuses a runtime library from other source. Then add LLVM's tools, which `fennec` builds programs through, to the Rust toolchain this repository pins:
+Or work in the checkout. Build `fennec` and the runtime library it links programs with together, and again after pulling: `fennec` refuses a runtime library from other source. rustup installs the Rust toolchain this repository pins on first use, with the LLVM tools `fennec` builds programs through:
 
 ```bash
 cargo build -p fennec -p fennec-runtime
-```
-
-```bash
-rustup component add llvm-tools
 ```
 
 Fennec runs most of the language on the website: structs, enums, unions, `match`, errors with `fail` and `?`, optional values, tables and Ids, comprehensions, generators, `parallel` loops, tests and property tests, and a standard library with JSON, HTTP and more. `fennec run` and `fennec test` type-check a program first and report every mistake they find. `fennec run` builds a program through LLVM a function at a time, and where LLVM can't build something yet, it says why.

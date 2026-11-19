@@ -45,7 +45,7 @@ fn kept_build(source: &str, kept: Option<KeptCheck>) -> (Built, Option<KeptCheck
         Ok(module) => module,
         Err(problems) => return (Err(problems), None),
     };
-    match check_to_build_keeping(&mut module, kept, true) {
+    match check_to_build_keeping(&mut module, (kept, None), true) {
         Ok((signatures, as_left, kept)) => (built(Ok((signatures, as_left))), Some(kept)),
         Err(problems) => (built(Err(problems)), None),
     }

@@ -652,7 +652,7 @@ pub fn check_to_build_saying(module: &mut Module) -> Result<(Signatures, bool), 
 /// and what the program declared besides its functions.
 pub struct KeptCheck {
     first: Checked,
-    declared: Vec<Item>,
+    declared: Vec<Declared>,
     /// How many functions and tests the check that kept this could carry over from the build
     /// before it.
     carriable: usize,
@@ -668,12 +668,27 @@ impl KeptCheck {
     }
 }
 
+/// What an edit changed in a program since a build kept a check of it (`check_to_build_keeping`),
+/// as the build reads the files' texts. The build gives it only when the program has the same files,
+/// in the same order, each where it was: an edit to one file moves no other file's spans.
+pub struct Edit<'a> {
+    /// The spans of the kept check's program whose text changed or moved: in each changed file,
+    /// from its first changed byte to its last when its length is the same, or else to its end.
+    pub dirty: Vec<Span>,
+    /// Whether the kept check's program's text at the first span reads as this program's text at
+    /// the second.
+    pub same_text: &'a dyn Fn(Span, Span) -> bool,
+}
+
 /// `check_to_build_saying`, keeping what the first check finds for a build after an edit, and
 /// carrying over from `kept`, what the build before it kept, what was found for each function the
-/// edit left as it was. Nothing's carried over when the edit changed anything the program declares
-/// besides what's inside its functions and tests, or added, took away or renamed a function. The
-/// rounds of rewriting that follow check what they write all again, as a build that keeps nothing
-/// does.
+/// edit left as it was: its text the same, where it was, and nothing found for it from text `edit`
+/// changed or moved, as a default written in from a declaration after the edit. Nothing's carried
+/// over when the edit changed anything the program declares besides what's inside its functions
+/// and tests, or added, took away or renamed a function. With `edit`, a declaration whose text reads
+/// the same, its methods' aside, is the same, wherever it is; without, it has to be where it was.
+/// The rounds of rewriting that follow check what they write all again, as a build that keeps
+/// nothing does.
 ///
 /// With `compare`, each check that carried anything over is compared with checking it all again,
 /// and a difference is the compiler's mistake, said as one (`compares_kept_check`).
@@ -683,7 +698,7 @@ impl KeptCheck {
 /// What the checker finds wrong with it, then nothing's kept.
 pub fn check_to_build_keeping(
     module: &mut Module,
-    kept: Option<KeptCheck>,
+    (kept, edit): (Option<KeptCheck>, Option<&Edit<'_>>),
     compare: bool,
 ) -> Result<(Signatures, bool, KeptCheck), Vec<Diagnostic>> {
     library_parses()?;
@@ -691,8 +706,13 @@ pub fn check_to_build_keeping(
     let names = own_types_apart(module);
     refuse_reserved(module)?;
     let declared = declarations(module);
-    let first_check = match kept.filter(|kept| kept.declared == declared) {
-        Some(kept) => checker::Checker::carrying(module, kept.first),
+    let usable = kept.filter(|kept| match edit {
+        Some(edit) => same_declarations(&kept.declared, &declared, edit),
+        None => kept.declared.iter().map(|before| &before.item).eq(declared.iter().map(|now| &now.item)),
+    });
+    let dirty = edit.map_or(&[][..], |edit| edit.dirty.as_slice());
+    let first_check = match usable {
+        Some(kept) => checker::Checker::carrying(module, kept.first, dirty),
         None => checker::Checker::keeping(module),
     };
     let carriable = first_check.carriable();
@@ -939,25 +959,72 @@ fn resolved_from(
     unreachable!("the rounds go on until one returns")
 }
 
+/// One thing a module declares besides its functions and tests: the item without its methods,
+/// which are functions, and the stretches of its text that aren't a method's.
+#[derive(Clone, Debug, PartialEq)]
+struct Declared {
+    item: Item,
+    text: Vec<Span>,
+}
+
 /// What a module declares besides its functions and tests: its types and extensions without
-/// their methods, which are functions, and its interfaces, aliases, constants and imports.
-fn declarations(module: &Module) -> Vec<Item> {
+/// their methods, and its interfaces, aliases, constants and imports.
+fn declarations(module: &Module) -> Vec<Declared> {
     use fennec_syntax::{Extension, TypeDef};
     let without = |def: &TypeDef| TypeDef { methods: Vec::new(), ..def.clone() };
     module
         .items
         .iter()
-        .filter_map(|item| match item {
-            Item::Function(_) | Item::Test(_) => None,
-            Item::Struct(def) => Some(Item::Struct(without(def))),
-            Item::Enum(def) => Some(Item::Enum(without(def))),
-            Item::Error(def) => Some(Item::Error(without(def))),
-            Item::Extend(extension) => {
-                Some(Item::Extend(Extension { methods: Vec::new(), ..extension.clone() }))
-            }
-            other => Some(other.clone()),
+        .filter_map(|item| {
+            let (item, span, methods) = match item {
+                Item::Function(_) | Item::Test(_) | Item::Stmt(_) => return None,
+                Item::Struct(def) => (Item::Struct(without(def)), def.span, def.methods.as_slice()),
+                Item::Enum(def) => (Item::Enum(without(def)), def.span, def.methods.as_slice()),
+                Item::Error(def) => (Item::Error(without(def)), def.span, def.methods.as_slice()),
+                Item::Extend(extension) => (
+                    Item::Extend(Extension { methods: Vec::new(), ..extension.clone() }),
+                    extension.span,
+                    extension.methods.as_slice(),
+                ),
+                Item::Interface(interface) => (item.clone(), interface.span, &[][..]),
+                Item::TypeAlias { span, .. } | Item::Const { span, .. } => (item.clone(), *span, &[][..]),
+                Item::Import(import) => (item.clone(), import.span, &[][..]),
+            };
+            Some(Declared { item, text: around_methods(span, methods) })
         })
         .collect()
+}
+
+/// The stretches of `span`'s text that no method of `methods` covers, in order: none for an item
+/// the compiler wrote in, with no text.
+fn around_methods(span: Span, methods: &[fennec_syntax::FnDef]) -> Vec<Span> {
+    if span == Span::default() {
+        return Vec::new();
+    }
+    let mut covered: Vec<Span> = methods.iter().map(|method| method.span).collect();
+    covered.sort_by_key(|method| method.start);
+    let mut stretches = Vec::new();
+    let mut from = span.start;
+    for method in covered {
+        stretches.push(Span { start: from, end: method.start.max(from) });
+        from = method.end.max(from);
+    }
+    stretches.push(Span { start: from, end: span.end.max(from) });
+    stretches
+}
+
+/// Whether a program declares what it did before `edit`, item by item in the same order: each
+/// one's text, its methods' aside, reads the same, wherever it is now, or an item with no text is
+/// the same. The same text parses the same, but for where it is.
+fn same_declarations(before: &[Declared], now: &[Declared], edit: &Edit<'_>) -> bool {
+    before.len() == now.len()
+        && before.iter().zip(now).all(|(before, now)| {
+            if before.text.is_empty() || now.text.is_empty() {
+                return before.item == now.item;
+            }
+            before.text.len() == now.text.len()
+                && before.text.iter().zip(&now.text).all(|(was, is)| (edit.same_text)(*was, *is))
+        })
 }
 
 /// `text` with each open type variable's number taken out: `Var(12)` as `Var(_)`.
@@ -1509,6 +1576,21 @@ fn not_checked_again(problem: &Diagnostic, copied: &[fennec_syntax::Copied]) -> 
 }
 
 impl Checked {
+    /// Whether what this check found for `key`, kept apart, holds a span `hit` says yes to: its
+    /// typed body, what it wrote in the tables and adds to what's followed, or its parameters'
+    /// defaults.
+    pub(crate) fn holds_span(&self, key: &str, hit: &dyn Fn(Span) -> bool) -> bool {
+        use checker::HoldsSpan as _;
+        self.types.functions.get(key).is_some_and(|body| body.holds_span(hit))
+            || self.tables_of.get(key).is_some_and(|tables| tables.holds_span(hit))
+            || self.graph_of.get(key).is_some_and(|graph| graph.holds_span(hit))
+            || self
+                .signatures
+                .functions
+                .get(key)
+                .is_some_and(|signature| signature.params.iter().any(|param| param.default.holds_span(hit)))
+    }
+
     /// The signatures, holding the type of every expression too, for compilers to use.
     fn into_signatures(self) -> Signatures {
         Signatures { types: self.types, ..self.signatures }.without_literal()
@@ -1656,6 +1738,15 @@ pub struct Body {
     pub(crate) exprs: BTreeMap<(u32, u32), Type>,
     pub(crate) names: BTreeMap<((u32, u32), String), Type>,
     pub(crate) names_outer: bool,
+}
+
+impl checker::HoldsSpan for Body {
+    /// Where each type it knows is: a call's default, typed where it's written in, is in the
+    /// callee's text.
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        let Body { exprs, names, names_outer: _ } = self;
+        exprs.keys().any(|at| at.holds_span(hit)) || names.keys().any(|(at, _)| at.holds_span(hit))
+    }
 }
 
 impl Body {

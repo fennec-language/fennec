@@ -397,6 +397,13 @@ pub(crate) struct Task {
     inbox: Option<Expr>,
 }
 
+impl crate::checker::HoldsSpan for Task {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        let Task { arrow, inbox } = self;
+        arrow.holds_span(hit) || inbox.holds_span(hit)
+    }
+}
+
 impl Task {
     /// Writes the task's arrow in as the closure the source starts, where its placeholder is, with
     /// its inbox, when it has one, as the receiving end of the channel the source made. It's

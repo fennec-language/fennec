@@ -933,6 +933,11 @@ impl FnCx<'_> {
         (types, args): (&[Type], &[Arg]),
         span: Span,
     ) -> Type {
+        // Any type's function of this name could be the one called, inside a lock or not, as for
+        // a method called on a value of the type parameter in `interface_call`.
+        let any = format!("*.{method}");
+        self.checker.own_callers.entry(any.clone()).or_default().insert(self.key.clone());
+        self.note_lock_call(&any, method, span);
         let owner = Type::Param(param.to_owned());
         let Some((_, def)) = self.bound_method(param, method) else {
             let message = format!("`{param}` has nothing called `{method}`");

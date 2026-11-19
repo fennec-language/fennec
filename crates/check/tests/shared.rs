@@ -1020,6 +1020,34 @@ fn an_interface_method_inside_a_lock_counts_if_any_type_s_waits() {
     assert!(found[0].starts_with("`nap` waits on `Clock.sleep` while `held` is locked"), "{found:?}");
 }
 
+/// A type's function called on a type parameter, as `T.made(clock)`, could be any type's of that
+/// name too, inside the lock or in a function called inside one, as the checker lane's review of
+/// #2167 found it wasn't.
+#[test]
+fn a_type_parameter_s_function_inside_a_lock_counts_if_any_type_s_waits() {
+    let program = |made: &str, through: &str| {
+        format!(
+            "struct Scores:\n    total = 0\n\n\
+             interface Made:\n    def made(clock: Clock) -> int\n\n\
+             struct Slow:\n    size = 0\n\n    def made(clock: Clock) -> int:\n{made}        return 1\n\n\
+             def helper[T: Made](clock: Clock) -> int:\n    return T.made(clock)\n\n\
+             def through[T: Made](scores: shared Scores, clock: Clock) -> int:\n    \
+             lock scores as held:\n        return held.total + {through}\n"
+        )
+    };
+    let sleeps = "        clock.sleep(1s)\n";
+    let inside = problems(&program(sleeps, "T.made(clock)"));
+    assert_eq!(inside.len(), 1, "{inside:?}");
+    assert!(inside[0].starts_with("`made` waits on `Clock.sleep` while `held` is locked"), "{inside:?}");
+    let called = problems(&program(sleeps, "helper[T](clock)"));
+    assert_eq!(called.len(), 1, "{called:?}");
+    assert!(called[0].starts_with("`helper` waits on `Clock.sleep` while `held` is locked"), "{called:?}");
+    // No type's `made` waits, so neither is refused.
+    let quiet: Vec<String> = Vec::new();
+    assert_eq!(problems(&program("", "T.made(clock)")), quiet);
+    assert_eq!(problems(&program("", "helper[T](clock)")), quiet);
+}
+
 /// A function value called inside a lock is followed to what it could hold. What each caller
 /// passes for a function parameter that's called under a lock, directly or through another
 /// function it's passed to, is checked where it's passed: an arrow function by its body, a named

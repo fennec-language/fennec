@@ -2,11 +2,24 @@
 ## operations the engines provide.
 extend dict[K: Hashable, V]:
     ## Adds every pair of `more`, replacing the values of keys it already has.
+    ##
+    ## ```fennec
+    ## mut ages = {"ana": 31, "bo": 40}
+    ## ages.update({"bo": 41, "cy": 25})
+    ## assert ages == {"ana": 31, "bo": 41, "cy": 25}
+    ## ```
     def update(ref self, more: dict[K, V]):
         for key, value in more.items():
             self[key] = value
 
     ## The value of `key`, adding `default` as its value when it has none.
+    ##
+    ## ```fennec
+    ## mut seen: dict[str, int] = {}
+    ## assert seen.setdefault("a", 1) == 1
+    ## assert seen.setdefault("a", 2) == 1
+    ## assert seen == {"a": 1}
+    ## ```
     def setdefault(ref self, key: K, default: V) -> V:
         if key in self: return self[key]
         self[key] = default
@@ -14,11 +27,22 @@ extend dict[K: Hashable, V]:
 
     ## Takes `key` out, giving back its value, or `None` when it isn't there: `pop` for a key that
     ## may be missing, as `get` is to `self[key]`.
+    ##
+    ## ```fennec
+    ## mut ages = {"ana": 31}
+    ## assert ages.remove("ana") == 31
+    ## assert ages.remove("ana") is None
+    ## ```
     def remove(ref self, key: K) -> V?:
         if key not in self: return None
         return self.pop(key)
 
 extend dict[K: Hashable & Serializable, V: Serializable]:
+    ## Writes the dict for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps({"a": 1}) == "{\"a\": 1}"
+    ## ```
     def serialize(self, ref out: Serializer):
         out.map(self.items())
 
@@ -47,6 +71,12 @@ def twice_key[K](key: K) -> str:
 extend dict[K: Hashable & Deserializable, V: Deserializable]:
     ## A key that comes twice fails, naming it, rather than the last one winning: two readers that
     ## disagree on which wins would let a value past a check that read the other.
+    ##
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[dict[str, int]]("{\"a\": 1}")? == {"a": 1}
+    ## assert json.loads[dict[str, int]]("{\"a\": 1, \"a\": 2}") fails ParseError()
+    ## ```
     def deserialize(ref src: Deserializer) -> dict[K, V] fails ParseError:
         mut found = dict[K, V]()
         count = src.map_count()?

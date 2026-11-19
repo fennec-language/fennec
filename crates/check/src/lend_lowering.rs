@@ -590,6 +590,14 @@ fn below_copies(low: u32) -> u32 {
     })
 }
 
+/// Starts the spans lowering writes, and where copies of the standard library's text go, where a
+/// new thread starts them, as a new process does: what a program's build writes in is the same
+/// however many programs were built on its thread before it.
+pub(crate) fn start_program() {
+    NEXT.with(|next| next.set(Span::PRELUDE - 1));
+    COPIES.with(|copies| copies.set(u32::MAX));
+}
+
 /// Reserves `length` spans in a row for text written in, giving the lowest.
 pub(crate) fn reserved(length: u32) -> u32 {
     NEXT.with(|next| {

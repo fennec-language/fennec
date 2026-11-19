@@ -1,8 +1,19 @@
 ## `bytes`'s methods written in Fennec.
 extend bytes:
+    ## Writes the bytes for `json.dumps`, `pack.dumps` and the rest, which call it. JSON writes them as
+    ## base64 text.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps("hi".encode()) == "\"aGk=\""
+    ## ```
     def serialize(self, ref out: Serializer):
         out.bytes(self)
 
+    ## Reads bytes for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[bytes]("\"aGk=\"")? == "hi".encode()
+    ## ```
     def deserialize(ref src: Deserializer) -> bytes fails ParseError:
         return src.bytes()?
 

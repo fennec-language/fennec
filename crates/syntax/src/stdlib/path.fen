@@ -2,14 +2,31 @@ from std.string import cut_input
 
 ## A file path, like `saves/slot1.json`. Its parts are separated by `/`. Every method only
 ## looks at the text; none of them touch the file system.
+##
+## ```fennec
+## from std.path import Path
+## save = Path("saves") / "slot1.json"
+## assert save.text == "saves/slot1.json" and save.extension() == "json"
+## ```
 export struct Path:
     text: str
 
     ## `Path("saves") / "slot1.json"` is the same as `.join`.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert (Path("saves") / "slot1.json").text == "saves/slot1.json"
+    ## ```
     def /(self, part: str) -> Path:
         return self.join(part)
 
     ## This path with `part` added. A `part` that starts with `/` replaces the path.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("saves").join("slot1.json").text == "saves/slot1.json"
+    ## assert Path("saves").join("/tmp").text == "/tmp"
+    ## ```
     def join(self, part: str) -> Path:
         if part.startswith("/") or self.text == "": return Path(part)
         if self.text.endswith("/"): return Path(self.text + part)
@@ -22,6 +39,12 @@ export struct Path:
     ## Windows drops, so `.. ` is `..`, and a device's name, like `CON` or `nul.txt`. Unlike `/`,
     ## it can't replace the path. It only looks at the text: an `Fs` narrowed with `only` is what
     ## keeps a program out of other folders, links and all.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("public").inside("/css/site.css")?.text == "public/css/site.css"
+    ## assert Path("public").inside("../secret.txt") fails InvalidValue()
+    ## ```
     def inside(self, part: str) -> Path fails InvalidValue:
         for c in part:
             if c.code() < 32 or c.code() == 127 or c == "\\":
@@ -46,14 +69,29 @@ export struct Path:
         return self.join("/".join(kept))
 
     ## Whether the path starts at the root, `/`.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("/etc").is_absolute() and not Path("etc").is_absolute()
+    ## ```
     def is_absolute(self) -> bool:
         return self.text.startswith("/")
 
     ## The names between the `/`s, leaving out empty ones and `.`.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("/a/./b//c").parts() == ["a", "b", "c"]
+    ## ```
     def parts(self) -> list[str]:
         return [part for part in self.text.split("/") if part != "" and part != "."]
 
     ## The last part: `fox.png` for `assets/fox.png`.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("assets/fox.png").name() == "fox.png"
+    ## ```
     def name(self) -> str:
         parts = self.parts()
         if len(parts) == 0: return ""
@@ -61,12 +99,22 @@ export struct Path:
 
     ## What follows the name's last `.`, without the dot: `png` for `fox.png`. Empty for
     ## names like `notes` and `.hidden`.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("fox.png").extension() == "png" and Path(".hidden").extension() == ""
+    ## ```
     def extension(self) -> str:
         pieces = self.name().split(".")
         if len(pieces) < 2 or (len(pieces) == 2 and pieces[0] == ""): return ""
         return pieces[-1]
 
     ## The name without its extension: `fox` for `fox.png`.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("fox.png").stem() == "fox"
+    ## ```
     def stem(self) -> str:
         name = self.name()
         extension = self.extension()
@@ -74,6 +122,12 @@ export struct Path:
         return name[:len(name) - len(extension) - 1]
 
     ## The path without its last part: `assets` for `assets/fox.png`, and `.` for `fox.png`.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("assets/fox.png").parent().text == "assets"
+    ## assert Path("fox.png").parent().text == "."
+    ## ```
     def parent(self) -> Path:
         mut parts = self.parts()
         if len(parts) == 0: return self.rebuild([])
@@ -85,6 +139,12 @@ export struct Path:
 
     ## The same path written simply: `a/./b/../c` becomes `a/c`. A `..` that would go above
     ## the start stays in a relative path and is dropped from an absolute one.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("a/./b/../c").normalize().text == "a/c"
+    ## assert Path("/../a").normalize().text == "/a"
+    ## ```
     def normalize(self) -> Path:
         mut kept = []
         for part in self.parts():
@@ -97,6 +157,12 @@ export struct Path:
         return self.rebuild(kept)
 
     ## `parts` joined by `/`, starting at the root when this path does.
+    ##
+    ## ```fennec
+    ## from std.path import Path
+    ## assert Path("/x").rebuild(["a", "b"]).text == "/a/b"
+    ## assert Path("x").rebuild(["a", "b"]).text == "a/b"
+    ## ```
     def rebuild(self, parts: list[str]) -> Path:
         text = "/".join(parts)
         if self.is_absolute(): return Path("/" + text)

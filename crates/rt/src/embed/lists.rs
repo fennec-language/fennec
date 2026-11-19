@@ -385,34 +385,41 @@ pub(super) fn owns_items(element: &Element) -> bool {
     ) && !element.is_optional_text()
 }
 
-/// The blocks items of a kind hold, laid out as `words`: an item of a word that's a block's
-/// address, or the blocks an item laid out in place holds, like a struct's string field.
-fn held_blocks(element: &Element, words: &[u64]) -> Vec<u64> {
+/// Does `each` to every block items of a kind hold, laid out as `words`: an item of a word
+/// that's a block's address, or the blocks an item laid out in place holds, like a struct's
+/// string field. Those an item in place holds are listed in the heap's scratch words first, so
+/// none is made for them.
+fn each_held_block(state: &mut State, element: &Element, words: &[u64], each: fn(&mut State, u64)) {
     if owns_items(element) {
-        return words.iter().copied().filter(|address| *address != 0).collect();
-    }
-    let mut found = Vec::new();
-    if super::heap::holds_blocks(element) {
-        for item in words.chunks(element.words().max(1)) {
-            super::heap::held_addresses(element, item, &mut found);
+        for address in words.iter().copied().filter(|address| *address != 0) {
+            each(state, address);
         }
+        return;
     }
-    found
+    if !super::heap::holds_blocks(element) {
+        return;
+    }
+    // Taken while it's used: what `each` does may want scratch words of its own.
+    let mut found = std::mem::take(&mut state.heap.scratch);
+    found.clear();
+    for item in words.chunks(element.words().max(1)) {
+        super::heap::held_addresses(element, item, &mut found);
+    }
+    for address in found.iter().copied() {
+        each(state, address);
+    }
+    state.heap.keep_scratch(found);
 }
 
 /// One more owner for each block a list of this kind of item holds, for a new list that
 /// holds them too.
 fn retain_items(state: &mut State, element: &Element, words: &[u64]) {
-    for address in held_blocks(element, words) {
-        super::heap::retain(state, address);
-    }
+    each_held_block(state, element, words, super::heap::retain);
 }
 
 /// Gives up the owner a list held of each block its items, laid out as `words`, hold.
 fn release_items(state: &mut State, element: &Element, words: &[u64]) {
-    for address in held_blocks(element, words) {
-        release(state, address);
-    }
+    each_held_block(state, element, words, release);
 }
 
 /// A block owned once holding `items` words of items, with room for at least `room`.
@@ -1227,12 +1234,15 @@ pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
             return Ok(());
         }
         let element = state.heap.block(address).and_then(|block| element_of(state, block));
-        let value = match element {
-            Some(element) if passed_as_block(&element) => read_block(state, word),
-            Some(element) => super::heap::read_word(state, &element, word),
-            None => Value::None,
-        };
-        let message = format!("{} isn't in the list", crate::format::repr(&value));
+        // Read for the message, written and let go of with room for however deep it is.
+        let message = super::heap::with_room_to_read(|| {
+            let value = match element {
+                Some(element) if passed_as_block(&element) => read_block(state, word),
+                Some(element) => super::heap::read_word(state, &element, word),
+                None => Value::None,
+            };
+            format!("{} isn't in the list", crate::format::repr(&value))
+        });
         Err(Diagnostic::new(message, span(start, end)))
     });
 }
@@ -1352,13 +1362,26 @@ pub extern "C" fn slice(list: i64, from: i64, to: i64) -> i64 {
         };
         let (begin, stop) = (place(from, 0), place(to, length));
         let offset = |at: i64| usize::try_from(at).unwrap_or(0) * stride;
-        let kept = if begin < stop {
-            words.get(offset(begin)..offset(stop)).unwrap_or_default().to_vec()
-        } else {
-            Vec::new()
-        };
-        retain_items(state, &element, &kept);
-        let block = build(state, usize::try_from(number).unwrap_or(0), stride, &kept, 0);
+        let kept = offset(begin)..offset(stop.max(begin));
+        // The new block is made first and the items copied into it from the list's own block,
+        // with nothing made to hold them on the way.
+        let mut block =
+            build(state, usize::try_from(number).unwrap_or(0), stride, &[], kept.len() / stride.max(1));
+        let Some(source) = state.heap.block(address) else { return 0 };
+        let from = items(source, stride).get(kept.clone()).unwrap_or_default();
+        let Some(into) = block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + from.len()) else { return 0 };
+        into.copy_from_slice(from);
+        // The count and the owners are of what was copied: were the list's block ever shorter than
+        // the range asked for, the slice would count items it never had.
+        let copied = from.len();
+        if let Some(count) = block.get_mut(2) {
+            *count = u64::try_from(copied / stride.max(1)).unwrap_or(0);
+        }
+        retain_items(
+            state,
+            &element,
+            block.get(LIST_HEADER_WORDS..LIST_HEADER_WORDS + copied).unwrap_or_default(),
+        );
         state.heap.insert(block)
     })
 }

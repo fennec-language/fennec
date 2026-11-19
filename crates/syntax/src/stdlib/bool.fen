@@ -1,7 +1,17 @@
 ## `bool`'s methods written in Fennec.
 extend bool:
+    ## Writes the bool for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps(True) == "true"
+    ## ```
     def serialize(self, ref out: Serializer):
         out.bool(self)
 
+    ## Reads a bool for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[bool]("false")? == False
+    ## ```
     def deserialize(ref src: Deserializer) -> bool fails ParseError:
         return src.bool()?

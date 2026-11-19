@@ -3,12 +3,27 @@ extend float:
     ## The float `text` writes, as `"1.5"`, `".5"`, `"-2e3"` or `"inf"`, with space around it. One too big
     ## to hold is infinity, and `"nan"` and `"inf"` read as NaN and infinity, as Python's and Rust's
     ## do. Anything else fails, saying what it was given.
+    ##
+    ## ```fennec
+    ## assert float.parse("-2e3")? == -2000.0
+    ## assert float.parse("1,5") fails InvalidValue()
+    ## ```
     def parse(text: str) -> float fails InvalidValue:
         return float(text)?
 
+    ## Writes the float for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps(1.5) == "1.5"
+    ## ```
     def serialize(self, ref out: Serializer):
         out.float(self)
 
+    ## Reads a float for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[float]("1.5")? == 1.5
+    ## ```
     def deserialize(ref src: Deserializer) -> float fails ParseError:
         return src.float()?
 

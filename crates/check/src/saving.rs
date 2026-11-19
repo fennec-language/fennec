@@ -11,8 +11,9 @@ use fennec_syntax::{Expr, ExprKind, Field, Item, Module, Pattern, TypeDef};
 use crate::checker::Checker;
 use crate::types::Type;
 
-/// The modules that save through these methods.
-const SAVING_MODULES: [&str; 5] = ["json", "toml", "pack", "sql", "sqlite"];
+/// The modules that save through these methods: each one with a function or method that takes a
+/// type to save or load, as `postgres`' `query[Entry]` does (`saving_modules_are_those_taking_a_type`).
+const SAVING_MODULES: [&str; 6] = ["json", "toml", "pack", "sql", "sqlite", "postgres"];
 
 /// The standard library's types that are never saved, though their fields could be: a `Secret`,
 /// whose text mustn't leave the program that way, an `Instant`, which means nothing outside
@@ -1078,5 +1079,44 @@ fn field_stops(
             stops_in(checker, name, place, open)
         }
         other => stop(crate::types::a(other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Each standard library module with a function or method a program hands a type to save or
+    /// load, as `json.loads[Entry]` or a Postgres transaction's `query[Entry]`, is one that turns
+    /// saving on, or a program importing only it can't load a plain struct: a Postgres query
+    /// couldn't. `std.net`'s `response.json[T]()` turns it on by its name instead.
+    #[test]
+    fn saving_modules_are_those_taking_a_type() {
+        let mut taking = std::collections::BTreeSet::new();
+        for (file, source) in fennec_syntax::prelude_files() {
+            let module = fennec_syntax::parse_prelude(source).unwrap();
+            let mut functions: Vec<&fennec_syntax::FnDef> = Vec::new();
+            for item in &module.items {
+                match item {
+                    fennec_syntax::Item::Function(def) => functions.push(def),
+                    fennec_syntax::Item::Struct(def) | fennec_syntax::Item::Enum(def) => {
+                        functions.extend(def.methods.iter().filter(|method| !method.name.starts_with('_')));
+                    }
+                    _ => {}
+                }
+            }
+            let bounded = |def: &fennec_syntax::FnDef| {
+                def.generics.iter().any(|generic| {
+                    generic.bounds.iter().any(|bound| super::SAVING_NAMES.contains(&bound.name.as_str()))
+                })
+            };
+            for def in functions.into_iter().filter(|def| bounded(def)) {
+                if !(file == "net" && def.name == "json") {
+                    taking.insert(file);
+                }
+            }
+        }
+        let saving: std::collections::BTreeSet<&str> = super::SAVING_MODULES.into_iter().collect();
+        let missing: Vec<&&str> = taking.iter().filter(|file| !saving.contains(**file)).collect();
+        assert!(taking.contains("postgres"), "the modules found were {taking:?}");
+        assert_eq!(missing, Vec::<&&str>::new(), "these take a type to save or load, so they turn saving on");
     }
 }

@@ -41,8 +41,11 @@ export struct CliArgs:
 ## What a program takes on its command line, built up one argument at a time, then used to
 ## read `args` and to write the help:
 ## ```fennec
+## from std.cli import Cli
+##
 ## cli = Cli(name="greet").flag("loud", short="l").option("name", default="world")
-## given = cli.parse([arg for arg in args])?
+## given = cli.parse(["-l", "--name", "Ana"])?
+## assert given.flag("loud") and given.value("name") == "Ana"
 ## ```
 ## Options are written `--name value`, `--name=value` or `-n value`. Flags take no value, and
 ## short ones can be written together, `-lv`. Everything after `--` is positional.

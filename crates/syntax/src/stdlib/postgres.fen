@@ -2,11 +2,23 @@
 ## `std.sql`. Queries are templates, and each value goes to the server apart from the query's
 ## text, as a parameter. Rows read into any type that loads, by the columns' names.
 ##
-## ```fennec
+## ```fennec check
+## from std import postgres
+## from std.crypto import Secret
+##
+## struct Entry:
+##     path: str
+##     size: int
+##
+## secret = Secret.of("hunter2")
+## path = "a.txt"
+## size = 10
+## least = 5
 ## with postgres.connect(net, entropy, "postgres://hoard@localhost/hoard", password=secret)? as db:
 ##     with db.transaction()? as tx:
 ##         _ = tx.execute(t"insert into entries values ({path}, {size})")?
 ##         rows = tx.query[Entry](t"select path, size from entries where size > {least}")?
+##         stdout.print(len(rows))
 ##     with db.borrow()? as conn:
 ##         _ = conn.execute(t"delete from entries where path = {path}")?
 ## ```

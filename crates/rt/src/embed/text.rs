@@ -50,6 +50,11 @@ pub(in crate::embed) fn block_of(words: &[u64; 3]) -> Option<u64> {
     (tag(words) & INLINE == 0).then_some(first)
 }
 
+/// How many bytes an inline header holds.
+pub(super) fn inline_length(words: &[u64; 3]) -> usize {
+    usize::from(tag(words) & !INLINE).min(INLINE_BYTES)
+}
+
 /// The bytes an inline header holds, when it's inline.
 pub(super) fn inline_bytes(words: &[u64; 3]) -> Option<Vec<u8>> {
     let tag = tag(words);
@@ -278,7 +283,7 @@ pub extern "C" fn append_header(text: i64, h0: u64, h1: u64, h2: u64) -> i64 {
         let (words, length) = bytes_of(state, &piece);
         copied.extend_from_slice(words.get(..length.div_ceil(8)).unwrap_or_default());
         let grown = super::strings::grow_by(state, text, &copied, length, chars);
-        state.heap.scratch = copied;
+        state.heap.keep_scratch(copied);
         grown.unwrap_or(text)
     })
 }

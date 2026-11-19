@@ -189,9 +189,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: .github/scripts/windows.sh toolchain
-      - name: Install LLVM's tools
-        if: runner.os != 'Windows'
-        run: rustup component add llvm-tools-preview
       # A failing or stopped run still saves what it built. Otherwise a red main saves nothing, and
       # every run after it builds from nothing: after Windows' key changed, each of its runs did,
       # until they ran out of time.
@@ -409,8 +406,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools
-        run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Say the machine
         run: .github/scripts/machine.sh
@@ -477,8 +472,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools
-        run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build the runtime libraries
         run: |
@@ -510,7 +503,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-llvm-cov@0.9.1
@@ -550,8 +542,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools
-        run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, and its runtime libraries with the heap audit in them
         run: |
@@ -670,9 +660,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # Each kernel is built through LLVM, with LLVM's tools and the runtime library.
-      - name: Install LLVM's tools
-        run: rustup component add llvm-tools-preview
+      # Each kernel is built through LLVM, with LLVM's tools, which come with the toolchain, and the
+      # runtime library.
       - name: Build fennec, its runtime and the benchmark suite
         run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       # The runtime with threads, for kernels that `launch` a task, on its own so the others don't
@@ -733,9 +722,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The tests of the kit it times run through LLVM. It runs them in a folder of its own, outside
       # this repository's toolchain file, so it's told where this toolchain's tools are.
-      - name: Install LLVM's tools, and musl's C compiler
+      - name: Point fennec at LLVM's tools, and install musl's C compiler
         run: |
-          rustup component add llvm-tools-preview
           echo "FENNEC_LLVM_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_ENV"
           .github/scripts/apt.sh musl-tools
       - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
@@ -769,9 +757,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools, and the nightly compiler AddressSanitizer needs
+      - name: Install the nightly compiler AddressSanitizer needs
         run: |
-          rustup component add llvm-tools-preview
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, and its runtime library with AddressSanitizer
@@ -857,8 +844,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools
-        run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build the runtime libraries
         run: |
@@ -885,8 +870,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools
-        run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec and its runtimes
         run: |
@@ -963,10 +946,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install musl's C compiler and LLVM's tools
+      - name: Install musl's C compiler
         run: |
           .github/scripts/apt.sh musl-tools
-          rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtime library, and the runtime libraries for musl
         run: |
@@ -1047,9 +1029,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools, and the nightly compiler the sanitizers need
+      - name: Install the nightly compiler the sanitizers need
         run: |
-          rustup component add llvm-tools-preview
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, and its threads runtime with the sanitizer
@@ -1120,9 +1101,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install LLVM's tools, and the nightly compiler ThreadSanitizer needs
+      - name: Install the nightly compiler ThreadSanitizer needs
         run: |
-          rustup component add llvm-tools-preview
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec and the fuzzer, and the runtime libraries with ThreadSanitizer

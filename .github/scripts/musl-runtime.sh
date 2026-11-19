@@ -22,6 +22,8 @@ target="$(uname -m)-unknown-linux-musl"
 cc_variable="CC_$(echo "$target" | tr - _)"
 export "$cc_variable=${!cc_variable:-musl-gcc}"
 
+# The toolchain is installed by name first: `rustup target add` installing it on the way is deprecated.
+rustup toolchain install > /dev/null
 rustup target add "$target" > /dev/null
 mkdir -p "$out/self-contained"
 for features in "" threads; do

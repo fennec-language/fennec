@@ -399,7 +399,7 @@ pub(crate) struct Checker {
     /// The types of the constants and the fields the check before worked out, which whichever
     /// function reads one first works out: a check that carries over and finds any of them
     /// different is done again whole (`types_moved`).
-    before_types: Option<(BTreeMap<String, Option<Type>>, BTreeMap<String, Option<Type>>)>,
+    before_types: Option<(WorkedOut, WorkedOut)>,
     /// Whether what each function's check finds is kept apart, by its key, for a later check to
     /// carry over (`carrying`). A build that won't check again keeps nothing, and checks as it
     /// would with none of this.
@@ -919,7 +919,7 @@ impl Checker {
     /// Only those both worked out are compared: every constant and every field of the program's
     /// own types is worked out each check, and the library's can't change.
     fn types_moved(&self) -> bool {
-        let differs = |before: &BTreeMap<String, Option<Type>>, now: &BTreeMap<String, Option<Type>>| {
+        let differs = |before: &WorkedOut, now: &WorkedOut| {
             before.iter().any(|(key, was)| now.get(key).is_some_and(|is| is != was))
         };
         self.before_types.as_ref().is_some_and(|(constants, fields)| {
@@ -956,6 +956,24 @@ impl Checker {
         tables
     }
 
+    /// What each source lends, each task launched and each generic call, now that what each is given
+    /// is known, for lowering to write in.
+    fn settled_writes(&mut self) -> SettledWrites {
+        let mut sources = std::mem::take(&mut self.sources);
+        for source in sources.values_mut() {
+            source.gives = self.settled(&source.gives);
+        }
+        let launches = std::mem::take(&mut self.launches)
+            .into_iter()
+            .map(|(at, launch)| (at, launch.settled(&|ty| self.settled(ty))))
+            .collect();
+        let mut generic_calls = std::mem::take(&mut self.generic_calls);
+        for call in generic_calls.values_mut() {
+            call.types = call.types.iter().map(|ty| self.settled(ty)).collect();
+        }
+        (sources, launches, generic_calls)
+    }
+
     /// What each function's check wrote in the tables and added to what's followed, settled, for a
     /// later check to carry over.
     fn settled_by_function(&mut self) -> (BTreeMap<String, Tables>, BTreeMap<String, Graph>) {
@@ -980,19 +998,7 @@ impl Checker {
         errors: BTreeMap<String, crate::Struct>,
     ) -> Checked {
         let (tables_of, graph_of) = self.settled_by_function();
-        // What each source lends, now that what it's given is known, for lowering to write in.
-        let mut sources = std::mem::take(&mut self.sources);
-        for source in sources.values_mut() {
-            source.gives = self.settled(&source.gives);
-        }
-        let launches = std::mem::take(&mut self.launches)
-            .into_iter()
-            .map(|(at, launch)| (at, launch.settled(&|ty| self.settled(ty))))
-            .collect();
-        let mut generic_calls = std::mem::take(&mut self.generic_calls);
-        for call in generic_calls.values_mut() {
-            call.types = call.types.iter().map(|ty| self.settled(ty)).collect();
-        }
+        let (sources, launches, generic_calls) = self.settled_writes();
         let enums = self.enums();
         let locals = std::mem::take(&mut self.locals);
         // A type asked about before what it holds was known, like the list in `pack.dumps(pairs)`
@@ -1980,6 +1986,16 @@ fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
     PROTOCOLS.contains(&method)
         || method.chars().next().is_some_and(|first| !first.is_alphanumeric() && first != '_')
 }
+
+/// The types of constants or fields, by name, as a check worked them out: `None` while one is.
+pub(crate) type WorkedOut = BTreeMap<String, Option<Type>>;
+
+/// What `Checker::settled_writes` gives: the sources, launches and generic calls, by span.
+type SettledWrites = (
+    BTreeMap<(u32, u32), crate::lend_lowering::Source>,
+    BTreeMap<(u32, u32), crate::launch::Launch>,
+    BTreeMap<(u32, u32), crate::generic_copies::Call>,
+);
 
 /// A function's type parameters, with their bounds, as a call reads them: its own, those of the
 /// functions around it and its extension's.

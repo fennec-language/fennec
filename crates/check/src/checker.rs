@@ -100,8 +100,8 @@ tables! {
 }
 
 /// What one function's check adds to what's followed across functions: whom it calls, what it
-/// waits on and locks, what it calls inside a lock, the function values it passes, and what it
-/// hands from kit to kit. It's added as soon as the check is done, since revisiting a cycle reads
+/// waits on and locks, what it calls inside a lock, the function values it passes, what it hands
+/// from kit to kit, and whether it calls a function value it can't follow. It's added as soon as the check is done, since revisiting a cycle reads
 /// whom each function calls, and kept by function for a later round to carry over.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Graph {
@@ -111,6 +111,8 @@ pub(crate) struct Graph {
     lock_calls: Vec<crate::waits::LockCall>,
     values: crate::waits::Values,
     handovers: crate::holds::Handovers,
+    /// The functions that call a function value they can't follow.
+    unfollowed: BTreeSet<String>,
     /// For a test, the functions it called itself: a test notes no callers, so this is how what
     /// it reaches is reached again when it's carried over.
     reached: BTreeSet<String>,
@@ -126,18 +128,23 @@ impl Checker {
             lock_calls: std::mem::take(&mut self.lock_calls),
             values: std::mem::take(&mut self.values),
             handovers: std::mem::take(&mut self.handovers),
+            unfollowed: std::mem::take(&mut self.unfollowed),
             reached: BTreeSet::new(),
         }
     }
 
     /// Puts back what `take_graph` took.
     fn put_graph(&mut self, graph: Graph) {
-        self.own_callers = graph.own_callers;
-        self.waits = graph.waits;
-        self.takes_locks = graph.takes_locks;
-        self.lock_calls = graph.lock_calls;
-        self.values = graph.values;
-        self.handovers = graph.handovers;
+        // A test's `reached` is kept by the test, not put back.
+        let Graph { own_callers, waits, takes_locks, lock_calls, values, handovers, unfollowed, reached: _ } =
+            graph;
+        self.own_callers = own_callers;
+        self.waits = waits;
+        self.takes_locks = takes_locks;
+        self.lock_calls = lock_calls;
+        self.values = values;
+        self.handovers = handovers;
+        self.unfollowed = unfollowed;
     }
 
     /// Adds what one function's check found.
@@ -164,14 +171,19 @@ impl Checker {
 impl Graph {
     /// Adds what another function's check found.
     fn add(&mut self, graph: &Graph) {
-        for (callee, callers) in &graph.own_callers {
+        // Named in full, so a field added to `Graph` can't be left out of what's carried over.
+        // A test's `reached` is its own, not added.
+        let Graph { own_callers, waits, takes_locks, lock_calls, values, handovers, unfollowed, reached: _ } =
+            graph;
+        for (callee, callers) in own_callers {
             self.own_callers.entry(callee.clone()).or_default().extend(callers.iter().cloned());
         }
-        self.waits.extend(graph.waits.clone());
-        self.takes_locks.extend(graph.takes_locks.clone());
-        self.lock_calls.extend(graph.lock_calls.iter().cloned());
-        self.values.add(&graph.values);
-        self.handovers.add(&graph.handovers);
+        self.waits.extend(waits.clone());
+        self.takes_locks.extend(takes_locks.clone());
+        self.lock_calls.extend(lock_calls.iter().cloned());
+        self.values.add(values);
+        self.handovers.add(handovers);
+        self.unfollowed.extend(unfollowed.iter().cloned());
     }
 }
 

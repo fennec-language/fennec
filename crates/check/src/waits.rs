@@ -84,15 +84,18 @@ impl Values {
 impl Values {
     /// Adds what one function's check followed.
     pub(crate) fn add(&mut self, other: &Values) {
-        self.called.extend(other.called.iter().cloned());
-        self.passed.extend(other.passed.iter().cloned());
-        self.waits.extend(other.waits.clone());
-        for (at, calls) in &other.calls {
+        // Named in full, so a field added to `Values` can't be left out of what's carried over.
+        let Values { called, passed, waits, calls, locks, local_calls, through, captured_arrows } = other;
+        self.called.extend(called.iter().cloned());
+        self.passed.extend(passed.iter().cloned());
+        self.waits.extend(waits.clone());
+        for (at, calls) in calls {
             self.calls.entry(*at).or_default().extend(calls.iter().cloned());
         }
-        self.locks.extend(other.locks.clone());
-        self.local_calls.extend(other.local_calls.iter().cloned());
-        self.through.extend(other.through.iter().cloned());
+        self.locks.extend(locks.clone());
+        self.local_calls.extend(local_calls.iter().cloned());
+        self.through.extend(through.iter().cloned());
+        self.captured_arrows.extend(captured_arrows.iter().cloned());
     }
 }
 

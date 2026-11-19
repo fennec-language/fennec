@@ -113,10 +113,12 @@ pub(crate) struct Handovers {
 impl Handovers {
     /// Adds what one function's check found it hands over.
     pub(crate) fn add(&mut self, other: &Handovers) {
-        for (key, calls) in &other.handed {
+        // Named in full, so a field added to `Handovers` can't be left out of what's carried over.
+        let Handovers { handed, arrows } = other;
+        for (key, calls) in handed {
             self.handed.entry(key.clone()).or_default().extend(calls.clone());
         }
-        for (key, arrows) in &other.arrows {
+        for (key, arrows) in arrows {
             self.arrows.entry(key.clone()).or_default().extend(arrows.clone());
         }
     }

@@ -1382,6 +1382,51 @@ pub(crate) const IFACE_STEPS: [IfaceStep; 7] = [
     IfaceStep::Sized,
 ];
 
+/// A `LockedTogether` statement: `locked_together{id}(stdout)`, three `shared` accounts made in
+/// order, then a step at a time on two of them taken in one `lock`, each followed by what all
+/// three hold. A `fail` or a crash inside `lock ... as ref` puts back every value it changed, of
+/// both, as `docs/language.md` says; nothing else does.
+#[derive(Clone, Debug)]
+pub(crate) struct LockingTogether {
+    pub(crate) id: usize,
+    /// What the accounts start from.
+    pub(crate) base: i64,
+    pub(crate) steps: Vec<LockStep>,
+}
+
+/// A step of a `LockedTogether` statement on two accounts, `pair` naming them by the order they
+/// were made, from 0 to 2, the first before the second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LockStep {
+    pub(crate) way: LockWay,
+    pub(crate) pair: (usize, usize),
+    /// What it moves or adds, from 0 to 9.
+    pub(crate) amount: i64,
+    /// Whether it takes from the second and gives to the first.
+    pub(crate) backward: bool,
+    /// Whether the `lock` names the second before the first, against the order they were made.
+    pub(crate) against: bool,
+}
+
+/// How a `LockedTogether` step goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LockWay {
+    /// `moved`: takes from one and gives to the other, both changed, then fails when the one taken
+    /// from is below 0, which puts both back.
+    Moved,
+    /// `crashed`, in a launched task: changes both, then crashes, which puts both back. In
+    /// programs with threads.
+    Crashed,
+    /// `summed`: both read under one `lock`, given back from inside it.
+    Summed,
+    /// `half_ref`: one changed through `ref` from what the other holds, read.
+    HalfRef,
+}
+
+/// Every `LockWay`, for the generator to pick from.
+pub(crate) const LOCK_WAYS: [LockWay; 4] =
+    [LockWay::Moved, LockWay::Crashed, LockWay::Summed, LockWay::HalfRef];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1652,6 +1697,8 @@ pub(crate) enum Stmt {
     Turned(Turning),
     /// `ordered{id}(stdout)`: lines whose parts change what's read before them, read left to right.
     Ordered(InOrder),
+    /// `locked_together{id}(stdout)`: two `shared` values taken in one `lock`, changed and put back.
+    LockedTogether(LockingTogether),
     /// `interfaced{id}(stdout)`: two types with one interface, through generic functions bounded by it.
     Interfaced(Interfacing),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.

@@ -26,6 +26,7 @@ use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{GenericStep, Genericking};
 use super::ast::{IfaceStep, Interfacing};
 use super::ast::{InOrder, OrderStep};
+use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
 use super::source::LONG_PIECE;
@@ -2025,6 +2026,7 @@ impl Machine {
             Stmt::Filed(filing) => self.filed(filing),
             Stmt::Generic(generic) => self.generic(generic),
             Stmt::Interfaced(interfacing) => self.interfaced(interfacing)?,
+            Stmt::LockedTogether(locking) => self.locked_together(locking)?,
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
@@ -3225,6 +3227,69 @@ impl Machine {
         let _ = writeln!(self.out, "{}", list(&heaps));
         let _ = writeln!(self.out, "{}", crate_one.shown(id));
         let _ = writeln!(self.out, "{}", heap.shown(id));
+        Ok(())
+    }
+
+    /// What `locked_together{id}` prints: a change to two accounts under one `lock` that fails or
+    /// crashes leaves both as they were, and one that ends keeps both changes.
+    fn locked_together(&mut self, locking: &LockingTogether) -> Ran<()> {
+        let id = locking.id;
+        let base = locking.base;
+        let mut accounts: [(i64, Vec<i64>); 3] = [
+            (base, Vec::new()),
+            (checked(base.checked_add(1))?, vec![1]),
+            (checked(base.checked_add(2))?, vec![2, 3]),
+        ];
+        let length = |moves: &Vec<i64>| i64::try_from(moves.len()).map_err(|_| Stop::Unsure);
+        for step in &locking.steps {
+            let (one_at, two_at) = (step.pair.0 % 3, step.pair.1 % 3);
+            let (one, two) = (
+                accounts.get(one_at).cloned().ok_or(Stop::Unsure)?,
+                accounts.get(two_at).cloned().ok_or(Stop::Unsure)?,
+            );
+            let (mut one, mut two) = (one, two);
+            let amount = step.amount;
+            match step.way {
+                LockWay::Moved => {
+                    let (from, to) = if step.backward { (&mut two, &mut one) } else { (&mut one, &mut two) };
+                    from.0 = checked(from.0.checked_sub(amount))?;
+                    from.1.push(-amount);
+                    to.0 = checked(to.0.checked_add(amount))?;
+                    to.1.push(amount);
+                    if from.0 < 0 {
+                        let _ = writeln!(self.out, "failed Short{id}(left={})", from.0);
+                    } else {
+                        for (at, kept) in [(one_at, one), (two_at, two)] {
+                            if let Some(held) = accounts.get_mut(at) {
+                                *held = kept;
+                            }
+                        }
+                    }
+                }
+                LockWay::Crashed => {
+                    let _ = writeln!(self.out, "crashed");
+                }
+                LockWay::Summed => {
+                    let total = [one.0, two.0, length(&one.1)?, length(&two.1)?]
+                        .iter()
+                        .try_fold(0_i64, |total, each| total.checked_add(*each));
+                    let _ = writeln!(self.out, "{}", checked(total)?);
+                }
+                LockWay::HalfRef => {
+                    let added = checked(two.0.rem_euclid(7).checked_add(amount))?;
+                    one.0 = checked(one.0.checked_add(added))?;
+                    one.1.push(length(&two.1)?);
+                    if let Some(held) = accounts.get_mut(one_at) {
+                        *held = one;
+                    }
+                }
+            }
+            let shown: Vec<String> = accounts
+                .iter()
+                .map(|(total, moves)| format!("{total}{}", shown(&Value::Ints(moves.clone()))))
+                .collect();
+            let _ = writeln!(self.out, "{}", shown.join(" "));
+        }
         Ok(())
     }
 

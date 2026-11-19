@@ -28,6 +28,7 @@ use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, FileWay, Filing};
 use super::ast::{GENERIC_STEPS, GENERIC_TYS, GenericStep, GenericTy, Genericking};
 use super::ast::{IFACE_STEPS, IfaceStep, Interfacing};
 use super::ast::{InOrder, ORDER_STEPS, OrderStep};
+use super::ast::{LOCK_WAYS, LockStep, LockWay, LockingTogether};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
 
@@ -67,6 +68,16 @@ const GENERICS: bool = true;
 /// code, a method that fails partway passed up with `?`, and one that's a generator. Map row 5:
 /// nothing wrote an interface before.
 const INTERFACES: bool = true;
+
+/// Whether random programs take two `shared` values in one `lock` (`LockedTogether`): both
+/// changed, then a `fail` or a crash in a task putting both back, both read, and one changed from
+/// what the other holds. Map row 4: every `lock` named one value before.
+const LOCKED_TOGETHER: bool = true;
+
+/// Whether a `LockedTogether` statement's `lock` may name its two values against the order they
+/// were made. A crash there leaves their lists reading as `None` after the rollback (#2223), so
+/// it's off until that's fixed.
+const LOCKED_AGAINST_MADE_ORDER: bool = false;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
@@ -738,6 +749,7 @@ impl Writer<'_> {
             27 if OWN_INDEXES && self.choice(4) == 0 => self.own_indexes(body),
             27 if GENERICS && self.choice(4) == 0 => self.generics(body),
             27 if INTERFACES && self.choice(4) == 0 => self.interfaces(body),
+            27 if LOCKED_TOGETHER && self.choice(4) == 0 => self.locked_together(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1501,6 +1513,27 @@ impl Writer<'_> {
             steps.push((step, self.choice(2) == 0, i64::from(self.byte() % 10)));
         }
         body.push(Stmt::Interfaced(Interfacing { id, steps }));
+    }
+
+    /// A `LockedTogether` statement: 3 to 10 steps, each on two of the three accounts. A program
+    /// without threads can't launch, so it moves plainly where it would crash in a task.
+    fn locked_together(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 10);
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let mut way = LOCK_WAYS.get(self.choice(LOCK_WAYS.len())).copied().unwrap_or(LockWay::Moved);
+            if way == LockWay::Crashed && self.threadless {
+                way = LockWay::Moved;
+            }
+            let pair = [(0, 1), (0, 2), (1, 2)].get(self.choice(3)).copied().unwrap_or((0, 1));
+            let amount = i64::from(self.byte() % 10);
+            let backward = self.choice(2) == 0;
+            let against = LOCKED_AGAINST_MADE_ORDER && self.choice(2) == 0;
+            steps.push(LockStep { way, pair, amount, backward, against });
+        }
+        body.push(Stmt::LockedTogether(LockingTogether { id, base, steps }));
     }
 
     /// An `Ordered` statement: 3 to 10 steps, each with what its call adds, from 0 to 9.

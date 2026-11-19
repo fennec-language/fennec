@@ -11994,6 +11994,22 @@ def main(stdout: Stdout):
     )
 }
 
+/// A string across lines in `"""`s, plain and as an f-string, prints its lines less the spaces
+/// before its closing `"""`, ending with the newline before that line (#294).
+#[test]
+fn strings_in_triple_quotes_print_their_lines() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "triple_quoted",
+        "def main(stdout: Stdout):\n    name = \"Ada\"\n    usage = \"\"\"\n        Usage: tool <path>\n\n          \
+         --dry-run\n        \"\"\"\n    stdout.print(usage)\n    stdout.print(f\"\"\"\n        Hello, {name}!\n        \
+         \"\"\")\n",
+        "Usage: tool <path>\n\n  --dry-run\n\nHello, Ada!\n\n",
+    )
+}
+
 /// An f-string made in one go from its pieces where they are: strings inline and in blocks,
 /// ASCII or not, ints at their ends, floats short and long, formats, values written out, and
 /// results that fit in a header and that don't, on both sides of 23 bytes.
@@ -16941,6 +16957,41 @@ def made(count: int) -> str:
     padding = "z" * 30
     return ",".join([f"{at}-{padding}" for at in range(count)])
 
+error Bad:
+    why: str
+
+## The separator, after changing the text its loop is over.
+def swap(ref line: str) -> str:
+    line = "x;y"
+    return ";"
+
+## The first part longer than three bytes, given back from inside the loop.
+def first_long(text: str) -> str:
+    for part in text.split(","):
+        if len(part) > 3:
+            return part
+    return ""
+
+## A part's size, failing for one that starts with "bad".
+def checked(part: str) -> int fails Bad:
+    if part.startswith("bad"):
+        fail Bad(part)
+    return len(part)
+
+## The parts' sizes added up, leaving the loop through `?` at the first bad one.
+def total_of(text: str) -> int fails Bad:
+    mut total = 0
+    for part in text.split(","):
+        total += checked(part)?
+    return total
+
+## Fails from inside the loop at the first bad part.
+def first_bad(text: str) -> int fails Bad:
+    for part in text.split(","):
+        if part.startswith("bad"):
+            fail Bad(part)
+    return 0
+
 def main(stdout: Stdout):
     # Empty parts at either end and between, a separator not there, and an empty text.
     stdout.print(
@@ -16998,6 +17049,20 @@ def main(stdout: Stdout):
     for number in "1;22;333".split(separator):
         total += len(number)
     stdout.print(total)
+    # A separator that changes the text's name: the loop splits the text as it was read.
+    mut line = "a,b"
+    mut taken = list[str]()
+    for part in line.split(swap(ref line)):
+        taken.append(part)
+    stdout.print(taken, line)
+    # Leaving by a return, by `?` and by `fail`, from parts that are blocks of their own.
+    padding = "z" * 30
+    found = first_long(f"a,bb,ccc{padding},dddd{padding}")
+    stdout.print(len(found), found[:4])
+    good = total_of(f"1{padding},22{padding}") except Bad(): -1
+    bad = total_of(f"1{padding},bad{padding},333{padding}") except Bad(): -2
+    early = first_bad(f"x{padding},bad{padding}") except Bad(): -3
+    stdout.print(good, bad, early)
     return
 "#;
 
@@ -17006,7 +17071,9 @@ def main(stdout: Stdout):
 /// there, an empty text, separators of two bytes and of more than eight, ones that overlap
 /// themselves, text that isn't ASCII, parts that are blocks of their own from a text a call
 /// made, loops inside loops leaving early and going round again, a field, a text its own loop
-/// changes, and a separator from a name. It prints what `split`'s list gives, with nothing left.
+/// changes, a separator from a name, a separator that changes the text's name, and leaving by a
+/// return, by `?` and by `fail`. It prints what `split`'s list gives, with nothing left. An empty
+/// separator from a name fails as `split` does, where the call is.
 #[test]
 fn a_loop_over_a_split_makes_no_list() -> std::io::Result<()> {
     if !ready() {
@@ -17014,10 +17081,25 @@ fn a_loop_over_a_split_makes_no_list() -> std::io::Result<()> {
     }
     assert_eq!(
         printed_by("loop_split", LOOP_SPLIT)?,
-        "[a][b][][c] [a][b][] [][a]\n[abc] [] [][]\n[x][y][][z] [][][] [][][a]\n[one][two][][three] [<--separator]\n[é][ü][ß] [a][b][c] [][語の][]\n500 16890\n9 [\"GET\", \"/a\", \"200\", \"POST\", \"/b\", \"500\", \"GET\", \"/c\", \"404\"] 4\n3 a-b-c-a-b-c\n6\n"
+        "[a][b][][c] [a][b][] [][a]\n[abc] [] [][]\n[x][y][][z] [][][] [][][a]\n[one][two][][three] [<--separator]\n[é][ü][ß] [a][b][c] [][語の][]\n500 16890\n9 [\"GET\", \"/a\", \"200\", \"POST\", \"/b\", \"500\", \"GET\", \"/c\", \"404\"] 4\n3 a-b-c-a-b-c\n6\n[\"a,b\"] x;y\n33 cccz\n63 -2 -3\n"
     );
     let counts = counts_of("loop_split_counts", LOOP_SPLIT)?;
-    assert!(counts.contains(" allocations 1022 ") && counts.ends_with(" live 0"), "{counts}");
+    assert!(counts.contains(" allocations 1041 ") && counts.ends_with(" live 0"), "{counts}");
+    let dir = folder("loop_split_empty_separator")?;
+    let (program, executable) = (dir.join("empty.fen"), dir.join("empty"));
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    separator = \"\"\n    for part in \"abc\".split(separator):\n        stdout.print(part)\n",
+    )?;
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success());
+    let said = String::from_utf8_lossy(&ran.stderr);
+    let mut lines = said.lines();
+    assert_eq!(lines.next(), Some("error: `split` was called with the wrong arguments"), "{said}");
+    assert!(lines.next().is_some_and(|place| place.ends_with("empty.fen:3:17")), "{said}");
     Ok(())
 }
 
@@ -23451,6 +23533,66 @@ def main(stdout: Stdout) fails Nope:
     )
 }
 
+/// A `ref self` method called on a union known to hold one member, after `is`, is given that
+/// member and puts it back changed. So is one called on each union in a list, or on a union field,
+/// and a union given by `ref` to a function that takes the union can be changed to another member.
+/// One given by `ref` where its member is taken is given the member, and gets it back changed.
+#[test]
+fn a_ref_self_method_on_a_narrowed_union_changes_the_member_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_ref_self",
+        r"struct Box:
+    items: list[int]
+
+    def grow(ref self) -> int:
+        self.items.append(9)
+        return len(self.items)
+
+struct Bag:
+    held: int
+
+    def grow(ref self) -> int:
+        self.held += 1
+        return self.held
+
+struct Holder:
+    shape: Box | Bag
+
+def reset(ref shape: Box | Bag) -> int:
+    grown = shape.grow()
+    shape = Bag(held=100)
+    return grown
+
+def grow_box(ref box: Box) -> int:
+    return box.grow()
+
+def main(stdout: Stdout):
+    mut shape: Box | Bag = Box(items=[1])
+    stdout.print(shape.grow())
+    if shape is Box:
+        stdout.print(shape.grow(), shape.items)
+    mut shapes: list[Box | Bag] = [Bag(held=0), Box(items=[])]
+    for ref each in shapes:
+        stdout.print(each.grow())
+    stdout.print(shapes)
+    mut holder = Holder(shape=Bag(held=5))
+    stdout.print(holder.shape.grow(), holder.shape)
+    mut other: Box | Bag = Box(items=[])
+    if other is Box:
+        stdout.print(reset(ref other))
+    stdout.print(other)
+    mut third: Box | Bag = Box(items=[])
+    if third is Box:
+        stdout.print(grow_box(ref third), third)
+    return
+",
+        "2\n3 [1, 9, 9]\n1\n1\n[Bag(held=1), Box(items=[9])]\n6 Bag(held=6)\n1\nBag(held=100)\n1 Box(items=[9])\n",
+    )
+}
+
 /// A union with a function member, as a server's `Router | (Request) -> Response`: a struct, an
 /// arrow, a named function and an arrow given to a name of the union's type each go in, and the
 /// function is called once `case _:` or `is` leaves only it.
@@ -27837,6 +27979,46 @@ fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
         assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
     }
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// An item read out of a `Table` once and put back by its `Id` in a loop that comes round to the
+/// put-back again with no read between, as `while True:` with its way out after the put-back
+/// makes. Each put-back looks the `Id` up again: one whose item was removed between the turns
+/// stops the program there, on its line, and one after the item changed in place, or after the
+/// `Table` grew past its room, puts back what was read. It prints what the reference evaluator
+/// prints, built either way, with nothing left.
+#[test]
+fn an_item_put_back_twice_from_one_read_looks_it_up_each_time() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/put_back_twice.fen");
+    prints_in_both_builds("put_back_twice", source, include_str!("fixtures/put_back_twice.out"))?;
+    assert!(counts_of("put_back_twice_counts", source)?.ends_with(" live 0"));
+    // The coverage lane's loop shapes: list items and dict values as well, changed in place, their
+    // list popped and appended to, or their dict's key removed between the turns.
+    let loops = include_str!("fixtures/put_back_loops.fen");
+    prints_in_both_builds("put_back_loops", loops, include_str!("fixtures/put_back_loops.out"))?;
+    assert!(counts_of("put_back_loops_counts", loops)?.ends_with(" live 0"));
+    let removed = "from std.collections import Id, Table\n\nstruct Unit:\n    health: int\n\ndef twice(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.health -= 1\n    mut turn = 0\n    while True:\n        units[id] = unit\n        turn += 1\n        if turn == 2:\n            break\n        _ = units.remove(id)\n    return\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    id = units.add(Unit(health=5))\n    twice(ref units, id)\n    stdout.print(\"not reached\")\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("put_back_twice_removed")?;
+        let (at, executable) = (dir.join("twice.fen"), dir.join("twice"));
+        std::fs::write(&at, removed)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([at.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        let why = "this Id refers to something that's been removed";
+        assert!(said.contains(why) && said.contains("twice.fen:11:"), "{how:?}: {said}");
+    }
     Ok(())
 }
 

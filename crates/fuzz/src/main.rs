@@ -3,7 +3,7 @@
 //! ```text
 //! fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--stuck SECONDS] [--found DIR] [target...]
 //! fennec-fuzz one <target> <file>
-//! fennec-fuzz show [llvm] <file>
+//! fennec-fuzz show [llvm|programs|replay] <file>
 //! fennec-fuzz worker <target> <seed> <first input> <input to stop at> <progress file>
 //! fennec-fuzz input <target> <seed> <input> <file>
 //! fennec-fuzz oracle [--seed N] [--inputs N]
@@ -22,7 +22,9 @@
 //! named runs every one but `llvm`, which builds every input twice and runs only when named, and
 //! leaves out the other native ones, saying so, where nothing can be built. `programs` runs only
 //! when named too: random, well-typed programs built both ways and checked against a reference
-//! evaluator written here, which `fennec-fuzz show programs <file>` writes out. `fennec-fuzz oracle`
+//! evaluator written here, which `fennec-fuzz show programs <file>` writes out. `replay` runs only
+//! when named as well: tasks and a server's rounds that print and make way, recorded and replayed
+//! on several thread counts, which `fennec-fuzz show replay <file>` writes out. `fennec-fuzz oracle`
 //! runs the first of a run's random programs, 200 unless `--inputs` says, through the oracle
 //! alone, and says how many it ran and why it refused the rest, since the builds are held to the
 //! oracle only on the programs it runs.
@@ -42,6 +44,7 @@ mod pack_rules;
 mod parked;
 mod postgres_rules;
 mod programs;
+mod replay_rules;
 mod router_rules;
 mod supervise;
 mod targets;
@@ -66,6 +69,7 @@ fn main() -> ExitCode {
         ["show", file] => show(Path::new(file), generate::program),
         ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
         ["show", "programs", file] => show(Path::new(file), programs::written),
+        ["show", "replay", file] => show(Path::new(file), replay_rules::written),
         ["show", "reader", name] => llvm::reader_source(name).map_or_else(
             || Err(format!("there's no reader for `{name}`; there are {}", llvm::reader_names().join(", "))),
             |source| {
@@ -223,7 +227,7 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
         options.names.iter().map(|name| target_named(name)).collect::<Result<_, _>>()?
     };
     let native = |target: &&Target| {
-        [targets::LLVM.name, targets::RANDOM_PROGRAMS.name].contains(&target.name)
+        [targets::LLVM.name, targets::RANDOM_PROGRAMS.name, targets::REPLAY.name].contains(&target.name)
             || targets::NATIVE.contains(&target.name)
     };
     if chosen.iter().any(native) {

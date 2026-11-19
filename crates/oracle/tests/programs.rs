@@ -2430,6 +2430,79 @@ fn std_collections_runs_from_its_own_source() {
     );
 }
 
+/// What's indexed is read before its index, left to right, as `docs/decisions.md` says: an index
+/// that grows a list, or changes a dict's value, reads the list or dict from before. An index too
+/// big for the list as it was stops the program, though the list has grown to hold it. What it
+/// prints is what the compiled program printed, the same on three runs.
+#[test]
+fn what_is_indexed_is_read_before_its_index() {
+    let (printed, ended) = ran(INDEXED_BEFORE_ITS_INDEX);
+    assert_eq!(printed, "2 [1, 2, 3, 5]\n1 {\"a\": 101}\n3\n");
+    let Ended::Stopped(said) = ended else { panic!("{ended:?}") };
+    assert!(said.contains("index 1 is out of range for length 1"), "{said}");
+}
+
+/// A built-in method that only reads what it's called on reads it before its arguments, left to
+/// right, as a method the program writes does (`a_call_reads_what_it_is_made_on_before_its_arguments`):
+/// a dict's `get`, a list's `count` and a string's `split`, each given an argument that changes
+/// what it's called on, see it as it was. What it prints is what the compiled program printed.
+#[test]
+fn a_built_in_method_that_only_reads_reads_what_it_is_called_on_first() {
+    prints(
+        "
+        struct Tally:
+            items: list[int]
+            names: dict[str, int]
+            text: str
+
+            def key(ref self) -> str:
+                self.names['a'] = self.names['a'] + 100
+                return 'a'
+
+            def grow(ref self) -> int:
+                self.items.append(1)
+                return 1
+
+            def renamed(ref self) -> str:
+                self.text = 'b,b'
+                return ','
+
+        def main(stdout: Stdout):
+            mut tally = Tally(items=[1, 1], names={'a': 1}, text='a,a,a')
+            stdout.print(tally.names.get(tally.key()), tally.names)
+            stdout.print(tally.items.count(tally.grow()), tally.items)
+            stdout.print(tally.text.split(tally.renamed()), tally.text)
+            return
+        ",
+        "1 {\"a\": 101}\n2 [1, 1, 1]\n[\"a\", \"a\", \"a\"] b,b\n",
+    );
+}
+
+const INDEXED_BEFORE_ITS_INDEX: &str = "
+        struct Tally:
+            items: list[int]
+            count: int
+            names: dict[str, int]
+
+            def grow(ref self) -> int:
+                self.items.append(self.count + 5)
+                self.count += 1
+                return self.count
+
+            def key(ref self) -> str:
+                self.names['a'] = self.names['a'] + 100
+                return 'a'
+
+        def main(stdout: Stdout):
+            mut tally = Tally(items=[1, 2, 3], count=0, names={'a': 1})
+            stdout.print(tally.items[tally.grow()], tally.items)
+            stdout.print(tally.names[tally.key()], tally.names)
+            stdout.print(tally.items[tally.count + 1])
+            mut short = Tally(items=[1], count=0, names={'a': 1})
+            stdout.print(short.items[short.grow()])
+            return
+        ";
+
 /// Places through a type's own `def []`, as `docs/decisions.md` sets them out. Through the plain
 /// form beside a `def []=`, a change reads the part, changes the copy and writes it back once,
 /// nested too, and once for a method that changes it twice. Through the `ref` form a position is
@@ -3108,6 +3181,86 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
                     with launch(() => took(inbox, stdout=stdout))?:
                         _ = quiet.receive_within(2ms) except Timeout(): -1
                         hits.send(2)?
+        ";
+
+/// A listener started in a task beside the block's sends hears them or not by time: each place it
+/// could start among them is tried, and here they print differently, so the run is refused. One
+/// started before the sends, which its task says before they go, hears them all. A timed wait that
+/// times out comes after every other task got as far as it could, so a listener that exists then
+/// started before what's sent after, and a handshake repeating its send until it's heard has an
+/// end, as the fuzzer's does. An untimed wait says nothing about that: a listener whose task
+/// waits beside the sends, untimed, is still tried at each place, and here one way hangs (#2115).
+#[test]
+fn a_listener_started_beside_a_send_is_tried_at_each_place_it_could_start() {
+    prints(LISTENER_STARTED_FIRST, "heard 1 2\n");
+    let (printed, ended) = ran(LISTENER_STARTED_BESIDE_SENDS);
+    let refused = "what it prints, or how it ends, hangs on the order its tasks' messages come in: line 1 is \"heard []\" in one order and \"heard [2]\" in another";
+    assert_eq!(ended, Ended::Unsupported(refused.to_owned()), "{printed}");
+    let (printed, ended) = ran(LISTENER_STARTED_BESIDE_SENDS_AFTER_AN_UNTIMED_WAIT);
+    let hangs = "every task waits on another, so the program hangs";
+    assert_eq!(ended, Ended::Unsupported(hangs.to_owned()), "{printed}");
+}
+
+const LISTENER_STARTED_BESIDE_SENDS_AFTER_AN_UNTIMED_WAIT: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Sender, channel
+
+        def listening(hits: Channel[int], stdout: Stdout):
+            inbox = hits.inbox()
+            first = inbox.receive() else -1
+            stdout.print('heard', first)
+
+        def signalling(ready: Sender[int]) fails Closed:
+            ready.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=4, to=.Every) as hits, channel[int](size=1) as ready:
+                with launch(() => listening(hits, stdout=stdout))?:
+                    with launch(() => signalling(ready.sender())?)?:
+                        _ = ready.receive() else -1
+                        hits.send(1)?
+                        hits.send(2)?
+        ";
+
+const LISTENER_STARTED_FIRST: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Sender, channel
+
+        def listening(hits: Channel[int], ready: Sender[int], stdout: Stdout) fails Closed:
+            inbox = hits.inbox()
+            ready.send(0)?
+            first = inbox.receive() else -1
+            second = inbox.receive() else -1
+            stdout.print('heard', first, second)
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=4, to=.Every) as hits, channel[int](size=1) as ready:
+                with launch(() => listening(hits, ready=ready.sender(), stdout=stdout)?)?:
+                    _ = ready.receive() else -1
+                    hits.send(1)?
+                    hits.send(2)?
+        ";
+
+const LISTENER_STARTED_BESIDE_SENDS: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Sender, Timeout, channel
+
+        def listening(hits: Channel[int], replies: Sender[int], stdout: Stdout) fails Closed:
+            mut got: list[int] = []
+            for hit in hits.listen():
+                if hit < 0:
+                    replies.send(0)?
+                    break
+                got.append(hit)
+            stdout.print('heard', got)
+
+        def main(stdout: Stdout) fails Closed | Crashed | Timeout:
+            with channel[int](size=8, to=.Every) as hits, channel[int](size=1) as replies:
+                with launch(() => listening(hits, replies=replies.sender(), stdout=stdout)?)?:
+                    hits.send(1)?
+                    hits.send(2)?
+                    while True:
+                        hits.send(-1)?
+                        heard = replies.receive_within(2ms) except Timeout(): continue
+                        if heard is not None:
+                            break
         ";
 
 /// A wait of no time looks once, as the runtime's does: what it finds is the same on every run

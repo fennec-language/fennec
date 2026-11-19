@@ -333,7 +333,7 @@ fn a_nested_function_is_refused_however_a_captured_value_reaches_it() {
     );
     assert_eq!(
         refused_in_a_lock(&reassigned),
-        ["`later` takes `scores`'s lock while `held` is locked @ later()"]
+        ["`later` waits on a function value that can't be followed while `held` is locked @ later()"]
     );
     // The same through a loop, given the arrow that waits after the nested function is written.
     let in_a_loop = format!(
@@ -413,7 +413,7 @@ fn a_nested_function_is_refused_through_an_arrow_or_a_name_declared_again() {
     );
     assert_eq!(
         refused_in_a_lock(&in_a_list),
-        ["`step` takes `scores`'s lock while `held` is locked @ step()"]
+        ["`step` waits on a function value that can't be followed while `held` is locked @ step()"]
     );
     // A nested function calling a captured parameter, reached through an arrow function called
     // inside a lock: passed for a parameter called inside one, or held by a local name.
@@ -438,7 +438,7 @@ fn a_nested_function_is_refused_through_an_arrow_or_a_name_declared_again() {
     for (called, said) in [
         (
             "    def later():\n        job()\n",
-            "`later` takes `scores`'s lock while `held` is locked @ later()",
+            "`later` waits on a function value that can't be followed while `held` is locked @ later()",
         ),
         (
             "",
@@ -479,6 +479,101 @@ fn an_optional_function_parameter_is_followed_once_narrowed() {
                     _ = held\n";
     assert_eq!(refused_in_a_lock(&guarded(captured, "() => nap(clock)")), WAITS);
     assert_eq!(locking(&guarded(captured, "None")), empty);
+}
+
+/// The checker lane's review of #2139: a function parameter read any way but a call, an argument
+/// for a function parameter, or an `is None` test counts as called right there. Unwrapped into
+/// another name, kept in a list, returned or handed to an interface's method, what each caller
+/// passes is judged where it's passed: one that waits is refused inside a lock, and one that
+/// doesn't is let through.
+#[test]
+fn a_function_parameter_read_any_other_way_counts_as_called() {
+    let empty: [&str; 0] = [];
+    let in_the_lock = |helper: &str, passed: &str, call: &str| {
+        format!(
+            "{NAP}type Job = () -> nothing\n\n{helper}\ndef main(clock: Clock, stdout: Stdout):\n    \
+             shared scores = Account()\n    rest = {passed}\n    shelf = Shelf()\n    \
+             lock scores as held:\n        {call}\n        _ = held\n\n\
+             interface Keeper:\n    def keep(self, job: Job)\n\n\
+             struct Shelf:\n    count = 0\n\n    def keep(self, job: Job):\n        pass\n"
+        )
+    };
+    let waits = ["`guarded` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ rest"];
+    for (helper, call) in [
+        // Given to another name, then called through it: a plain one, and, the review's program,
+        // an optional one unwrapped.
+        ("def guarded(work: Job):\n    job = work\n    job()\n", "guarded(rest)"),
+        ("def guarded(work: Job?):\n    job = work else return\n    job()\n", "guarded(rest)"),
+        ("def guarded(work: Job) -> list[Job]:\n    return [work]\n", "_ = guarded(rest)"),
+        ("def guarded(work: Job) -> Job:\n    return work\n", "_ = guarded(rest)"),
+        ("def guarded[T: Keeper](keeper: T, work: Job):\n    keeper.keep(work)\n", "guarded(shelf, rest)"),
+    ] {
+        assert_eq!(refused_in_a_lock(&in_the_lock(helper, "() => nap(clock)", call)), waits, "{helper}");
+        assert_eq!(locking(&in_the_lock(helper, "() => stdout.print(1)", call)), empty, "{helper}");
+    }
+    // Asking whether there's a function calls none.
+    let tested = "def guarded(work: Job?) -> bool:\n    return work is not None\n";
+    assert_eq!(locking(&in_the_lock(tested, "() => nap(clock)", "_ = guarded(rest)")), empty);
+}
+
+/// #2113: what a function value does reaches a lock however it's held where it's called. Each
+/// program waits inside a lock, so each is refused.
+#[test]
+fn a_function_value_waits_inside_a_lock_however_it_is_held() {
+    // Each helper is called inside the lock, with a value made before it.
+    let lock_around = |helper: &str, made: &str, call: &str| {
+        format!(
+            "{NAP}{helper}\ndef main(clock: Clock):\n    shared scores = Account()\n    {made}\n    \
+             lock scores as held:\n        {call}\n        _ = held\n"
+        )
+    };
+    // A parameter given to a local name, then called through it.
+    let aliased = lock_around(
+        "def helper(work: () -> nothing):\n    job = work\n    job()\n",
+        "resting = () => nap(clock)",
+        "helper(resting)",
+    );
+    assert_eq!(
+        refused_in_a_lock(&aliased),
+        ["`helper` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ resting"]
+    );
+    // A function value called from a list, outside the lock.
+    let listed = lock_around(
+        "def helper(jobs: list[() -> nothing]):\n    jobs[0]()\n",
+        "jobs = [() => nap(clock)]",
+        "helper(jobs)",
+    );
+    assert_eq!(
+        refused_in_a_lock(&listed),
+        ["`helper` waits on a function value that can't be followed while `held` is locked @ helper(jobs)"]
+    );
+    // An interface's method called on a type parameter, outside the lock.
+    let interface = lock_around(
+        "interface Napper:\n    def nap(self, clock: Clock)\n\n\
+         struct Slow:\n    held = 0\n\n    def nap(self, clock: Clock):\n        clock.sleep(1s)\n\n\
+         def helper[T: Napper](napper: T, clock: Clock):\n    napper.nap(clock)\n",
+        "slow = Slow()",
+        "helper(slow, clock)",
+    );
+    assert_eq!(
+        refused_in_a_lock(&interface),
+        ["`helper` waits on `Clock.sleep` while `held` is locked @ helper(slow, clock)"]
+    );
+    // A `ref` parameter given a sleeping arrow before a nested function calls it: what it's passed
+    // is a place, which can't be known, so the call is refused there.
+    let given_by_ref = format!(
+        "{NAP}def quiet():\n    pass\n\n\
+         def guarded(scores: shared Account, ref work: () -> nothing, clock: Clock):\n    work = () => nap(clock)\n    \
+         def step():\n        work()\n    lock scores as held:\n        step()\n        _ = held\n\n\
+         def main(clock: Clock):\n    shared scores = Account()\n    mut job = () => quiet()\n    \
+         guarded(scores, ref job, clock)\n"
+    );
+    assert_eq!(
+        refused_in_a_lock(&given_by_ref),
+        [
+            "`guarded` calls `work` while `held` is locked, and what this holds can't be known, so it can't be shown not to wait @ job"
+        ]
+    );
 }
 
 /// The third pass: a captured arrow function that hands a parameter on. (Its other program, an
@@ -923,6 +1018,34 @@ fn an_interface_method_inside_a_lock_counts_if_any_type_s_waits() {
     let found = problems(program);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].starts_with("`nap` waits on `Clock.sleep` while `held` is locked"), "{found:?}");
+}
+
+/// A type's function called on a type parameter, as `T.made(clock)`, could be any type's of that
+/// name too, inside the lock or in a function called inside one, as the checker lane's review of
+/// #2167 found it wasn't.
+#[test]
+fn a_type_parameter_s_function_inside_a_lock_counts_if_any_type_s_waits() {
+    let program = |made: &str, through: &str| {
+        format!(
+            "struct Scores:\n    total = 0\n\n\
+             interface Made:\n    def made(clock: Clock) -> int\n\n\
+             struct Slow:\n    size = 0\n\n    def made(clock: Clock) -> int:\n{made}        return 1\n\n\
+             def helper[T: Made](clock: Clock) -> int:\n    return T.made(clock)\n\n\
+             def through[T: Made](scores: shared Scores, clock: Clock) -> int:\n    \
+             lock scores as held:\n        return held.total + {through}\n"
+        )
+    };
+    let sleeps = "        clock.sleep(1s)\n";
+    let inside = problems(&program(sleeps, "T.made(clock)"));
+    assert_eq!(inside.len(), 1, "{inside:?}");
+    assert!(inside[0].starts_with("`made` waits on `Clock.sleep` while `held` is locked"), "{inside:?}");
+    let called = problems(&program(sleeps, "helper[T](clock)"));
+    assert_eq!(called.len(), 1, "{called:?}");
+    assert!(called[0].starts_with("`helper` waits on `Clock.sleep` while `held` is locked"), "{called:?}");
+    // No type's `made` waits, so neither is refused.
+    let quiet: Vec<String> = Vec::new();
+    assert_eq!(problems(&program("", "T.made(clock)")), quiet);
+    assert_eq!(problems(&program("", "helper[T](clock)")), quiet);
 }
 
 /// A function value called inside a lock is followed to what it could hold. What each caller

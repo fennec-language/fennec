@@ -1,0 +1,36 @@
+name: CI macOS
+
+# CI's macOS jobs, the Arm Mac's three parts and the Intel Mac's three, run apart from the rest, as
+# `ci.yml` with `platforms: macos`. GitHub has few macOS runners, and a job of theirs can wait an
+# hour for one: run with the rest, they held main's place in CI while they waited, so no newer
+# run could start and a change that broke a Linux test went unseen for two hours (2026-11-18).
+# Here only macOS waits on them. The gate runs everything on an Arm Mac before a change lands, so
+# these tell the least.
+on:
+  push:
+    branches: [main]
+  # By hand on any branch, `gh workflow run "CI macOS" --ref <branch>`.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# As in `ci.yml`: pushes to main share a group, which keeps one run going and only the newest
+# waiting, so a run is never cancelled once it starts, and each covers every commit before it.
+# A run by hand gets a group of its own.
+concurrency:
+  group: ci-macos-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  # actionlint and the runner take only `./` for a workflow in this repository.
+  ci:
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
+    with:
+      platforms: macos
+    # What `ci.yml`'s jobs ask for, which a call has to allow even for one that's skipped: only
+    # `prune-caches` writes, and it never runs here.
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read

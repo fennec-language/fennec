@@ -944,4 +944,38 @@ mod tests {
         });
         finish();
     }
+
+    /// Words of all ones, for telling a word that was zeroed from one that wasn't.
+    fn marked(words: usize) -> Box<[u64]> {
+        vec![u64::MAX; words].into_boxed_slice()
+    }
+
+    #[test]
+    fn zeroing_clears_every_word_of_any_length_and_none_before_it() {
+        for length in (0..=40).chain([63, 64, 65, 100, 256, 257, 1_000]) {
+            for before in [0, 1, 3, 6] {
+                let mut block = marked(before + length);
+                super::super::zero(&mut block[before..]);
+                assert!(block[before..].iter().all(|word| *word == 0), "{length} words after {before}");
+                assert!(
+                    block[..before].iter().all(|word| *word == u64::MAX),
+                    "{length} words after {before}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reused_block_is_zeroed_past_what_is_written_and_all_of_it_when_that_is_past_its_end() {
+        let mut heap = Heap::default();
+        for _ in 0..3 {
+            heap.recycle(marked(4));
+        }
+        let some = heap.fresh_written(4, 1);
+        assert_eq!(*some, [u64::MAX, 0, 0, 0], "the word to be written is left; the rest are zero");
+        let all = heap.fresh_written(4, 4);
+        assert_eq!(*all, [u64::MAX; 4], "every word is to be written");
+        let past = heap.fresh_written(4, 9);
+        assert_eq!(*past, [0; 4], "more said to be written than it has: none of a freed block's words");
+    }
 }

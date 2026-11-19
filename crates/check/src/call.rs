@@ -553,13 +553,20 @@ impl FnCx<'_> {
                     None => diagnostic.with_help("take `ref` off the argument"),
                 });
             }
-            // What it's given to can make it `None`, whatever a check for `None` said before.
+            // What it's given to can make it `None`, or another member of its union, whatever a
+            // check for `None` or an `is` said before: it holds what it was declared to again. A
+            // parameter of the member it's known to hold can only give it back as that member.
             (true, true) => {
                 if let ExprKind::Name(name) = &arg.value.kind
-                    && self.checker.settled(&param.ty).maybe_none()
                     && let Some(declared) = self.declared_type(name)
                 {
-                    self.set_type(name, declared);
+                    let takes = self.checker.settled(&param.ty);
+                    let held = self.lookup(name).map(|(held, _)| held);
+                    let other_member = matches!(takes, Type::Union(_))
+                        && held.is_some_and(|held| !self.checker.fits(&held, &takes));
+                    if takes.maybe_none() || other_member {
+                        self.set_type(name, declared);
+                    }
                 }
             }
             (false, false) => {}

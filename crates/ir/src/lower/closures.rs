@@ -241,8 +241,10 @@ impl Lowering<'_> {
             return Err("it calls something other than a function".to_owned());
         };
         let slots = self.closure_slots(callee, args, params.len())?;
-        let closure = self.expr(callee)?;
+        // The function called is read first, then its arguments, left to right.
         let mut reads = super::order::Reads::default();
+        let closure = self.expr(callee)?;
+        reads.add(self, closure);
         for (arg, at) in args.iter().zip(&slots) {
             // A nested function with a `mut` parameter isn't lowered, and a closure's type takes
             // none, so nothing passes one here.
@@ -254,7 +256,8 @@ impl Lowering<'_> {
             let value = self.coerce(value, param, arg.value.span)?;
             reads.add(self, value);
         }
-        let read = reads.finish(self, span);
+        let mut read = reads.finish(self, span).into_iter();
+        let closure = read.next().ok_or("its call to a closure lost the closure")?;
         let mut values: Vec<Option<Operand>> = vec![None; params.len()];
         for (at, value) in slots.into_iter().zip(read) {
             if let Some(slot) = values.get_mut(at) {

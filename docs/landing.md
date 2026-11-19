@@ -90,20 +90,24 @@ A check that fails and then passes on the same code is a flake, and nothing is e
 
 The coverage lane reads the ledger nightly.
 
-- **On your machine:** a failed gate step is kept under the change it tested: the tree, and the branch with its own commits, the ones not on main. When a later gate of the same change passes, what failed before goes in `flakes.log` in Fennec's folder, `~/.fennec`, beside `work` rather than in it, since what's in `work` is swept after an hour. The same change is the same tree, or the same branch with the same commits of its own, since the gate merges `main` first and main may have moved. A failure on a branch whose own commits changed before it passed was fixed, not shown to be a flake, so it's dropped.
+- **On your machine:** a failed gate step is kept under the change it tested: the tree, and the branch with its own commits, the ones not on main. When a later gate of the same change passes, what failed before goes in `flakes.log` in Fennec's folder, `~/.fennec`, beside `work` rather than in it, since what's in `work` is swept after an hour. The same change is the same tree, or the same branch with the same commits of its own, since the gate merges `main` first and main may have moved. A failure on a branch whose own commits changed before it passed was fixed, not shown to be a flake, so it's dropped. A failure that passed after only main moved is a flake only when main's new commits changed nothing it tests. If they changed the failing test's own file, or the compiler and runtime crates every test runs through (`check`, `ir`, `llvm`, `rt`, `runtime` and `syntax`), main may have fixed it, as when a red test on main is fixed there. Then it goes in `fixed-on-main.log` beside the ledger, naming what main changed, and not in the ledger.
 - **In CI:** a run that passes only after jobs ran again finds the jobs that failed in its earlier attempts. It keeps their failures as the run's `flakes` artifact.
 
 `.github/scripts/fennec-flakes` lists the ledger by test, most often first. It reads `~/.fennec/flakes.log` or the ledgers it's given, such as a downloaded artifact. `--show TEST` prints a test's entries whole.
 
 ## When CI on `main` fails
 
-1. Find the failed job in the Actions tab, under the workflow "CI" or "CodeQL".
+1. Find the failed job in the Actions tab, under the workflow "CI", "CI macOS" or "CodeQL".
 2. If your change caused it, open a fix straight away, or a revert of your change if the fix will
    take a while.
 3. If a check fails only now and then, say so to the coordinator, and fix the check that day.
 
 A run that's going is never cancelled by a newer push. The newest push takes the place of one that's
 still waiting, and since each commit holds the ones before it, nothing goes unchecked.
+
+The macOS jobs run in a workflow of their own, "CI macOS", the same way: GitHub has few macOS
+runners, and a job can wait an hour for one, so "CI" checks Linux and Windows without waiting on
+them. `.github/scripts/main-ci.sh` says whether each is green.
 
 ## Outside contributions
 

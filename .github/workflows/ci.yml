@@ -3,16 +3,34 @@ name: CI
 # Changes land on main as soon as they're merged, after the gate on the machine they're written on
 # (see `docs/landing.md`), so this runs after the merge rather than before it. A red run gets a fix
 # or a revert.
+#
+# A push to main or the run every four hours checks Linux and Windows. The macOS jobs, the Arm Mac's
+# three parts and the Intel Mac's three, run apart, in `ci-macos.yml`, which calls this with
+# `platforms: macos`: GitHub has few macOS runners, and on 2026-11-18 a main run's macOS jobs
+# waited over an hour for one while the run held main's place, so no newer run could start and a
+# change that broke a Linux test went unseen for two hours. The gate runs everything on an Arm Mac
+# before a change lands, so those jobs tell the least.
 on:
   push:
     branches: [main]
-  # `staging.yml` runs this on the commit it may move main to.
+  # `staging.yml` runs this on the commit it may move main to, and `ci-macos.yml` for macOS alone.
   workflow_call:
+    inputs:
+      platforms:
+        description: "`all`, `macos` for the macOS jobs alone, or `others` for every other job"
+        type: string
+        default: all
   # By hand on any branch, `gh workflow run CI --ref <branch>`, for what only another system shows,
   # like a Windows failure.
   workflow_dispatch:
-  # A full run on main's newest commit every four hours, whatever pushes are doing, so main is
-  # never long without one that finished.
+    inputs:
+      platforms:
+        description: "`all`, `macos` for the macOS jobs alone, or `others` for every other job"
+        type: choice
+        options: [all, macos, others]
+        default: all
+  # A run on main's newest commit every four hours, whatever pushes are doing, so main is never long
+  # without one that finished.
   schedule:
     - cron: "17 */4 * * *"
 
@@ -24,6 +42,8 @@ permissions:
 # waiting, and a waiting run a newer push replaces never started, as the newer one covers every
 # commit before it. Anything else, like a scheduled run, a merge group or a run for
 # `staging.yml`, gets a group of its own, since sharing one would drop some that are needed.
+# Called by `ci-macos.yml`, `github.workflow` is that one's name, so its runs on main have a group
+# apart from these, and never wait on them.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.ref == 'refs/heads/main' && github.event_name == 'push' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -45,6 +65,7 @@ jobs:
     outputs:
       docs_only: ${{ steps.changes.outputs.docs-only }}
       parked_changed: ${{ steps.changes.outputs.parked-changed }}
+      platforms: ${{ steps.platforms.outputs.platforms }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,10 +74,34 @@ jobs:
       - uses: ./.github/actions/live-merge-group # zizmor: ignore[self-repository]
       - id: changes
         uses: ./.github/actions/docs-only # zizmor: ignore[self-repository]
+      # Which jobs this run has: `all`, `macos` or `others`. A push or a scheduled run, which
+      # `ci-macos.yml` checks macOS for, and a merge group, which leaves macOS out, have the
+      # others; a run by hand or through `workflow_call` has what it asked for.
+      - id: platforms
+        env:
+          ASKED: ${{ inputs.platforms }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          platforms="$ASKED"
+          if [ -z "$platforms" ]; then
+            case "$EVENT" in
+              push | schedule | merge_group) platforms=others ;;
+              *) platforms=all ;;
+            esac
+          fi
+          case "$platforms" in
+            all | macos | others) ;;
+            *)
+              echo "::error::platforms is all, macos or others, not $platforms"
+              exit 1
+              ;;
+          esac
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
 
   lint:
     name: Format, lints and docs
     needs: changes
+    if: needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -107,14 +152,12 @@ jobs:
     name: Test (${{ matrix.os }}, ${{ matrix.part == 'llvm' && 'llvm::' || matrix.part }})
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    # A merge group leaves out macOS. GitHub's macOS runners are short, and a job no runner
-    # takes is cancelled after about 15 minutes ("not acquired by Runner"), which knocks the
-    # pull request out of the queue. The pull request ran on macOS already, up to date with
-    # main as the ruleset requires, and the push to main runs it again.
+    # The platforms the run has (see `changes`): macOS only through `ci-macos.yml`, a run by hand or
+    # `staging.yml`. GitHub's macOS runners are short, and a job can wait an hour for one.
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
+        os: ${{ fromJSON(needs.changes.outputs.platforms == 'macos' && '["macos-latest"]' || needs.changes.outputs.platforms == 'others' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
         # Each platform's tests run in three jobs of about the same length:
         # - `llvm`: the `llvm::` tests in `fennec`'s main test binary, each building a program;
         # - `fennec`: the rest of the `fennec` package's tests, then every example and kit;
@@ -339,8 +382,8 @@ jobs:
   # Native code on an Intel Mac. Linux covers x86-64 and the other Mac covers Arm, but an Arm-only
   # pass can hide what only x86-64 does, like having two return registers, not eight, and macOS
   # has its own way of calling on each. Every program in the repository has to build as native code
-  # here, and every LLVM test, the examples' output among them, has to pass. A merge group leaves
-  # it out, as it does the other Mac.
+  # here, and every LLVM test, the examples' output among them, has to pass. It runs where the
+  # other Mac does (see `changes`): through `ci-macos.yml`, by hand, or for `staging.yml`.
   #
   # The LLVM tests run in three parts, by the first letter of their names: "a", "b" to "p", and
   # the rest. On 2026-11-17 they took 21 to 29 minutes in one job, 33% apart on the same commit,
@@ -353,7 +396,7 @@ jobs:
   x86-mac:
     name: Native code on x86-64 macOS (${{ matrix.part }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'others'
     strategy:
       fail-fast: false
       matrix:
@@ -409,7 +452,7 @@ jobs:
   postgres:
     name: Postgres against a real server
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     services:
@@ -460,6 +503,7 @@ jobs:
     if: >-
       needs.changes.outputs.docs_only != 'true'
       && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -467,7 +511,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup component add llvm-tools-preview
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-llvm-cov@0.9.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -499,6 +543,7 @@ jobs:
     if: >-
       needs.changes.outputs.docs_only != 'true'
       && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -534,13 +579,14 @@ jobs:
   deny:
     name: Licenses, advisories and sources
     needs: changes
+    if: needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-deny@0.20.2
       - run: cargo deny --locked check
@@ -556,6 +602,7 @@ jobs:
   site:
     name: Website builds
     needs: changes
+    if: needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -575,6 +622,7 @@ jobs:
   workflows:
     name: Workflow lints and security audit
     needs: changes
+    if: needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -583,7 +631,7 @@ jobs:
           persist-credentials: false
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: zizmor@1.31.1
       - name: zizmor
@@ -600,6 +648,8 @@ jobs:
         run: .github/scripts/test-sweep-worktrees.sh
       - name: Fetching under the lock every worktree shares, on a throwaway repository
         run: .github/scripts/test-fetch.sh
+      - name: Telling flakes from failures main fixed, on a throwaway repository
+        run: .github/scripts/test-flakes.sh
       - name: Naming what failed, and the known failures' file, as the gate reads them
         run: |
           .github/scripts/known-failures.sh
@@ -611,7 +661,7 @@ jobs:
   bench:
     name: Benchmarks
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -673,7 +723,7 @@ jobs:
   budgets:
     name: Instant-feedback budgets
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -708,7 +758,7 @@ jobs:
   asan:
     name: AddressSanitizer on LLVM-built programs
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -796,7 +846,7 @@ jobs:
   llvm-asan:
     name: LLVM tests under AddressSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -828,7 +878,7 @@ jobs:
   lean-runtime:
     name: Every example and kernel built natively
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -903,7 +953,7 @@ jobs:
   static:
     name: Release builds in an empty container
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -949,7 +999,7 @@ jobs:
   install:
     name: Install from a checkout
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -978,7 +1028,7 @@ jobs:
   worker-sanitizers:
     name: Workers under ${{ matrix.name }}
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -1061,7 +1111,7 @@ jobs:
   tsan-programs:
     name: Programs under ThreadSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -1098,6 +1148,7 @@ jobs:
     if: >-
       needs.changes.outputs.docs_only != 'true'
       && (github.event_name != 'merge_group' || needs.changes.outputs.parked_changed == 'true')
+      && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -1153,7 +1204,7 @@ jobs:
   # stays under GitHub's 10 GB and its builds keep the caches they start from: see the script.
   prune-caches:
     name: Prune caches
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1172,7 +1223,7 @@ jobs:
   server-sanitizers:
     name: Servers under ThreadSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -1193,7 +1244,8 @@ jobs:
 
   # One status for branch protection to require, so adding jobs never means changing settings.
   # A job skipped because the change is only documentation counts as passed, and so do the two a
-  # merge group can leave out; any other skip, failure or cancellation doesn't.
+  # merge group can leave out, the Intel Mac's in a run without macOS, and every job but the macOS
+  # ones in a run of those alone; any other skip, failure or cancellation doesn't.
   ok:
     name: CI passed
     if: always()
@@ -1208,6 +1260,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PARKED_CHANGED: ${{ needs.changes.outputs.parked_changed }}
+          PLATFORMS: ${{ needs.changes.outputs.platforms }}
           EVENT: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
@@ -1217,13 +1270,18 @@ jobs:
           while read -r job result; do
             [ "$result" = success ] && continue
             [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
+            # The macOS jobs alone, or every other: what the run leaves out isn't its to pass.
+            if [ "$result" = skipped ] && [ "$PLATFORMS" = macos ] && [ "$job" != changes ] \
+              && [ "$job" != test ] && [ "$job" != x86-mac ]; then
+              continue
+            fi
+            [ "$result" = skipped ] && [ "$PLATFORMS" = others ] && [ "$job" = x86-mac ] && continue
             # Coverage and the heap audit run only in the scheduled run and by hand.
             if [ "$result" = skipped ] && { [ "$job" = coverage ] || [ "$job" = audit ]; } \
               && [ "$EVENT" != schedule ] && [ "$EVENT" != workflow_dispatch ]; then
               continue
             fi
             if [ "$result" = skipped ] && [ "$EVENT" = merge_group ]; then
-              [ "$job" = x86-mac ] && continue
               [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
             fi
             # `test` has one result for its whole matrix, so each OS's job is looked at, and so is

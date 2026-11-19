@@ -185,6 +185,7 @@ impl FnCx<'_> {
                 }
             }
         }
+        self.lent_kept(target, value);
     }
 
     /// The type a field or item holds, as declared: not narrowed by a check for None.
@@ -233,6 +234,7 @@ impl FnCx<'_> {
             to_every: false,
             param_of: None,
             arrow: None,
+            alias: None,
         };
         self.declare_with(binding, at);
         self.record(at, &self.checker.settled(&ty));

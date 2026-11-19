@@ -156,6 +156,111 @@ pub(crate) struct Analysis {
     pub(crate) param_ranges: Vec<(usize, Range)>,
 }
 
+impl Analysis {
+    /// Hashes everything this says, the same whenever it says the same: sets and maps in order.
+    /// Every field is named, so one added later has to be hashed too.
+    pub(crate) fn stable(&self, state: &mut crate::keys::Stable) {
+        use crate::keys::{hash_map, hash_set};
+        use std::hash::Hash as _;
+        let Analysis {
+            safe,
+            nonzero,
+            below,
+            length_of,
+            reads,
+            writes,
+            shared,
+            changed,
+            maybe_marked,
+            given_mut,
+            read_again,
+            borrowed,
+            borrowed_from,
+            taken,
+            items_taken,
+            put_back_reads,
+            slot_homes,
+            path_taken,
+            path_waits,
+            path_waiting,
+            loop_taken,
+            places_taken,
+            place_parts,
+            place_paths,
+            places_waiting,
+            field_of,
+            slice_keys,
+            unmade,
+            aliases,
+            alone_in_loops,
+            steady_lengths,
+            adjacent_reads,
+            reservations,
+            zero_filled,
+            zero_counts,
+            room_enough,
+            length_kept,
+            last_copies,
+            last_reads,
+            last_made,
+            enumerated,
+            map_walks,
+            walk_items,
+            walk_keys,
+            pairs,
+            guarded_reads,
+            param_ranges,
+        } = self;
+        hash_set(safe, state);
+        hash_set(nonzero, state);
+        hash_map(below, state);
+        hash_map(length_of, state);
+        reads.hash(state);
+        writes.hash(state);
+        hash_set(shared, state);
+        hash_set(changed, state);
+        hash_set(maybe_marked, state);
+        hash_set(given_mut, state);
+        hash_set(read_again, state);
+        hash_set(borrowed, state);
+        hash_map(borrowed_from, state);
+        hash_set(taken, state);
+        hash_map(items_taken, state);
+        hash_map(put_back_reads, state);
+        hash_map(slot_homes, state);
+        hash_map(path_taken, state);
+        hash_map(path_waits, state);
+        hash_set(path_waiting, state);
+        hash_set(loop_taken, state);
+        hash_map(places_taken, state);
+        hash_map(place_parts, state);
+        hash_map(place_paths, state);
+        hash_set(places_waiting, state);
+        hash_map(field_of, state);
+        hash_map(slice_keys, state);
+        hash_set(unmade, state);
+        hash_map(aliases, state);
+        alone_in_loops.hash(state);
+        hash_set(steady_lengths, state);
+        hash_map(adjacent_reads, state);
+        hash_map(reservations, state);
+        hash_set(zero_filled, state);
+        hash_map(zero_counts, state);
+        hash_set(room_enough, state);
+        hash_map(length_kept, state);
+        hash_set(last_copies, state);
+        hash_set(last_reads, state);
+        hash_set(last_made, state);
+        hash_map(enumerated, state);
+        hash_map(map_walks, state);
+        hash_map(walk_items, state);
+        hash_set(walk_keys, state);
+        hash_map(pairs, state);
+        hash_set(guarded_reads, state);
+        param_ranges.hash(state);
+    }
+}
+
 /// What's known about every function, and which can fail.
 pub(crate) struct Whole<'p> {
     pub(crate) functions: HashMap<&'p str, &'p Function>,
@@ -2693,6 +2798,7 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
             let Some((root, path)) = put_back_to(function, known, *item, index) else { continue };
             if comes_from(function, known, *from, (root, &path))
                 && stays_apart(function, known, (start, at + 2), (*item, *from, index), (root, &path))
+                && read_before_put_back_again(function, (start, at), *item)
             {
                 for local in [*read, *item] {
                     known.taken.insert(local.0);
@@ -2702,6 +2808,54 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
             }
         }
     }
+}
+
+/// Whether every way on from where `item` is put back reaches the read at `read` again, or leaves,
+/// before it can come to the put-back again. `stays_apart` follows each way from the read only as
+/// far as the put-back, so a loop around the put-back alone, as `while True:` with its way out
+/// after it makes, would put the item back twice from one read: the second time into a slot
+/// that may be gone, and with what the first put back changed in place since showing through.
+fn read_before_put_back_again(function: &Function, read: (usize, usize), item: LocalId) -> bool {
+    let is_back = |inst: &InstKind| matches!(inst, InstKind::SetIndex { value: Operand::Local(put), .. } if *put == item);
+    let backs: Vec<(usize, usize)> = function
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(at, block)| {
+            block
+                .insts
+                .iter()
+                .enumerate()
+                .filter(|(_, inst)| is_back(&inst.kind))
+                .map(move |(index, _)| (at, index))
+        })
+        .collect();
+    for (back_block, back_at) in backs {
+        let mut seen = HashSet::new();
+        let mut waiting = vec![(back_block, back_at + 1)];
+        while let Some((at, first)) = waiting.pop() {
+            let Some(block) = function.blocks.get(at) else { return false };
+            let mut ended = false;
+            for (index, inst) in block.insts.iter().enumerate().skip(first) {
+                if (at, index) == read {
+                    ended = true;
+                    break;
+                }
+                if is_back(&inst.kind) {
+                    return false;
+                }
+            }
+            if ended {
+                continue;
+            }
+            for target in block.end.targets() {
+                if seen.insert(target.0) {
+                    waiting.push((target.0, 0));
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Where a local is put back, when that's one place and by a key equal to `index`: the same
@@ -3006,7 +3160,7 @@ fn loop_blocks(function: &Function, header: usize, body: usize) -> HashSet<usize
 /// A loop that changes lists or `Table`s held in locals, each of which nothing in the loop can
 /// give another owner: one check on the way in that each is alone does for every change in the
 /// loop, where today each change checks again.
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub(crate) struct AloneInLoop {
     /// The block that goes into the loop, with a jump to its start that nothing else makes.
     pub(crate) entry: usize,
@@ -3072,13 +3226,57 @@ fn find_alone_in_loops(function: &Function, known: &mut Analysis) {
             })
             .map(|(at, _)| LocalId(at))
             .filter(|held| {
-                changes_in(&inside, known, *held) && gives_no_owner(function, &inside, known, *held)
+                changes_in(&inside, known, *held)
+                    && gives_no_owner(function, &inside, known, *held)
+                    && !copy_read_in(function, &blocks, &inside, known, *held)
             })
             .collect();
         if !locals.is_empty() {
             known.alone_in_loops.push(AloneInLoop { entry: *entry, blocks, locals });
         }
     }
+}
+
+/// Whether a loop reads a copy of `held` made before it, as a loop through `items[k:]` holds the
+/// list as it was while its body changes it. `held` then has another owner on every way in, so
+/// making it alone there would copy all of it, where its first change in the loop does that work
+/// anyway: an append to a list held twice grows it into a block of its own, with no copy made
+/// first. So such a loop is left to check at each change. A local that only stands for `held`,
+/// with no count of its own (see [`Analysis::alias`]), is no other owner.
+fn copy_read_in(
+    function: &Function,
+    loop_blocks: &BTreeSet<usize>,
+    inside: &[&Block],
+    known: &Analysis,
+    held: LocalId,
+) -> bool {
+    let mut copies = BTreeSet::from([held]);
+    let mut grew = true;
+    while grew {
+        grew = false;
+        let before: Vec<&Block> = function
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| !loop_blocks.contains(at))
+            .map(|(_, block)| block)
+            .collect();
+        for inst in before.iter().flat_map(|block| &block.insts) {
+            if let InstKind::Copy { dest, value: Operand::Local(from) } = &inst.kind
+                && copies.contains(from)
+                && known.alias(*dest).is_none()
+                && copies.insert(*dest)
+            {
+                grew = true;
+            }
+        }
+    }
+    copies.remove(&held);
+    inside.iter().any(|block| {
+        copies.iter().any(|copy| {
+            block.insts.iter().any(|inst| reads_local(&inst.kind, *copy)) || reads_in_end(&block.end, *copy)
+        })
+    })
 }
 
 /// The builtins on a list or a `Table` that give it no other owner, called on it: what each gives
@@ -4614,8 +4812,9 @@ mod tests {
 
     /// A list or a `Table` a loop changes is made alone on the way in, once, when nothing in the
     /// loop can give it another owner, however it's shared before or after. Copied in the loop,
-    /// given to a call or a closure, put inside another value, written anew, or held by a task, it
-    /// isn't: each change in the loop checks for itself.
+    /// given to a call or a closure, put inside another value, written anew, held by a task, or
+    /// held as it was by a loop through it from a place, it isn't: each change in the loop checks
+    /// for itself.
     #[test]
     fn a_value_a_loop_gives_no_owner_is_made_alone_on_the_way_in() -> Result<(), String> {
         let summed = "def summed(items: list[int]) -> int:\n    return sum(items)\n\n";
@@ -4637,6 +4836,10 @@ mod tests {
                 "{what}"
             );
         }
+        // A loop through it from a place holds it as it was, so it's held twice on the way in:
+        // the body's first append grows it into a block of its own, with no copy made first.
+        let walked = "def go(count: int) -> int:\n    mut items = [1, 2, 3]\n    for item in items[1:]:\n        items.append(item + count)\n    return len(items)\n";
+        assert!(!alone_in_a_loop("", walked, "items")?, "held as it was by a loop through it from a place");
         let tables = "from std.collections import Id, Table\nfrom std.concurrent import Crashed\n\n";
         let units = |inside: &str| {
             format!(

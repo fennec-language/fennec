@@ -361,6 +361,8 @@ impl Pool {
     /// Whatever wakes it is mail or a job, which only something still moving sends, or a check
     /// asking for the notes it left out.
     fn sleep_idle(&self, at: usize, io: &mut Io) {
+        // With time on its hands, its table gives back what it can.
+        crate::embed::with(|state| state.heap.idle());
         let slot = self.published.get(at);
         let idle = io.idle_stuck();
         let left = crate::embed::deadlock::sleeps_stuck(idle.unwrap_or(0));

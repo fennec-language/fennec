@@ -133,7 +133,12 @@ impl FnCx<'_> {
             }
             _ => {}
         }
-        match self.expr(callee) {
+        // A function value called right here is followed by the call (see `note_value_call`).
+        let outer = self.direct_read;
+        self.direct_read = Some((callee.span.start, callee.span.end));
+        let callee_ty = self.expr(callee);
+        self.direct_read = outer;
+        match callee_ty {
             Type::Function(key) => {
                 let name = key.rsplit('.').next().unwrap_or_default().to_owned();
                 self.call_function(&key, &name, args, span)
@@ -450,8 +455,33 @@ impl FnCx<'_> {
         signature.returns
     }
 
-    /// Matches arguments to parameters, positionally and by name.
+    /// Whether calling `method` on a value of type `ty` changes it: a built-in method that does, or
+    /// one that takes `ref self`, its type's own or one the standard library adds to a built-in
+    /// type, as `list.extend`.
+    fn changes_receiver(&self, ty: &Type, method: &str) -> bool {
+        self.changes_value(ty, method)
+            || self
+                .checker
+                .settled(ty)
+                .method_owner()
+                .and_then(|owner| self.checker.program.method(owner, method))
+                .is_some_and(|(_, entry)| entry.def.params.first().is_some_and(|param| param.is_mut))
+    }
+
+    /// Matches arguments to parameters, positionally and by name. A place given with `ref` can be
+    /// given what the other arguments are, so what a `with` lent among them is held to its block.
     fn bind_args(&mut self, function: &str, params: &[ParamType], args: &[Arg], span: Span) {
+        self.bind_args_to(function, params, args, span);
+        if self.any_lent() {
+            let values: Vec<&Expr> = args.iter().filter(|arg| !arg.is_mut).map(|arg| &arg.value).collect();
+            for arg in args.iter().filter(|arg| arg.is_mut) {
+                self.lent_put(&arg.value, &values);
+            }
+        }
+    }
+
+    /// `bind_args`, all but what's lent.
+    fn bind_args_to(&mut self, function: &str, params: &[ParamType], args: &[Arg], span: Span) {
         let mut given = vec![false; params.len()];
         let mut unmatched_args = false;
         let mut next = 0;
@@ -477,7 +507,17 @@ impl FnCx<'_> {
                 Some(Type::Arrow(receives, _)) => receives,
                 _ => Vec::new(),
             };
+            // A function value passed for a function parameter of a function called by name is
+            // followed to where that function calls it (see `note_passed_function`); one passed
+            // through a function value, or to an interface's method, isn't.
+            let followed = found.is_some_and(|(_, param)| self.takes_function(&param.ty))
+                && self.calling.last().is_some_and(|callee| !callee.is_empty());
+            let outer = self.direct_read;
+            if followed {
+                self.direct_read = Some((arg.value.span.start, arg.value.span.end));
+            }
             let ty = self.arg_as(arg, &receives, found.map(|(_, param)| &param.ty));
+            self.direct_read = outer;
             self.handle_passed(&arg.value, &ty);
             if arg.is_mut
                 && let Some(callee) = self.calling.last().filter(|callee| !callee.is_empty()).cloned()
@@ -553,13 +593,20 @@ impl FnCx<'_> {
                     None => diagnostic.with_help("take `ref` off the argument"),
                 });
             }
-            // What it's given to can make it `None`, whatever a check for `None` said before.
+            // What it's given to can make it `None`, or another member of its union, whatever a
+            // check for `None` or an `is` said before: it holds what it was declared to again. A
+            // parameter of the member it's known to hold can only give it back as that member.
             (true, true) => {
                 if let ExprKind::Name(name) = &arg.value.kind
-                    && self.checker.settled(&param.ty).maybe_none()
                     && let Some(declared) = self.declared_type(name)
                 {
-                    self.set_type(name, declared);
+                    let takes = self.checker.settled(&param.ty);
+                    let held = self.lookup(name).map(|(held, _)| held);
+                    let other_member = matches!(takes, Type::Union(_))
+                        && held.is_some_and(|held| !self.checker.fits(&held, &takes));
+                    if takes.maybe_none() || other_member {
+                        self.set_type(name, declared);
+                    }
                 }
             }
             (false, false) => {}
@@ -723,7 +770,20 @@ impl FnCx<'_> {
         }
         let ty = if method == "expect" { ty } else { self.failing_step(ty, object.span, step) };
         let optional = optional || self.chained_step(&ty, step);
-        self.method_on(&MethodCall { object, method, types, args, span }, &ty, optional)
+        self.method_putting(&MethodCall { object, method, types, args, span }, &ty, optional)
+    }
+
+    /// `method_on`, and what a method that changes its value, or a channel's `send`, is given goes
+    /// into it, which what a `with` lent can't do from inside its block (see `lent.rs`).
+    fn method_putting(&mut self, call: &MethodCall<'_>, ty: &Type, optional: bool) -> Type {
+        let gives = self.method_on(call, ty, optional);
+        if self.any_lent()
+            && (self.changes_receiver(ty, call.method) || sends(&self.checker.settled(ty), call.method))
+        {
+            let values: Vec<&Expr> = call.args.iter().map(|arg| &arg.value).collect();
+            self.lent_put(call.object, &values);
+        }
+        gives
     }
 
     fn method_on(&mut self, call: &MethodCall<'_>, ty: &Type, optional: bool) -> Type {
@@ -918,6 +978,11 @@ impl FnCx<'_> {
         (types, args): (&[Type], &[Arg]),
         span: Span,
     ) -> Type {
+        // Any type's function of this name could be the one called, inside a lock or not, as for
+        // a method called on a value of the type parameter in `interface_call`.
+        let any = format!("*.{method}");
+        self.checker.own_callers.entry(any.clone()).or_default().insert(self.key.clone());
+        self.note_lock_call(&any, method, span);
         let owner = Type::Param(param.to_owned());
         let Some((_, def)) = self.bound_method(param, method) else {
             let message = format!("`{param}` has nothing called `{method}`");
@@ -934,7 +999,11 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         let signature = self.interface_method_with(&def, &owner, types, span);
+        // Any type's function of this name could be the one called, so what's passed can't be
+        // followed by its parameters.
+        self.calling.push(String::new());
         self.bind_args(method, &signature.params, args, span);
+        self.calling.pop();
         signature.returns
     }
 
@@ -942,8 +1011,11 @@ impl FnCx<'_> {
     /// interfaces and no others.
     fn interface_call(&mut self, call: &MethodCall<'_>, name: &str) -> Type {
         let MethodCall { object, method, types, args, span } = *call;
-        // Any type's method of this name could be the one called.
-        self.note_lock_call(&format!("*.{method}"), method, span);
+        // Any type's method of this name could be the one called, inside a lock or not: what any
+        // of them waits on or locks reaches this function (see `up_the_calls`).
+        let any = format!("*.{method}");
+        self.checker.own_callers.entry(any.clone()).or_default().insert(self.key.clone());
+        self.note_lock_call(&any, method, span);
         let owner = Type::Param(name.to_owned());
         let Some((_, def)) = self.bound_method(name, method) else {
             let help = match self.bounds_of(name).as_slice() {
@@ -973,7 +1045,11 @@ impl FnCx<'_> {
         }
         let values: Vec<&Expr> = std::iter::once(object).chain(args.iter().map(|arg| &arg.value)).collect();
         self.note_handed(crate::holds::To::Interface(method.to_owned()), span, &values);
+        // Any type's method of this name could be the one called, so what's passed can't be
+        // followed by its parameters.
+        self.calling.push(String::new());
         self.bind_args(method, signature.params.get(1..).unwrap_or_default(), args, span);
+        self.calling.pop();
         signature.returns
     }
 
@@ -1734,4 +1810,10 @@ enum UnionSource {
     Dispatched(crate::union_sources::Dispatch),
     /// One that can't be, which is said.
     Refused,
+}
+
+/// Whether `method` is a channel's `send`, which puts what it's given where another task takes it.
+fn sends(ty: &Type, method: &str) -> bool {
+    method == "send"
+        && ty.type_name().is_some_and(|name| matches!(name.rsplit('.').next(), Some("Channel" | "Sender")))
 }

@@ -115,6 +115,27 @@ fn a_failure_is_the_programs_and_too_long_is_left_for_the_start() {
 }
 
 #[test]
+fn a_loop_over_a_split_is_worked_out_a_part_at_a_time() {
+    let source = "SPLIT = parts_of(\"a,b,,\", separator=\",\")\n\
+                  OVERLAPPING = parts_of(\"aaaaa\", separator=\"aa\")\n\
+                  WIDE = parts_of(\"日本語の日本\", separator=\"日本\")\n\
+                  WRITTEN = commas(\"x,y\")\nEMPTY = parts_of(\"abc\", separator=\"\")\n\n\
+                  def parts_of(text: str, separator: str) -> list[str]:\n    mut parts = list[str]()\n    \
+                  for part in text.split(separator):\n        parts.append(part)\n    return parts\n\n\
+                  def commas(text: str) -> int:\n    mut count = 0\n    for _ in text.split(\",\"):\n        \
+                  count += 1\n    return count\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(SPLIT, OVERLAPPING, WIDE, WRITTEN, EMPTY)\n";
+    let all = worked(source, 1_000_000);
+    let said = |name: &str| all.iter().find(|(own, _)| own == name).map(|(_, said)| said.clone()).unwrap();
+    assert_eq!(said("SPLIT"), "[\"a\", \"b\", \"\", \"\"]");
+    assert_eq!(said("OVERLAPPING"), "[\"\", \"\", \"a\"]");
+    assert_eq!(said("WIDE"), "[\"\", \"語の\", \"\"]");
+    assert_eq!(said("WRITTEN"), "2");
+    // An empty separator is left for the program, where `split` fails for it.
+    assert_eq!(said("EMPTY"), "not here: `str.split`");
+}
+
+#[test]
 fn what_it_doesnt_do_is_left_for_the_start() {
     let found = "AT = \"abc\".find(\"b\")\n\ndef main(stdout: Stdout):\n    stdout.print(AT)\n";
     assert_eq!(said(found, "AT", 1_000_000), "not here: `str.find`");

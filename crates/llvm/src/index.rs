@@ -303,6 +303,7 @@ fn what_number(what: What) -> u8 {
         What::Constants => 14,
         What::Native => 15,
         What::WaitingClosures => 16,
+        What::Layout => 17,
     };
     debug_assert_eq!(what_of(number), Some(what), "`what_of` reads {what:?}'s number back as another");
     number
@@ -328,6 +329,7 @@ fn what_of(number: u8) -> Option<What> {
         14 => What::Constants,
         15 => What::Native,
         16 => What::WaitingClosures,
+        17 => What::Layout,
         _ => return None,
     })
 }

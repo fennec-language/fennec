@@ -38,6 +38,9 @@ pub(crate) enum What {
     Native,
     /// Whether any closure the program makes may wait.
     WaitingClosures,
+    /// A type's layout, by its name: its size and its fields' kinds and places, read through
+    /// `Layouts::get` (see `Layouts::note_reads`).
+    Layout,
 }
 
 /// One read: of what, and by which name. A name that isn't there is a read too, of nothing.
@@ -249,6 +252,7 @@ impl Reads<'_, '_> {
                 Some(key_of("native", &names))
             }
             What::WaitingClosures => Some(key_of("waiting closures", &self.waiting_closures)),
+            What::Layout => layouts.layout_fingerprint(name).map(|text| key_of("layout", &text)),
         }
     }
 }

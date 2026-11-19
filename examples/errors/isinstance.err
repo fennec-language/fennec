@@ -1,0 +1,7 @@
+error: `isinstance` doesn't exist
+  --> examples/errors/isinstance.fen:11:8
+   |
+11 |     if isinstance(shape, Circle):
+   |        ^^^^^^^^^^
+   |
+   = help: write `value is Circle`, which also narrows `value` to a `Circle` inside the `if`

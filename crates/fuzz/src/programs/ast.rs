@@ -456,6 +456,7 @@ impl Aliasing {
                 | Alias::Tasked { .. }
                 | Alias::Walked { .. }
                 | Alias::Drained { .. }
+                | Alias::Looped(_)
                 | Alias::Read { .. } => {}
             }
         }
@@ -539,6 +540,55 @@ pub(crate) enum Alias {
     /// `print(last{s}.values())` as the dict's last use, so the walk is all that holds what it
     /// gives back once the dict is gone.
     Drained { from: usize, at: usize, n: i64 },
+    /// An item taken out, changed and put back in a `while True:` loop whose exit comes after
+    /// the put-back, with the item or what holds it changed between turns.
+    Looped(Looping),
+}
+
+/// A `Looped` step: `mut taken{s} = to[at]`, or that item's `items` when `items`, changed, then
+/// `to[at] = taken{s}` in a `while True:` loop that ends after the put-back on its `turns`th
+/// turn, `between` done before each turn but the first. Read once before the loop, the put-back
+/// comes round again with no read between, and has to put back what was read whatever happened
+/// to the item since: the shape the compiled program once got wrong, putting back at a place
+/// found before the turn. With `inside`, each turn reads the item first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Looping {
+    pub(crate) to: usize,
+    pub(crate) at: usize,
+    pub(crate) n: i64,
+    pub(crate) turns: i64,
+    pub(crate) between: Between,
+    pub(crate) inside: bool,
+    pub(crate) items: bool,
+}
+
+/// What a `Looped` step does between its turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Between {
+    /// The item changed in place, which the next put-back undoes.
+    Changed,
+    /// What holds the item grown by this many items, past the room it had.
+    Grown(i64),
+    /// The item taken out. A table's goes by its `Id`, so the next turn stops the program, as an
+    /// `Id` whose item has gone does; a list's by place, another added at its end; a dict's by
+    /// key, which the next put-back adds again, last, or a fresh value added at once where the
+    /// next turn reads it first or puts back only its `items`.
+    Removed,
+}
+
+/// The kinds a `Looped` step takes an item out of, and those whose item's `items` it can take.
+pub(crate) const fn loops_back(held: Held) -> bool {
+    matches!(
+        held,
+        Held::Holders
+            | Held::Keepers
+            | Held::Lists
+            | Held::Spots
+            | Held::Table
+            | Held::Entries
+            | Held::Ledger
+            | Held::Rooms
+    )
 }
 
 /// How a `Read` step's loop reads a table's items.
@@ -827,6 +877,63 @@ impl RefWay {
     }
 }
 
+/// A union of `Crate{id}`, holding a list, and `Heap{id}`, holding an int, each with a `ref self`
+/// method `grow` that changes it and gives back its size, grown through a name narrowed to one
+/// member, written `way`. It starts as a `Crate{id}` holding `[n]` when `crate_first`, else as a
+/// `Heap{id}` holding `n`; where it's given the other member, that one holds `n + 1`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Narrowing {
+    pub(crate) id: usize,
+    pub(crate) way: NarrowWay,
+    pub(crate) crate_first: bool,
+    pub(crate) n: i64,
+}
+
+/// The ways a `Narrowed` statement narrows its union and changes it. A `ref self` method called on
+/// a union narrowed to one member was given the whole union (#2157), and a narrowing outlived a
+/// `ref` call that gave the name the other member (#2163).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NarrowWay {
+    /// Narrowed by what it's given: grown twice, given the other member, and grown again.
+    Given,
+    /// Narrowed by `if shape is ...:` for each member, grown and read inside.
+    Is,
+    /// Given by `ref` to a function where it's grown, narrowed to what's left after
+    /// `if shape is Heap{id}: return shape.grow()`.
+    Left,
+    /// Not narrowed: the union's own `grow`, which runs its member's.
+    Whole,
+    /// Grown in the `match` case naming its member.
+    Matched,
+    /// Each item of a list of both, grown in a `for ref` loop, and grown again where `is` narrows
+    /// it to a `Crate{id}`.
+    ForRef,
+    /// Grown as a struct's field, which `is` doesn't narrow.
+    Field,
+    /// Narrowed, by `is` and by what it's given, and given by `ref` to a function taking the member.
+    RefMember,
+    /// Narrowed by `is` and given by `ref` to a function taking the union, which grows it and gives
+    /// it the other member, then grown after the `if`.
+    RefUnion,
+    /// Narrowed by what it's given, given by `ref` to the same function, and grown right after,
+    /// where the narrowing has to have ended (#2163).
+    RefUnionGrown,
+}
+
+/// Every `NarrowWay`.
+pub(crate) const NARROW_WAYS: [NarrowWay; 10] = [
+    NarrowWay::Given,
+    NarrowWay::Is,
+    NarrowWay::Left,
+    NarrowWay::Whole,
+    NarrowWay::Matched,
+    NarrowWay::ForRef,
+    NarrowWay::Field,
+    NarrowWay::RefMember,
+    NarrowWay::RefUnion,
+    NarrowWay::RefUnionGrown,
+];
+
 /// A name that another of the same name and type could capture, written `way`, with `n` the value
 /// it adds or lends.
 #[derive(Clone, Copy, Debug)]
@@ -903,6 +1010,77 @@ pub(crate) enum StreamRead {
     /// `[y + 1 for y in stream]`.
     Listed,
 }
+
+/// An `Ordered` statement: `ordered{id}(stdout)`, a `Tally{id}` and a `Pair{id}` holding a copy of
+/// it, then a line for each step, in which a call made later changes what was read earlier.
+/// Evaluation is left to right, as `docs/decisions.md` says, so each line shows what was read
+/// before the change: a method's receiver and a field's receiver before an argument, an index's
+/// base before the index, and the left of an operator, a list, a text, a call's arguments, a
+/// field or index write and `+=` before what's to their right.
+#[derive(Clone, Debug)]
+pub(crate) struct InOrder {
+    pub(crate) id: usize,
+    /// What the tally's items, count and dict start from.
+    pub(crate) base: i64,
+    /// Each step, with what its `grow` or `key` adds, from 0 to 9.
+    pub(crate) steps: Vec<(OrderStep, i64)>,
+}
+
+/// A line of an `Ordered` statement, each reading `tally`, and `pair` for `FieldReceiver`, before
+/// a call that changes it: `grow(n)`, which appends `count + n` and gives back the count it adds
+/// 1 to, or `key(n)`, which adds `n` to `names["a"]` and gives back `"a"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OrderStep {
+    /// `tally.show(tally.grow(n))`: a method taking its value as a copy.
+    Receiver,
+    /// `pair.shown(pair.left.grow(n))`: the same through a field.
+    FieldReceiver,
+    /// `tally.items.count(tally.grow(n))`: a list's method that only reads.
+    Counted,
+    /// `tally.names.get(tally.key(n))`: a dict's.
+    Got,
+    /// `tally.items[tally.grow(n) % 4]`: an index's base.
+    Indexed,
+    /// `tally.names[tally.key(n)]`: a dict's.
+    Keyed,
+    /// `three{id}(tally.count, second=tally.grow(n), third=tally.count)`.
+    Arguments,
+    /// `tally.count + tally.grow(n)`.
+    PlusBefore,
+    /// `tally.grow(n) + tally.count`.
+    PlusAfter,
+    /// `[tally.count, tally.grow(n), tally.count]`.
+    Listed,
+    /// `f"{tally.count} {tally.grow(n)} {tally.count}"`.
+    Text,
+    /// `tally.count >= tally.grow(n)`, false read left to right.
+    AtLeast,
+    /// `tally.count = tally.grow(n) + n`.
+    FieldWrite,
+    /// `tally.items[tally.grow(n) % 4] = tally.grow(n)`: the place before what's put there.
+    IndexWrite,
+    /// `tally.count += tally.grow(n)`: the count before the call.
+    Added,
+}
+
+/// Every `OrderStep`, for the generator to pick from.
+pub(crate) const ORDER_STEPS: [OrderStep; 15] = [
+    OrderStep::Receiver,
+    OrderStep::FieldReceiver,
+    OrderStep::Counted,
+    OrderStep::Got,
+    OrderStep::Indexed,
+    OrderStep::Keyed,
+    OrderStep::Arguments,
+    OrderStep::PlusBefore,
+    OrderStep::PlusAfter,
+    OrderStep::Listed,
+    OrderStep::Text,
+    OrderStep::AtLeast,
+    OrderStep::FieldWrite,
+    OrderStep::IndexWrite,
+    OrderStep::Added,
+];
 
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1172,6 +1350,8 @@ pub(crate) enum Stmt {
     /// to each end of `int`, so a proof that it's never negative, made from the first turn alone,
     /// shows: from -4 to 3 all of those hold, and past them the program stops.
     Turned(Turning),
+    /// `ordered{id}(stdout)`: lines whose parts change what's read before them, read left to right.
+    Ordered(InOrder),
     /// `streamed{id}(stdout)`: a generator over `parallel(xs)`, read in one of the ways a stream is.
     Streamed(Streaming),
     /// `aliased{id}(stdout)`: copies of collections and their parts, each changed in place, then
@@ -1199,6 +1379,9 @@ pub(crate) enum Stmt {
     /// `captured{id}(stdout)`: a name written where another of the same name and type is in
     /// sight, in a way the checker once renamed into the other.
     Captured(Capturing),
+    /// `narrowed{id}(stdout)`: a union narrowed to one member and changed through it, by a `ref self`
+    /// method or a `ref` call.
+    Narrowed(Narrowing),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

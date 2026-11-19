@@ -17,7 +17,7 @@ impl Emit<'_, '_, '_> {
     /// A list kind's number, for the runtime to make lists of it.
     pub(crate) fn element_number(&mut self, item: ListItem) -> String {
         let symbol = element_symbol(self.module.layouts, item);
-        self.module.shared.elements.insert(symbol.clone(), item);
+        self.module.add_element(&symbol, item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         let number = self.temp();
         self.line(&format!("{number} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
@@ -155,7 +155,7 @@ impl Emit<'_, '_, '_> {
                     Ok(())
                 });
                 at_match?;
-                self.release(&places);
+                self.release_quietly(&places);
                 self.assign(dest, &found)
             }
             "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
@@ -173,7 +173,7 @@ impl Emit<'_, '_, '_> {
                 self.leave_if_failed();
                 let groups = self.group_count(&pattern);
                 self.optional_match(dest, &whole, &places, &groups, span)?;
-                self.release(&places);
+                self.release_quietly(&places);
                 Ok(())
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),

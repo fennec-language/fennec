@@ -18,7 +18,8 @@ const INT_LIMIT: f64 = 9_223_372_036_854_775_808.0;
 /// What was made to hand the runtime an item, to let go of after.
 enum Passed {
     Nothing,
-    Block(String),
+    /// A block made for it, and whether letting go of it runs no program code.
+    Block(String, bool),
     /// A string's block, and what says whether it was made for this.
     Text(String, String),
 }
@@ -247,7 +248,7 @@ impl Emit<'_, '_, '_> {
                 self.on_blocks([&text], |emit, [block]| {
                     let list = emit.chars_list(&block);
                     emit.enumerated_list(dest, &list, &Kind::Str)?;
-                    emit.release(&list);
+                    emit.release_quietly(&list);
                     Ok(())
                 })
             }),
@@ -494,7 +495,7 @@ impl Emit<'_, '_, '_> {
     fn codes_of_text(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
         let (text, _) = self.operand(text)?;
         let symbol = crate::kinds::element_symbol(self.module.layouts, ListItem::Int);
-        self.module.shared.elements.insert(symbol.clone(), ListItem::Int);
+        self.module.add_element(&symbol, ListItem::Int);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         self.declare("declare ptr @fennec_str_codes(ptr, i64) nounwind");
         let (element, list) = (self.temp(), self.temp());
@@ -690,7 +691,7 @@ impl Emit<'_, '_, '_> {
             let sorted = emit.temp();
             let how = fennec_rt::embed::lists::SORT_STRINGS;
             emit.line(&format!("{sorted} = call ptr @fennec_list_sorted(ptr {list}, i64 {how})"));
-            emit.release(&list);
+            emit.release_quietly(&list);
             emit.assign(dest, &sorted)
         })
     }
@@ -701,7 +702,7 @@ impl Emit<'_, '_, '_> {
         self.on_blocks([&text], |emit, [block]| {
             let list = emit.chars_list(&block);
             emit.set_of_list(dest, &list, &Kind::Str)?;
-            emit.release(&list);
+            emit.release_quietly(&list);
             Ok(())
         })
     }
@@ -762,7 +763,7 @@ impl Emit<'_, '_, '_> {
         self.loop_end(&end);
         if let Some((keys, _)) = keys {
             self.made_for_body.pop();
-            self.release(&keys);
+            self.release_quietly(&keys);
         }
         let winner = self.temp();
         self.line(&format!("{winner} = load i64, ptr {best_slot}"));
@@ -835,7 +836,7 @@ impl Emit<'_, '_, '_> {
             Kind::Struct(id) | Kind::Boxed(id) => {
                 let layout = self.layout_of(*id)?;
                 let own = format!("{}.<", layout.name);
-                if self.module.whole.functions.contains_key(own.as_str()) {
+                if self.module.reads.function(own.as_str()).is_some() {
                     let less = self.own_less(&own, (score, best), span)?;
                     if !is_max {
                         return Ok(less);
@@ -893,7 +894,7 @@ impl Emit<'_, '_, '_> {
 
     /// A call to a type's own `<`, whose values come as addresses, either way they're held.
     fn own_less(&mut self, name: &str, (a, b): (&str, &str), span: Span) -> Result<String, String> {
-        let callee = *self.module.whole.functions.get(name).ok_or("a `<` that isn't lowered")?;
+        let callee = self.module.reads.function(name).ok_or("a `<` that isn't lowered")?;
         if !self.module.defined.contains(name) {
             let (ret, params) = (self.module.ret_text(callee)?, self.module.params(callee, false)?);
             self.declare(&format!("declare swiftcc {ret} {}({params}) #0", symbol(name)));
@@ -1034,12 +1035,14 @@ impl Emit<'_, '_, '_> {
                     if !fresh {
                         self.retain_inline(held, &fields);
                     }
-                    (as_word(self, "ptrtoint", "ptr", &block), Passed::Block(block))
+                    let quiet = self.lets_go_quietly(held);
+                    (as_word(self, "ptrtoint", "ptr", &block), Passed::Block(block, quiet))
                 }
             }
             _ => {
                 let word = as_word(self, "ptrtoint", "ptr", &value);
-                (word, if fresh { Passed::Block(value) } else { Passed::Nothing })
+                let quiet = self.lets_go_quietly(held);
+                (word, if fresh { Passed::Block(value, quiet) } else { Passed::Nothing })
             }
         })
     }
@@ -1047,7 +1050,8 @@ impl Emit<'_, '_, '_> {
     fn let_go_of_passed(&mut self, passed: Passed) {
         match passed {
             Passed::Nothing => {}
-            Passed::Block(block) => self.release(&block),
+            Passed::Block(block, true) => self.release_quietly(&block),
+            Passed::Block(block, false) => self.release(&block),
             Passed::Text(block, owned) => self.let_go_text_block(&block, &owned),
         }
     }

@@ -1,0 +1,91 @@
+# An item read out of a `Table` by `Id`, changed, and put back by the same `Id` is put back where it
+# was read, with no second lookup. When something reaches the `Table` between the read and the
+# put-back, a call, a closure or a task, the put-back looks it up again, and means what a copy
+# put back means: whatever happened in between is overwritten, or a copy kept in between keeps
+# what it had.
+
+from std.collections import Id, Table
+from std.concurrent import Crashed
+
+struct Unit:
+    health: int
+    bag: dict[str, int]
+    changed: bool
+
+# The shape every game's per-entity update takes: read, change, put back by the same `Id`, with a
+# rare path that changes the item's dict between.
+def hurt(ref units: Table[Unit], ids: list[Id[Unit]], at: int, by: int):
+    mut unit = units[ids[at]]
+    unit.health = min(100, unit.health - by)
+    if unit.health <= 0:
+        unit.health = 100
+        unit.bag["bone"] = (unit.bag.get("bone") else 0) + 1
+    unit.changed = True
+    units[ids[at]] = unit
+    return
+
+def heal(ref units: Table[Unit], id: Id[Unit]):
+    mut unit = units[id]
+    unit.health += 1000
+    units[id] = unit
+    return
+
+# A call given the `Table` in between: its change is overwritten by the put-back.
+def hurt_around_a_call(ref units: Table[Unit], id: Id[Unit]):
+    mut unit = units[id]
+    unit.health -= 1
+    heal(ref units, id)
+    units[id] = unit
+    return
+
+# A closure holding the `Table` in between keeps what it had when it was made.
+def hurt_around_a_closure(ref units: Table[Unit], id: Id[Unit]) -> int:
+    mut unit = units[id]
+    unit.health -= 2
+    first = () => total(units)
+    units[id] = unit
+    return first()
+
+def report(stdout: Stdout, units: Table[Unit]):
+    stdout.print("the task saw", total(units))
+    return
+
+# A task given the `Table` in between sees it as it was.
+def hurt_around_a_task(ref units: Table[Unit], id: Id[Unit], stdout: Stdout) fails Crashed:
+    mut unit = units[id]
+    unit.health -= 3
+    with launch(() => report(stdout, units))?:
+        pass
+    units[id] = unit
+    return
+
+# Put back by an `Id` read again from a list that changed between: another item, so a lookup.
+def hurt_another(ref units: Table[Unit], ref ids: list[Id[Unit]]):
+    mut unit = units[ids[0]]
+    unit.health -= 4
+    ids.reverse()
+    units[ids[0]] = unit
+    return
+
+def total(units: Table[Unit]) -> int:
+    return sum(unit.health for unit in units)
+
+def main(stdout: Stdout) fails Crashed:
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for n in range(8):
+        ids.append(units.add(Unit(health=40 + n * 7, bag={"gold": n}, changed=False)))
+    kept = units
+    for turn in range(15):
+        for at in range(len(ids)):
+            hurt(ref units, ids, at, by=(at + turn) % 9)
+    bones = sum(unit.bag.get("bone") else 0 for unit in units)
+    stdout.print(total(units), bones, total(kept))
+    hurt_around_a_call(ref units, ids[1])
+    stdout.print("after a call", units[ids[1]].health)
+    stdout.print("the closure saw", hurt_around_a_closure(ref units, ids[2]), "now", total(units))
+    hurt_around_a_task(ref units, ids[3], stdout)?
+    stdout.print("after a task", total(units))
+    hurt_another(ref units, ref ids)
+    stdout.print("put back by a key that moved", units[ids[0]].health, units[ids[7]].health)
+    return

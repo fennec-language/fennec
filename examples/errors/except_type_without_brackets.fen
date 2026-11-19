@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    text = "42"
+    count = int.parse(text) except InvalidValue: 0
+    stdout.print(count)

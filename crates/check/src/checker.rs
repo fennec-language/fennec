@@ -354,6 +354,9 @@ pub(crate) struct Checker {
     pub(crate) own_callers: BTreeMap<String, BTreeSet<String>>,
     /// What each function waits on itself: a network call, a sleep, a channel.
     pub(crate) waits: BTreeMap<String, String>,
+    /// The functions that call a function value they can't follow, outside a lock: each may wait
+    /// on whatever it does, which counts only where nothing it reaches is known to wait.
+    pub(crate) unfollowed: BTreeSet<String>,
     /// Set when what's checked is a program as lowering rewrote it, checked again: the rules
     /// about how a program is written were held to it as written, the first time.
     pub(crate) again: bool,
@@ -506,6 +509,7 @@ impl Checker {
             previous: BTreeMap::new(),
             own_callers: BTreeMap::new(),
             waits: BTreeMap::new(),
+            unfollowed: BTreeSet::new(),
             again: false,
             takes_locks: BTreeMap::new(),
             lock_calls: Vec::new(),
@@ -819,7 +823,10 @@ impl Checker {
             self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
-            self.crossing = crate::crossing::crossing(&mut self);
+            // Only when asked for: nothing a build lowers reads it yet (`crossing::with_crossing`).
+            if crate::crossing::wanted() {
+                self.crossing = crate::crossing::crossing(&mut self);
+            }
             return Ok(self.checked(structs, errors));
         }
         let mut diagnostics = self.diagnostics;
@@ -1671,17 +1678,14 @@ impl Checker {
     /// though nothing was reported, is reported now. Only the innermost such expressions
     /// are, since what's around them is unknown because of them.
     fn unknowns_left(&mut self) {
-        let prelude: Vec<String> = self
-            .program
-            .functions
-            .iter()
-            .filter(|(_, entry)| entry.prelude)
-            .map(|(key, _)| key.clone())
-            .collect();
+        // Looked up by key, not searched for in a list of the library's functions: that made this
+        // check about a function's typed body against each of thousands of keys.
+        let functions = &self.program.functions;
+        let prelude = |key: &str| functions.get(key).is_some_and(|entry| entry.prelude);
         let mut unknown: Vec<(u32, u32)> = self
             .typed
             .iter()
-            .filter(|(key, _)| !prelude.contains(key))
+            .filter(|(key, _)| !prelude(key))
             .flat_map(|(_, body)| body.exprs.iter())
             .filter(|(_, ty)| !ty.is_known())
             .map(|(span, _)| *span)
@@ -1699,7 +1703,7 @@ impl Checker {
             .states
             .iter()
             .filter_map(|(key, state)| match state {
-                State::Done(signature) if !prelude.contains(key) => Some((key, signature)),
+                State::Done(signature) if !prelude(key) => Some((key, signature)),
                 _ => None,
             })
             .filter(|(_, signature)| {
@@ -1997,23 +2001,43 @@ mod tests {
         assert_eq!(problems, ["`Duration` doesn't exist"]);
     }
 
-    /// A library module's function, keyed under the module's name, is its own outermost, so
-    /// what calls it is found when it's checked again. A function written inside another is
-    /// that other's.
+    /// A library module's function, keyed under the module's name, as `intrinsics.launch` is.
+    fn a_module_function(checker: &super::Checker) -> (String, super::FnEntry) {
+        checker
+            .program
+            .functions
+            .iter()
+            .find(|(key, entry)| entry.owner.is_none() && !entry.nested && key.contains('.'))
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .unwrap()
+    }
+
+    /// A library module's function is its own outermost, and a function written inside another
+    /// is that other's.
     #[test]
     fn a_module_function_is_its_own_outermost_and_a_nested_one_is_its_outers() {
         let program = fennec_syntax::parse("def main():\n    pass\n").unwrap();
         let mut checker = super::Checker::new(&program);
-        let (key, entry) = checker
-            .program
-            .functions
-            .iter()
-            .find(|(key, entry)| entry.owner.is_none() && key.contains('.'))
-            .map(|(key, entry)| (key.clone(), entry.clone()))
-            .unwrap();
+        let (key, entry) = a_module_function(&checker);
         assert_eq!(checker.outermost_of(&key), key);
         let inner = super::FnEntry { nested: true, ..entry };
         checker.program.functions.insert("main.inner".to_owned(), inner);
         assert_eq!(checker.outermost_of("main.inner"), "main");
+    }
+
+    /// A library module's function that reads a signature still growing, as one calling itself
+    /// does, is checked again itself, and so is what calls it: before, the module's name was
+    /// marked, which is no function, so the function kept the signature it was first given while
+    /// the callers of every function in its module were checked again against it.
+    #[test]
+    fn a_module_function_reading_a_growing_signature_is_checked_again_with_its_callers() {
+        let program = fennec_syntax::parse("def main():\n    pass\n").unwrap();
+        let mut checker = super::Checker::new(&program);
+        let (key, _) = a_module_function(&checker);
+        checker.checking.push(key.clone());
+        checker.mark_stale();
+        assert_eq!(checker.revisit, std::collections::BTreeSet::from([key.clone()]));
+        super::note_caller(&mut checker.own_callers, &key, "main");
+        assert_eq!(checker.outer_callers(&key), std::collections::BTreeSet::from(["main".to_owned()]));
     }
 }

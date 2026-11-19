@@ -41,7 +41,7 @@ fn leads_to(under: &[String], path: &[String]) -> bool {
 }
 
 /// What an instruction may give another owner, or replace.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub(crate) enum Unsettled {
     /// What's at the path, and everything under it.
     Under(LocalId, Vec<String>),
@@ -93,6 +93,18 @@ const DEEPEST: usize = 4;
 
 /// For each function, what it may give another owner, or replace, under each parameter.
 pub(crate) type Summaries<'p> = HashMap<&'p str, Vec<Vec<Unsettled>>>;
+
+/// Where [`unsettled`] finds what a function it calls may unsettle: the whole program's summaries
+/// as they're worked out, or a unit's reads of them, which note each one (see `reads`).
+pub(crate) trait Callees {
+    fn summary(&self, name: &str) -> Option<&[Vec<Unsettled>]>;
+}
+
+impl Callees for Summaries<'_> {
+    fn summary(&self, name: &str) -> Option<&[Vec<Unsettled>]> {
+        self.get(name).map(Vec::as_slice)
+    }
+}
 
 /// Whether a local's value can be a block, or hold one.
 fn counted(function: &Function, local: LocalId) -> bool {
@@ -185,7 +197,7 @@ pub(crate) fn unsettled(
     function: &Function,
     known: &Analysis,
     inst: &InstKind,
-    (summaries, facts): (&Summaries<'_>, Tracked),
+    (summaries, facts): (&dyn Callees, Tracked),
 ) -> Vec<Unsettled> {
     let mut out = Vec::new();
     let owned = |function: &Function, known: &Analysis, operand: &Operand, out: &mut Vec<Unsettled>| {
@@ -275,7 +287,7 @@ pub(crate) fn unsettled(
             }
         }
         InstKind::Call { function: callee, args, .. } => {
-            let theirs = summaries.get(callee.as_str());
+            let theirs = summaries.summary(callee.as_str());
             // An index it's given to change is a different index from here.
             for arg in args {
                 if let Operand::Local(local) = arg
@@ -577,7 +589,7 @@ pub(crate) fn written_order(function: &Function) -> Vec<usize> {
 pub(crate) fn coming_in(
     function: &Function,
     known: &Analysis,
-    summaries: (&Summaries<'_>, Tracked),
+    summaries: (&dyn Callees, Tracked),
     (at, before, done): (usize, &HashMap<usize, Vec<usize>>, &HashSet<usize>),
     (on_entry, left): (&[FieldPath], &HashMap<usize, Vec<FieldPath>>),
 ) -> Vec<FieldPath> {

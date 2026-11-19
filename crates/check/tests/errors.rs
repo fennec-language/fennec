@@ -284,7 +284,13 @@ fn ignored_results_are_mistakes() {
         ]
     );
     let help = helps(&format!("{RISKY}\ndef f():\n    risky(3)\n    1\n"));
-    assert_eq!(help, ["pass the error up with `?`, give a default with `else`, or handle it with `match`"]);
+    // In the forms of 2026-11-11: `except` handles a failure, and `?` passes it up.
+    assert_eq!(
+        help,
+        [
+            "handle the failure with `except why:`, give a value for the cases it fails with, as `x = f() except Missing(): 0`, or pass it up with `?` from a function that says `fails`"
+        ]
+    );
 }
 
 #[test]

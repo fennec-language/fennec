@@ -1,0 +1,7 @@
+error: `first_even` gives back an int, which can't be `None`
+ --> examples/errors/return_none_from_plain_type.fen:4:12
+  |
+4 |     return None
+  |            ^^^^
+  |
+  = help: write `-> int?` to give back `None` when there's nothing

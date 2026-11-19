@@ -64,6 +64,10 @@ struct Lexer:
                     self.at_line_start = True
             elif c == "#":
                 self.skip_comment()
+            elif c == "\"" and self.triple_at(0):
+                self.triple(start, "")?
+            elif (c == "r" or c == "f" or c == "t") and self.triple_at(1):
+                self.triple(start, c)?
             elif c == "\"":
                 self.string(start)?
             elif c == "f" and self.peek(1) == "\"":
@@ -229,6 +233,8 @@ struct Lexer:
         c = self.peek(0)
         pair = c + self.peek(1)
         triple = pair + self.peek(2)
+        if pair == ":=":
+            fail self.walrus(start)
         if is_three_char_punct(triple):
             self.pos += 3
             self.push(.Punct(triple), start)
@@ -238,14 +244,78 @@ struct Lexer:
             self.push(.Punct(pair), start)
             return
         if c not in "()[]{},:.?+-*/%=<>&|^~@":
-            span = Span(start=self.offset(start), end=self.offset(start) + utf8_width(c))
-            fail Diagnostic(message=f"unexpected character `{c}`", span=span)
+            fail self.unexpected(start)
         if c in "([{":
             self.depth += 1
         elif c in ")]}" and self.depth > 0:
             self.depth -= 1
         self.pos += 1
         self.push(.Punct(c), start)
+
+    ## A character no token starts with, at character `start`. Where it's a habit from Python,
+    ## what to write instead: `;` between statements, a string in `'`s, a `\` that goes on to the
+    ## next line, `!r` in an f-string's `{}`, or `!` for `not`.
+    def unexpected(self, start: int) -> Diagnostic:
+        character = self.peek(0)
+        one = Span(start=self.offset(start), end=self.offset(start) + utf8_width(character))
+        rest = self.text(start, len(self.chars)).rstrip()
+        if character == ";":
+            return Diagnostic(message="Fennec doesn't use `;`", span=one, help="put each statement on its own line")
+        if character == "'":
+            return self.single_quoted(start, one)
+        if character == "\\" and self.ends_line(start + 1):
+            return Diagnostic(
+                message="Fennec doesn't go on to the next line with `\\`",
+                span=one,
+                help="put what goes on in brackets, which can span lines, as `total = (1 +` with `2)` on the next line",
+            )
+        if rest in ["!r", "!s", "!a"]:
+            return Diagnostic(
+                message=f"an f-string has no `{rest}`",
+                span=Span(start=self.offset(start), end=self.offset(start) + 2),
+                help="`{name}` shows the value as `str(name)` does, and a format goes after `:`, as `{price:.2f}`",
+            )
+        if character == "!":
+            return Diagnostic(message="Fennec writes `not`, not `!`", span=one, help="write `not done`")
+        return Diagnostic(message=f"unexpected character `{character}`", span=one)
+
+    ## A string in `'`s from character `start`: the text up to the closing `'` on its line, in
+    ## `"`s, when it can go in them as it is.
+    def single_quoted(self, start: int, one: Span) -> Diagnostic:
+        mut at = start + 1
+        while at < len(self.chars) and self.chars[at] != "'" and self.chars[at] != "\n":
+            at += 1
+        text = self.text(start + 1, at)
+        plain = "\"" not in text and "\\" not in text and "{" not in text and "}" not in text
+        if at < len(self.chars) and self.chars[at] == "'" and plain:
+            return Diagnostic(
+                message="a string is written in double quotes",
+                span=Span(start=self.offset(start), end=self.offset(at + 1)),
+                help=f"write `\"{text}\"`",
+            )
+        return Diagnostic(message="a string is written in double quotes", span=one, help="write it in `\"`s, as `\"text\"`")
+
+    ## Whether only spaces, tabs and `\r` come between character `at` and the line's end.
+    def ends_line(self, at: int) -> bool:
+        mut after = at
+        while after < len(self.chars) and self.chars[after] in [" ", "\t", "\r"]:
+            after += 1
+        return after == len(self.chars) or self.chars[after] == "\n"
+
+    ## `:=`, Python's way to name a value inside an expression, at character `start`.
+    def walrus(self, start: int) -> Diagnostic:
+        mut help = "give the value a name on a line of its own first, then use the name"
+        if len(self.tokens) > 0:
+            match self.tokens[-1].tok:
+                case .Name(name):
+                    help = f"give `{name}` its value on a line of its own first, as `{name} = ...`, then use it"
+                case _:
+                    pass
+        return Diagnostic(
+            message="Fennec doesn't have `:=`",
+            span=Span(start=self.offset(start), end=self.offset(start) + 2),
+            help=help,
+        )
 
     def string(ref self, start: int) fails Diagnostic:
         self.pos += 1
@@ -279,6 +349,156 @@ struct Lexer:
             message="this string never ends",
             span=Span(start=self.offset(start), end=self.offset(start) + 1),
             help="close it with `\"` on the same line",
+        )
+
+    ## Whether `"""` starts `ahead` characters on.
+    def triple_at(self, ahead: int) -> bool:
+        return self.peek(ahead) == "\"" and self.peek(ahead + 1) == "\"" and self.peek(ahead + 2) == "\""
+
+    ## The character at `at`, or an empty string past the end.
+    def char_at(self, at: int) -> str:
+        if at < len(self.chars): return self.chars[at]
+        return ""
+
+    ## Where the closing `"""` of the string starting at `start` is: a backslash escapes what follows
+    ## it, but not in a raw one.
+    def triple_end(self, start: int, kind: str) -> int fails Diagnostic:
+        mut end = self.pos + len(kind) + 3
+        while not self.triple_at(end - self.pos):
+            character = self.char_at(end)
+            if character == "": fail self.unclosed_triple(start, prefix=len(kind))
+            end += 2 if character == "\\" and kind != "r" else 1
+        return end
+
+    ## The closing `"""` at `end` alone on its line: the spaces before it, and where the text ends,
+    ## with the newline before them. Otherwise none, and the text ends at `end`.
+    def closing_indent(self, content: int, end: int) -> (int, int):
+        mut newline = end - 1
+        while newline >= content and self.char_at(newline) != "\n":
+            newline -= 1
+        if newline < content: return (0, end)
+        for at in range(newline + 1, end):
+            if self.char_at(at) != " ": return (0, end)
+        return (end - newline - 1, newline + 1)
+
+    ## A string between `"""`s, which may span lines, after the letter `kind` of `r"""`, `f"""` or
+    ## `t"""`, or none. Read as `triple` in `crates/syntax/src/lexer.rs` reads it.
+    def triple(ref self, start: int, kind: str) fails Diagnostic:
+        content = self.pos + len(kind) + 3
+        end = self.triple_end(start, kind)?
+        first = content + 1 if self.char_at(content) == "\n" else content
+        indent, body_end = self.closing_indent(content, end=end)
+        self.pos = first
+        formatted = kind == "f" or kind == "t"
+        mut text = ""
+        mut parts = list[FPart]()
+        # Text right after the opening `"""` has no spaces of its own to take off.
+        mut line_start = first != content
+        while self.pos < body_end:
+            if line_start:
+                line_start = False
+                mut spaces = 0
+                while self.pos + spaces < body_end and self.char_at(self.pos + spaces) == " ":
+                    spaces += 1
+                if self.char_at(self.pos + spaces) == "\n":
+                    self.pos += spaces if spaces < indent else indent
+                elif spaces < indent:
+                    fail self.under_indented(self.pos + spaces, indent=indent)
+                else:
+                    self.pos += indent
+                continue
+            character = self.peek(0)
+            if character == "\n":
+                text += "\n"
+                self.pos += 1
+                line_start = True
+            elif character == "\\" and kind != "r" and self.peek(1) == "\n":
+                fail Diagnostic(
+                    message="a `\\` can't end a line in a string",
+                    span=self.span(self.pos),
+                    help="write `\\n` for a newline, or take the `\\` out",
+                )
+            elif character == "\\" and kind != "r":
+                text += self.escape(start)?
+            elif formatted and (character == "{" or character == "}") and self.peek(1) == character:
+                text += character
+                self.pos += 2
+            elif formatted and character == "{":
+                self.brace_on_its_line()?
+                mut part = self.fstring_code(start)?
+                # `{hp=}` shows what's written and then its value: `hp=100`.
+                match part:
+                    case .Code(source, offset, spec):
+                        shown = shown_as_written(source)
+                        if shown is not None:
+                            text += source
+                            part = .Code(shown, offset, spec)
+                    case .Text(_):
+                        pass
+                if text != "":
+                    parts.append(FPart.Text(text))
+                    text = ""
+                parts.append(part)
+            elif formatted and character == "}":
+                fail Diagnostic(
+                    message="`}` without a matching `{`",
+                    span=self.span(self.pos),
+                    help="write `}}` for a literal brace",
+                )
+            else:
+                text += character
+                self.pos += 1
+        self.pos = end + 3
+        if not formatted:
+            self.push(.Str(text), start)
+            return
+        if text != "":
+            parts.append(FPart.Text(text))
+        self.push(.TStr(parts) if kind == "t" else .FStr(parts), start)
+
+    ## A `{` in a `"""` string closes on its own line and holds no `"`, as in a string on one line.
+    def brace_on_its_line(self) fails Diagnostic:
+        mut nesting = 0
+        mut at = self.pos + 1
+        while not (self.char_at(at) == "}" and nesting == 0):
+            character = self.char_at(at)
+            if character == "" or character == "\n":
+                fail Diagnostic(
+                    message="this `{` isn't closed on its line",
+                    span=self.span(self.pos),
+                    help="close it with `}` on the same line, or write `{{` for a brace",
+                )
+            elif character == "\"":
+                fail Diagnostic(
+                    message="a `\"` can't go inside `{}` in a string",
+                    span=Span(start=self.offset(at), end=self.offset(at) + 1),
+                    help="give the value a name before the string, and write the name in the `{}`",
+                )
+            elif character in "([{":
+                nesting += 1
+            elif character in ")]}" and nesting > 0:
+                nesting -= 1
+            at += 1
+
+    ## A `"""` with no `"""` after it, named by the line it's on, which may be far above where the
+    ## file ends.
+    def unclosed_triple(self, start: int, prefix: int) -> Diagnostic:
+        mut line = 1
+        for character in self.chars[0:start]:
+            if character == "\n": line += 1
+        return Diagnostic(
+            message=f"the `\"\"\"` on line {line} is never closed",
+            span=Span(start=self.offset(start), end=self.offset(start) + prefix + 3),
+            help="close it with `\"\"\"`",
+        )
+
+    ## A line of a `"""` string with fewer spaces before it than the closing `"""` has, at its first
+    ## character.
+    def under_indented(self, at: int, indent: int) -> Diagnostic:
+        return Diagnostic(
+            message="this line is indented less than the closing `\"\"\"`",
+            span=Span(start=self.offset(at), end=self.offset(at + 1)),
+            help=f"indent it at least {indent} spaces, as far as the closing `\"\"\"` is, or move the closing `\"\"\"` left",
         )
 
     ## Reads a backslash escape and returns the character it stands for.

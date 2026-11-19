@@ -61,7 +61,7 @@ rustls-platform-verifier = "=0.7.1"
 ring = { version = "=0.17.14", default-features = false }
 # Inflating a release's `.tar.gz` when the launcher installs it, after its hash is checked: pure
 # Rust with no `unsafe`, the inflater most Rust tools use. Under MIT, Zlib or Apache-2.0.
-miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
 # The deques of the work-stealing pool `parallel` runs on, for programs with tasks: well-tested
 # Chase-Lev deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
 crossbeam-deque = { version = "=0.8.8", default-features = false, features = ["std"] }
@@ -99,7 +99,9 @@ rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled
 # Stopping a program `process.run` started, with whatever it started in turn: on Unix it runs in a
 # process group of its own, and the group is killed at its timeout, which the standard library
 # can't do without `unsafe`. rustix is already here under cap-std; this is its safe call for it.
-rustix = { version = "=1.1.6", default-features = false, features = ["fs", "process", "std"] }
+# The build daemon also takes a build's printing into files for the command that asked for it, by
+# putting a file in standard output's and error's place for the build (`stdio`), safely.
+rustix = { version = "=1.1.6", default-features = false, features = ["fs", "process", "std", "stdio"] }
 # On macOS, being told when a program `process.run` started has ended, by kqueue's `EVFILT_PROC`,
 # so a task waiting for it parks until then rather than looking. rustix reaches `kevent` only
 # through an `unsafe` call, and nix's `Kqueue` is safe. It's already here under ctrlc. Under MIT.

@@ -64,6 +64,37 @@ pub(crate) struct GenLink {
     thread: Option<std::thread::JoinHandle<()>>,
     /// How many `parallel` rounds and launched tasks had started when it was made.
     made: u64,
+    /// Whether it's a generator function's that can fail. Such a generator stays in the function
+    /// that made it, so its last owner lets go of it where compiled code frees it.
+    can_fail: bool,
+}
+
+thread_local! {
+    /// Whether what's let go of now is let go of where compiled code frees it: a function's names
+    /// as it ends, or a name's value as it's given another.
+    static LETTING_GO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// What came of the generators let go of then, for the interpreter to act on.
+    static LET_GO: std::cell::RefCell<Option<LetGo>> = const { std::cell::RefCell::new(None) };
+}
+
+/// What came of letting go of a generator partway, where it ran its cleanup.
+pub(crate) enum LetGo {
+    /// Its cleanup failed with this, which stops the program, as compiled code's free does.
+    Failed(Value),
+    /// Something the oracle doesn't model came of it.
+    Refused(String),
+    /// It ran its cleanup and ended.
+    Ended,
+}
+
+/// Runs `let_go`, which lets go of a function's names or a name's value, as compiled code frees
+/// them: a generator that can fail let go of partway leaves at its `yield`, running the cleanup
+/// of each `with` it's in, then and there. What came of it, if one did.
+pub(crate) fn letting_go(let_go: impl FnOnce()) -> Option<LetGo> {
+    let before = LETTING_GO.with(|flag| flag.replace(true));
+    let_go();
+    LETTING_GO.with(|flag| flag.set(before));
+    LET_GO.with(|slot| slot.borrow_mut().take())
 }
 
 /// What a generator sends its reader.
@@ -82,12 +113,40 @@ pub(crate) struct YieldSide {
 
 impl Drop for GenLink {
     /// Letting go of a generator lets its thread go: it wakes, finds nobody asking, and ends,
-    /// running nothing more of the program.
+    /// running nothing more of the program. One that can fail, let go of partway where compiled
+    /// code frees it, leaves at its `yield` instead, running each `with`'s cleanup.
     fn drop(&mut self) {
+        if self.can_fail && self.started && !self.done && LETTING_GO.with(std::cell::Cell::get) {
+            self.leave_for_good();
+        }
         self.resume.take();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+impl GenLink {
+    /// Lets it go for good as compiled code's free does, keeping what came of it. Two let go of at
+    /// once run their cleanups in an order compiled code doesn't promise, so that's refused.
+    fn leave_for_good(&mut self) {
+        let came = match self.let_go() {
+            None => LetGo::Ended,
+            Some(Flow::Fail(error, _)) => LetGo::Failed(error),
+            Some(Flow::Unsupported(why)) => LetGo::Refused(why),
+            Some(_) => LetGo::Refused("a generator let go of whose cleanup crashed".to_owned()),
+        };
+        LET_GO.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let earlier = slot.take();
+            *slot = Some(match earlier {
+                None => came,
+                Some(_) => LetGo::Refused(
+                    "two generators let go of at once, whose cleanups run in an order compiled code doesn't promise"
+                        .to_owned(),
+                ),
+            });
+        });
     }
 }
 
@@ -320,7 +379,7 @@ impl Interp {
         if vars.iter().any(|(_, binding)| matches!(binding, Binding::Ref(_))) {
             return unsupported("a generator with a `ref` parameter");
         }
-        let link = self.spawn(move |interp| {
+        let mut link = self.spawn(move |interp| {
             let previous = interp.push_frame(vars, None)?;
             let ran = interp.block(&def.body);
             interp.pop_frame(previous);
@@ -329,6 +388,7 @@ impl Interp {
                 Err(other) => Err(other),
             }
         })?;
+        link.can_fail = def.fails.is_some();
         Ok(Interp::stream_of(Source::Gen(link), shown))
     }
 
@@ -435,6 +495,7 @@ impl Interp {
             started: false,
             thread: Some(thread),
             made,
+            can_fail: false,
         })
     }
 

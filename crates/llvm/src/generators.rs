@@ -74,7 +74,7 @@ impl<'p> Emit<'_, '_, 'p> {
     ) -> Result<(), String> {
         let def = self.module.generator(generator).ok_or("no such generator")?;
         // A closure outside the runtime's table can't be in a block of its.
-        if !self.module.whole.runtime_closures && def.slots.iter().any(|ty| matches!(ty, Type::Arrow(..))) {
+        if !self.module.reads.runtime_closures() && def.slots.iter().any(|ty| matches!(ty, Type::Arrow(..))) {
             return Err("it keeps a closure in a generator, which this backend doesn't take yet".to_owned());
         }
         let id = self.module.layouts.id(&def.name).ok_or("a generator with no layout")?;
@@ -231,6 +231,23 @@ impl<'p> Emit<'_, '_, 'p> {
     /// Ends the program with a string's text.
     pub(crate) fn stop_with(&mut self, text: &str, span: Span) {
         self.stop_then(text, span, "");
+    }
+
+    /// Ends the program with a string's text, letting go of what `let_go` does once the runtime
+    /// has taken the text, as the failure's set.
+    pub(crate) fn stop_letting_go(&mut self, text: &str, span: Span, let_go: impl FnOnce(&mut Self)) {
+        self.declare("declare void @fennec_stop(ptr, i64, i64) #1");
+        let label = self.label("stop");
+        let (place, args) = self.span_values(&label, span);
+        for line in place.lines() {
+            self.line(line.trim_start());
+        }
+        self.line(&format!("call void @fennec_stop(ptr {text}, {args})"));
+        let_go(self);
+        // Stopping is what the program says to do, not a check.
+        self.next_check(span, None);
+        let failed = self.failed_exit();
+        self.line(&failed);
     }
 
     /// Ends the program with a string's text, doing `then` once the failure's set.

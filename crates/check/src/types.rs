@@ -8,7 +8,7 @@ use std::fmt;
 ///
 /// A program that checks without errors has no `Unknown` or `Var` anywhere in its
 /// signatures or typed tree: every type is fully known.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
     /// A type the checker couldn't work out because of a mistake it has already reported.
     Unknown,

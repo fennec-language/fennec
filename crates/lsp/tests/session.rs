@@ -363,6 +363,24 @@ fn definitions_of_functions_locals_members_and_constants() {
     assert_eq!(nothing, Json::Null);
 }
 
+/// A name in a `{}` of an f-string across lines in `"""`s, and code after the string, are found
+/// where they're written, and the string is no mistake (#294).
+#[test]
+fn names_in_and_after_a_string_in_triple_quotes_are_found() {
+    let mut editor = Editor::new("triple").unwrap();
+    let main = MAIN.replace(
+        "    stdout.print(fighter.describe(), damage, SIZE)\n",
+        "    report = f\"\"\"\n        {fighter.describe()}\n          took {damage}\n        \"\"\"\n    \
+         stdout.print(report, SIZE)\n",
+    );
+    let published = editor.open("src/main.fen", &main);
+    assert_eq!(messages(for_file(&published, "main.fen").unwrap_or_default()), Vec::<String>::new());
+    let local = editor.at("textDocument/definition", "src/main.fen", &main, "damage}", 0);
+    assert_eq!(local.as_array().unwrap()[0].at(&["range", "start"]), Some(&position(&main, "damage =", 0)));
+    let constant = editor.at("textDocument/definition", "src/main.fen", &main, "SIZE)", 0);
+    assert_eq!(line_of(&constant.as_array().unwrap()[0]), 3);
+}
+
 #[test]
 fn members_are_found_while_the_program_has_mistakes() {
     let mut editor = Editor::new("mistakes").unwrap();
@@ -820,7 +838,7 @@ fn copies_in_loops_are_marked_and_none_is_a_mistake() {
     let mut editor = Editor::new("inlay-copies").unwrap();
     let once = format!(
         "{MAIN}\ndef once(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    for at in range(n):\n        \
-         xs[0] = at\n    snapshot.len() + xs.len()\n"
+         xs[0] = at\n    return len(snapshot) + len(xs)\n"
     );
     let published = editor.open("src/main.fen", &once);
     assert!(
@@ -835,7 +853,7 @@ fn copies_in_loops_are_marked_and_none_is_a_mistake() {
     assert!(hints.iter().any(|(label, line, _)| label == "copies once" && *line == 14), "{hints:?}");
     let each = format!(
         "{MAIN}\ndef each(n: int) -> int:\n    mut xs = [n]\n    mut total = 0\n    for at in range(n):\n        \
-         snapshot = xs\n        xs[0] = at\n        total += snapshot.len()\n    total\n"
+         snapshot = xs\n        xs[0] = at\n        total += len(snapshot)\n    return total\n"
     );
     let published = editor.change("src/main.fen", &each);
     let found = for_file(&published, "main.fen").unwrap();

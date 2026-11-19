@@ -19,9 +19,16 @@ cd "$root" || exit 1
 # How much the disk it builds on has free, said loudly first when it's under 40 GB, and again by
 # its summary: a gate builds 7 to 13 GB in its worktree, and a build that runs out of room part way
 # leaves broken objects behind, as one lane's did with 12 GB free on 2026-11-17. It still runs.
+# Under the mark, it first deletes the builds of the worktrees nothing has built in for two hours,
+# as the lanes' two-hourly sweep does, since the warning alone left the disk to fill on 2026-11-18.
 # GATE_LEAST_FREE_GB sets the mark.
 least_free=${GATE_LEAST_FREE_GB:-40}
 free_gb=$(df -Pk "$root" 2> /dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+if [[ $free_gb =~ ^[0-9]+$ ]] && [ "$free_gb" -lt "$least_free" ]; then
+  echo "gate: only $free_gb GB free, so the builds idle for two hours go first" >&2
+  "$root/.github/scripts/sweep-builds.sh" --hours 2 >&2 || echo "gate: the sweep of idle builds failed" >&2
+  free_gb=$(df -Pk "$root" 2> /dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+fi
 low_disk=''
 if [[ $free_gb =~ ^[0-9]+$ ]] && [ "$free_gb" -lt "$least_free" ]; then
   low_disk="WARNING: only $free_gb GB free on the disk this builds on, under $least_free GB: a build that runs out part way leaves broken objects. Free some first: remove the worktrees of merged pull requests, their target folders first."
@@ -35,6 +42,9 @@ log="$logs/gate.log"
 : > "$log"
 # LLVM is the main backend, so its tests have to run, not skip.
 export FENNEC_EXPECT_LLVM=1
+# Everything builds in its own process, as a first build and CI do, never through a build daemon
+# kept between commands: what's checked and timed is the build on its own.
+export FENNEC_NO_DAEMON=1
 # Every executable a build makes as a new file, a line each, which macOS may hold at its first
 # launch: counted for each step at the end.
 export FENNEC_NEW_EXECUTABLES="$logs/new-executables.txt"
@@ -322,7 +332,7 @@ quick() {
   # With no git settings but git's own, as CI's runners have: this Mac's git names a new
   # repository's first branch `main`, which hid two tests that needed it, and CI found them.
   local script
-  for script in test-fetch test-open-pr test-landing test-sweep-worktrees; do
+  for script in test-fetch test-open-pr test-landing test-sweep-worktrees test-flakes; do
     if ! GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null ".github/scripts/$script.sh" > "$said" 2>&1; then
       cat "$said"
       echo "$script" >> "$names"

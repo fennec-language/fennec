@@ -201,6 +201,9 @@ fn no_module(name: &str, span: Span) -> Diagnostic {
     }
     let modules: Vec<String> = MODULES.iter().map(|module| format!("std.{}", module.name)).collect();
     let diagnostic = Diagnostic::new(format!("there's no module called `{name}`"), span);
+    if let Some(help) = python_module(name) {
+        return diagnostic.with_help(help);
+    }
     // A slip of a letter or two, like `std.compres`, is most likely the module it nearly spells.
     match modules
         .iter()
@@ -232,4 +235,27 @@ fn letters_apart(a: &str, b: &str) -> usize {
         }
     }
     row.last().copied().unwrap_or(0)
+}
+
+/// Where a Python programmer's import of one of Python's own modules is in Fennec, for a program
+/// with no module of that name: in `std`, built in, or reached through what `main` is given. The
+/// kit loader and the checker both say it, so `fennec check` and an editor agree.
+#[must_use]
+pub fn python_module(name: &str) -> Option<String> {
+    Some(match name {
+        "json" | "math" | "random" | "re" | "time" | "csv" | "uuid" | "base64" | "collections" => {
+            format!("it's `std.{name}`, as `from std.{name} import ...`")
+        }
+        "datetime" => "dates and times are in `std.time`, as `from std.time import Time`".to_owned(),
+        "typing" => {
+            "Fennec's types are built in: `str?` for `Optional[str]` and `list[int]` for `List[int]`, so take out the import"
+                .to_owned()
+        }
+        "dataclasses" => "a `struct` is a data class already, so take out the import".to_owned(),
+        "os" | "sys" | "pathlib" | "shutil" | "subprocess" => {
+            "Fennec reaches the system through what `main` is given, as `fs: Fs`, `env: Env`, `args: Args` or `process: Process`, so take out the import"
+                .to_owned()
+        }
+        _ => return None,
+    })
 }

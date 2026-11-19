@@ -42,6 +42,8 @@ pub enum Also {
     Loop,
     /// Where a generator was used first.
     FirstUse,
+    /// Where a name read too early is given its value.
+    GivenValue,
 }
 
 /// One change to a source: the text at `span` becomes `text`. An empty span inserts.
@@ -134,6 +136,7 @@ impl Diagnostic {
             Also::Other => "the other one",
             Also::Loop => "the loop",
             Also::FirstUse => "its first use",
+            Also::GivenValue => "the line that gives it its value",
         }
     }
 

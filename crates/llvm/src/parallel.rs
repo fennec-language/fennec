@@ -421,12 +421,12 @@ impl Emit<'_, '_, '_> {
     /// The start of a helper that counts a block: whose it is, a native block counting as this
     /// thread's own, up to the `br i1` on that.
     fn whose_or_native(&mut self) -> String {
-        let native: Vec<u32> = self.module.shared.native.iter().copied().collect();
+        let native: Vec<u32> = self.module.reads.native().iter().copied().collect();
         let mut shapes = Vec::with_capacity(native.len());
         for id in native {
             let Some(name) = self.module.layouts.get(id).map(|layout| layout.name.clone()) else { continue };
             let symbol = format!("h_{name}");
-            self.module.shared.shapes.insert(symbol.clone(), id);
+            self.module.add_shape(&symbol, id);
             self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
             shapes.push(symbol);
         }
@@ -517,7 +517,7 @@ impl Emit<'_, '_, '_> {
 
     /// One more owner for a closure.
     pub(crate) fn retain_closure(&mut self, closure: &str) {
-        if self.module.whole.runtime_closures {
+        if self.module.reads.runtime_closures() {
             self.retain(closure);
         } else if self.module.threads {
             self.closure_helpers();
@@ -664,8 +664,8 @@ impl Emit<'_, '_, '_> {
     }
 
     fn waiting(&self, range: &Operand) -> &'static str {
-        let shared = &self.module.shared;
-        let any_closure = !shared.waiting_closures.is_empty();
+        let reads = self.module.reads;
+        let any_closure = reads.waiting_closures();
         let Operand::Local(local) = range else {
             return if any_closure { "_waiting" } else { "" };
         };
@@ -682,11 +682,8 @@ impl Emit<'_, '_, '_> {
             })
             .collect();
         let known = !writes.is_empty() && writes.iter().all(Option::is_some);
-        let waits = if known {
-            writes.iter().flatten().any(|function| shared.waiting.contains(*function))
-        } else {
-            any_closure
-        };
+        let waits =
+            if known { writes.iter().flatten().any(|function| reads.waiting(function)) } else { any_closure };
         if waits { "_waiting" } else { "" }
     }
 
@@ -756,7 +753,7 @@ impl Emit<'_, '_, '_> {
             Kind::Struct(_) | Kind::Enum(_) => {
                 let fields = self.offset(block, crate::lists::FIELDS_OFFSET);
                 self.read_into(dest, &kind, &fields, "")?;
-                self.release(block);
+                self.release_block(block, &kind);
                 Ok(())
             }
             Kind::Boxed(_) => self.assign(dest, block),
@@ -787,7 +784,7 @@ impl Emit<'_, '_, '_> {
         let call = format!("fennec_parallel_map{}", self.weighed(range));
         let (list, env) = self.list_and_env(list, range)?;
         let symbol = element_symbol(self.module.layouts, item);
-        self.module.shared.elements.insert(symbol.clone(), item);
+        self.module.add_element(&symbol, item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         // A range whose items can fail gives back how it ended.
         let (_, kind) = self.operand(range)?;
@@ -813,7 +810,7 @@ impl Emit<'_, '_, '_> {
         let call = format!("fennec_parallel_stream{}", self.waiting(range));
         let (list, env) = self.list_and_env(list, range)?;
         let symbol = element_symbol(self.module.layouts, item);
-        self.module.shared.elements.insert(symbol.clone(), item);
+        self.module.add_element(&symbol, item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         let shim = self.shim(Shape::Into);
         self.declare(&format!("declare i64 @{call}(ptr, ptr, i64, i64) nounwind"));

@@ -218,6 +218,9 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
     let thread = with(|state| state.heap.owner_number());
     FAILED_WITH.set(None);
     let how = body(i64::try_from(env).unwrap_or(0), thread);
+    // The generators it let go of partway that wait to be closed are closed as it ends, as its
+    // own: one whose cleanup fails is this task's crash, said here, and never another task's.
+    heap::run_abandons();
     let failure = FAILED_WITH.take().unwrap_or(0);
     let how = match how {
         ENDED if super::super::failed() => CRASHED,
@@ -299,6 +302,7 @@ pub extern "C" fn task_failed(failure: i64) {
 /// now the caller's own.
 pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure: &mut i64) -> i64 {
     let Some(launched) = tasks(|tasks| tasks.remove(&task)) else { return 0 };
+    super::super::live::publish_main();
     // A failure this thread has, as when a stop ended the block, waits aside: the flag's the
     // thread's, and other tasks run on it while this one waits.
     let held = with(|state| state.failure.take());

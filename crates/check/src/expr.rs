@@ -91,7 +91,18 @@ impl FnCx<'_> {
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Binary { op, lhs, rhs } => {
+                // `work is None` reads only whether there's a function, so it calls none.
+                let tested = match (op, &lhs.kind, &rhs.kind) {
+                    (BinOp::Is | BinOp::IsNot, ExprKind::Name(_), ExprKind::None) => Some(lhs.span),
+                    (BinOp::Is | BinOp::IsNot, ExprKind::None, ExprKind::Name(_)) => Some(rhs.span),
+                    _ => None,
+                };
+                let outer = self.direct_read;
+                if let Some(tested) = tested {
+                    self.direct_read = Some((tested.start, tested.end));
+                }
                 let (left, right) = self.operands(lhs, rhs);
+                self.direct_read = outer;
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
@@ -214,6 +225,9 @@ impl FnCx<'_> {
         if let Some(problem) = self.missing_capability(name, span) {
             return problem;
         }
+        if let Some(problem) = self.newcomer_name(name, span) {
+            return problem;
+        }
         if let Some(problem) = self.std_own(name, span) {
             return problem;
         }
@@ -233,6 +247,44 @@ impl FnCx<'_> {
             }
             None => problem,
         }
+    }
+
+    /// A name read above the line that gives it its value, or one a Python programmer reaches for
+    /// that Fennec spells another way: what to write instead.
+    fn newcomer_name(&self, name: &str, span: Span) -> Option<Diagnostic> {
+        if let Some((_, at)) = self.assigned.iter().find(|(given, at)| given == name && at.start > span.start)
+        {
+            return Some(
+                Diagnostic::new(format!("`{name}` is used before it's given a value"), span)
+                    .with_help(format!("give `{name}` its value above this line"))
+                    .also_at_the(fennec_syntax::Also::GivenValue, *at),
+            );
+        }
+        let help = match name {
+            // A method written without `self`, which reads it all the same.
+            "self" => {
+                let owner = self.checker.program.functions.get(&self.key)?.owner.clone()?;
+                let function = &self.name;
+                return Some(Diagnostic::new(format!("`{function}` has no `self`"), span).with_help(format!(
+                    "write `self` first among its parameters, as `def {function}(self, ...)`, to call it on a `{owner}`"
+                )));
+            }
+            "open" => {
+                "files are reached through `fs: Fs` in `main`'s parameters, as `text = fs.read_text(path)?`; a database is `from std.sqlite import open`"
+            }
+            "input" => {
+                "standard input comes through `stdin: Stdin` in `main`'s parameters, as `line = stdin.read_line()? else \"\"`"
+            }
+            "exit" => {
+                "`main` gives the exit code: write `def main(...) -> int:` and `return 1`, or `fail` out of `main`"
+            }
+            "isinstance" => {
+                "write `value is Circle`, which also narrows `value` to a `Circle` inside the `if`"
+            }
+            "type" => "write `value is int` to test what a value is",
+            _ => return None,
+        };
+        Some(unknown_name(name, span).with_help(help))
     }
 
     /// `print` or `console`, which a newcomer writes first: what to write instead, in the function
@@ -298,6 +350,7 @@ impl FnCx<'_> {
             self.note_outer();
         }
         if !outer && let Some((ty, _)) = self.lookup(name) {
+            self.note_function_read(name, span);
             // A generator that can fail passes its failure up from where it's looped over, so only
             // the function that made it, and counts its failure, may loop over it: not one around
             // it, from a name that is one or that holds one in a list, a tuple or a struct.
@@ -1001,8 +1054,33 @@ impl FnCx<'_> {
     }
 
     fn no_field(&mut self, ty: &Type, name: &str, span: Span) -> Type {
+        // A union some of whose members have it, as one known to hold one member was, until a
+        // `ref` call that could change its member: it's read once it's known to be one again.
+        let having: Vec<String> = match ty {
+            Type::Union(members) => members
+                .iter()
+                .filter(|member| {
+                    member.type_name().and_then(|owner| self.checker.program.type_info(owner)).is_some_and(
+                        |info| {
+                            info.def.cases.is_empty()
+                                && info.def.fields.iter().any(|field| field.name == name)
+                        },
+                    )
+                })
+                .map(|member| format!("`{member}`"))
+                .collect(),
+            _ => Vec::new(),
+        };
         let help = if self.has_method(ty, name) {
             format!("`{name}` is a method: call it, as `.{name}()`")
+        } else if let [first, rest @ ..] = having.as_slice() {
+            let (which, has) = match (rest, having.split_last()) {
+                ([], _) | (_, None) => (first.clone(), "has"),
+                (_, Some((last, before))) => (format!("{} and {last}", before.join(", ")), "have"),
+            };
+            format!(
+                "only {which} {has} `.{name}`: read it where it's known to be one, after an `is` check or in a `match` case for it"
+            )
         } else {
             format!("take `.{name}` off: {} has no fields", describe(ty))
         };
@@ -1268,10 +1346,11 @@ impl FnCx<'_> {
 
     /// `except` on a call whose value is, or holds, a generator that can fail. That generator's
     /// failure is counted only where a `?` takes it out, so `except` leaves it with nowhere to go,
-    /// unless what's called is a `def` given no function, which gives back only what its caller
-    /// made and counted. A generator function's call runs none of its body, so its `except` would
-    /// never run; an arrow function's `?` counted the generator as its own failure, not this
-    /// function's, and so may a function a `def` is given and calls.
+    /// unless what's called is a `def` given nothing that could have made one, which gives back
+    /// only what its caller made and counted. A generator function's call runs none of its body,
+    /// so its `except` would never run; an arrow function's `?` counted the generator as its own
+    /// failure, not this function's, and so may a function a `def` is given and calls, as
+    /// `could_make_a_failing_generator` says.
     fn except_on_failing_generator(&mut self, value: &Expr) {
         let written = value.span;
         let ExprKind::Call { callee, args } = &value.kind else {
@@ -1301,12 +1380,84 @@ impl FnCx<'_> {
         if let ExprKind::Attr { object, .. } = &callee.kind {
             given.push(object.span);
         }
-        let given_a_function = given.into_iter().any(|span| {
+        let given_a_maker = given.into_iter().any(|span| {
             let ty = self.recorded(span).map_or(Type::Unknown, |ty| self.checker.settled(&ty));
-            mentions_a_function(&ty) || self.checker.holds_function_value(&ty, &mut Vec::new())
+            self.could_make_a_failing_generator(&ty, &mut Vec::new())
         });
-        if given_a_function {
+        if given_a_maker {
             self.error(crate::messages::except_on_a_call_given_a_function(written));
+        }
+    }
+
+    /// Whether a value of this type, given to a call, could have made a generator that can fail
+    /// the call gives back: it is, or holds, a function whose result is, or holds, one, a type
+    /// parameter, a type not worked out yet, or another function that could; or an arrow function
+    /// taking a function, which could carry one out to a callback. A function that gives back
+    /// only a plain value, like an `(int) -> bool` rule, couldn't. A struct holding a function
+    /// counts, its field not looked into. A value whose own type isn't worked out yet counts as
+    /// none: the call's result, read on the same line, already holds the generator.
+    /// `open` holds the functions by name being looked into, so one giving back itself, or two
+    /// giving back each other, count rather than being looked into again.
+    fn could_make_a_failing_generator(&mut self, ty: &Type, open: &mut Vec<String>) -> bool {
+        let ty = self.checker.settled(ty);
+        let could_be = |returns: &Type| {
+            !returns.held_generator_failures().is_empty() || returns.has_params() || !returns.is_known()
+        };
+        match &ty {
+            Type::Arrow(params, returns) => {
+                let returns = self.checker.settled(returns);
+                could_be(&returns)
+                    || self.could_make_a_failing_generator(&returns, open)
+                    || params.iter().any(|param| self.holds_a_function(param))
+            }
+            Type::Function(key) => {
+                if open.contains(key) {
+                    return true;
+                }
+                let Some((generator, returns)) = self
+                    .checker
+                    .signature_found(key)
+                    .map(|signature| (signature.generator, signature.returns.clone()))
+                else {
+                    return true;
+                };
+                if generator || could_be(&returns) {
+                    return true;
+                }
+                open.push(key.clone());
+                let could = self.could_make_a_failing_generator(&returns, open);
+                open.pop();
+                could
+            }
+            Type::Named(_) | Type::Generic(..) if self.checker.holds_function_value(&ty, &mut Vec::new()) => {
+                true
+            }
+            other => other
+                .children()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .iter()
+                .any(|child| self.could_make_a_failing_generator(child, open)),
+        }
+    }
+
+    /// Whether a value of this type is, or holds, a function: an arrow function, a function by
+    /// name, or a struct with a function in a field.
+    fn holds_a_function(&mut self, ty: &Type) -> bool {
+        let ty = self.checker.settled(ty);
+        match &ty {
+            Type::Arrow(..) | Type::Function(_) => true,
+            Type::Named(_) | Type::Generic(..) if self.checker.holds_function_value(&ty, &mut Vec::new()) => {
+                true
+            }
+            other => other
+                .children()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .iter()
+                .any(|child| self.holds_a_function(child)),
         }
     }
 
@@ -1409,6 +1560,8 @@ impl FnCx<'_> {
 /// How to fix an operator used on values it doesn't work on.
 fn operator_help(op: BinOp, left: &Type, right: &Type) -> &'static str {
     match (left, right) {
+        // Python's `"%d items" % count`.
+        (Type::Str | Type::LiteralStr, _) if op == BinOp::Mod => crate::messages::F_STRINGS,
         (Type::Str, _) | (_, Type::Str) if op == BinOp::Add => {
             "join text with an f-string, as `f\"{name}{count}\"`"
         }
@@ -1527,10 +1680,4 @@ fn swallows_failure(written: Span, inner: &Type) -> Diagnostic {
             a(inner)
         ))
         .with_hint("pass the failure up", end, "?")
-}
-
-/// Whether a type is, or holds where its parts are written, a function named as a value, which an
-/// arrow function's type doesn't cover.
-fn mentions_a_function(ty: &Type) -> bool {
-    matches!(ty, Type::Function(_)) || ty.children().into_iter().any(mentions_a_function)
 }

@@ -7,6 +7,7 @@ use fennec_layout::ListItem;
 use fennec_rt::embed::layout::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM};
 use fennec_syntax::{BinOp, Span};
 
+use crate::analysis::Reserved;
 use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, VALUE_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::uniqueness::{FieldPath, item_step, list_place};
@@ -86,7 +87,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn shape_of(&mut self, id: u32) -> Result<String, String> {
         let name = self.layout_of(id)?.name.clone();
         let symbol = format!("h_{name}");
-        self.module.shared.shapes.insert(symbol.clone(), id);
+        self.module.add_shape(&symbol, id);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         let shape = self.temp();
         self.line(&format!("{shape} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
@@ -782,6 +783,10 @@ impl Emit<'_, '_, '_> {
         if self.alone_slots_contains(place) {
             let block = self.temp();
             self.line(&format!("{block} = load ptr, ptr {place}"));
+            if self.alone_in_loop(place) {
+                let span = self.here_span();
+                self.proof_alone(&block, "made alone before its loop, which gives it no other owner", span);
+            }
             return block;
         }
         self.declare(&format!("declare ptr @{helper}(ptr) nounwind"));
@@ -1551,7 +1556,7 @@ impl Emit<'_, '_, '_> {
 
     fn new_list_with(&mut self, item: ListItem, count: &str, helper: &str) -> String {
         let symbol = element_symbol(self.module.layouts, item);
-        self.module.shared.elements.insert(symbol.clone(), item);
+        self.module.add_element(&symbol, item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         self.declare(&format!("declare ptr @{helper}(i64, i64) nounwind"));
         let (element, list) = (self.temp(), self.temp());
@@ -1689,9 +1694,8 @@ impl Emit<'_, '_, '_> {
     /// Whether the index of the instruction being written is proven not negative (see `signs`).
     fn index_not_negative(&self) -> bool {
         self.module
-            .whole
-            .non_negative
-            .get(self.function.name.as_str())
+            .reads
+            .non_negative(self.function.name.as_str())
             .is_some_and(|found| found.contains(&self.at))
     }
 
@@ -1920,6 +1924,13 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn check_alone(&mut self, local: LocalId) -> String {
         self.declare("declare ptr @fennec_list_unshare(ptr) nounwind");
         let slot = self.slot(local);
+        if self.alone_in_loop(&slot) {
+            let list = self.temp();
+            self.line(&format!("{list} = load ptr, ptr {slot}"));
+            let span = self.here_span();
+            self.proof_alone(&list, "made alone before its loop, which gives it no other owner", span);
+            return list;
+        }
         let list = self.temp();
         let (ok, shared) = (self.label("alone"), self.label("shared"));
         self.line(&format!("{list} = load ptr, ptr {slot}"));
@@ -2425,7 +2436,9 @@ impl Emit<'_, '_, '_> {
             return self.assign(dest, &text);
         }
         // A list a loop right after fills is made once the loop's count is known.
-        if self.known.reservations.get(&block).is_some_and(|(list, _)| *list == dest.0) && items.is_empty() {
+        if items.is_empty()
+            && self.reserved_at(block).iter().any(|one| one.list == dest.0 || one.copied_from == Some(dest.0))
+        {
             return Ok(());
         }
         let kind = self.kind_of(dest)?.clone();
@@ -2488,6 +2501,20 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{list} = phi ptr [ {kept}, %{before} ], [ {made}, %{made_end} ]"));
         self.retain_value(&list, &kind);
         self.assign(dest, &list)
+    }
+
+    /// The lists made at the end of `block` with room for the loop after it. Only those kept as
+    /// lists: a `list[str]` kept as the string it's joined into is made as that string, and so
+    /// is the empty one copied into it, as any such list is.
+    pub(crate) fn reserved_at(&self, block: usize) -> Vec<Reserved> {
+        let is_list = |local: usize| matches!(self.kind_of(LocalId(local)), Ok(Kind::List(_)));
+        self.known.reservations.get(&block).map_or_else(Vec::new, |reserved| {
+            reserved
+                .iter()
+                .filter(|one| is_list(one.list) && one.copied_from.is_none_or(is_list))
+                .cloned()
+                .collect()
+        })
     }
 
     /// Makes an empty list with room for what the loop after this block adds, or, for a loop

@@ -1,0 +1,7 @@
+error: Fennec doesn't have `**options`
+ --> examples/errors/kwargs.fen:1:31
+  |
+1 | def configure(stdout: Stdout, **options):
+  |                               ^^^^^^^^^
+  |
+  = help: give each option a parameter with a default, as `width = 80`: a call names the ones it sets, as `configure(width=3)`

@@ -170,7 +170,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             typed: true,
         },
         Ok(loaded) => {
-            let (diagnostics, checked) = match fennec_check::check_typed(&loaded.module) {
+            let (diagnostics, checked) = match fennec_check::check_typed_refusing(&loaded.module) {
                 Ok(checked) => (Vec::new(), Some(checked)),
                 Err(mut diagnostics) => {
                     fennec_check::add_rename_fixes(&mut diagnostics, &loaded.module, &loaded.sources);
@@ -208,7 +208,8 @@ impl Analysis {
         }
         self.typed = true;
         if self.diagnostics.is_empty() {
-            self.checked = self.module.as_ref().and_then(|module| fennec_check::check_typed(module).ok());
+            self.checked =
+                self.module.as_ref().and_then(|module| fennec_check::check_typed_reached(module).ok());
         }
     }
 

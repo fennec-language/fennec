@@ -142,7 +142,10 @@ fn a_task_s_ranges_run_on_its_own_worker_while_it_s_parked_when_that_s_the_only_
 }
 
 static HEAVY_POOL: OnceLock<&'static Pool> = OnceLock::new();
-/// The thread another range than the first ran on, plus one.
+/// The thread the first range other than the first ran on, plus one: the one that let the first
+/// stop waiting. Only that one is kept. Kept for whichever ran last, under load it could be the
+/// first's own thread, which ran the rest once it stopped waiting while the other worker was slow
+/// to, and the ranges seemed to have run on one thread (2 runs in 150 beside 12 busy loops).
 static ANOTHER_RAN_ON: AtomicI64 = AtomicI64::new(0);
 /// The thread the first range ran on, plus one, once another had run elsewhere: -1 if none did.
 static FIRST_RAN_ON: AtomicI64 = AtomicI64::new(0);
@@ -152,7 +155,7 @@ static HEAVY_LEFT: AtomicI64 = AtomicI64::new(0);
 /// any other to have run, which only another worker can do meanwhile.
 extern "C" fn first_waits_for_another_thread(_env: i64, from: i64, _to: i64, thread: i64, _out: i64) -> i64 {
     if from != 0 {
-        ANOTHER_RAN_ON.store(thread + 1, Ordering::SeqCst);
+        let _ = ANOTHER_RAN_ON.compare_exchange(0, thread + 1, Ordering::SeqCst, Ordering::SeqCst);
         return 0;
     }
     let started = Instant::now();
@@ -637,5 +640,84 @@ fn a_task_s_reduction_whose_body_may_wait_runs_its_leaves_at_once() {
     assert_eq!(SUM.load(Ordering::SeqCst), (0..SUMMED).sum::<i64>());
     // Each leaf is a task that parks while it waits, so they all wait at once, on two workers.
     assert_eq!(LEAVES_AT_ONCE.load(Ordering::SeqCst), 4, "the leaves waited one after another");
+    finish();
+}
+
+static LONG_RANGE_POOL: OnceLock<&'static Pool> = OnceLock::new();
+/// What the long range kept, from its start and from its end.
+static LONG_RANGE_KEPT: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+/// The longest its list of what it had made was, each time it looked, and the longest its heap
+/// said the list could get then.
+static LONG_RANGE_LISTED: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+/// Whether it had let its list go by the time it stopped.
+static LONG_RANGE_LET_GO: AtomicBool = AtomicBool::new(false);
+/// What the task found of what the range kept, once its call was over: 1 for each that was its own
+/// now, and whole.
+static LONG_RANGE_FOUND: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+
+/// A range of a waiting call, run as a task of its own: the first makes a list and lets it go over
+/// and over, as a piece serving a session for an hour does, keeping one list from its start and one
+/// from its end. The other ends at once.
+extern "C" fn one_range_runs_long(_env: i64, from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
+    if from != 0 {
+        return 0;
+    }
+    LONG_RANGE_KEPT[0].store(list(&["kept from the start"]), Ordering::SeqCst);
+    let mut after_letting_go = 0;
+    for round in 0..2_000_000 {
+        heap::free(list(&["made and let go of"]));
+        if round % 1000 == 0 {
+            let (listed, allowed, let_go) =
+                with(|state| (state.heap.made_so_far(), state.heap.most_listed(), state.heap.made_let_go()));
+            LONG_RANGE_LISTED[0].fetch_max(i64::try_from(listed).unwrap_or(i64::MAX), Ordering::SeqCst);
+            LONG_RANGE_LISTED[1].fetch_max(i64::try_from(allowed).unwrap_or(i64::MAX), Ordering::SeqCst);
+            LONG_RANGE_LET_GO.store(let_go, Ordering::SeqCst);
+            after_letting_go += usize::from(let_go);
+        }
+        if after_letting_go > 100 {
+            break;
+        }
+    }
+    LONG_RANGE_KEPT[1].store(list(&["kept from the end"]), Ordering::SeqCst);
+    0
+}
+
+/// A task whose waiting call has one long range, which then reads what that range kept.
+extern "C" fn calls_with_a_long_range(_env: i64, _thread: i64) -> i64 {
+    let items = list(&["one", "two"]);
+    heap::free(parallel_map_waiting(items, one_range_runs_long, 0, LINES));
+    heap::free(items);
+    for (at, text) in [(0, "kept from the start"), (1, "kept from the end")] {
+        let kept = LONG_RANGE_KEPT[at].load(Ordering::SeqCst);
+        LONG_RANGE_FOUND[at].store(i64::from(is_own(kept) && lines(kept) == [text]), Ordering::SeqCst);
+        heap::free(kept);
+    }
+    ENDED
+}
+
+/// A range of a waiting call that makes blocks for a long time keeps a short list, as a launched
+/// task does. Run as a task of its own, it marked its thread's list as it started and handed over
+/// by where the list was then, so the list was kept whole for as long as it ran: a word for every
+/// block it made, freed or not, without end in a piece that lives as long as its program (#1842).
+/// Now it lists as a launched task does, letting the list go once it's as long as a look through
+/// its thread's table, and what it holds when it ends is found by its mark and handed to its
+/// caller all the same.
+#[test]
+fn a_range_that_makes_blocks_for_a_long_time_keeps_a_short_list_and_hands_over_what_it_holds() {
+    begin();
+    let task = launch_on(own_pool(&LONG_RANGE_POOL, 2), calls_with_a_long_range, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    let (most, allowed) =
+        (LONG_RANGE_LISTED[0].load(Ordering::SeqCst), LONG_RANGE_LISTED[1].load(Ordering::SeqCst));
+    assert!(most <= allowed, "its list reached {most} blocks while it ran, past the {allowed} it may");
+    assert!(LONG_RANGE_LET_GO.load(Ordering::SeqCst), "it never let its list go, having listed {most}");
+    for (at, text) in [(0, "kept from the start"), (1, "kept from the end")] {
+        assert_eq!(
+            LONG_RANGE_FOUND[at].load(Ordering::SeqCst),
+            1,
+            "what it kept isn't the task's whole: {text}"
+        );
+    }
     finish();
 }

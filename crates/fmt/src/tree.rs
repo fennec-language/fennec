@@ -248,10 +248,13 @@ impl<'t, 'a> Line<'t, 'a> {
             } else {
                 let text = self.text(at);
                 let precedence = self.precedence.get(at).copied().unwrap_or(0);
+                // A string in `"""`s across lines is as wide as its first line, which is all that
+                // has to fit where it starts: its other lines are kept as they're written.
+                let first_line = text.split('\n').next().unwrap_or(text);
                 item.nodes.push(Node::Token {
                     text,
                     space: self.space(at),
-                    width: text.chars().count(),
+                    width: first_line.chars().count(),
                     precedence,
                 });
                 at

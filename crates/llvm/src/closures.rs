@@ -179,7 +179,7 @@ impl Emit<'_, '_, '_> {
     /// One owner fewer for a closure, freeing it when that was the last.
     pub(crate) fn release_closure(&mut self, closure: &str) {
         // A block in the runtime's table goes as any other does, with what it captured.
-        if self.module.whole.runtime_closures {
+        if self.module.reads.runtime_closures() {
             self.release(closure);
             return;
         }
@@ -197,6 +197,10 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("call void {code}(ptr {closure})"));
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
+        // What it captured may be a generator that closes something as it's let go partway.
+        if self.module.reads.abandons() {
+            self.owe_free_check();
+        }
     }
 
     /// `==` on functions: each is equal only to itself, however many times it's been named.
@@ -219,13 +223,13 @@ impl Emit<'_, '_, '_> {
         let (code, let_go, kinds) = self.closure_code(function, captures.len())?;
         let layouts = self.module.layouts;
         let size = u64::from(CAPTURES) + kinds.iter().map(|kind| u64::from(kind.size(layouts))).sum::<u64>();
-        let closure = if self.module.whole.runtime_closures {
+        let closure = if self.module.reads.runtime_closures() {
             self.table_closure(function, kinds.get(..captures.len()).ok_or("a closure captures too much")?)?
         } else {
             self.declare("declare noalias ptr @malloc(i64) nounwind");
             let closure = self.temp();
             self.line(&format!("{closure} = call ptr @malloc(i64 {size})"));
-            if self.module.shared.tracing_costs {
+            if self.module.tracing_costs() {
                 self.declare("declare void @fennec_trace_allocated(i64) nounwind");
                 self.line(&format!("call void @fennec_trace_allocated(i64 {size})"));
             }
@@ -309,6 +313,8 @@ impl Emit<'_, '_, '_> {
                     format!(
                         "  %f{at}_at = getelementptr inbounds i8, ptr %h{at}, i64 {LET_GO}\n  %f{at} = load ptr, ptr %f{at}_at\n  call void %f{at}(ptr %h{at})\n"
                     )
+                } else if self.lets_go_quietly(kind) {
+                    format!("  call void @fennec_free_plain(ptr %h{at})\n")
                 } else {
                     format!("  call void @fennec_free(ptr %h{at})\n")
                 };
@@ -362,6 +368,7 @@ impl Emit<'_, '_, '_> {
         self.module.add_helper(&code, thunk);
         if held.iter().any(Kind::counted) {
             self.declare("declare void @fennec_free(ptr) nounwind");
+            self.declare("declare void @fennec_free_plain(ptr) nounwind");
             self.owner_gone_helper();
             self.closure_helpers();
         }

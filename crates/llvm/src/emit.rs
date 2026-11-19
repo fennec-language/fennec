@@ -5,14 +5,19 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use fennec_ir::{FormatPart, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
-use fennec_layout::Layouts;
+use fennec_layout::{Layouts, ListItem, Word};
 use fennec_rt::embed::layout::COUNT;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
-use crate::analysis::{Analysis, Whole, callees, visit, whole};
+use crate::analysis::{Analysis, callees, visit, whole};
 use crate::holding::{Holding, filled, holding, step};
+use crate::index::{Record, Using};
+use crate::keys::Key;
 use crate::kinds::{Kind, struct_definitions};
-use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
+use crate::reads::Reads;
+use crate::reads::What;
+use crate::share::{Added, Kept, Place, Share, place};
+use crate::uniqueness::{Callees, FieldPath, Tracked, coming_in, unsettled, written_order};
 use crate::{CheckKind, CheckLeft, Shared};
 
 /// The level of processor code is built for.
@@ -233,7 +238,37 @@ const NEGATIVE_SQRT: i64 = 5;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unit {
     pub function: String,
+    /// Its module's text, or nothing for a unit a build used again without writing it.
     pub text: String,
+    /// The hash of its text, which names its object.
+    pub hash: fennec_blake3::Hash,
+    /// Whether it's too big to optimize, so it's compiled as written (see `huge_functions`).
+    pub huge: bool,
+}
+
+impl Unit {
+    /// A unit just written, with its text.
+    #[must_use]
+    pub fn written(function: String, text: String) -> Unit {
+        let hash = fennec_blake3::hash(text.as_bytes());
+        let huge = crate::build::is_huge(&text);
+        Unit { function, text, hash, huge }
+    }
+}
+
+/// What a dev build gives emission to use the units it kept last time again, without writing
+/// them (edit builds, stage 1), and what it gets back to keep for next time.
+pub struct Reuse<'r> {
+    /// The bytes of the index the last build of this program kept, if there's one.
+    pub kept: Option<Vec<u8>>,
+    /// Whether the object a unit's text names is in the cache. A unit whose object is gone is
+    /// written again, so it can be compiled.
+    pub has_object: &'r dyn Fn(&fennec_blake3::Hash) -> bool,
+    /// Whether every unit used again is written anyway, into what's thrown away, and checked to
+    /// come out the same: `FENNEC_CACHE_AUDIT=1`.
+    pub audit: bool,
+    /// The index to keep for the next build, once emission has made it.
+    pub keep: Option<Vec<u8>>,
 }
 
 /// What can't be emitted yet says so, by function.
@@ -297,8 +332,40 @@ pub(crate) fn facts_stripped() -> bool {
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
-    mut shared: Shared,
+    shared: Shared,
 ) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    // A dev build of `fennec` keeps what each unit read and shares, to check it's all it shares.
+    let (units, shared, layouts, _) = emit_keeping(program, cpu, shared, (cfg!(debug_assertions), None))?;
+    Ok((units, shared, layouts))
+}
+
+/// `emit_for`, using again each unit `reuse` kept last time whose function and every read it
+/// made are as they were, and filling in what to keep for next time.
+///
+/// # Errors
+/// What can't be emitted yet, as [`emit_for`] says it; and a unit kept last time that can't be
+/// added again as it was kept, which is a bug.
+pub fn emit_reusing(
+    program: &Program,
+    cpu: Cpu,
+    reuse: &mut Reuse<'_>,
+) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    let (units, shared, layouts, _) =
+        emit_keeping(program, cpu, Shared::default(), (cfg!(debug_assertions), Some(reuse)))?;
+    Ok((units, shared, layouts))
+}
+
+/// What [`emit_with`] gives, and, when `keeping`, what each unit read of the whole program, what
+/// it added to what units share and what it asked the layouts to number, checked to be all it
+/// added (see `share::audit`).
+pub(crate) fn emit_keeping(
+    program: &Program,
+    cpu: Cpu,
+    mut shared: Shared,
+    (checking, reuse): (bool, Option<&mut Reuse<'_>>),
+) -> Result<(Vec<Unit>, Shared, Layouts, Vec<Kept>), String> {
+    // A build that uses units again keeps what each one read and shares, for the next build.
+    let keeping = checking || reuse.is_some();
     let header = crate::header()?;
     let attributes = attributes(cpu);
     if PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
@@ -320,11 +387,11 @@ pub(crate) fn emit_with(
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
-    shared.native = crate::native::native_types(program, &layouts);
+    let native = crate::native::native_types(program, &layouts);
     let waits = crate::waits::may_wait(program, true);
     let closures =
         program.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.insts);
-    shared.waiting_closures = closures
+    let waiting_closures: BTreeSet<String> = closures
         .filter_map(|inst| match &inst.kind {
             InstKind::MakeClosure { function, .. } if waits.marked.contains_key(function) => {
                 Some(function.clone())
@@ -332,17 +399,107 @@ pub(crate) fn emit_with(
             _ => None,
         })
         .collect();
-    shared.waiting = waits.marked.into_keys().collect();
+    let waiting: BTreeSet<String> = waits.marked.into_keys().collect();
+    // What units read of these is noted, so they're kept apart from what units write while
+    // they're written, and put in `shared` after, for the entry.
+    let reads = Reads::new(&everything, &native, (&waiting, !waiting_closures.is_empty()), keeping);
+    let build = build_key(&shared, (header, &attributes), (threads, &reads), &layouts);
+    let mut using = reuse.map(|reuse| Using::new(reuse, build, &reads, &layouts));
+    let functions: HashMap<&str, &Function> = program
+        .functions
+        .iter()
+        .chain(&program.constants)
+        .map(|function| (function.name.as_str(), function))
+        .collect();
+    let anchor_of = |name: &str| functions.get(name).map(|function| crate::share::anchor(function));
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
+    let mut kept = Vec::new();
+    // Each written unit's IR key, by its place in `units`, for the index.
+    let mut written = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
-        match unit(function, (&everything, threads), &layouts, &mut shared, (header, &attributes)) {
-            Ok(text) => units.push(Unit { function: function.name.clone(), text }),
+        // A build asked to stop writes no more (`fennec_build::cancel`).
+        if fennec_build::cancelled() {
+            return Err(crate::STOPPED.to_owned());
+        }
+        let ir = using.as_ref().map(|_| crate::keys::ir_key(function));
+        if let (Some(using), Some(ir)) = (&mut using, ir)
+            && let Some(record) = using.usable(&function.name, &ir)
+        {
+            if using.audit {
+                let kept_reads = using.reads_of(&record);
+                let unit_in = (&reads, threads, kept_reads.as_slice());
+                audit_unit(function, &record, unit_in, &layouts, &shared, (header, &attributes))?;
+            }
+            // Asked again, then added into a `Shared` of its own, which goes into what units
+            // share only once all of it is added. A unit kept with what can't be asked or added
+            // again as it was is written instead, as if it hadn't been kept, rather than failing
+            // this build and every one after it.
+            let share = Share { added: Some(record.share.clone()) };
+            let mut wrote = crate::share::settings_of(&shared);
+            let added = layouts
+                .ask_again(&record.asked)
+                .and_then(|()| share.add_to(&mut wrote, &layouts, &anchor_of));
+            if added.is_some() {
+                crate::share::merge(&mut shared, &wrote);
+                units.push(Unit {
+                    function: function.name.clone(),
+                    text: String::new(),
+                    hash: fennec_blake3::Hash(record.text),
+                    huge: record.huge,
+                });
+                if checking {
+                    kept.push(Kept {
+                        function: function.name.clone(),
+                        reads: using.reads_of(&record),
+                        share,
+                        asked: Some(record.asked.clone()),
+                        wrote,
+                    });
+                }
+                using.keep(record);
+                continue;
+            }
+        }
+        if keeping {
+            layouts.note_asked();
+        }
+        // A build that checks what units keep writes each into a `Shared` of its own, then adds
+        // that to what units share, so the audit checks what each kept against exactly what it
+        // wrote.
+        let mut wrote = checking.then(|| crate::share::settings_of(&shared));
+        let made = unit(
+            function,
+            (&reads, threads),
+            &layouts,
+            wrote.as_mut().unwrap_or(&mut shared),
+            (header, &attributes),
+        );
+        let read = reads.take();
+        let asked = layouts.asked();
+        match made {
+            Ok((text, share)) => {
+                units.push(Unit::written(function.name.clone(), text));
+                if keeping {
+                    let reads: Vec<(What, String)> =
+                        read.into_iter().map(|(what, name)| (what, name.into_owned())).collect();
+                    if let (Some(ir), Some(_)) = (ir, &using) {
+                        written.push((units.len() - 1, ir, reads.clone(), share.clone(), asked.clone()));
+                    }
+                    if let Some(wrote) = wrote {
+                        crate::share::merge(&mut shared, &wrote);
+                        kept.push(Kept { function: function.name.clone(), reads, share, asked, wrote });
+                    }
+                }
+            }
             Err(why) => refused.push(format!("`{}`: {why}", function.name)),
         }
     }
     if !refused.is_empty() {
         return Err(refused.join("\n"));
+    }
+    if checking {
+        crate::share::audit(program, &layouts, &kept)?;
     }
     for own in &program.own_texts {
         let (id, boxed) = match Kind::of(&layouts, &own.ty)? {
@@ -356,11 +513,82 @@ pub(crate) fn emit_with(
         shared.own_texts.push((symbol, own.function.clone(), boxed));
     }
     if shared.facts == crate::Facts::Stripped {
-        for unit in &mut units {
-            unit.text = crate::facts::stripped(&unit.text);
+        for unit in units.iter_mut().filter(|unit| !unit.text.is_empty()) {
+            *unit = Unit::written(std::mem::take(&mut unit.function), crate::facts::stripped(&unit.text));
         }
     }
-    Ok((units, shared, layouts))
+    if let Some(mut using) = using {
+        // A written unit is kept with its text's hash as it's compiled, after facts are stripped.
+        for (at, ir, unit_reads, share, asked) in written {
+            let Some(unit) = units.get(at) else { continue };
+            using.keep_written(unit, ir, &unit_reads, share, asked);
+        }
+        using.finish();
+    }
+    shared.native = native;
+    shared.waiting_closures = waiting_closures;
+    shared.waiting = waiting;
+    Ok((units, shared, layouts, kept))
+}
+
+/// The settings every unit of a build is written with, and the layouts it's written against:
+/// a kept unit is used again only by a build with the same. Everything here is the same for
+/// every unit, so it's one key for the build rather than a read each unit notes.
+fn build_key(
+    shared: &Shared,
+    (header, attributes): (&str, &str),
+    (threads, reads): (bool, &Reads<'_, '_>),
+    layouts: &Layouts,
+) -> Key {
+    let Shared { traced, tracing_costs, noting_checks, proofs, facts, native_blocks, .. } = shared;
+    let settings = format!(
+        "{header}\n{attributes}\n{}\n{traced} {tracing_costs} {noting_checks} {proofs:?} {facts:?} {native_blocks:?}\n{threads} {} {} {}\n",
+        crate::output_switches(),
+        reads.cells(),
+        reads.runtime_closures(),
+        reads.tested()
+    );
+    crate::keys::key_of("fennec unit build 2026-11-17", &(settings, layouts.fingerprint()))
+}
+
+/// Writes a unit a build is using again, into what's then thrown away, and checks it comes out as
+/// it was kept: its text, what it shares, every kind it asks the layouts for, in order, and every
+/// read it makes of the whole program. `FENNEC_CACHE_AUDIT=1` has every unit used again checked.
+fn audit_unit<'p>(
+    function: &'p Function,
+    record: &Record,
+    (reads, threads, kept_reads): (&Reads<'_, 'p>, bool, &[(What, String)]),
+    layouts: &Layouts,
+    shared: &Shared,
+    (header, attributes): (&str, &str),
+) -> Result<(), String> {
+    layouts.ask_again(&record.asked).ok_or("asking again failed")?;
+    let mut scratch = crate::share::settings_of(shared);
+    layouts.note_asked();
+    let made = unit(function, (reads, threads), layouts, &mut scratch, (header, attributes));
+    let read: BTreeSet<(What, String)> =
+        reads.take().into_iter().map(|(what, name)| (what, name.into_owned())).collect();
+    let asked = layouts.asked();
+    let (text, share) = made?;
+    let text = if shared.facts == crate::Facts::Stripped { crate::facts::stripped(&text) } else { text };
+    let name = &function.name;
+    if *fennec_blake3::hash(text.as_bytes()).as_bytes() != record.text {
+        return Err(format!("the audit wrote `{name}` again and its text isn't the one kept"));
+    }
+    if share.added.as_ref() != Some(&record.share) {
+        return Err(format!("the audit wrote `{name}` again and what it shares isn't what was kept"));
+    }
+    // Every kind, in the order it was first asked for, whether something before had numbered it
+    // or not: a kind the kept asking leaves out could be one it later can't find.
+    if asked.as_ref() != Some(&record.asked) {
+        return Err(format!(
+            "the audit wrote `{name}` again and it asked for other kinds than it kept, or in another order"
+        ));
+    }
+    if read != kept_reads.iter().cloned().collect::<BTreeSet<_>>() {
+        return Err(format!("the audit wrote `{name}` again and it read other things than it kept"));
+    }
+    Ok(())
 }
 
 /// Whether a function only hands its work on: one block, a few instructions, and one call, to
@@ -378,13 +606,13 @@ fn size(function: &Function) -> usize {
 
 /// Whether a function is small enough to copy into its callers, with everything it calls, which
 /// must be too, `depth` calls deep. A recursive one isn't.
-fn copyable(whole: &Whole<'_>, function: &Function, depth: usize) -> bool {
+fn copyable(reads: &Reads<'_, '_>, function: &Function, depth: usize) -> bool {
     size(function) <= COPIED
-        && !whole.constants.contains(function.name.as_str())
+        && !reads.constant(function.name.as_str())
         && callees(function).all(|name| {
             depth > 0
                 && name != function.name
-                && whole.functions.get(name).is_some_and(|callee| copyable(whole, callee, depth - 1))
+                && reads.function(name).is_some_and(|callee| copyable(reads, callee, depth - 1))
         })
 }
 
@@ -425,9 +653,15 @@ struct Definition<'d> {
 
 /// What one module holds so far.
 pub(crate) struct Module<'w, 'p> {
-    pub(crate) whole: &'w Whole<'p>,
+    /// What the whole program's analysis worked out, every read of it noted.
+    pub(crate) reads: &'w Reads<'w, 'p>,
     pub(crate) layouts: &'w Layouts,
-    pub(crate) shared: &'w mut Shared,
+    /// What units share, which a unit adds to only through methods that keep what it adds in
+    /// `share`.
+    shared: &'w mut Shared,
+    share: Share,
+    /// Where each function whose places this unit keeps starts (see `share::anchor`).
+    anchors: HashMap<&'p str, Option<u32>>,
     /// Whether the program runs `parallel`'s ranges on other threads, which keep their own stack
     /// limit and failure flag.
     pub(crate) threads: bool,
@@ -444,17 +678,19 @@ pub(crate) struct Module<'w, 'p> {
 
 fn unit<'p>(
     function: &'p Function,
-    (whole, threads): (&Whole<'p>, bool),
+    (reads, threads): (&Reads<'_, 'p>, bool),
     layouts: &Layouts,
     shared: &mut Shared,
     (header, attributes): (&str, &str),
-) -> Result<String, String> {
+) -> Result<(String, Share), String> {
     let mut module = Module {
-        whole,
+        reads,
         layouts,
         shared,
+        share: Share::new(reads.noting()),
+        anchors: HashMap::new(),
         threads,
-        cells: threads && whole.cells,
+        cells: threads && reads.cells(),
         declares: BTreeSet::new(),
         defined: HashSet::new(),
         bodies: String::new(),
@@ -473,10 +709,10 @@ fn unit<'p>(
     let mut copies: Vec<&Function> = Vec::new();
     let mut waiting: Vec<&str> = callees(function).chain(made(function)).collect();
     while let Some(name) = waiting.pop() {
-        let Some(callee) = whole.functions.get(name).copied() else { continue };
+        let Some(callee) = reads.function(name) else { continue };
         if name == function.name
             || copies.iter().any(|copy| copy.name == name)
-            || !copyable(whole, callee, COPY_DEPTH)
+            || !copyable(reads, callee, COPY_DEPTH)
         {
             continue;
         }
@@ -522,20 +758,113 @@ fn unit<'p>(
     out += &module.bodies;
     out.extend(module.helpers.values().map(String::as_str));
     out += attributes;
-    Ok(out)
+    Ok((out, module.share))
 }
 
 impl<'p> Module<'_, 'p> {
+    /// Whether checks left out because of a proof are, or are written anyway: one of the build's
+    /// settings.
+    pub(crate) fn proofs(&self) -> crate::Proofs {
+        self.shared.proofs
+    }
+
+    /// Whether native blocks are made known to the runtime: one of the build's settings.
+    pub(crate) fn native_blocks(&self) -> crate::NativeBlocks {
+        self.shared.native_blocks
+    }
+
+    /// Whether code says where it is for a run to say what each place cost: one of the build's
+    /// settings.
+    pub(crate) fn tracing_costs(&self) -> bool {
+        self.shared.tracing_costs
+    }
+
+    /// Whether each check written is noted: one of the build's settings.
+    pub(crate) fn noting_checks(&self) -> bool {
+        self.shared.noting_checks
+    }
+
+    /// Where `function` starts, for its places to be kept from.
+    fn anchor(&mut self, function: &'p Function) -> Option<u32> {
+        *self.anchors.entry(&function.name).or_insert_with(|| crate::share::anchor(function))
+    }
+
+    pub(crate) fn add_string(&mut self, symbol: &str, text: &str) {
+        self.shared.strings.insert(symbol.to_owned(), text.to_owned());
+        if self.share.keeping() {
+            self.share.add(Some(Added::String(symbol.to_owned(), text.to_owned())));
+        }
+    }
+
+    pub(crate) fn add_literal(&mut self, symbol: &str, text: &str) {
+        self.shared.literals.insert(symbol.to_owned(), text.to_owned());
+        if self.share.keeping() {
+            self.share.add(Some(Added::Literal(symbol.to_owned(), text.to_owned())));
+        }
+    }
+
+    pub(crate) fn add_element(&mut self, symbol: &str, item: ListItem) {
+        self.shared.elements.insert(symbol.to_owned(), item);
+        if self.share.keeping() {
+            self.share.add(crate::share::element(self.layouts, symbol, item));
+        }
+    }
+
+    pub(crate) fn add_shape(&mut self, symbol: &str, id: u32) {
+        self.shared.shapes.insert(symbol.to_owned(), id);
+        if self.share.keeping() {
+            self.share.add(crate::share::shape(self.layouts, symbol, id));
+        }
+    }
+
+    pub(crate) fn add_dict(&mut self, symbol: &str, words: (Word, Word)) {
+        self.shared.dicts.insert(symbol.to_owned(), words);
+        if self.share.keeping() {
+            self.share.add(crate::share::dict(self.layouts, symbol, words));
+        }
+    }
+
+    /// A function's table of places as it stands: each new place adds to it, so what's kept is
+    /// the last, where the first was.
+    pub(crate) fn add_places(&mut self, symbol: &str, function: &'p Function, sites: &[u32]) {
+        self.shared.places.insert(symbol.to_owned(), sites.to_vec());
+        if !self.share.keeping() {
+            return;
+        }
+        let anchor = self.anchor(function);
+        let kept: Vec<Place> = sites.iter().map(|at| place(*at, anchor)).collect();
+        let table = Added::Places(symbol.to_owned(), function.name.clone(), kept);
+        let earlier = self.share.added.as_mut().and_then(|added| {
+            added.iter_mut().find(|added| matches!(added, Added::Places(known, ..) if known == symbol))
+        });
+        match earlier {
+            Some(earlier) => *earlier = table,
+            None => self.share.add(Some(table)),
+        }
+    }
+
+    pub(crate) fn add_check(&mut self, function: &'p Function, span: Span, what: CheckKind) {
+        if self.share.keeping() {
+            let start = place(span.start, self.anchor(function));
+            let length = span.end.saturating_sub(span.start);
+            self.share.add(Some(Added::Check(function.name.clone(), start, length, what.clone())));
+        }
+        self.shared.checks.push(CheckLeft { function: function.name.clone(), span, what });
+    }
+
+    pub(crate) fn add_site(&mut self, at: u32, what: String) {
+        if self.share.keeping() {
+            self.share.add(Some(Added::Site(at, what.clone())));
+        }
+        self.shared.sites.entry(at).or_insert(what);
+    }
+
     pub(crate) fn add_helper(&mut self, name: &str, text: String) {
         self.helpers.entry(name.to_owned()).or_insert(text);
     }
 
     pub(crate) fn function_named(&self, name: &str) -> Result<&'p Function, String> {
-        self.whole
-            .functions
-            .get(name)
-            .copied()
-            .ok_or_else(|| format!("it uses `{name}`, which isn't lowered"))
+        self.reads.function(name).ok_or_else(|| format!("it uses `{name}`, which isn't lowered"))
     }
 
     /// Has a function declared if it isn't in this module.
@@ -549,11 +878,11 @@ impl<'p> Module<'_, 'p> {
 
     /// A generator, by its name or the name of one of its functions.
     pub(crate) fn generator(&self, name: &str) -> Option<&'p GeneratorDef> {
-        self.whole.generators.get(name).copied()
+        self.reads.generator(name)
     }
 
     pub(crate) fn flagged(&self, name: &str) -> bool {
-        self.whole.can_fail.contains(name)
+        self.reads.can_fail(name)
     }
 
     pub(crate) fn declare(&mut self, line: &str) {
@@ -592,7 +921,7 @@ impl<'p> Module<'_, 'p> {
         let returns = self.kind(&function.returns)?;
         // An address only this parameter has: told to LLVM, or checked on the way in by a build
         // that checks proofs (see `Emit::addresses_apart`).
-        let alone = if self.shared.proofs == crate::Proofs::Checked { "" } else { "noalias " };
+        let alone = if self.proofs() == crate::Proofs::Checked { "" } else { "noalias " };
         if returns.in_memory() {
             params.push(if named { format!("ptr {alone}captures(none) %ret") } else { "ptr".to_owned() });
         }
@@ -641,6 +970,10 @@ impl<'p> Module<'_, 'p> {
             .flat_map(|block| &block.insts)
             .any(|inst| inst.span != Span::default() && !inst.span.in_prelude());
         self.shared.starts.insert(start_symbol.clone(), start);
+        if self.share.keeping() {
+            let kept = place(start, self.anchor(function));
+            self.share.add(Some(Added::Start(start_symbol.clone(), function.name.clone(), kept)));
+        }
         self.declare(&format!("@\"{start_symbol}\" = external dso_local global i64"));
         let failed = if self.flagged(&function.name) {
             let leave = if ret == "void" { "ret void".to_owned() } else { format!("ret {ret} poison") };
@@ -648,9 +981,9 @@ impl<'p> Module<'_, 'p> {
         } else {
             "unreachable".to_owned()
         };
-        let known = self.whole.analyses.get(function.name.as_str()).ok_or("no analysis")?;
+        let known = self.reads.analysis(function.name.as_str()).ok_or("no analysis")?;
         let mut kinds = Vec::with_capacity(function.locals.len());
-        let joined = self.whole.builders.get(function.name.as_str());
+        let joined = self.reads.builders(function.name.as_str());
         let builder = if self.layouts.text_headers() { Kind::TextBlock } else { Kind::Str };
         for (at, local) in function.locals.iter().enumerate() {
             // Pieces only ever joined are the string they're joined into, a block that grows.
@@ -681,6 +1014,7 @@ impl<'p> Module<'_, 'p> {
             failed,
             leaves: std::cell::Cell::new(false),
             needs_prop: false,
+            free_owed: false,
             named: if moves { Places::Numbered } else { Places::FromStart(start) },
             start_symbol,
             sites: Vec::new(),
@@ -690,6 +1024,9 @@ impl<'p> Module<'_, 'p> {
             found_entries: Vec::new(),
             searched: HashMap::new(),
             alone_slots: HashSet::new(),
+            alone_by_block: HashMap::new(),
+            alone_in_block: HashSet::new(),
+            alone_before_loops: HashMap::new(),
             alone_dicts: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
@@ -701,6 +1038,7 @@ impl<'p> Module<'_, 'p> {
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
+            taken_places: HashMap::new(),
             walks: HashMap::new(),
             saving: crate::rollback::saving_handles(function),
             on_crash: crate::rollback::given_back_on_crash(function),
@@ -771,6 +1109,9 @@ impl<'p> Module<'_, 'p> {
             self.declares.insert(format!("{flag} = external dso_local global i8"));
             let _ = writeln!(self.bodies, "  store i8 1, ptr {flag}");
             self.shared.ran.insert(function.name.clone());
+            if self.share.keeping() {
+                self.share.add(Some(Added::Ran(function.name.clone())));
+            }
         }
         self.bodies += &out;
         self.bodies += &cold;
@@ -805,6 +1146,10 @@ enum Places {
 }
 
 /// One function being written.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each says something of its own about the function being written"
+)]
 pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) module: &'e mut Module<'w, 'p>,
     pub(crate) function: &'p Function,
@@ -830,6 +1175,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Whether a way out for a failure was written.
     leaves: std::cell::Cell<bool>,
     needs_prop: bool,
+    /// Whether a free since the flag was last read may have run program code, which can fail
+    /// (see [`Emit::owe_free_check`]).
+    free_owed: bool,
     /// How this function's text names the places in the source it may say failed.
     named: Places,
     start_symbol: String,
@@ -851,6 +1199,12 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) searched: HashMap<String, String>,
     /// Slots of `mut` parameters made alone on the way in, that nothing here can share since.
     alone_slots: HashSet<String>,
+    /// The slots made alone on the way into a loop the block being written is in (see
+    /// `AloneInLoop`), by block, and those of the block being written.
+    alone_by_block: HashMap<usize, HashSet<String>>,
+    alone_in_block: HashSet<String>,
+    /// The locals each block makes alone just before it goes into a loop.
+    alone_before_loops: HashMap<usize, Vec<LocalId>>,
     /// Slots of dicts nothing else can hold, so a put into one needs no check that it's alone.
     pub(crate) alone_dicts: HashSet<String>,
     /// Field paths from locals whose blocks are known alone here.
@@ -921,6 +1275,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) inside_slots: HashMap<FieldPath, String>,
     /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
     pub(crate) pair_slots: HashMap<usize, String>,
+    /// The slot holding where each item taken out of a `Table` to be put back is, by the local it
+    /// was read into: its put-back goes there with no second lookup (see `id_map_store`).
+    pub(crate) taken_places: HashMap<LocalId, String>,
     /// Where each map's walk has got to, and where the slot a walk is on and its generation are.
     pub(crate) walks: HashMap<usize, (String, String)>,
 }
@@ -954,7 +1311,10 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn written_apart(&mut self, write: impl FnOnce(&mut Self)) -> String {
         let (hot, current) = (std::mem::take(&mut self.out), self.current.clone());
         let runs = std::mem::replace(&mut self.runs, Runs::Anywhere);
+        // What's written apart reads no flag of this function's.
+        let owed = self.free_owed;
         write(self);
+        self.free_owed = owed;
         self.runs = runs;
         self.current = current;
         std::mem::replace(&mut self.out, hot)
@@ -971,7 +1331,27 @@ impl Emit<'_, '_, '_> {
 
     /// Whether a slot's block was made alone on the way in and can't have been shared since.
     pub(crate) fn alone_slots_contains(&self, place: &str) -> bool {
-        self.alone_slots.contains(place)
+        self.alone_slots.contains(place) || self.alone_in_block.contains(place)
+    }
+
+    /// Whether a slot's block was made alone on the way into a loop this block is in, which
+    /// gives it no other owner: a build that checks proofs checks it where it would have.
+    pub(crate) fn alone_in_loop(&self, place: &str) -> bool {
+        self.alone_in_block.contains(place)
+    }
+
+    /// Makes a local's list or `Table` alone on the way into a loop that changes it.
+    fn alone_for_loop(&mut self, local: LocalId) -> Result<(), String> {
+        let slot = self.slot(local);
+        match self.kind_of(local)? {
+            Kind::List(_) => {
+                self.check_alone(local);
+            }
+            _ => {
+                self.alone_at(&slot, "fennec_unshare");
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn kind_of(&self, local: LocalId) -> Result<&Kind, String> {
@@ -1097,8 +1477,8 @@ impl Emit<'_, '_, '_> {
             self.alone_dicts.insert(slot);
         }
         // What callers see to before calling.
-        let whole = self.module.whole;
-        if let Some(needs) = whole.needs.get(function.name.as_str()) {
+        let reads = self.module.reads;
+        if let Some(needs) = reads.needs(function.name.as_str()) {
             self.alone_fields.clone_from(needs);
         }
         for (at, kind) in kinds.iter().take(function.params).enumerate() {
@@ -1133,6 +1513,18 @@ impl Emit<'_, '_, '_> {
                 self.alone_slots.insert(slot);
             }
         }
+        // Lists and `Table`s a loop changes and gives no other owner are made alone on the way
+        // in, once, and not checked again inside it. A function that asks a lock's log keeps
+        // every check: a marked block never reads as alone.
+        if !self.asks_the_log() {
+            for alone in &self.known.alone_in_loops {
+                let slots: Vec<String> = alone.locals.iter().map(|local| self.slot(*local)).collect();
+                for at in &alone.blocks {
+                    self.alone_by_block.entry(*at).or_default().extend(slots.iter().cloned());
+                }
+                self.alone_before_loops.entry(alone.entry).or_default().extend(alone.locals.iter().copied());
+            }
+        }
         // Every caller passes the flag clear, so saying so lets a check after an inlined call
         // that didn't fail go away. An assumption, as a store would be inlined into loops.
         if self.module.flagged(&function.name) {
@@ -1156,13 +1548,15 @@ impl Emit<'_, '_, '_> {
         let mut alone_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let mut inside_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let on_entry = std::mem::take(&mut self.alone_fields);
-        let settles = (&whole.settles, Tracked::Owners);
-        let lengths = (&whole.lengths, Tracked::Lengths);
+        let (settled, lengthened) = (reads.settles(), reads.lengths());
+        let settles: (&dyn Callees, Tracked) = (&settled, Tracked::Owners);
+        let lengths: (&dyn Callees, Tracked) = (&lengthened, Tracked::Lengths);
         // Each block after every one leading to it, but for loops, so what's known carries on.
         let mut done = HashSet::new();
         for at in written_order(function) {
             let Some(block) = function.blocks.get(at) else { continue };
             self.start_block(&format!("bb{at}"));
+            self.alone_in_block = self.alone_by_block.get(&at).cloned().unwrap_or_default();
             self.holding_now = self.holding.coming_in(at);
             self.filling.clear();
             self.write_kept_lengths(at);
@@ -1197,7 +1591,7 @@ impl Emit<'_, '_, '_> {
                     self.get_field(field_local, &Operand::Local(item), &field)?;
                 }
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
-                    for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
+                    for (param, path) in reads.needs(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {
                             self.see_to(*given, path)?;
                         }
@@ -1233,6 +1627,8 @@ impl Emit<'_, '_, '_> {
                     }
                 }
                 self.let_go_after(&inst.kind);
+                self.close_what_waits(&inst.kind);
+                self.pay_free_check();
                 let mut now = std::mem::take(&mut self.holding_now);
                 step(self, &self.holding, (at, index), &inst.kind, &mut now);
                 self.holding_now = now;
@@ -1241,18 +1637,21 @@ impl Emit<'_, '_, '_> {
             alone_left.insert(at, std::mem::take(&mut self.alone_fields));
             inside_left.insert(at, std::mem::take(&mut self.inside_items));
             done.insert(at);
-            if let Some((list, limit)) = self.known.reservations.get(&at).cloned()
-                && matches!(self.kinds.get(list), Some(Kind::List(_)))
-            {
-                self.reserve(LocalId(list), &limit)?;
+            for reserved in self.reserved_at(at) {
+                self.reserve(LocalId(reserved.list), &reserved.limit)?;
             }
             // Every loop goes back to a block written no later than where it goes from, so that's
             // where a task counts a turn.
             if self.ticks() && block.end.targets().iter().any(|next| next.0 <= at) {
                 self.tick();
             }
+            for local in self.alone_before_loops.get(&at).cloned().unwrap_or_default() {
+                self.alone_for_loop(local)?;
+            }
             self.terminator(&block.end)?;
         }
+        // What follows runs on a crash from anywhere in the function, in no loop.
+        self.alone_in_block.clear();
         // A crash inside a `lock ... as ref` block puts back what it changed before leaving, and a
         // crash anywhere lets go of what the function owns, so a server whose rounds crash keeps
         // nothing of theirs.
@@ -1264,6 +1663,8 @@ impl Emit<'_, '_, '_> {
             }
             self.write_kept_lengths_after_crash();
             self.release_locals_at_prop();
+            // Leaving as it failed already.
+            self.free_owed = false;
             self.line(&leave);
             self.wrote_prop = true;
         }
@@ -1309,9 +1710,100 @@ impl Emit<'_, '_, '_> {
             self.release_text(value);
         } else if matches!(kind, Kind::Closure(..)) {
             self.release_closure(value);
+        } else if self.lets_go_quietly(kind) {
+            self.release_quietly(value);
         } else {
             self.release(value);
         }
+    }
+
+    /// Whether letting go of a value of this kind can't run program code: the program has no
+    /// generator that closes something when it's let go partway, or the kind can't hold or reach
+    /// one (see `dying::lets_go_quietly`). Such a value is freed with `fennec_free_plain`, which
+    /// can't fail.
+    pub(crate) fn lets_go_quietly(&self, kind: &Kind) -> bool {
+        !self.module.reads.abandons() || crate::dying::lets_go_quietly(self.module.layouts, kind)
+    }
+
+    /// Notes that a free just written may have run program code, which can fail: the function
+    /// reads the flag once what it's writing is whole (see [`Self::pay_free_check`]). A function
+    /// that can't fail has nothing to read it with, and the analysis gives the flag to every one
+    /// that may let go of such a value (`analysis::lets_go_loudly`).
+    pub(crate) fn owe_free_check(&mut self) {
+        if self.module.flagged(self.function.name.as_str()) {
+            self.free_owed = true;
+        }
+    }
+
+    /// Reads the failure flag, and leaves on a failure, when a free since it last did may have run
+    /// what closes a generator let go partway, which can fail: so a launched task whose free fails
+    /// stops at that line, as `main`'s thread does, and runs nothing after it. Written once an
+    /// instruction is whole, where `prop` finds each local as it lets go of it.
+    fn pay_free_check(&mut self) {
+        if !std::mem::take(&mut self.free_owed) {
+            return;
+        }
+        let failed = self.flag_set();
+        self.leave_if(&failed);
+    }
+
+    /// Whether the failure flag is set, read.
+    fn flag_set(&mut self) -> String {
+        let flag_at = self.failure_flag();
+        let (flag, failed) = (self.temp(), self.temp());
+        self.line(&format!("{flag} = load i8, ptr {flag_at}"));
+        self.line(&format!("{failed} = icmp ne i8 {flag}, 0"));
+        failed
+    }
+
+    /// After an instruction that changes a list or a dict whose items may be generators that close
+    /// something when they're let go partway: the runtime's change only queues those it lets go
+    /// of, so they're closed here, at the line that let go of them, and a failure leaves from it.
+    fn close_what_waits(&mut self, inst: &InstKind) {
+        let local = match inst {
+            InstKind::Builtin { changes: true, args, .. } => match args.first() {
+                Some(Operand::Local(local)) => *local,
+                _ => return,
+            },
+            InstKind::SetIndex { object, .. } => *object,
+            _ => return,
+        };
+        let Some(kind) = self.kinds.get(local.0).cloned() else { return };
+        if kind == Kind::Gen
+            || self.lets_go_quietly(&kind)
+            || !self.module.flagged(self.function.name.as_str())
+        {
+            return;
+        }
+        self.declare("declare void @fennec_close_waiting() nounwind");
+        self.line("call void @fennec_close_waiting()");
+        self.free_owed = true;
+    }
+
+    /// [`Self::pay_free_check`] at a return, once its locals are let go of: a failure leaves from
+    /// here rather than by `prop`, which would let go of them again, and lets go of what was to be
+    /// given back, which no caller takes.
+    fn pay_free_check_at_return(&mut self, given: Option<(&str, &Kind)>) {
+        if !std::mem::take(&mut self.free_owed) {
+            return;
+        }
+        let failed = self.flag_set();
+        let (leaving, on) = (self.label("free_failed"), self.label("giving_back"));
+        self.line(&format!("br i1 {failed}, label %{leaving}, label %{on}, !prof !0"));
+        self.start_block(&leaving);
+        match given {
+            Some((value, kind)) if kind.in_memory() => self.release_inline(kind, value),
+            Some((value, kind)) if kind.counted() => self.release_kind(value, kind),
+            _ => {}
+        }
+        // Already leaving as it failed.
+        self.free_owed = false;
+        self.leaves.set(true);
+        let leave = self.leave_after_crash.clone().unwrap_or_else(|| self.failed.clone());
+        for line in leave.lines() {
+            self.line(line.trim());
+        }
+        self.start_block(&on);
     }
 
     /// One more owner for a value, unless it's the one that's nothing: an optional's may be.
@@ -1409,8 +1901,7 @@ impl Emit<'_, '_, '_> {
     /// be another thread's.
     pub(crate) fn on_workers(&self) -> bool {
         self.module.threads
-            && (self.runs == Runs::Anywhere
-                || self.module.whole.on_workers.contains(self.function.name.as_str()))
+            && (self.runs == Runs::Anywhere || self.module.reads.on_workers(self.function.name.as_str()))
     }
 
     /// Writes `write` for a block that's made, leaving a null one be.
@@ -1513,11 +2004,41 @@ impl Emit<'_, '_, '_> {
         );
     }
 
-    /// One owner fewer for a block, if there's a block, freeing it when that was the last.
+    /// One owner fewer for a block, if there's a block, freeing it when that was the last, with
+    /// `fennec_free`: what it frees may hold a generator let go partway that closes something,
+    /// which can fail, so the function reads the flag after (see [`Self::owe_free_check`]). A
+    /// block known to hold no such generator goes by [`Self::release_quietly`].
     pub(crate) fn release(&mut self, block: &str) {
-        debug_assert_eq!(COUNT, 0);
+        if !self.module.reads.abandons() {
+            return self.release_quietly(block);
+        }
         // A program's native types are layouts it has, so finding their free can't fail.
         let free = self.free_function().unwrap_or("@fennec_free");
+        self.release_with(block, free);
+        self.owe_free_check();
+    }
+
+    /// [`Self::release`], or [`Self::release_quietly`] for a block of a kind that lets go quietly.
+    pub(crate) fn release_block(&mut self, block: &str, kind: &Kind) {
+        if self.lets_go_quietly(kind) {
+            self.release_quietly(block);
+        } else {
+            self.release(block);
+        }
+    }
+
+    /// One owner fewer for a block whose type can't hold or reach a generator that closes
+    /// something when it's let go partway, freeing it when that was the last, with
+    /// `fennec_free_plain`, which runs no program code and can't fail.
+    pub(crate) fn release_quietly(&mut self, block: &str) {
+        let free = self.plain_free_function().unwrap_or("@fennec_free_plain");
+        self.release_with(block, free);
+    }
+
+    /// One owner fewer for a block, if there's a block, freeing it with `free` when that was the
+    /// last.
+    fn release_with(&mut self, block: &str, free: &str) {
+        debug_assert_eq!(COUNT, 0);
         let (none, held, last, done) =
             (self.temp(), self.label("held"), self.label("last"), self.label("done"));
         self.line(&format!("{none} = icmp eq ptr {block}, null"));
@@ -1560,7 +2081,7 @@ impl Emit<'_, '_, '_> {
             self.sites.len() - 1
         });
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        self.module.shared.places.insert(symbol.clone(), self.sites.clone());
+        self.module.add_places(&symbol, self.function, &self.sites);
         (number, symbol)
     }
 
@@ -1636,6 +2157,8 @@ impl Emit<'_, '_, '_> {
         }
         let label = self.label("let_go");
         let (hot, block) = (std::mem::take(&mut self.out), self.current.clone());
+        // What's let go of here is on a way out as the function fails already.
+        let owed = self.free_owed;
         self.start_block(&label);
         for local in short {
             let kind = self.kinds.get(local).cloned().unwrap_or(Kind::Unit);
@@ -1658,6 +2181,7 @@ impl Emit<'_, '_, '_> {
             }
         }
         self.line(&format!("br label %{then}"));
+        self.free_owed = owed;
         let written = std::mem::replace(&mut self.out, hot);
         let last = std::mem::replace(&mut self.current, block);
         self.cold.push_str(&written);
@@ -1766,7 +2290,7 @@ impl Emit<'_, '_, '_> {
 
     /// Whether checks left out because of a proof are written anyway, as assertions.
     pub(crate) fn checks_proofs(&self) -> bool {
-        self.module.shared.proofs == crate::Proofs::Checked
+        self.module.proofs() == crate::Proofs::Checked
     }
 
     /// In a build that checks proofs, ends the program if `broken`, an `i1`, is true: what the
@@ -1994,9 +2518,8 @@ impl Emit<'_, '_, '_> {
 
     /// Notes a check as it's written, when checks are being noted.
     pub(crate) fn note_check(&mut self, span: Span, what: CheckKind) {
-        if self.module.shared.noting_checks {
-            let function = self.function.name.clone();
-            self.module.shared.checks.push(CheckLeft { function, span, what });
+        if self.module.noting_checks() {
+            self.module.add_check(self.function, span, what);
         }
     }
 
@@ -2018,7 +2541,7 @@ impl Emit<'_, '_, '_> {
     /// What a call to a function fails with is noted in that function, and a call through a
     /// closure or into a generator in what runs there.
     pub(crate) fn note_runtime_check(&mut self) {
-        if !self.module.shared.noting_checks {
+        if !self.module.noting_checks() {
             return;
         }
         let function = self.function;
@@ -2277,9 +2800,8 @@ impl Emit<'_, '_, '_> {
     /// Whether the instruction being written multiplies two ints proven not negative (see `signs`).
     fn operands_not_negative(&self) -> bool {
         self.module
-            .whole
-            .non_negative
-            .get(self.function.name.as_str())
+            .reads
+            .non_negative(self.function.name.as_str())
             .is_some_and(|found| found.contains(&self.at))
     }
 
@@ -2827,11 +3349,10 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             });
         }
-        let callee = *self
+        let callee = self
             .module
-            .whole
-            .functions
-            .get(name)
+            .reads
+            .function(name)
             .ok_or_else(|| format!("it calls `{name}`, which isn't lowered"))?;
         let ret = self.module.ret_text(callee)?;
         if !self.module.defined.contains(name) {
@@ -2866,7 +3387,7 @@ impl Emit<'_, '_, '_> {
             let kind = self.module.kind(&param.ty)?;
             let (value, fresh) = self.value_for(arg, &kind)?;
             if fresh {
-                lent.push(value.clone());
+                lent.push((value.clone(), kind.clone()));
             }
             // Checking proofs, a borrowed block lent to a call is held for it too, to see after
             // that what it was borrowed from still holds it.
@@ -2874,7 +3395,7 @@ impl Emit<'_, '_, '_> {
                 && matches!(arg, Operand::Local(local) if self.known.is_borrowed(*local))
                 && matches!(kind, Kind::List(_) | Kind::Dict(..) | Kind::Boxed(_) | Kind::TextBlock)
             {
-                borrows_lent.push(value.clone());
+                borrows_lent.push((value.clone(), kind.clone()));
             }
             if kind.in_memory() {
                 shown.push(format!("ptr {value}"));
@@ -2896,7 +3417,7 @@ impl Emit<'_, '_, '_> {
         if name == self.function.name || !self.module.defined.contains(name) {
             self.check_stack(span);
         }
-        for borrowed in &borrows_lent {
+        for (borrowed, _) in &borrows_lent {
             self.when_made(borrowed, |emit| emit.retain(borrowed));
         }
         let result = self.temp();
@@ -2905,7 +3426,7 @@ impl Emit<'_, '_, '_> {
         } else {
             self.line(&format!("{result} = call swiftcc {ret} {target}({shown})"));
         }
-        for borrowed in &borrows_lent {
+        for (borrowed, kind) in &borrows_lent {
             self.when_made(borrowed, |emit| {
                 // Its one owner now is the one taken for the call: what it was borrowed from let
                 // go of it while the call ran, and the borrow was read after.
@@ -2915,7 +3436,7 @@ impl Emit<'_, '_, '_> {
                     "what a value lent to a call was borrowed from holds it till the call ends",
                     span,
                 );
-                emit.release(borrowed);
+                emit.release_block(borrowed, kind);
             });
         }
         if flagged && is_attempt(&self.function.name) {
@@ -2949,8 +3470,8 @@ impl Emit<'_, '_, '_> {
                 self.leave_traced(&failed, span);
             }
         }
-        for block in lent {
-            self.release(&block);
+        for (block, kind) in lent {
+            self.release_block(&block, &kind);
         }
         match (dest, returned_at) {
             (Some(dest), Some(at)) => self.assign_memory_owned(dest, &at)?,
@@ -3056,12 +3577,19 @@ impl Emit<'_, '_, '_> {
             }
             "intrinsics.stop" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
-                let block =
-                    if kind == Kind::Str && self.headers() { self.owned_text_block(&value) } else { value };
+                let made = kind == Kind::Str && self.headers();
+                let block = if made { self.owned_text_block(&value) } else { value };
                 self.declare("declare ptr @fennec_block_text(ptr) nounwind");
                 let text = self.temp();
                 self.line(&format!("{text} = call ptr @fennec_block_text(ptr {block})"));
-                self.stop_with(&text, span);
+                // The runtime copies the message, so the blocks made for it are let go of before
+                // leaving: a stop in a launched task ends only that task, and the program goes on.
+                self.stop_letting_go(&text, span, |emit| {
+                    emit.release_quietly(&text);
+                    if made {
+                        emit.release_quietly(&block);
+                    }
+                });
                 Ok(())
             }
             "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
@@ -3118,7 +3646,9 @@ impl Emit<'_, '_, '_> {
             }
             buffer if buffer.starts_with("Buffer.") => self.buffer_builtin(dest, name, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
-            | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),
+            | "str.replace" | "str.find" | "str.split" | "str.split_at" => {
+                self.text_builtin(dest, name, args, span)
+            }
             "float" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let temp = self.temp();
@@ -3283,11 +3813,11 @@ impl Emit<'_, '_, '_> {
 
     /// Says where this is, in a build that traces what things cost, if what's here can cost.
     fn trace_site(&mut self, inst: &InstKind, span: Span) {
-        if !self.module.shared.tracing_costs {
+        if !self.module.tracing_costs() {
             return;
         }
         let Some(what) = what_can_cost(inst) else { return };
-        self.module.shared.sites.entry(span.start).or_insert(what);
+        self.module.add_site(span.start, what);
         self.declare("declare void @fennec_trace_at(i64) nounwind");
         self.line(&format!("call void @fennec_trace_at(i64 {})", span.start));
     }
@@ -3314,6 +3844,16 @@ impl Emit<'_, '_, '_> {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
                 if self.known.unmade.contains(&dest.0) =>
+            {
+                Ok(())
+            }
+            // An empty list copied into one a loop right after fills: that one is made at the
+            // block's end, once the loop's count is known, and the empty one never is.
+            InstKind::Copy { dest, value: Operand::Local(from) }
+                if self
+                    .reserved_at(self.at.0)
+                    .iter()
+                    .any(|one| one.list == dest.0 && one.copied_from == Some(from.0)) =>
             {
                 Ok(())
             }
@@ -3684,7 +4224,7 @@ impl Emit<'_, '_, '_> {
     fn last_reads(&self, untracked: &BTreeSet<usize>) -> crate::dying::Dying {
         let function = self.function;
         let name = function.name.as_str();
-        if self.module.whole.generators.contains_key(name) {
+        if self.module.reads.generator(name).is_some() {
             return crate::dying::Dying::new();
         }
         // What's read by an instruction whose result stands for it, borrows from it or takes from
@@ -3910,7 +4450,7 @@ impl Emit<'_, '_, '_> {
     fn keeps_its_value(&mut self) -> bool {
         let returns = self.returns.clone();
         let name = self.function.name.as_str();
-        self.module.whole.constants.contains(name)
+        self.module.reads.constant(name)
             && (!self.module.threads || !self.module.flagged(name))
             && self.text_of(&returns) != "void"
     }
@@ -3918,9 +4458,8 @@ impl Emit<'_, '_, '_> {
     /// Starts `main` in a program that uses `parallel`: every constant that's kept gets kept here,
     /// so a worker only ever reads it, and two can't race to be the first.
     fn work_out_constants(&mut self) -> Result<(), String> {
-        let mut constants: Vec<&str> =
-            self.module.whole.constants.iter().copied().filter(|name| !self.module.flagged(name)).collect();
-        constants.sort_unstable();
+        let constants: Vec<&str> =
+            self.module.reads.constants().into_iter().filter(|name| !self.module.flagged(name)).collect();
         for name in constants {
             self.call(None, name, &[], Span::default())?;
         }
@@ -4022,11 +4561,13 @@ impl Emit<'_, '_, '_> {
                 self.keep_value(&held);
             }
             self.release_locals(moved);
+            self.pay_free_check_at_return(Some(("%ret", &returns)));
             self.line("ret void");
             return Ok(());
         }
         if text == "void" {
             self.release_locals(None);
+            self.pay_free_check_at_return(None);
             self.line("ret void");
             return Ok(());
         }
@@ -4044,6 +4585,7 @@ impl Emit<'_, '_, '_> {
             self.keep_value(&held);
         }
         self.release_locals(moved);
+        self.pay_free_check_at_return(Some((&held, &returns)));
         self.line(&format!("ret {text} {held}"));
         Ok(())
     }
@@ -4479,6 +5021,29 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// An item read out of a `Table` by `Id`, changed and put back by the same `Id` is put back
+    /// where it was read: one lookup, which fails if the `Id` finds nothing. A call given the
+    /// `Table` in between could change it, so there the put-back looks it up again.
+    #[test]
+    fn an_item_put_back_by_the_id_it_was_read_by_is_looked_up_once() -> Result<(), String> {
+        let source = "from std.collections import Id, Table\n\nstruct Unit:\n    hp: int\n    bag: dict[str, int]\n\ndef hurt(ref units: Table[Unit], ids: list[Id[Unit]], at: int):\n    mut unit = units[ids[at]]\n    unit.hp -= 1\n    if unit.hp <= 0:\n        unit.bag[\"bone\"] = 1\n    units[ids[at]] = unit\n    return\n\ndef heal(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.hp += 1\n    units[id] = unit\n    return\n\ndef hurt_around_a_call(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.hp -= 1\n    heal(ref units, id)\n    units[id] = unit\n    return\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    ids = [units.add(Unit(hp=1, bag={\"gold\": 1}))]\n    hurt(ref units, ids, at=0)\n    hurt_around_a_call(ref units, ids[0])\n    stdout.print(units[ids[0]].hp)\n";
+        // Counted in the function's own definition, apart from the copies of others its unit has
+        // for inlining.
+        let lookups = |text: &str, function: &str| {
+            let own = format!("@\"f_{function}\"(");
+            text.split("\ndefine ")
+                .filter(|definition| definition.lines().next().is_some_and(|first| first.contains(&own)))
+                .flat_map(str::lines)
+                .filter(|line| line.starts_with("stale") && line.ends_with(':'))
+                .count()
+        };
+        let once = text_of(source, "hurt")?;
+        assert_eq!(lookups(&once, "hurt"), 1, "{once}");
+        let twice = text_of(source, "hurt_around_a_call")?;
+        assert_eq!(lookups(&twice, "hurt_around_a_call"), 2, "{twice}");
+        Ok(())
+    }
+
     /// A build that checks proofs checks, at each return, that the locals let go of before it
     /// are empty. A function with many of them does it through one table and one call a return,
     /// so its text grows with its locals and its returns, not with their product: `main` in the
@@ -4723,14 +5288,44 @@ def main(stdout: Stdout):
     }
 
     /// An enum holding strings gets native blocks in a program with no other threads, and its
-    /// drop lets go of each string's block, giving the runtime one with no owner left.
+    /// drop lets go of each string's block, giving the runtime one with no owner left, to free
+    /// plainly: a string holds nothing.
     #[test]
     fn an_enum_holding_strings_has_native_blocks() -> Result<(), String> {
         let source = "enum Named:\n    Leaf(name: str)\n    Pair(left: Named, right: Named, label: str)\n\ndef build(depth: int) -> Named:\n    if depth == 0: return .Leaf(name=\"leaf\")\n    return .Pair(left=build(depth - 1), right=build(depth - 1), label=\"pair\")\n\ndef size(tree: Named) -> int:\n    match tree:\n        case .Leaf(name):\n            return len(name)\n        case .Pair(left, right, label):\n            return size(left) + size(right) + len(label)\n\ndef main(stdout: Stdout):\n    stdout.print(size(build(4)))\n";
         let (units, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Named's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
-        assert!(text.contains("call void @fennec_free(ptr %text"), "{text}");
+        assert!(text.contains("call void @fennec_free_plain(ptr %text"), "{text}");
+        Ok(())
+    }
+
+    /// A program with no generator that closes something when it's let go partway frees every
+    /// block plainly, with nothing to check after (#2127).
+    #[test]
+    fn a_program_whose_generators_close_nothing_frees_everything_plainly() -> Result<(), String> {
+        let source = "def walk(n: int) -> Iterator[str]:\n    for at in range(n):\n        yield f\"a line long enough for a block {at}\"\n\ndef main(stdout: Stdout):\n    lines = [line for line in walk(3)]\n    keyed = {line: len(line) for line in lines}\n    stdout.print(len(lines), len(keyed))\n";
+        let (units, _, _) = emit(&lowered(source)?)?;
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(text.contains("@fennec_free_plain"), "{text}");
+        assert!(!text.contains("@fennec_free("), "{text}");
+        Ok(())
+    }
+
+    /// In a program with a generator that closes something when it's let go partway, only what
+    /// may be or hold one is freed with `fennec_free`, and the flag is read after each such free:
+    /// a string's free is plain, and the generator's is checked, so nothing goes unchecked (#2127).
+    #[test]
+    fn only_what_may_hold_a_generator_that_closes_is_freed_checked() -> Result<(), String> {
+        let source = "error Shut:\n    Stuck(name: str)\n\nstruct Door:\n    name: str\n\ndef opened(name: str) -> with Door fails Shut:\n    door = Door(name=name)\n    lend door\n    fail .Stuck(name=name)\n\ndef held(name: str) -> Iterator[int] fails Shut:\n    with opened(name)? as door:\n        yield 1\n        yield 2\n\ndef kept(name: str) -> int fails Shut:\n    walk = held(name)?\n    for n in walk:\n        break\n    said = f\"{name}, said with more text than a header holds\"\n    return len(said)\n\ndef main(stdout: Stdout):\n    n = kept(\"kept\") except why:\n        stdout.print(why)\n        return\n    stdout.print(n)\n";
+        let text = text_of(source, "kept")?;
+        assert!(text.contains("@fennec_free("), "{text}");
+        assert!(text.contains("@fennec_free_plain"), "{text}");
+        let unchecked: Vec<_> = crate::failure_checks::unchecked_failures(&text, &[])
+            .into_iter()
+            .filter(|missed| missed.callee == "fennec_free")
+            .collect();
+        assert!(unchecked.is_empty(), "{unchecked:?}\n{text}");
         Ok(())
     }
 
@@ -4743,7 +5338,7 @@ def main(stdout: Stdout):
         let (units, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Doc's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
-        assert!(text.contains("call void @fennec_free(ptr %list"), "{text}");
+        assert!(text.contains("call void @fennec_free_plain(ptr %list"), "{text}");
         Ok(())
     }
 
@@ -4880,6 +5475,32 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A loop over `items[k:]` with `k` a number goes through the list from `k`, slicing
+    /// nothing; one from the end still makes the slice.
+    #[test]
+    fn a_loop_over_a_list_from_a_place_slices_nothing() -> Result<(), String> {
+        let source = "def main(stdout: Stdout):\n    lines = [\"a\", \"b\", \"c\"]\n    mut joined = \"\"\n    for line in lines[1:]:\n        joined += line\n    stdout.print(joined)\n";
+        let text = text_of(source, "main")?;
+        assert!(!text.contains("@fennec_list_slice("), "{text}");
+        let from_the_end = source.replace("lines[1:]", "lines[-1:]");
+        let text = text_of(&from_the_end, "main")?;
+        assert!(text.contains("@fennec_list_slice("), "{text}");
+        Ok(())
+    }
+
+    /// A loop over a text's parts looks for each separator from where the last part ended, and
+    /// makes no list of them; `split` used as a list still makes one.
+    #[test]
+    fn a_loop_over_a_split_makes_no_list() -> Result<(), String> {
+        let source = "def walked(text: str, stdout: Stdout):\n    mut count = 0\n    for part in text.split(\",\"):\n        count += len(part)\n    stdout.print(count)\n\ndef listed(text: str, stdout: Stdout):\n    parts = text.split(\",\")\n    stdout.print(len(parts))\n\ndef main(stdout: Stdout):\n    walked(\"a,b\", stdout)\n    listed(\"a,b\", stdout)\n";
+        let walked = text_of(source, "walked")?;
+        assert!(walked.contains("@fennec_str_split_at_header("), "{walked}");
+        assert!(!walked.contains("@fennec_str_split_header("), "{walked}");
+        let listed = text_of(source, "listed")?;
+        assert!(listed.contains("@fennec_str_split_header("), "{listed}");
+        Ok(())
+    }
+
     /// A new struct key compared by its words goes into a dict that's alone, with room, by
     /// compiled code itself, and only to the runtime otherwise.
     #[test]
@@ -4971,6 +5592,130 @@ def main(stdout: Stdout):
                 "`{function}` reads differently with types added before it:\n{alone}\n---\n{after}"
             );
         }
+        Ok(())
+    }
+
+    /// What each unit of `source` read, shared and asked to be numbered, as a build keeping
+    /// units keeps it.
+    fn kept_of(source: &str) -> Result<(Vec<Kept>, Program), String> {
+        let program = lowered(source)?;
+        let (_, _, _, kept) = emit_keeping(&program, Cpu::Usual, Shared::default(), (true, None))?;
+        Ok((kept, program))
+    }
+
+    /// A unit notes what it read of the whole program: its own analysis, a small function it
+    /// holds a copy of, whether what it calls can fail. It keeps what it added to what units
+    /// share, a kind of list item by its type's name, and what it asked to be numbered.
+    #[test]
+    fn a_unit_notes_what_it_reads_and_keeps_what_it_shares() -> Result<(), String> {
+        use crate::reads::What;
+        use fennec_layout::{Asked, Named};
+        let source = "error Short:\n    excess: int\n\ndef tiny(value: int) -> int:\n    return value + 1\n\ndef bound(value: int) -> int fails Short:\n    if value < 0:\n        fail Short(excess=value)\n    return value\n\ndef total(items: list[list[int]]) -> int:\n    mut summed = 0\n    for item in items:\n        summed += tiny(len(item))\n    return summed\n\ndef main(stdout: Stdout):\n    stdout.print(total([[1], [2, 3]]))\n    checked_value = bound(tiny(4)) except Short(): -1\n    stdout.print(checked_value)\n    return\n";
+        let (kept, _) = kept_of(source)?;
+        let of = |name: &str| kept.iter().find(|kept| kept.function == name).ok_or(format!("no unit {name}"));
+        let read = |kept: &Kept, what: What, name: &str| {
+            kept.reads.iter().any(|(was, read)| *was == what && read == name)
+        };
+        let total = of("total")?;
+        assert!(
+            read(total, What::Analysis, "total") && read(total, What::Function, "tiny"),
+            "{:?}",
+            total.reads
+        );
+        let main = of("main")?;
+        assert!(read(main, What::CanFail, "bound"), "{:?}", main.reads);
+        let lists = Named::Block(Box::new(Named::List(Box::new(Named::Int))));
+        assert!(
+            total
+                .asked
+                .as_ref()
+                .is_some_and(|asked| asked.contains(&Asked::Block(Named::List(Box::new(Named::Int))))),
+            "{:?}",
+            total.asked
+        );
+        let shared = kept.iter().filter_map(|kept| kept.share.added.as_ref()).flatten();
+        assert!(
+            shared.into_iter().any(|added| matches!(added, Added::Element(_, item) if *item == lists)),
+            "no unit kept the list of lists' kind of item"
+        );
+        Ok(())
+    }
+
+    /// What a unit keeps of the places it shares moves with its function: kept from a program,
+    /// then added again for the same program with lines added above every function, it gives
+    /// what writing that program gives, every place moved.
+    #[test]
+    fn a_kept_share_moves_with_its_function() -> Result<(), String> {
+        let source = "def picked(items: list[int], index: int) -> int:\n    return items[index] // (index + 1)\n\ndef main(stdout: Stdout):\n    stdout.print(picked([3, 5, 7], 1))\n    return\n";
+        let (before, _) = kept_of(source)?;
+        let (after, program) = kept_of(&format!("# Two lines\n# above everything.\n{source}"))?;
+        let anchors: HashMap<&str, Option<u32>> = program
+            .functions
+            .iter()
+            .chain(&program.constants)
+            .map(|function| (function.name.as_str(), crate::share::anchor(function)))
+            .collect();
+        let anchor_of = |name: &str| anchors.get(name).copied();
+        let layouts = crate::layouts_of(&program)?;
+        let (mut moved, mut written) = (Shared::default(), Shared::default());
+        for (before, after) in before.iter().zip(&after) {
+            assert_eq!(before.function, after.function);
+            // As a build using the unit again does: its asking asked again, then what it kept.
+            layouts.ask_again(after.asked.as_deref().unwrap_or_default()).ok_or("didn't ask again")?;
+            before.share.add_to(&mut moved, &layouts, &anchor_of).ok_or("didn't add again")?;
+            after.share.add_to(&mut written, &layouts, &anchor_of).ok_or("didn't add")?;
+        }
+        assert!(!written.places.values().all(Vec::is_empty), "no places to move: {:?}", written.places);
+        assert_eq!(moved.places, written.places);
+        assert_eq!(moved.starts, written.starts);
+        Ok(())
+    }
+
+    /// A place at the program's very first byte is kept as it is, and the anchor a function's other
+    /// places are kept from leaves it out: so a `main` written on the file's first line, part of
+    /// which goes by its whole definition, keeps its other places moving with it, and its key (see
+    /// the next step's `keys`) changes when text above it moves rather than leaving a place behind.
+    #[test]
+    fn a_place_at_the_first_byte_is_kept_as_it_is() -> Result<(), String> {
+        let source = "def main(stdout: Stdout) fails Oops:\n    picked_value = picked([3, 5, 7], 1)\n    if picked_value > 6: fail Oops(why=picked_value)\n    stdout.print(picked_value)\n    return\n\nerror Oops:\n    why: int\n\ndef picked(items: list[int], index: int) -> int:\n    return items[index]\n";
+        // Lowered as a build lowers it, which has `main` stop on a failure it gives back.
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let options =
+            fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true, serve_in_order: false };
+        let program = fennec_ir::lower_with(&module, &checked, options);
+        let main = program.functions.iter().find(|function| function.name == "main").ok_or("no main")?;
+        let starts: Vec<u32> =
+            main.blocks.iter().flat_map(|block| &block.insts).map(|inst| inst.span.start).collect();
+        assert!(starts.contains(&0), "nothing of main is at byte 0: {starts:?}");
+        let anchor = crate::share::anchor(main);
+        assert!(anchor.is_some_and(|at| at > 0), "the anchor is {anchor:?}");
+        assert_eq!(place(0, anchor), Place::At(0));
+        Ok(())
+    }
+
+    /// A unit's kinds of block, asked for again in its place among units written fresh, get the
+    /// numbers writing it would give, though a unit before it asks for more than it did when
+    /// it was kept: so the numbers every unit after it gets come out as writing them all would.
+    #[test]
+    fn asking_again_numbers_a_kind_as_writing_did_after_others_asked_more() -> Result<(), String> {
+        let helper = "def helper() -> int:\n    nested = [[1, 2], [3]]\n    names = {\"a\": [\"b\"]}\n    return len(nested) + len(names)\n\n";
+        let main = "def main(stdout: Stdout):\n    stdout.print(early(), helper())\n    return\n";
+        let plain = "def early() -> int:\n    return 1\n\n";
+        let asking = "def early() -> int:\n    places = {\"x\": [[1.5]]}\n    return len(places)\n\n";
+        let (kept, _) = kept_of(&format!("{plain}{helper}{main}"))?;
+        let (fresh, program) = kept_of(&format!("{asking}{helper}{main}"))?;
+        let at = |kept: &[Kept], name: &str| kept.iter().position(|kept| kept.function == name);
+        assert!(at(&fresh, "early") < at(&fresh, "helper"), "early is written first");
+        let layouts = crate::layouts_of(&program)?;
+        let _ = crate::native::native_types(&program, &layouts);
+        let kept_helper = kept.iter().find(|kept| kept.function == "helper").ok_or("no helper")?;
+        for unit in &fresh {
+            let unit = if unit.function == "helper" { kept_helper } else { unit };
+            layouts.ask_again(unit.asked.as_deref().ok_or("unnamed")?).ok_or("didn't ask again")?;
+        }
+        let (_, _, written, _) = emit_keeping(&program, Cpu::Usual, Shared::default(), (true, None))?;
+        assert_eq!(layouts.fingerprint(), written.fingerprint());
         Ok(())
     }
 

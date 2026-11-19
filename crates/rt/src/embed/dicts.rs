@@ -2113,6 +2113,11 @@ pub(super) fn children(state: &State, block: &[u64], found: &mut Vec<u64>) {
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;
     let words = block.get(start..start + used * layout.width()).unwrap_or_default();
+    // Room for a key's block and a value's in each entry at once: grown one at a time, the list
+    // would double, copying itself on the way, and end with room for twice what it holds.
+    let each =
+        usize::from(layout.key.owned() || layout.key == Word::Text) + usize::from(layout.value.owned());
+    found.reserve(used * each);
     for entry in words.chunks_exact(layout.width()).filter(|entry| entry.first() != Some(&REMOVED)) {
         found.extend(key_block(layout.key, key_of(layout, entry)));
         found.extend(layout.value.owned().then(|| value_of(entry)));

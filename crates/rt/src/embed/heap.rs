@@ -101,6 +101,7 @@ pub(crate) struct Heap {
     /// by address, and those already taken out of the table, each at its own address.
     pending: Vec<u64>,
     taken: Vec<Box<[u64]>>,
+    /// A freed block's children, kept up to `SCRATCH_KEPT_WORDS` of room (see `emptied_if_small`).
     found: Vec<u64>,
     /// The `Value`s cells hold, by the number in each cell, and unused numbers.
     cells: Vec<Value>,
@@ -787,19 +788,26 @@ fn all_inline(block: &[u64]) -> bool {
     items.as_chunks::<3>().0.iter().all(|[_, _, last]| last & inline != 0)
 }
 
-/// The most room the heap's scratch words keep from one use to the next, as a regex buffer does
-/// (64 KB). More is let go of when its use ends: a list of 100,000 strings freed or copied once
-/// would hold 800 KB of it on its thread for the rest of the run.
+/// The most room the heap's scratch words and a freed block's list of children keep from one use
+/// to the next, as a regex buffer does (64 KB). More is let go of when its use ends: a list of
+/// 100,000 strings freed or copied once would hold 800 KB of it on its thread for the rest of the
+/// run.
 const SCRATCH_KEPT_WORDS: usize = 8 << 10;
 
+/// Words a use took, emptied to be kept for the next, or let go of if they've grown past
+/// `SCRATCH_KEPT_WORDS`.
+fn emptied_if_small(mut words: Vec<u64>) -> Vec<u64> {
+    if words.capacity() > SCRATCH_KEPT_WORDS {
+        return Vec::new();
+    }
+    words.clear();
+    words
+}
+
 impl Heap {
-    /// Puts back the scratch words a use took, emptied, unless they've grown past
-    /// `SCRATCH_KEPT_WORDS`, when they're let go of.
-    pub(super) fn keep_scratch(&mut self, mut words: Vec<u64>) {
-        if words.capacity() <= SCRATCH_KEPT_WORDS {
-            words.clear();
-            self.scratch = words;
-        }
+    /// Puts back the scratch words a use took (see `emptied_if_small`).
+    pub(super) fn keep_scratch(&mut self, words: Vec<u64>) {
+        self.scratch = emptied_if_small(words);
     }
 
     /// Whether a list of this kind of item is known to hold no blocks. A worker's heap has no

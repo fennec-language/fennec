@@ -148,6 +148,29 @@ fn copying_a_big_list_lets_its_scratch_room_go() {
     finish();
 }
 
+/// Freeing a block that holds many others lets go of the room it listed them in, where a short
+/// one's is kept for the next: kept, one list of 20,000 strings freed held 160 KB of it on its
+/// thread for the rest of the run.
+#[test]
+fn freeing_a_big_list_lets_its_room_for_children_go() {
+    let str = Rc::new(Element::Str);
+    let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
+    start(tables, crate::Inputs::default());
+    let room_after_freeing = |count: usize| {
+        let texts: Vec<String> =
+            (0..count).map(|number| format!("item {number} of a list, long enough for a block")).collect();
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let list = with(|state| super::super::lists::list_of_strings(state, 0, &texts));
+        heap::free(list);
+        with(|state| state.heap.found.capacity())
+    };
+    assert!(room_after_freeing(100) >= 100, "a short list's room is kept");
+    let room = room_after_freeing(20_000);
+    assert!(room <= super::SCRATCH_KEPT_WORDS, "{room} words kept after freeing 20,000");
+    let (_, failure, _) = finish();
+    assert!(failure.is_none(), "{failure:?}");
+}
+
 #[test]
 fn strings_have_their_methods() {
     let str = Rc::new(Element::Str);

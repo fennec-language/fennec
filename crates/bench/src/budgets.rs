@@ -48,10 +48,16 @@ const VERDICT: Budget =
 /// How many instructions CI's slower machines run in a second. An old verdict ran 6,658 million of
 /// them in between 792 and 988 ms, depending on the machine, so 6.7 billion a second on the slow
 /// end. Limits use that, so they mean what they say even on a slow machine.
+///
+/// A count far under its time's worth is held to about twice what it was when it was pinned
+/// instead, so a change that doubles one fails then, rather than growing unseen until it's near
+/// the time: the definition after an edit ran 666 million, checking all of the standard library
+/// again, which went unseen until its clock went over 100 ms; it needs 87 million (#2137).
 const INSTRUCTIONS_A_SECOND: u64 = 6_700_000_000;
 
-/// What an edit's verdict may run: a second.
-const MOST_VERDICT_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND;
+/// What an edit's verdict may run: about twice the 612 million it ran on CI on 2026-11-18, against
+/// a second's 6,700 million.
+const MOST_VERDICT_INSTRUCTIONS: u64 = 1_250_000_000;
 
 /// After an edit, `fennec run` checks and lints only the files that changed, then compiles the
 /// function, links a new executable and starts it. It's counted in every instruction that takes,
@@ -87,14 +93,17 @@ const ERRORED_FUNCTIONS: usize = 5000;
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
 
-/// What starting an unchanged program may run: 100 ms.
-const MOST_RUN_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
+/// What starting an unchanged program may run: about twice the 218 million it ran on CI on
+/// 2026-11-18, against 100 ms's 670 million.
+const MOST_RUN_INSTRUCTIONS: u64 = 450_000_000;
 
-/// What an edit may cost the language server: 100 ms.
-const MOST_CHECK_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
+/// What an edit may cost the language server: about twice the 66 to 70 million it ran on CI on
+/// 2026-11-18, against 100 ms's 670 million.
+const MOST_CHECK_INSTRUCTIONS: u64 = 140_000_000;
 
-/// What going to a definition after an edit may cost the language server: 100 ms.
-const MOST_DEFINITION_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
+/// What going to a definition after an edit may cost the language server: about twice the 87 and
+/// 88 million it ran on CI on 2026-11-18, against 100 ms's 670 million.
+const MOST_DEFINITION_INSTRUCTIONS: u64 = 180_000_000;
 
 /// How many times the work an edit's verdict may be on the big kit, against one a tenth its size.
 /// It shouldn't depend on the size of a project at all. Reading and hashing every file does, by

@@ -4,4 +4,4 @@ error: `input` doesn't exist
 2 |     name = input("name? ")
   |            ^^^^^
   |
-  = help: give it a value first, as `input = ...`, or check the spelling
+  = help: standard input comes through `stdin: Stdin` in `main`'s parameters, as `line = stdin.read_line()? else ""`

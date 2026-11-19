@@ -47,6 +47,7 @@ impl FnCx<'_> {
             if matches!(stmt.kind, StmtKind::Expr(_)) && !(last && used) && !this.exits {
                 match self.checker.settled(&this.ty) {
                     Type::Result(..) => self.error(unhandled(stmt.span)),
+                    _ if is_text_alone(stmt) => self.error(text_alone(stmt.span)),
                     ty if gives_something(&ty) => self.error(unused(&ty, stmt.span)),
                     _ => {}
                 }
@@ -785,6 +786,17 @@ fn names_read(expr: &Expr, reads: &mut Vec<String>) {
 /// Whether a value is something, so a statement that gives it and drops it loses it.
 fn gives_something(ty: &Type) -> bool {
     !matches!(ty, Type::Unit | Type::Unknown | Type::Var(_) | Type::None)
+}
+
+/// Whether a statement is only text, as Python's docstring is.
+fn is_text_alone(stmt: &Stmt) -> bool {
+    matches!(&stmt.kind, StmtKind::Expr(expr) if matches!(expr.kind, ExprKind::Str(_) | ExprKind::FStr(_)))
+}
+
+/// Text on a line of its own, as a docstring: it does nothing, and a doc comment is `##`.
+fn text_alone(span: Span) -> Diagnostic {
+    Diagnostic::new("a string on its own line does nothing", span)
+        .with_help("a doc comment is `##` above what it's about, as `## Doubles a number.` above the `def`")
 }
 
 /// A statement's value, thrown away without saying so. Throwing it away could hide a mistake,

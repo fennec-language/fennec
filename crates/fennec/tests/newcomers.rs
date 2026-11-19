@@ -70,10 +70,6 @@ const MISTAKES: [(&str, &str); 56] = [
     ("print_with_end", "`stdout.print(text, end=\"\")`"),
 ];
 
-/// Mistakes whose message gives no fix hint yet, which is the checker's to add: the tooling lane's
-/// audit gave the checker lane the list. Each comes out of here as its hint lands.
-const NO_HINT_YET: [&str; 2] = ["format_method", "value_without_return"];
-
 /// What a message says, where, and its fix hint: the same in every tool.
 #[derive(Debug, PartialEq)]
 struct Said {
@@ -87,21 +83,16 @@ struct Said {
 #[test]
 fn a_python_programmers_first_mistakes_each_say_what_to_write_in_every_tool() {
     let mut editor = Editor::new().unwrap();
-    for name in NO_HINT_YET {
-        assert!(MISTAKES.iter().any(|(mistake, _)| *mistake == name), "{name} isn't one of the mistakes");
-    }
     for (name, python) in MISTAKES {
         let path = format!("examples/errors/{name}.fen");
         let source = std::fs::read_to_string(repo().join(&path)).unwrap();
         let expected = std::fs::read_to_string(repo().join(format!("examples/errors/{name}.err"))).unwrap();
         let said = said_in_text(&expected);
         assert!(!said.is_empty(), "{name}, {python}, is refused with nothing:\n{expected}");
-        if !NO_HINT_YET.contains(&name) {
-            assert!(
-                said.iter().all(|one| one.help.is_some() || one.fix.is_some()),
-                "{name}, {python}, gives no fix hint:\n{expected}"
-            );
-        }
+        assert!(
+            said.iter().all(|one| one.help.is_some() || one.fix.is_some()),
+            "{name}, {python}, gives no fix hint:\n{expected}"
+        );
         let checked = fennec(&["check", &path]).unwrap();
         assert_eq!(String::from_utf8_lossy(&checked.stderr), expected, "`fennec check` on {name}, {python}");
         assert_eq!(editor.diagnostics(&source), said, "the language server on {name}, {python}");

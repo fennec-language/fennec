@@ -99,19 +99,21 @@ pub(crate) fn missing_step(span: Span) -> Diagnostic {
         .with_help("end the chain with `else` and a default, like `x.name else \"\"`, or check with `if x is None:` first")
 }
 
+/// What to do with a failure nothing handles, in the forms of 2026-11-11.
+const HANDLE_IT: &str = "handle the failure with `except why:`, give a value for the cases it fails with, as `x = f() except Missing(): 0`, or pass it up with `?` from a function that says `fails`";
+
 pub(crate) fn unhandled_result(span: Span) -> Diagnostic {
-    Diagnostic::new("this is the result of something that can fail", span)
-        .with_help("get the value out with `?`, `else`, or `match` first")
+    Diagnostic::new("this is the result of something that can fail", span).with_help(
+        "handle the failure where it's made: `x = f()?` passes it up, `x = f() except Missing(): 0` gives a value instead, and `x = f() except why:` handles it in a block",
+    )
 }
 
 pub(crate) fn dropped_failure(span: Span) -> Diagnostic {
-    Diagnostic::new("`_ =` would drop this failure", span)
-        .with_help("pass the error up with `?`, give a default with `else`, or handle it with `match`")
+    Diagnostic::new("`_ =` would drop this failure", span).with_help(HANDLE_IT)
 }
 
 pub(crate) fn unhandled(span: Span) -> Diagnostic {
-    Diagnostic::new("this can fail, but nothing handles it", span)
-        .with_help("pass the error up with `?`, give a default with `else`, or handle it with `match`")
+    Diagnostic::new("this can fail, but nothing handles it", span).with_help(HANDLE_IT)
 }
 
 /// A condition that isn't a bool: Fennec has no truthiness. A bool from something that can fail,
@@ -135,6 +137,9 @@ pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
         .with_help(help)
 }
 
+/// How Fennec formats text, for Python's `%` and `.format()`.
+pub(crate) const F_STRINGS: &str = "Fennec formats text with f-strings, as `f\"{count} items\"`";
+
 pub(crate) fn no_method(ty: &Type, method: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("{} has no method `{method}`", describe(ty)), span);
     match method {
@@ -145,6 +150,7 @@ pub(crate) fn no_method(ty: &Type, method: &str, span: Span) -> Diagnostic {
         "toLowerCase" | "to_lowercase" => diagnostic.with_help("use `lower()`"),
         "log" | "println" => diagnostic.with_help("use `stdout.print(...)`"),
         "copy" | "clone" => diagnostic.with_help("a plain `=` makes a copy already: `kept = value`"),
+        "format" if matches!(ty, Type::Str | Type::LiteralStr) => diagnostic.with_help(F_STRINGS),
         _ => diagnostic,
     }
 }

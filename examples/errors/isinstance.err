@@ -4,12 +4,4 @@ error: `isinstance` doesn't exist
 11 |     if isinstance(shape, Circle):
    |        ^^^^^^^^^^
    |
-   = help: give it a value first, as `isinstance = ...`, or check the spelling
-
-error: `Circle` is a type, not a value
-  --> examples/errors/isinstance.fen:11:26
-   |
-11 |     if isinstance(shape, Circle):
-   |                          ^^^^^^
-   |
-   = help: make one with `Circle(...)`
+   = help: write `value is Circle`, which also narrows `value` to a `Circle` inside the `if`

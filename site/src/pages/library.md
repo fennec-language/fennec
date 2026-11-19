@@ -51,7 +51,9 @@ struct Settings:
 
 def main(stdout: Stdout):
     text = json.dumps(Settings())
-    loaded = json.loads[Settings](text) else Settings()
+    loaded = json.loads[Settings](text) except why:
+        stdout.print(f"using the defaults: {why}")
+        Settings()
     stdout.print(loaded)
 ```
 
@@ -67,7 +69,7 @@ This works for JSON, TOML and `std.pack`. One `serialize` and `deserialize` serv
 from std.net import Request, Response
 
 def respond(request: Request) -> Response:
-    match request.path:
+    return match request.path:
         case "/hello":
             name = request.query.get("name") else "you"
             Response(status=200, body=f"hello, {name}".encode())

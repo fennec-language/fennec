@@ -4,4 +4,4 @@ error: `exit` doesn't exist
 3 |     exit(1)
   |     ^^^^
   |
-  = help: give it a value first, as `exit = ...`, or check the spelling
+  = help: `main` gives the exit code: write `def main(...) -> int:` and `return 1`, or `fail` out of `main`

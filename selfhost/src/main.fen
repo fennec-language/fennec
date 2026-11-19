@@ -5,7 +5,7 @@
 ## `dump.fen` prints both in the same text as `fennec dev tokens` and `fennec dev tree`, so
 ## the two front ends can be compared line by line.
 
-from ast import Module
+from ast import FnDef, Item, Module
 from dump import dump_check, dump_tokens, dump_tree
 from parser import parse
 import parser.expr
@@ -14,6 +14,37 @@ import parser.pattern
 # only when something imports them.
 import parser.stmt
 from span import Diagnostic
+
+## Whether a function or method is declared `@intrinsic`.
+def declared_intrinsic(function: FnDef) -> bool:
+    return any(annotation.name == "intrinsic" for annotation in function.annotations)
+
+## A standard library file as the checker reads it: without what it declares `@intrinsic`, a method
+## or function the engines provide, which the checker knows from its own tables. An `extend` left
+## with no methods goes too. As `without_engine_declarations` in `crates/syntax/src/stdlib.rs`.
+def without_engine_declarations(module: Module) -> Module:
+    mut kept = list[Item]()
+    for item in module.items:
+        match item:
+            case .Function(function):
+                if not declared_intrinsic(function):
+                    kept.append(item)
+            case .Extend(extension):
+                methods = [method for method in extension.methods if not declared_intrinsic(method)]
+                if len(methods) > 0:
+                    kept.append(.Extend(copy(extension, methods=methods)))
+            case .Struct(type_def):
+                methods = [method for method in type_def.methods if not declared_intrinsic(method)]
+                kept.append(.Struct(copy(type_def, methods=methods)))
+            case .Enum(type_def):
+                methods = [method for method in type_def.methods if not declared_intrinsic(method)]
+                kept.append(.Enum(copy(type_def, methods=methods)))
+            case .Error(type_def):
+                methods = [method for method in type_def.methods if not declared_intrinsic(method)]
+                kept.append(.Error(copy(type_def, methods=methods)))
+            case _:
+                kept.append(item)
+    return Module(items=kept)
 
 ## Reads its work from standard input: one `tokens <path>`, `tree <path>` or `check <path>`
 ## line per file to dump. `std <path>` lines name the standard library's sources, which
@@ -29,7 +60,10 @@ def main(stdout: Stdout, fs: Fs, stdin: Stdin):
         if mode == "std":
             module = parse(source) except Diagnostic():
                 continue
-            library.append(module)
+            if path.endswith("intrinsics.fen"):
+                library.append(module)
+            else:
+                library.append(without_engine_declarations(module))
             continue
         stdout.print(f"== {path}")
         if mode == "tokens":

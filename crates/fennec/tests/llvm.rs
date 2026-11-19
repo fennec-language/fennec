@@ -23274,6 +23274,7 @@ def main(stdout: Stdout) fails Nope:
 /// A `ref self` method called on a union known to hold one member, after `is`, is given that
 /// member and puts it back changed. So is one called on each union in a list, or on a union field,
 /// and a union given by `ref` to a function that takes the union can be changed to another member.
+/// One given by `ref` where its member is taken is given the member, and gets it back changed.
 #[test]
 fn a_ref_self_method_on_a_narrowed_union_changes_the_member_it_holds() -> std::io::Result<()> {
     if !ready() {
@@ -23303,6 +23304,9 @@ def reset(ref shape: Box | Bag) -> int:
     shape = Bag(held=100)
     return grown
 
+def grow_box(ref box: Box) -> int:
+    return box.grow()
+
 def main(stdout: Stdout):
     mut shape: Box | Bag = Box(items=[1])
     stdout.print(shape.grow())
@@ -23318,9 +23322,12 @@ def main(stdout: Stdout):
     if other is Box:
         stdout.print(reset(ref other))
     stdout.print(other)
+    mut third: Box | Bag = Box(items=[])
+    if third is Box:
+        stdout.print(grow_box(ref third), third)
     return
 ",
-        "2\n3 [1, 9, 9]\n1\n1\n[Bag(held=1), Box(items=[9])]\n6 Bag(held=6)\n1\nBag(held=100)\n",
+        "2\n3 [1, 9, 9]\n1\n1\n[Bag(held=1), Box(items=[9])]\n6 Bag(held=6)\n1\nBag(held=100)\n1 Box(items=[9])\n",
     )
 }
 

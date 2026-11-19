@@ -24,6 +24,7 @@ use super::ast::{
 };
 use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{GenericStep, Genericking};
+use super::ast::{IfaceStep, Interfacing};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
@@ -832,6 +833,79 @@ impl OwnPart {
             self.x,
             shown(&Value::Ints(self.marks.clone()))
         )
+    }
+}
+
+/// A `Crate{id}` or a `Heap{id}` of an `Interfaced` statement as the evaluator keeps it.
+#[derive(Clone)]
+enum Grower {
+    Crate(Vec<i64>),
+    Heap(i64),
+}
+
+impl Grower {
+    fn length(items: &[i64]) -> Ran<i64> {
+        i64::try_from(items.len()).map_err(|_| Stop::Unsure)
+    }
+
+    /// `grow(by)`: a crate appends its length plus `by`, a heap adds `by` and 3.
+    fn grow(&mut self, by: i64) -> Ran<i64> {
+        match self {
+            Grower::Crate(items) => {
+                items.push(checked(Grower::length(items)?.checked_add(by))?);
+                Grower::length(items)
+            }
+            Grower::Heap(held) => {
+                *held = checked(held.checked_add(by).and_then(|held| held.checked_add(3)))?;
+                Ok(*held)
+            }
+        }
+    }
+
+    /// `tried(by)`: a crate appends `by`, a heap adds it, then each fails past 5. What it gives
+    /// back, or `None` for the failure.
+    fn tried(&mut self, by: i64) -> Ran<Option<i64>> {
+        let given = match self {
+            Grower::Crate(items) => {
+                items.push(by);
+                Grower::length(items)?
+            }
+            Grower::Heap(held) => {
+                *held = checked(held.checked_add(by))?;
+                *held
+            }
+        };
+        Ok((by <= 5).then_some(given))
+    }
+
+    fn size(&self) -> Ran<i64> {
+        match self {
+            Grower::Crate(items) => Grower::length(items),
+            Grower::Heap(held) => Ok(*held),
+        }
+    }
+
+    /// The sum of what `counts()` yields.
+    fn counted(&self) -> Ran<i64> {
+        match self {
+            Grower::Crate(items) => {
+                checked(items.iter().try_fold(0_i64, |total, item| total.checked_add(*item)))
+            }
+            Grower::Heap(held) => Ok((0..held.rem_euclid(4)).sum()),
+        }
+    }
+
+    fn bumped(&mut self, by: i64) -> Ran<()> {
+        self.grow(by)?;
+        self.grow(checked(by.checked_add(1))?)?;
+        Ok(())
+    }
+
+    fn shown(&self, id: usize) -> String {
+        match self {
+            Grower::Crate(items) => format!("Crate{id}(items={})", shown(&Value::Ints(items.clone()))),
+            Grower::Heap(held) => format!("Heap{id}(held={held})"),
+        }
     }
 }
 
@@ -1950,6 +2024,7 @@ impl Machine {
             Stmt::Turned(turning) => self.turned(turning)?,
             Stmt::Filed(filing) => self.filed(filing),
             Stmt::Generic(generic) => self.generic(generic),
+            Stmt::Interfaced(interfacing) => self.interfaced(interfacing)?,
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
@@ -3081,6 +3156,76 @@ impl Machine {
         let _ = writeln!(self.out, "Holder{id}(item={}, items=[])", shown(&outer));
         let _ = writeln!(self.out, "[{}, {}]", shown(&pair[0]), shown(&pair[1]));
         let _ = writeln!(self.out, "{{\"k\": {}}}", shown(&table));
+    }
+
+    /// What `interfaced{id}` prints: each generic call runs the method of the type it's given,
+    /// changes the place a `ref` names and leaves a copy apart.
+    fn interfaced(&mut self, interfacing: &Interfacing) -> Ran<()> {
+        let id = interfacing.id;
+        let mut crates = vec![Grower::Crate(vec![1]), Grower::Crate(Vec::new())];
+        let mut heaps = vec![Grower::Heap(2), Grower::Heap(5)];
+        let (mut crate_one, mut heap) = (Grower::Crate(vec![5]), Grower::Heap(1));
+        for &(step, crate_first, n) in &interfacing.steps {
+            let (items, item) =
+                if crate_first { (&mut crates, &mut crate_one) } else { (&mut heaps, &mut heap) };
+            let line = match step {
+                IfaceStep::GrownAll => {
+                    let mut total = 0_i64;
+                    for each in items.iter_mut() {
+                        total = checked(total.checked_add(each.grow(n)?))?;
+                    }
+                    Some(total.to_string())
+                }
+                IfaceStep::Bumped => {
+                    item.bumped(n)?;
+                    None
+                }
+                IfaceStep::Copied => {
+                    let mut copy = item.clone();
+                    copy.grow(n)?;
+                    Some(format!("{} {}", copy.shown(id), item.shown(id)))
+                }
+                IfaceStep::Summed => Some(item.counted()?.to_string()),
+                IfaceStep::Tried => {
+                    let second_by = checked(n.checked_add(4))?;
+                    let first = item.tried(n)?;
+                    let second = if first.is_some() { item.tried(second_by)? } else { None };
+                    if let (Some(first), Some(second)) = (first, second) {
+                        Some(checked(first.checked_add(second))?.to_string())
+                    } else {
+                        // The first try fails past 5, and the second, given 4 more, past 1.
+                        let code = if first.is_none() { n } else { second_by };
+                        let _ = writeln!(self.out, "failed Nope{id}(code={code})");
+                        Some("-1".to_owned())
+                    }
+                }
+                IfaceStep::EachBumped => {
+                    for each in items.iter_mut() {
+                        each.bumped(n)?;
+                    }
+                    None
+                }
+                IfaceStep::Sized => {
+                    let mut total = 0_i64;
+                    for each in items.iter() {
+                        total = checked(total.checked_add(each.size()?))?;
+                    }
+                    Some(total.to_string())
+                }
+            };
+            if let Some(line) = line {
+                let _ = writeln!(self.out, "{line}");
+            }
+        }
+        let list = |items: &[Grower]| {
+            let shown: Vec<String> = items.iter().map(|each| each.shown(id)).collect();
+            format!("[{}]", shown.join(", "))
+        };
+        let _ = writeln!(self.out, "{}", list(&crates));
+        let _ = writeln!(self.out, "{}", list(&heaps));
+        let _ = writeln!(self.out, "{}", crate_one.shown(id));
+        let _ = writeln!(self.out, "{}", heap.shown(id));
+        Ok(())
     }
 
     /// What `ordered{id}` prints: each line read left to right, as `ordered_written` writes it,

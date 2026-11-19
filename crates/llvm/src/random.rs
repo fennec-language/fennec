@@ -62,7 +62,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("br i1 {backwards}, label %{bad}, label %{ok}, !prof !0"));
                 self.start_block(&bad);
                 let message = self.pick_message(low, high);
-                self.stop_with(&message, span);
+                self.stop_owned(&message, span);
                 self.start_block(&ok);
                 let (span_of, count, drawn_pair, offset, after, value) =
                     (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -148,9 +148,8 @@ impl Emit<'_, '_, '_> {
             } else {
                 self.literal(part)
             };
-            let joined = self.temp();
-            self.line(&format!("{joined} = call ptr @fennec_str_concat(ptr {message}, ptr {piece})"));
-            message = joined;
+            // What's joined so far and a number's text are let go of once they're joined (#2170).
+            message = self.joined(&message, &piece, is_number);
         }
         message
     }

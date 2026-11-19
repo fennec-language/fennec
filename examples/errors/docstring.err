@@ -1,7 +1,7 @@
-error: this gives back a str, and nothing uses it
+error: a string on its own line does nothing
  --> examples/errors/docstring.fen:2:5
   |
 2 |     """Doubles a number."""
   |     ^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = fix: use it, or throw it away on purpose with `_ = ...`
+  = help: a doc comment is `##` above what it's about, as `## Doubles a number.` above the `def`

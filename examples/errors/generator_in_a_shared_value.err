@@ -1,0 +1,7 @@
+error: a `shared` value can't hold a generator yet
+ --> examples/errors/generator_in_a_shared_value.fen:9:21
+  |
+9 |     shared holder = Holder(items=numbers())
+  |                     ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: keep its items with `list(...)` first, as `items = list(made)`, and hand on the list, or make the generator where it's used

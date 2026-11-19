@@ -1,6 +1,6 @@
 # Building a program in Fennec
 
-A practical guide to writing a real program today, using a small version of Hoard, a source control tool, as the example. Every sample here compiles and passes its tests on main. Anything that doesn't is marked **planned**, with what to write until it lands. `docs/language.md` is the full language on one page.
+A practical guide to writing a real program today, using a small version of Hoard, a source control tool, as the example. Every sample here compiles and passes its tests on main, and a test checks it: the samples that are files of Hoard are put together as the kit, checked and tested. Anything that doesn't compile yet is marked **planned**, with what to write until it lands. `docs/language.md` is the full language on one page.
 
 ## Start a kit
 
@@ -114,7 +114,7 @@ shop/
     seed.fen
 ```
 
-```fennec
+```fennec planned
 # entries/deploy.fen
 from app import Config, run
 
@@ -141,7 +141,7 @@ Not built yet: today a kit has one `main`, in `src/main.fen`.
 
 A function that can fail says so in its signature, and every place it can leave is visible. This is `src/store.fen`, where Hoard keeps file contents under the hash of their bytes:
 
-```fennec
+```fennec src/store.fen
 ## Where Hoard keeps file contents, each under the hash of its bytes.
 from std.crypto import blake3
 
@@ -178,7 +178,7 @@ def load(fs: Fs, hash: str) -> bytes fails StoreError:
 - `except why:` handles a failure in a block, and `case` arms right under it handle each case. A `fail` inside it carries the failure it replaces along as a note, which counts as using `why`. There's no `Ok`, `Err` or `Result`: a failure is always handled at the call.
 - `else` is only for a missing value: a default, or leaving with `else return`, `else continue` or `else fail ...`.
 
-```fennec
+```fennec fragment
 data = load(fs, hash) except why:
     case .Missing(hash):
         stdout.print(f"nothing is saved under {hash}")
@@ -250,7 +250,7 @@ def note(fs: Fs, text: str) fails IoError:
 
 Most code passes plain values around: `=` gives you your own copy, and `ref` lets a function change yours. When many tasks have to reach the same value, make it `shared` in `main`, pass it down, and touch it inside `lock`. This is `src/index.fen`:
 
-```fennec
+```fennec src/index.fen
 ## Which hash each tracked path had when it was last saved, shared by every task.
 struct Entry:
     path: str
@@ -279,7 +279,7 @@ def hash_of(index: shared dict[str, Entry], path: str) -> str?:
 
 `parallel(xs)` splits work across cores, with no threads or `async` to manage. This is `src/main.fen`:
 
-```fennec
+```fennec src/main.fen
 from index import Entry, record
 from store import save
 
@@ -295,8 +295,8 @@ def snapshot(fs: Fs, folder: str, index: shared dict[str, Entry]) -> int fails I
 def main(stdout: Stdout, fs: Fs, args: Args):
     folder = args[0] if len(args) > 0 else "."
     shared index = dict[str, Entry]()
-    saved = snapshot(fs, folder, index) else:
-        stdout.print(f"couldn't read {folder}")
+    saved = snapshot(fs, folder, index) except why:
+        stdout.print(f"couldn't read {folder}: {why}")
         return
     stdout.print(f"saved {saved} files")
 ```
@@ -318,8 +318,11 @@ def respond(fs: Fs, request: Request) -> Response:
     if request.method != "GET" or not request.path.startswith("/objects/"):
         return Response(status=404, body="nothing here".encode())
     hash = request.path[9:]
-    data = fs.read_bytes(f".hoard/objects/{hash}") else:
-        return Response(status=404, body=f"no object {hash}".encode())
+    data = fs.read_bytes(f".hoard/objects/{hash}") except why:
+        case .NotFound():
+            return Response(status=404, body=f"no object {hash}".encode())
+        case _:
+            return Response(status=500, body=f"couldn't read object {hash}: {why}".encode())
     return Response(status=200, headers={"content-type": "application/octet-stream"}, body=data)
 
 test "a saved object is served"(fs: Fs):
@@ -353,8 +356,8 @@ def main(net: Net, stdout: Stdout):
         # one task for each connection, which closes when its round ends
         for conn in parallel(server):
             # handle a failure here, or it would pass up and stop the server
-            echo(conn) else:
-                continue
+            echo(conn) except why:
+                stdout.print(f"a connection ended early: {why}")
 ```
 
 A crash in one connection's task ends only that task, and the server keeps serving.
@@ -462,24 +465,20 @@ def hash_of(fs: Fs, path: str) -> str? fails SqlError:
 
 A test sits beside the code it tests, and names the capabilities it needs, as `main` does. It gets fakes: an in-memory `Fs`, a fixed `Clock`, captured `Stdout` and a `Net` that works in memory. Each test starts with nothing.
 
-```fennec
+```fennec src/store.fen
 test "what's saved loads back"(fs: Fs):
     hash = save(fs, "hello".encode())?
     assert load(fs, hash)? == "hello".encode()
 
 test "a hash nothing was saved under is missing"(fs: Fs):
-    _ = load(fs, "nothing") except why:
-        case .Missing(hash):
-            assert hash == "nothing"
-        case _:
-            assert False
-        return
-    assert False
+    assert load(fs, "nothing") fails .Missing(hash="nothing")
 ```
+
+`assert call fails pattern` checks that a call fails with what a `case` pattern matches. When it doesn't, it says what really happened: "it gave ..." or "it failed with ...".
 
 A property test takes its inputs after `for`. Fennec tries many random ones from a fixed seed, so a run repeats exactly, and shrinks a failing input to a small one:
 
-```fennec
+```fennec src/store.fen
 test "a hash names its content" for text: str:
     assert name_of(text.encode()) == name_of(text.encode())
 ```

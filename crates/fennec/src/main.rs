@@ -196,6 +196,11 @@ fn main() -> ExitCode {
             println!("🦊 fennec {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        // Asked for, how it's used is the answer, not a mistake.
+        ["--help" | "-h" | "help"] => {
+            println!("{USAGE}");
+            ExitCode::SUCCESS
+        }
         _ => usage(),
     }
 }

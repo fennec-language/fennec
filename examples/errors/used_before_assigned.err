@@ -1,7 +1,8 @@
-error: `total` doesn't exist
+error: `total` is used before it's given a value
  --> examples/errors/used_before_assigned.fen:2:18
   |
 2 |     stdout.print(total)
   |                  ^^^^^
   |
-  = help: give it a value first, as `total = ...`, or check the spelling
+  = help: give `total` its value above this line
+  = note: the line that gives it its value is at examples/errors/used_before_assigned.fen:3:5

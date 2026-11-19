@@ -84,8 +84,9 @@ fn no_name_std_keeps_is_reached_from_a_program() {
     assert_eq!(problems.len(), names.len(), "{problems:#?}");
     for ((name, problem), help) in names.iter().zip(&problems).zip(&helps) {
         let private = problem.starts_with(&format!("`{name}` is private to "));
-        let imported =
-            problem.starts_with(&format!("`{name}` doesn't exist")) && help.starts_with("import it");
+        // `open` says first what Python's `open(path)` is in Fennec, and then how to import std's.
+        let imported = problem.starts_with(&format!("`{name}` doesn't exist"))
+            && (help.starts_with("import it") || help.contains(&format!(" import {name}`")));
         assert!(private || imported, "{name}: {problem} / {help}");
     }
 }

@@ -418,6 +418,10 @@ pub(crate) fn emit_keeping(
     // Each written unit's IR key, by its place in `units`, for the index.
     let mut written = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
+        // A build asked to stop writes no more (`fennec_build::cancel`).
+        if fennec_build::cancelled() {
+            return Err(crate::STOPPED.to_owned());
+        }
         let ir = using.as_ref().map(|_| crate::keys::ir_key(function));
         if let (Some(using), Some(ir)) = (&mut using, ir)
             && let Some(record) = using.usable(&function.name, &ir)
@@ -1633,10 +1637,8 @@ impl Emit<'_, '_, '_> {
             alone_left.insert(at, std::mem::take(&mut self.alone_fields));
             inside_left.insert(at, std::mem::take(&mut self.inside_items));
             done.insert(at);
-            if let Some((list, limit)) = self.known.reservations.get(&at).cloned()
-                && matches!(self.kinds.get(list), Some(Kind::List(_)))
-            {
-                self.reserve(LocalId(list), &limit)?;
+            for reserved in self.reserved_at(at) {
+                self.reserve(LocalId(reserved.list), &reserved.limit)?;
             }
             // Every loop goes back to a block written no later than where it goes from, so that's
             // where a task counts a turn.
@@ -3842,6 +3844,16 @@ impl Emit<'_, '_, '_> {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
                 if self.known.unmade.contains(&dest.0) =>
+            {
+                Ok(())
+            }
+            // An empty list copied into one a loop right after fills: that one is made at the
+            // block's end, once the loop's count is known, and the empty one never is.
+            InstKind::Copy { dest, value: Operand::Local(from) }
+                if self
+                    .reserved_at(self.at.0)
+                    .iter()
+                    .any(|one| one.list == dest.0 && one.copied_from == Some(from.0)) =>
             {
                 Ok(())
             }

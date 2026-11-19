@@ -4,4 +4,4 @@ error: `open` doesn't exist
 2 |     with open("notes.txt") as notes:
   |          ^^^^
   |
-  = help: import it from std.sqlite, like `from std.sqlite import open`
+  = help: files are reached through `fs: Fs` in `main`'s parameters, as `text = fs.read_text(path)?`; a database is `from std.sqlite import open`

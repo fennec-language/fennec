@@ -1,0 +1,12 @@
+struct Holder:
+    items: Iterator[int]
+
+def numbers() -> Iterator[int]:
+    yield 1
+    yield 2
+
+def main(stdout: Stdout):
+    shared holder = Holder(items=numbers())
+    lock holder as held:
+        stdout.print(sum(held.items))
+    return

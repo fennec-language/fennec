@@ -890,8 +890,8 @@ impl Lowering<'_> {
                 ));
                 reads.add_place(Operand::None);
             } else if param.is_mut && !self.context.is_handle(&param.ty) {
-                let takes_optional = matches!(param.ty, Type::Optional(_));
-                let place = self.place(&arg.value, (index_changes, takes_optional), write_backs, span)?;
+                let takes_held = matches!(param.ty, Type::Optional(_) | Type::Union(_));
+                let place = self.place(&arg.value, (index_changes, takes_held), write_backs, span)?;
                 reads.add_place(place);
             } else {
                 let lowered =
@@ -918,21 +918,28 @@ impl Lowering<'_> {
 
     /// Something a call changes: a local itself, or a temporary holding a field or item
     /// that's written back after the call. So is a name known not to be `None`, which goes
-    /// back as an optional, unless what it's given to takes an optional and can make it `None`.
-    /// When an index may change, the place's indexes are held apart from the names they came from.
+    /// back as an optional, and a union known to hold one member, which goes back as the union,
+    /// unless what it's given to takes it as it's held, an optional or a union, and can change
+    /// what it holds. When an index may change, the place's indexes are held apart from the names
+    /// they came from.
     fn place(
         &mut self,
         expr: &Expr,
-        (index_changes, takes_optional): (bool, bool),
+        (index_changes, takes_held): (bool, bool),
         write_backs: &mut Vec<WriteBack>,
         span: Span,
     ) -> Lowered<Operand> {
         let place = if index_changes { self.held_place(expr, span)? } else { self.place_of(expr)? };
         self.note_changed_place(place.local);
         let held = self.steps_type(&place)?;
-        let narrowed = !takes_optional
-            && matches!(held, Type::Optional(_))
-            && self.type_at(expr.span).is_some_and(|read| read != held);
+        let read = self.type_at(expr.span).filter(|read| *read != held);
+        let narrowed = !takes_held
+            && match &held {
+                Type::Optional(_) => read.is_some(),
+                // A union left with some of its members is held as the union it was.
+                Type::Union(_) => read.is_some_and(|read| !matches!(read, Type::Union(_))),
+                _ => false,
+            };
         if place.steps.is_empty() && !narrowed {
             return Ok(Operand::Local(place.local));
         }

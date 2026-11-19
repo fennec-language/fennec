@@ -648,6 +648,8 @@ jobs:
         run: .github/scripts/test-sweep-worktrees.sh
       - name: Fetching under the lock every worktree shares, on a throwaway repository
         run: .github/scripts/test-fetch.sh
+      - name: Telling flakes from failures main fixed, on a throwaway repository
+        run: .github/scripts/test-flakes.sh
       - name: Naming what failed, and the known failures' file, as the gate reads them
         run: |
           .github/scripts/known-failures.sh

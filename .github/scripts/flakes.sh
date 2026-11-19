@@ -6,7 +6,7 @@
 #   flakes.sh failed STEP LOG    a gate step failed, printing LOG: it's kept, pending, under the
 #                                code it tested
 #   flakes.sh passed             the gate passed: what failed before on the same code goes in the
-#                                ledger as flakes
+#                                ledger as flakes, or as fixed on main (below)
 #   flakes.sh entries WHERE COMMIT FAILED-AT LOG
 #                                prints the ledger's entries for a failure in LOG, for CI, which
 #                                finds a rerun's earlier failures itself
@@ -24,9 +24,17 @@
 #   --- what it printed
 #   ...
 #   === end
+#
+# A failure that passed with only main moved is a flake only when main's new commits changed
+# nothing it tests. When they changed the failing test's own file, or the compiler and runtime
+# crates every test runs through (`check`, `ir`, `llvm`, `rt`, `runtime`, `syntax`), main may
+# well have fixed it: a red test on main, fixed there, passes in the next gate of every branch.
+# Then it goes in `fixed-on-main.log`, beside the ledger, as `=== fixed on main`, naming what main
+# changed, and not in the ledger.
 set -u
 folder=${FENNEC_HOME:-$HOME/.fennec}
 ledger="$folder/flakes.log"
+fixed_on_main="$folder/fixed-on-main.log"
 pending="$folder/flakes-pending"
 
 # The machine's load averages, as `uptime` gives them.
@@ -77,6 +85,36 @@ tree_now() {
   git rev-parse 'HEAD^{tree}'
 }
 
+# What main changed, between the commit that failed and this one, that could have fixed the
+# failure in LOG: the compiler and runtime crates, and each failing test's own file, which is where
+# it panicked and the test file its first module is named for (`llvm::a_loop` is in
+# `crates/*/tests/llvm.rs`). Prints each such path. It prints none when the commit that failed
+# can't be read, and the failure stays a flake, as before.
+touched_by_main() {
+  local failed=$1 log=$2 changed files path module
+  changed=$(git diff --name-only "$failed" HEAD 2> /dev/null) || return 0
+  [ -n "$changed" ] || return 0
+  files=$(
+    sed -n -E 's/.*panicked at ([^:]+):[0-9]+:[0-9]+.*/\1/p' "$log"
+    sed -n -E 's/^---- ([A-Za-z0-9_]+)::.* stdout ----$/\1/p' "$log" | sort -u | while IFS= read -r module; do
+      printf '%s\n' "$changed" | grep -E "^crates/[^/]+/tests/$module(\.rs|/)" || true
+    done
+  )
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      crates/check/* | crates/ir/* | crates/llvm/* | crates/rt/* | crates/runtime/* | crates/syntax/*)
+        echo "$path"
+        ;;
+      *)
+        if printf '%s\n' "$files" | grep -qxF -- "$path"; then
+          echo "$path"
+        fi
+        ;;
+    esac
+  done <<< "$changed"
+}
+
 # The branch a gate tests, and a hash of its own commits: every one not on main that isn't a merge.
 # Each gate merges main first, so two gates of a branch whose own commits are the same test the
 # same change, whatever main brought in between.
@@ -121,10 +159,12 @@ case "${1:-}" in
       failed_tree=$(basename "$(dirname "$kept")")
       kept_branch=$(sed -n 's/^branch: //p' "$kept" | head -n 1)
       kept_own=$(sed -n 's/^own: //p' "$kept" | head -n 1)
+      main_moved=false
       if [ "$failed_tree" = "$tree" ]; then
         shown_tree=$tree
       elif [ -n "$kept_branch" ] && [ "$kept_branch" = "$branch" ] && [ "$kept_own" = "$own" ]; then
         shown_tree="$failed_tree, passed on $tree with only main moved"
+        main_moved=true
       elif [ -n "$kept_branch" ] && [ "$kept_branch" = "$branch" ]; then
         rm -f "$kept"
         rmdir "$(dirname "$kept")" 2> /dev/null
@@ -138,10 +178,21 @@ case "${1:-}" in
       was=$(sed -n 's/^load: //p' "$kept" | head -n 1)
       output=$(mktemp)
       sed '1,/^---$/d' "$kept" > "$output"
-      entries "gate: $step" "$commit" "$failed_at" "$output" "$passed_at" "$shown_tree" "$was" >> "$ledger"
+      fixed=""
+      if [ "$main_moved" = true ]; then
+        fixed=$(touched_by_main "$commit" "$output" | head -n 10 | paste -s -d ' ' -)
+      fi
+      if [ -n "$fixed" ]; then
+        entries "gate: $step" "$commit" "$failed_at" "$output" "$passed_at" \
+          "$failed_tree, passed on $tree after main changed $fixed" "$was" |
+          sed 's/^=== flake$/=== fixed on main/' >> "$fixed_on_main"
+        echo "the gate failed on this change before, at \"$step\", and passed now, after main changed what it tests ($fixed): written to $fixed_on_main as fixed on main, not a flake" >&2
+      else
+        entries "gate: $step" "$commit" "$failed_at" "$output" "$passed_at" "$shown_tree" "$was" >> "$ledger"
+        echo "the gate failed on this change before, at \"$step\", and passed now: written to $ledger as a flake" >&2
+      fi
       rm -f "$output" "$kept"
       rmdir "$(dirname "$kept")" 2> /dev/null
-      echo "the gate failed on this change before, at \"$step\", and passed now: written to $ledger as a flake" >&2
     done
     ;;
   entries)

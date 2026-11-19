@@ -3460,7 +3460,7 @@ fn find_aliases(function: &Function, known: &mut Analysis) {
 }
 
 /// A list a loop fills, made once the loop's count is known (see `Analysis::reservations`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 pub(crate) struct Reserved {
     pub(crate) list: usize,
     pub(crate) limit: Operand,

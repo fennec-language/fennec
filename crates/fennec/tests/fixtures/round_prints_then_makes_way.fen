@@ -1,0 +1,49 @@
+# A round prints a line, then counts for a while, making way for others at each tick, while `main`
+# asks another round and prints its answer. No round serves anything, and every round has ended
+# before the server's task is stopped.
+# A round that makes way parks without writing what it printed, and its worker wrote it after,
+# with no task running there, so a recording logged it as `main`'s. A replay then put the round's
+# lines among `main`'s own, or tore one in two (#2033). From Fable 5.2's review of #2028.
+from std.concurrent import Crashed
+from std.net import Connection, NetError, Server
+
+# Counts for a quarter of a second, making way for others at each tick.
+def counted(clock: Clock) -> int:
+    began = clock.now()
+    mut total = 0
+    while (clock.now() - began).nanos < 250_000_000:
+        for turn in range(200_000):
+            total = (total + turn * turn) % 1_000_003
+    return total
+
+def answered(conn: Connection, clock: Clock, stdout: Stdout):
+    line = conn.read_line() except why:
+        stdout.print("a round's read failed", f"{why}")
+        return
+    asked = line else ""
+    if asked == "/slow":
+        stdout.print("the slow one began")
+        total = counted(clock)
+        stdout.print("the slow one counted", total >= 0)
+    conn.write(f"hello {asked}\n") except why:
+        stdout.print("a round's write failed", f"{why}")
+
+def serving(server: Server, clock: Clock, stdout: Stdout):
+    for conn in parallel(server):
+        answered(conn, clock=clock, stdout=stdout)
+    stdout.print("the server never said")
+
+def asked_for(net: Net, port: int, path: str) -> str fails NetError:
+    with net.connect("127.0.0.1", port)? as asking:
+        asking.write(f"{path}\n")?
+        return asking.read_line()? else "nothing"
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("/slow\n")?
+            with launch(() => serving(server, clock=clock, stdout=stdout), stop_after=100ms)?:
+                stdout.print(asked_for(net, port=port, path="/one")?)
+                stdout.print(slow.read_line()? else "nothing")
+    stdout.print("the server is over")

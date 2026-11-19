@@ -86,6 +86,10 @@ thread_local! {
     /// accounts as it parks and resumes.
     static RANGE_NAME: std::cell::RefCell<Option<super::deadlock::RangeName>> =
         const { std::cell::RefCell::new(None) };
+    /// Whether what runs here is a range of a waiting `parallel` call run as a parked task of its
+    /// own, with accounts of its own: its list of what it made may be let go, as a launched task's
+    /// may, and what it holds when it ends is found by its mark (#1842).
+    static OWN_RANGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The name of the range of a waiting `parallel` call running here, if one is (see `RANGE_NAME`).
@@ -487,6 +491,10 @@ pub(super) fn job_ends(serving: Option<Serving>) {
 /// same thread was still using.
 #[cfg(any(test, feature = "threads"))]
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a fact of its own about the task, swapped in and out with a thread-local of its own"
+)]
 pub(crate) struct Accounts {
     made: Vec<u64>,
     /// Whether it let its list of what it made go, and how many ranges or chunks have it marked.
@@ -520,6 +528,8 @@ pub(crate) struct Accounts {
     caller_s_launcher: Option<Arc<Launcher>>,
     /// For a range of a waiting call, how a deadlock's report names it (see `RANGE_NAME`).
     range_name: Option<super::deadlock::RangeName>,
+    /// Whether it's a range's, run as its own task (see `OWN_RANGE`).
+    own_range: bool,
 }
 
 /// Whose accounts they are: a launched task's, or those of a range of a `parallel` call whose body
@@ -537,7 +547,7 @@ impl Accounts {
     /// A range's, of a `parallel` call whose body may wait: it has nothing until its call gives it
     /// what to read.
     pub(in crate::embed) fn for_range() -> Accounts {
-        Accounts { of: Of::Range, ..Accounts::default() }
+        Accounts { of: Of::Range, own_range: true, ..Accounts::default() }
     }
 
     /// Whether it's a range's, rather than a launched task's.
@@ -616,6 +626,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         CALLER_S_LAUNCHER
             .with_borrow_mut(|launcher| std::mem::swap(launcher, &mut accounts.caller_s_launcher));
         RANGE_NAME.with_borrow_mut(|name| std::mem::swap(name, &mut accounts.range_name));
+        accounts.own_range = OWN_RANGE.replace(accounts.own_range);
         crate::replay::swap(&mut accounts.replay);
         if !same {
             state.heap.texts.get_mut().clear();
@@ -815,6 +826,42 @@ pub fn made_scope_ends(kept: bool) {
 /// as blocks for the thread that started the task to adopt when the task ends.
 pub fn hand_over(since: usize) -> Vec<Box<[u64]>> {
     super::with(|state| state.heap.hand_over(since))
+}
+
+/// Everything the task running here made and still holds, as `hand_over` does, with what it no
+/// longer lists found by its mark: for a range run as a task of its own, as it ends.
+#[cfg(any(test, feature = "threads"))]
+pub fn hand_over_all() -> Vec<Box<[u64]>> {
+    super::with(|state| state.heap.hand_over_all())
+}
+
+/// Whether the range starting here runs as a task of its own, with its own accounts and mark,
+/// taken so that a range a call in it runs on this thread isn't: `put_own_range` gives it back
+/// as the range ends. A range run here for want of a stack has its own accounts but no mark, so
+/// it keeps the list the way to find what it made.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn take_own_range() -> (bool, bool) {
+    let flag = OWN_RANGE.replace(false);
+    (flag, flag && super::with(|state| state.heap.has_task_mark()))
+}
+
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn put_own_range(flag: bool) {
+    OWN_RANGE.set(flag);
+}
+
+/// Without threads no range runs as a task.
+#[cfg(not(any(test, feature = "threads")))]
+pub(super) fn take_own_range() -> (bool, bool) {
+    (false, false)
+}
+
+#[cfg(not(any(test, feature = "threads")))]
+pub(super) fn put_own_range(_flag: bool) {}
+
+#[cfg(not(any(test, feature = "threads")))]
+pub fn hand_over_all() -> Vec<Box<[u64]>> {
+    hand_over(0)
 }
 
 /// Takes over blocks a task's thread handed over, as this thread's own.

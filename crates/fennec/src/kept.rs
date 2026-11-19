@@ -44,7 +44,7 @@ struct Kept {
     /// What each kit's next build says, once checking all of it again after its last disagreed.
     notices: HashMap<PathBuf, String>,
     /// How many checks have been kept, which tells a kit's kept check from the next build's.
-    checks_kept: u64,
+    generations: u64,
 }
 
 /// One kit's kept check.
@@ -150,10 +150,10 @@ fn keep(kit: PathBuf, mut check: KeptCheck, files: Vec<File>, edited: Vec<String
     let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
     let Some(kept) = kept.as_mut() else { return };
     kept.last_carried = Some(check.carried_over());
-    kept.checks_kept += 1;
+    kept.generations += 1;
     let size = files.iter().map(|file| file.text.len()).sum::<usize>().saturating_mul(BYTES_PER_SOURCE_BYTE);
     let pending = check.take_module().map(|module| (module, edited));
-    let generation = kept.checks_kept;
+    let generation = kept.generations;
     kept.kits.insert(kit, Kit { check, files, size, built: Instant::now(), generation, pending });
     within_budget(&mut kept.kits, BUDGET);
 }

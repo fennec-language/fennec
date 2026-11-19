@@ -241,6 +241,15 @@ jobs:
       matrix:
         program: [game_server, web_backend]
         in: [task, main]
+        # Resident memory may rise 5% or 4 MB after the warm-up, as `soak.sh` says. game_server keeps
+        # 10% or 16 MB until #2158, its rise in a task, is fixed.
+        include:
+          - program: game_server
+            rss_rise: 10
+            rss_least: 16384
+          - program: web_backend
+            rss_rise: 5
+            rss_least: 4096
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -257,6 +266,8 @@ jobs:
         env:
           PROGRAM: ${{ matrix.program }}
           SOAK_IN: ${{ matrix.in }}
+          SOAK_RSS_RISE: ${{ matrix.rss_rise }}
+          SOAK_RSS_LEAST: ${{ matrix.rss_least }}
         run: .github/scripts/soak.sh target/release/fennec "bench/realworld/$PROGRAM.fen" soak.md 60
       - name: Show the curve on the run's summary page
         if: always()

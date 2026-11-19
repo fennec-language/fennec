@@ -45,6 +45,11 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_f32_header",
     "fennec_float_header",
     "fennec_code_header",
+    // A block freed whose type can't hold a generator that closes something when it's let go
+    // partway, as the compiler works out: it runs no program code. Any generator it finds others
+    // let go of waits for `fennec_free`, which can fail. A string's block holds nothing at all.
+    "fennec_free_plain",
+    "fennec_free_text",
     // Temporaries pushed, copied and read. Dropping back to a mark lets go of blocks, which only
     // queues the generators among them to be closed: `fennec_free` runs those, so it can fail.
     "fennec_mark",
@@ -410,6 +415,7 @@ export! {
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
     fennec_new_tag() -> i64 => heap::new_tag();
     fennec_free(a0: i64) => heap::free(a0);
+    fennec_free_plain(a0: i64) => heap::free_plain(a0);
     fennec_retain_shared(a0: i64, a1: i64) => threads::retain_shared(a0, a1);
     fennec_release_shared(a0: i64, a1: i64) => threads::release_shared(a0, a1);
     fennec_parallel_for(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for(a0, a1, a2);

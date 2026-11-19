@@ -15,8 +15,9 @@ use crate::value::Value;
 /// that had no other owner, all the way down.
 ///
 /// Program code only runs here for a generator let go partway, by the function its shape was
-/// given with `set_abandon`. So freeing a block whose type holds no such generator and no
-/// `del` runs no program code.
+/// given with `set_abandon`: what closes what it holds, which can fail. So it can fail, and
+/// native code reads the failure flag after it, as after any call that can. It closes every
+/// generator waiting to be, including those [`free_plain`] and the runtime left waiting.
 pub extern "C" fn free(address: i64) {
     let abandoning = with(|state| {
         // What other threads let go of last waits for this one, which made it, to free it.
@@ -32,6 +33,30 @@ pub extern "C" fn free(address: i64) {
     if abandoning {
         run_abandons();
     }
+}
+
+/// `free`, for a block whose type can't hold or reach a generator that closes something when it's
+/// let go partway, which the compiler worked out: it runs no program code, so it can't fail, and
+/// native code reads no flag after it. What other threads let go of is freed here too, as `free`
+/// does, but a generator that leaves to close waits for the next `free`, or for the end of the
+/// task or the run, which native code checks. A debug build, which tests run, stops if this block
+/// was such a generator or held one, so a wrong proof shows where it's made.
+pub extern "C" fn free_plain(address: i64) {
+    with(|state| {
+        if crate::embed::threads::any_waiting() {
+            free_waiting(state);
+        }
+        let waiting = state.heap.abandoning.len();
+        let address = u64::try_from(address).unwrap_or(0);
+        if !free_plain_list(state, address) {
+            free_block(state, address);
+        }
+        if cfg!(debug_assertions) && state.heap.abandoning.len() > waiting {
+            super::runtime_bug(
+                "a free that runs no program code let go of a generator stopped partway, which has something to close",
+            );
+        }
+    });
 }
 
 /// Frees a string or a list whose items hold nothing of this thread's, the most usual blocks let
@@ -95,12 +120,12 @@ fn stray(address: u64) {
 }
 
 /// `free`, for a block native code knows is a string's. A string's block holds no
-/// addresses, so freeing it needs none of the looking `free` does. A block that isn't a
-/// string's is freed as `free` would.
+/// addresses, so freeing it needs none of the looking `free` does, and runs no program code. A
+/// block that isn't a string's is freed as [`free_plain`] would.
 pub extern "C" fn free_text(address: i64) {
-    // Another thread counted it: `free` waits for that.
+    // Another thread counted it: `free_plain` waits for that.
     if crate::embed::threads::held_elsewhere(address.cast_unsigned()) {
-        free(address);
+        free_plain(address);
         return;
     }
     let freed = with(|state| {
@@ -119,7 +144,7 @@ pub extern "C" fn free_text(address: i64) {
         Some(())
     });
     if freed.is_none() {
-        free(address);
+        free_plain(address);
     }
 }
 
@@ -175,7 +200,8 @@ fn take_up_abandons(state: &mut State) {
 /// isn't expecting a failure there. The rest are closed first, with the crash held aside, as a
 /// crash's cleanup holds one; a later one that crashes too is said, and the first goes on. In a
 /// launched task it stops only that task, as any crash does: the crash stays this thread's,
-/// which the task's code finds at its next check. Anywhere else it ends the program on the spot.
+/// which the task's code finds right after the free, where it reads the flag, and leaves by.
+/// Anywhere else it ends the program on the spot.
 pub(in crate::embed) fn run_abandons() {
     let mut held = None;
     while let Some((address, abandon)) = with(next_abandoned) {

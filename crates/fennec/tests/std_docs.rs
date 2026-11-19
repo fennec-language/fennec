@@ -199,13 +199,11 @@ fn places(code: &[String]) -> Vec<Place> {
 
 /// The capabilities the statements name, in `CAPABILITIES`' order: a name standing alone, not a
 /// field or a method after a dot.
-fn named_capabilities<'a>(
-    statements: impl Iterator<Item = &'a String> + Clone,
-) -> Vec<(&'static str, &'static str)> {
+fn named_capabilities(statements: &[&String]) -> Vec<(&'static str, &'static str)> {
     CAPABILITIES
         .into_iter()
         .filter(|(name, _)| {
-            statements.clone().any(|line| {
+            statements.iter().any(|line| {
                 line.match_indices(name).any(|(at, _)| {
                     let before = line.get(..at).and_then(|text| text.chars().next_back());
                     let after = line.get(at + name.len()..).and_then(|text| text.chars().next());
@@ -255,7 +253,7 @@ fn test_file(examples: &[&Example]) -> (String, Vec<usize>) {
             .filter(|((_, place), _)| *place == Place::Statement)
             .map(|((line, _), _)| line)
             .collect();
-        let mut capabilities = named_capabilities(statements.iter().copied());
+        let mut capabilities = named_capabilities(&statements);
         if example.output.is_some() && !capabilities.iter().any(|(name, _)| *name == "stdout") {
             capabilities.insert(0, ("stdout", "Stdout"));
         }
@@ -306,9 +304,9 @@ fn test_file(examples: &[&Example]) -> (String, Vec<usize>) {
 fn shown_in_std(said: &str, path: &str, file: &str, from: &[usize]) -> String {
     let mut shown = String::new();
     let mut rest = said;
-    while let Some(at) = rest.find(path) {
-        shown.push_str(&rest[..at]);
-        rest = &rest[at + path.len()..];
+    while let Some((before, after)) = rest.split_once(path) {
+        shown.push_str(before);
+        rest = after;
         let digits: String =
             rest.strip_prefix(':').unwrap_or("").chars().take_while(char::is_ascii_digit).collect();
         let line = digits.parse::<usize>().ok().and_then(|line| from.get(line.checked_sub(1)?)).copied();
@@ -318,7 +316,7 @@ fn shown_in_std(said: &str, path: &str, file: &str, from: &[usize]) -> String {
                 shown.push_str(file);
                 shown.push_str(".fen:");
                 shown.push_str(&line.to_string());
-                rest = &rest[1 + digits.len()..];
+                rest = rest.get(1 + digits.len()..).unwrap_or("");
             }
             _ => shown.push_str(path),
         }
@@ -382,10 +380,10 @@ fn every_example_in_the_standard_librarys_docs_runs_and_holds() {
 /// Each public item std declares in Fennec, as `file: Name` or `file: Type.method`, with whether
 /// its doc comment has an example: an exported function, type or constant, each method not
 /// starting with `_` of an exported type or interface, and each method a file adds with `extend`.
-fn public_items() -> Vec<(String, bool)> {
+fn public_items() -> Result<Vec<(String, bool)>, fennec_syntax::Diagnostic> {
     let mut items = Vec::new();
     let files: Vec<(&str, &str)> = fennec_syntax::prelude_files().collect();
-    let modules = fennec_syntax::prelude_modules().expect("the standard library parses");
+    let modules = fennec_syntax::prelude_modules()?;
     for (module, (file, source)) in modules.iter().zip(files) {
         if file == "intrinsics" {
             continue;
@@ -432,7 +430,7 @@ fn public_items() -> Vec<(String, bool)> {
             }
         }
     }
-    items
+    Ok(items)
 }
 
 /// Every public item std declares in Fennec has an example in its doc comment, but those listed
@@ -440,7 +438,7 @@ fn public_items() -> Vec<(String, bool)> {
 /// example, and an item given one leaves the list.
 #[test]
 fn every_public_item_in_the_standard_library_has_an_example() {
-    let items = public_items();
+    let items = public_items().unwrap();
     assert!(items.len() > 500, "only {} public items were found in std", items.len());
     let without: BTreeSet<String> =
         items.iter().filter(|(_, has)| !*has).map(|(name, _)| name.clone()).collect();

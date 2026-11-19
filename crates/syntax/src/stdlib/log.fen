@@ -1,12 +1,27 @@
 from std.json import quoted
 
 ## How much a log entry matters, least first.
+##
+## ```fennec
+## from std.log import Log, LogLevel
+## log = Log(out=stdout, level=.Warn)
+## log.info("not written")
+## log.warn("disk almost full")
+## ```
+## ```output
+## WARN disk almost full
+## ```
 export enum LogLevel:
     Debug
     Info
     Warn
     Error
 
+    ## How much it matters, from 0 for `Debug` to 3 for `Error`.
+    ## ```fennec
+    ## from std.log import LogLevel
+    ## assert LogLevel.Debug.rank() < LogLevel.Error.rank()
+    ## ```
     def rank(self) -> int:
         match self:
             case .Debug:
@@ -18,6 +33,11 @@ export enum LogLevel:
             case .Error:
                 return 3
 
+    ## How an entry of this level starts, like `WARN`.
+    ## ```fennec
+    ## from std.log import LogLevel
+    ## assert LogLevel.Warn.label() == "WARN"
+    ## ```
     def label(self) -> str:
         match self:
             case .Debug:
@@ -30,6 +50,14 @@ export enum LogLevel:
                 return "ERROR"
 
 ## How each entry is written.
+##
+## ```fennec
+## from std.log import Log, LogFormat
+## Log(out=stdout, format=.Json).info("saved", fields={"file": "a.txt"})
+## ```
+## ```output
+## {"level": "INFO", "message": "saved", "file": "a.txt"}
+## ```
 export enum LogFormat:
     ## `INFO saved file=a.txt`, for people.
     Text
@@ -42,6 +70,15 @@ export enum LogFormat:
 ## program that uses it chose. Each entry is one line, like `INFO saved file=a.txt size=12`.
 ## Give it a `Clock` and each line starts with the seconds since the clock started.
 ## `format=.Json` writes each entry as a JSON object instead.
+##
+## ```fennec
+## from std.log import Log
+## log = Log(out=stdout)
+## log.info("saved", fields={"file": "a.txt", "size": "12"})
+## ```
+## ```output
+## INFO saved file=a.txt size=12
+## ```
 export struct Log:
     out: Stdout
     level = LogLevel.Info
@@ -49,29 +86,84 @@ export struct Log:
     clock: Clock? = None
     fields: dict[str, str] = {}
 
+    ## An entry that matters least, written only when the log's `level` is `Debug`.
+    ## ```fennec
+    ## from std.log import Log, LogLevel
+    ## Log(out=stdout, level=.Debug).debug("cache warm")
+    ## ```
+    ## ```output
+    ## DEBUG cache warm
+    ## ```
     def debug(self, message: str, fields: dict[str, str]? = None):
         self.write(.Debug, message, fields)
 
+    ## An entry saying what happened.
+    ## ```fennec
+    ## from std.log import Log
+    ## Log(out=stdout).info("started")
+    ## ```
+    ## ```output
+    ## INFO started
+    ## ```
     def info(self, message: str, fields: dict[str, str]? = None):
         self.write(.Info, message, fields)
 
+    ## An entry about something that may need looking at.
+    ## ```fennec
+    ## from std.log import Log
+    ## Log(out=stdout).warn("slow request", fields={"ms": "900"})
+    ## ```
+    ## ```output
+    ## WARN slow request ms=900
+    ## ```
     def warn(self, message: str, fields: dict[str, str]? = None):
         self.write(.Warn, message, fields)
 
+    ## An entry about something that went wrong.
+    ## ```fennec
+    ## from std.log import Log
+    ## Log(out=stdout).error("couldn't save")
+    ## ```
+    ## ```output
+    ## ERROR couldn't save
+    ## ```
     def error(self, message: str, fields: dict[str, str]? = None):
         self.write(.Error, message, fields)
 
     ## Whether an entry of this level would be written, for when making one takes work.
+    ##
+    ## ```fennec
+    ## from std.log import Log, LogLevel
+    ## log = Log(out=stdout)
+    ## assert log.enabled(.Error) and not log.enabled(.Debug)
+    ## ```
     def enabled(self, level: LogLevel) -> bool:
         return level.rank() >= self.level.rank()
 
     ## A log that adds these fields to every entry, like the request it's handling. Its own
     ## value replaces this log's for a field they both have.
+    ##
+    ## ```fennec
+    ## from std.log import Log
+    ## request_log = Log(out=stdout).with_fields({"request": "7"})
+    ## request_log.info("answered")
+    ## ```
+    ## ```output
+    ## INFO answered request=7
+    ## ```
     def with_fields(self, fields: dict[str, str]) -> Log:
         mut all_fields = {name: value for name, value in self.fields.items()}
         all_fields.update(fields)
         return copy(self, fields=all_fields)
 
+    ## An entry of `level`, which `debug`, `info`, `warn` and `error` write.
+    ## ```fennec
+    ## from std.log import Log, LogLevel
+    ## Log(out=stdout).write(.Info, "saved", None)
+    ## ```
+    ## ```output
+    ## INFO saved
+    ## ```
     def write(self, level: LogLevel, message: str, fields: dict[str, str]?):
         if not self.enabled(level): return
         mut all_fields = {name: value for name, value in self.fields.items()}

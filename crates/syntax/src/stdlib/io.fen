@@ -26,34 +26,95 @@ from std.intrinsics import bytes_builder, bytes_push_bytes, bytes_push_text
 ## `write(...)`, which writes it with no new line. What's written is held and goes out in pieces.
 ## A test's `Stdout` is a fake that keeps what's printed, for the test's `captured()`. Only `main`
 ## and tests are given one: it can't be made.
+##
+## ```fennec
+## stdout.print("score:", 42)
+## stdout.write("no new ")
+## stdout.write("line\n")
+## ```
+## ```output
+## score: 42
+## no new line
+## ```
 export struct Stdout:
     _given: int
 
     ## Standard output as a `Writer`, for code written for any stream: `stdout.writer()`.
+    ##
+    ## ```fennec
+    ## out = stdout.writer()
+    ## out.write_line("hello")?
+    ## ```
+    ## ```output
+    ## hello
+    ## ```
     def writer(self) -> StdoutWriter:
         return StdoutWriter(_out=self)
 
 ## Standard input, given to `main`: what's typed or piped in. Its methods written in Rust are
 ## `read_line()`, the next line or `None` at the end, `read_chunk(size)`, and `lines()`, every
 ## line to the end. Only `main` is given one: it can't be made.
+##
+## ```fennec check
+## def main(stdin: Stdin, stdout: Stdout):
+##     for line in stdin.lines():
+##         stdout.print(line.upper())
+## ```
 export struct Stdin:
     _given: int
 
     ## Standard input as a `Reader`, for code written for any stream: `stdin.reader()`.
+    ##
+    ## ```fennec check
+    ## from std.io import read_all
+    ##
+    ## def main(stdin: Stdin, stdout: Stdout) fails IoError:
+    ##     mut src = stdin.reader()
+    ##     stdout.print(len(read_all(ref src)?))
+    ## ```
     def reader(self) -> StdinReader:
         return StdinReader(_in=self)
 
 ## Standard input as a `Reader`, from `stdin.reader()`. It reads through the same buffer as
 ## `Stdin`'s own methods, so nothing's lost between them.
+##
+## ```fennec check
+## def main(stdin: Stdin, stdout: Stdout) fails IoError:
+##     mut src = stdin.reader()
+##     first = src.read_line()? else "nothing"
+##     stdout.print(first)
+## ```
 export struct StdinReader:
     _in: Stdin
 
+    ## Up to `size` bytes, and empty bytes at the end.
+    ## ```fennec check
+    ## def main(stdin: Stdin, stdout: Stdout) fails IoError:
+    ##     src = stdin.reader()
+    ##     stdout.print(len(src.read_chunk(1024)?))
+    ## ```
     def read_chunk(self, size: int) -> bytes fails IoError:
         return self._in.read_chunk(size)?
 
+    ## The next line without its ending, or `None` at the end.
+    ## ```fennec check
+    ## def main(stdin: Stdin, stdout: Stdout) fails IoError:
+    ##     src = stdin.reader()
+    ##     name = src.read_line()? else "nobody"
+    ##     stdout.print(f"hello, {name}")
+    ## ```
     def read_line(self) -> str? fails IoError:
         return self._in.read_line()?
 
+    ## Each line to the end, without its ending.
+    ## ```fennec check
+    ## def main(stdin: Stdin, stdout: Stdout) fails IoError:
+    ##     src = stdin.reader()
+    ##     mut count = 0
+    ##     for _ in src.lines()?:
+    ##         count += 1
+    ##     stdout.print(count)
+    ## ```
     def lines(self) -> Iterator[str] fails IoError:
         while True:
             line = self._in.read_line()? else return
@@ -65,84 +126,250 @@ export struct StdinReader:
 ## been printed to standard output, and fails with an `IoError` when standard error is closed. A
 ## test's `Stderr` is a fake that keeps what's written, for the test's `captured()`. Only `main`
 ## and tests are given one: it can't be made. It's a `Writer` as it is.
+##
+## ```fennec
+## stderr.write_line("disk almost full")?
+## ```
 export struct Stderr:
     _given: int
 
 ## Standard output as a `Writer`, from `stdout.writer()`. What's written goes out as `print` and
 ## `write` send it, so `flush` has nothing it can do sooner.
+##
+## ```fennec
+## out = stdout.writer()
+## out.write_text("a")?
+## out.write_line("b")?
+## ```
+## ```output
+## ab
+## ```
 export struct StdoutWriter:
     _out: Stdout
 
     ## Writes `data`, which has to be UTF-8 text: standard output takes text.
+    ##
+    ## ```fennec
+    ## stdout.writer().write("hi\n".encode())?
+    ## ```
+    ## ```output
+    ## hi
+    ## ```
     def write(self, data: bytes) fails IoError:
         text = data.decode() except InvalidValue(): fail .Other(
             reason="standard output takes text, and these bytes aren't UTF-8",
         )
         self._out.write(text)
 
+    ## Writes `text`.
+    ## ```fennec
+    ## stdout.writer().write_text("hi\n")?
+    ## ```
+    ## ```output
+    ## hi
+    ## ```
     def write_text(self, text: str) fails IoError:
         self._out.write(text)
 
+    ## Writes `text`, then a line break.
+    ## ```fennec
+    ## stdout.writer().write_line("hi")?
+    ## ```
+    ## ```output
+    ## hi
+    ## ```
     def write_line(self, text: str) fails IoError:
         self._out.print(text)
 
+    ## Does nothing: what's written already goes out as `print` sends it.
+    ## ```fennec
+    ## out = stdout.writer()
+    ## out.write_line("hi")?
+    ## out.flush()?
+    ## ```
+    ## ```output
+    ## hi
+    ## ```
     def flush(self) fails IoError:
         pass
 
 ## Something bytes and text can be written to.
+##
+## ```fennec
+## from std.io import MemoryStream, Writer
+##
+## def greet[W: Writer](ref out: W, name: str) fails IoError:
+##     out.write_line(f"hello, {name}")?
+##
+## mut memory = MemoryStream()
+## greet(ref memory, "Ana")?
+## assert memory.text()? == "hello, Ana\n"
+## ```
 export interface Writer:
     ## Writes `data` as it is.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write(bytes([104, 105]))?
+    ## assert memory.text()? == "hi"
+    ## ```
     def write(ref self, data: bytes) fails IoError
 
     ## Writes `text` as UTF-8.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write_text("hi")?
+    ## assert memory.bytes() == "hi".encode()
+    ## ```
     def write_text(ref self, text: str) fails IoError
 
     ## Writes `text`, then a line break.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write_line("hi")?
+    ## assert memory.text()? == "hi\n"
+    ## ```
     def write_line(ref self, text: str) fails IoError
 
     ## Sends on whatever's been held back to be written together. A stream that holds nothing
     ## back does nothing.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write_text("hi")?
+    ## memory.flush()?
+    ## assert memory.text()? == "hi"
+    ## ```
     def flush(ref self) fails IoError
 
 ## Something bytes and lines can be read from, buffered, so a line reads only as far as its end.
+##
+## ```fennec
+## from std.io import MemoryStream, Reader
+##
+## def first_line[R: Reader](ref src: R) -> str fails IoError:
+##     return src.read_line()? else ""
+##
+## mut src = MemoryStream.of("one\ntwo".encode())
+## assert first_line(ref src)? == "one"
+## ```
 export interface Reader:
     ## Up to `size` bytes, and empty bytes once there's nothing left.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut src = MemoryStream.of("abc".encode())
+    ## assert src.read_chunk(2)? == "ab".encode()
+    ## assert src.read_chunk(2)? == "c".encode()
+    ## assert len(src.read_chunk(2)?) == 0
+    ## ```
     def read_chunk(ref self, size: int) -> bytes fails IoError
 
     ## The next line without its line break, or `None` once there's nothing left.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut src = MemoryStream.of("one\r\ntwo".encode())
+    ## assert src.read_line()? == "one"
+    ## assert src.read_line()? == "two"
+    ## assert src.read_line()? is None
+    ## ```
     def read_line(ref self) -> str? fails IoError
 
     ## Each line left, without its line break. A failure to read fails the loop, rather than
     ## looking like the end.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut src = MemoryStream.of("one\ntwo\n".encode())
+    ## mut read = list[str]()
+    ## for line in src.lines()?:
+    ##     read.append(line)
+    ## assert read == ["one", "two"]
+    ## ```
     def lines(ref self) -> Iterator[str] fails IoError
 
 ## Bytes in memory, written to and read back: `MemoryStream()` to write and then take
 ## `bytes()` or `text()`, or `MemoryStream.of(data)` to read `data` as a stream. Reading starts at
 ## the beginning and goes on from where it got to, whatever's written after.
+##
+## ```fennec
+## from std.io import MemoryStream
+## mut memory = MemoryStream()
+## memory.write_line("saved")?
+## assert memory.text()? == "saved\n"
+## ```
 export struct MemoryStream:
     _data = bytes_builder()
     _at = 0
 
     ## A stream to read `data` from.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut src = MemoryStream.of("a\nb".encode())
+    ## assert src.read_line()? == "a"
+    ## ```
     def of(data: bytes) -> MemoryStream:
         mut made = MemoryStream()
         bytes_push_bytes(ref made._data, data)
         return made
 
+    ## Adds `data` to what's written.
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write(bytes([1, 2]))?
+    ## assert memory.bytes() == bytes([1, 2])
+    ## ```
     def write(ref self, data: bytes) fails IoError:
         bytes_push_bytes(ref self._data, data)
 
+    ## Adds `text` to what's written, as UTF-8.
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write_text("café")?
+    ## assert len(memory.bytes()) == 5
+    ## ```
     def write_text(ref self, text: str) fails IoError:
         bytes_push_text(ref self._data, text)
 
+    ## Adds `text`, then a line break.
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write_line("a")?
+    ## memory.write_line("b")?
+    ## assert memory.text()? == "a\nb\n"
+    ## ```
     def write_line(ref self, text: str) fails IoError:
         bytes_push_text(ref self._data, text)
         bytes_push_text(ref self._data, "\n")
 
     ## Nothing's held back in memory, so there's nothing to send on.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.flush()?
+    ## assert len(memory.bytes()) == 0
+    ## ```
     def flush(ref self) fails IoError:
         pass
 
+    ## Up to `size` bytes from where reading has got to, and empty bytes at the end.
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut src = MemoryStream.of(bytes([1, 2, 3]))
+    ## assert src.read_chunk(2)? == bytes([1, 2])
+    ## ```
     def read_chunk(ref self, size: int) -> bytes fails IoError:
         if size < 0: fail .Other(reason=f"can't read {size} bytes")
         end = min(self._at + size, len(self._data))
@@ -150,6 +377,14 @@ export struct MemoryStream:
         self._at = end
         return chunk
 
+    ## The next line without its ending, `\n` or `\r\n`, or `None` at the end.
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut src = MemoryStream.of("a\r\nb".encode())
+    ## assert src.read_line()? == "a"
+    ## assert src.read_line()? == "b"
+    ## assert src.read_line()? is None
+    ## ```
     def read_line(ref self) -> str? fails IoError:
         if self._at >= len(self._data): return None
         mut end = self._at
@@ -162,6 +397,15 @@ export struct MemoryStream:
         return line.decode() except InvalidValue(): fail .Other(reason="a line isn't UTF-8 text")
 
     ## Each line left, without moving where reading has got to.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## src = MemoryStream.of("a\nb".encode())
+    ## mut read = list[str]()
+    ## for line in src.lines()?:
+    ##     read.append(line)
+    ## assert read == ["a", "b"]
+    ## ```
     def lines(self) -> Iterator[str] fails IoError:
         mut at = self._at
         while at < len(self._data):
@@ -175,16 +419,36 @@ export struct MemoryStream:
             yield line.decode() else fail .Other(reason="a line isn't UTF-8 text")
 
     ## Everything written, as bytes.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write_text("hi")?
+    ## assert memory.bytes() == bytes([104, 105])
+    ## ```
     def bytes(self) -> bytes:
         return self._data[:]
 
     ## Everything written, as text.
+    ##
+    ## ```fennec
+    ## from std.io import MemoryStream
+    ## mut memory = MemoryStream()
+    ## memory.write_text("hi")?
+    ## assert memory.text()? == "hi"
+    ## ```
     def text(self) -> str fails IoError:
         return self._data.decode() except InvalidValue(): fail .Other(
             reason="what was written isn't UTF-8 text",
         )
 
 ## Everything left in `src`, read a chunk at a time.
+##
+## ```fennec
+## from std.io import MemoryStream, read_all
+## mut src = MemoryStream.of("all of it".encode())
+## assert read_all(ref src)? == "all of it".encode()
+## ```
 export def read_all[R: Reader](ref src: R) -> bytes fails IoError:
     mut all = bytes_builder()
     while True:

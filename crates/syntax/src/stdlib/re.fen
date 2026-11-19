@@ -14,10 +14,23 @@ from std.re import is_regex
 ## Its methods: `match(text)` at the start, `fullmatch(text)` for all of it, `search(text)`
 ## anywhere (each gives a `Match?`); `find_all(text)`; `replace(text, with)`, where `\1` in
 ## `with` is group 1; and `split(text)`.
+##
+## ```fennec
+## from std.re import Regex
+## digits = Regex(r"\d+")
+## assert [found.text for found in digits.find_all("a1b22c333")] == ["1", "22", "333"]
+## assert digits.replace("a1b22", "#") == "a#b#"
+## ```
 export struct Regex:
     pattern: str where is_regex(pattern)
 
 ## Where a `Regex` matched, and what its groups caught.
+##
+## ```fennec
+## from std.re import Regex
+## found = Regex(r"(\w+)@(\w+)\.com").search("mail ana@fox.com today") else return
+## assert found[0] == "ana@fox.com" and found[1] == "ana" and found[2] == "fox"
+## ```
 export struct Match:
     text: str
     ## Where the match starts and ends, counting characters, as in `text[start:end]`.

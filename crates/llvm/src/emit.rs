@@ -463,6 +463,7 @@ pub(crate) fn emit_keeping(
         }
         if keeping {
             layouts.note_asked();
+            layouts.note_reads();
         }
         // A build that checks what units keep writes each into a `Shared` of its own, then adds
         // that to what units share, so the audit checks what each kept against exactly what it
@@ -475,14 +476,13 @@ pub(crate) fn emit_keeping(
             wrote.as_mut().unwrap_or(&mut shared),
             (header, &attributes),
         );
-        let read = reads.take();
+        let read = with_layouts_read(reads.take(), &layouts);
         let asked = layouts.asked();
         match made {
             Ok((text, share)) => {
                 units.push(Unit::written(function.name.clone(), text));
                 if keeping {
-                    let reads: Vec<(What, String)> =
-                        read.into_iter().map(|(what, name)| (what, name.into_owned())).collect();
+                    let reads = read;
                     if let (Some(ir), Some(_)) = (ir, &using) {
                         written.push((units.len() - 1, ir, reads.clone(), share.clone(), asked.clone()));
                     }
@@ -531,9 +531,11 @@ pub(crate) fn emit_keeping(
     Ok((units, shared, layouts, kept))
 }
 
-/// The settings every unit of a build is written with, and the layouts it's written against:
+/// The settings every unit of a build is written with, and how its layouts lay everything out:
 /// a kept unit is used again only by a build with the same. Everything here is the same for
-/// every unit, so it's one key for the build rather than a read each unit notes.
+/// every unit, so it's one key for the build rather than a read each unit notes. Each layout's
+/// own fields and size aren't in it: a unit notes reading each layout it uses (`What::Layout`),
+/// so a type's edit writes again only the units that read it.
 fn build_key(
     shared: &Shared,
     (header, attributes): (&str, &str),
@@ -548,7 +550,16 @@ fn build_key(
         reads.runtime_closures(),
         reads.tested()
     );
-    crate::keys::key_of("fennec unit build 2026-11-17", &(settings, layouts.fingerprint()))
+    crate::keys::key_of("fennec unit build 2026-11-19", &(settings, layouts.whole_fingerprint()))
+}
+
+/// The reads a unit made of the whole program, by name, with each layout it read: what `Reads`
+/// noted, then what the layouts noted since `note_reads`.
+fn with_layouts_read(read: BTreeSet<crate::reads::Read<'_>>, layouts: &Layouts) -> Vec<(What, String)> {
+    let mut reads: Vec<(What, String)> =
+        read.into_iter().map(|(what, name)| (what, name.into_owned())).collect();
+    reads.extend(layouts.layouts_read().unwrap_or_default().into_iter().map(|name| (What::Layout, name)));
+    reads
 }
 
 /// Writes a unit a build is using again, into what's then thrown away, and checks it comes out as
@@ -565,9 +576,9 @@ fn audit_unit<'p>(
     layouts.ask_again(&record.asked).ok_or("asking again failed")?;
     let mut scratch = crate::share::settings_of(shared);
     layouts.note_asked();
+    layouts.note_reads();
     let made = unit(function, (reads, threads), layouts, &mut scratch, (header, attributes));
-    let read: BTreeSet<(What, String)> =
-        reads.take().into_iter().map(|(what, name)| (what, name.into_owned())).collect();
+    let read: BTreeSet<(What, String)> = with_layouts_read(reads.take(), layouts).into_iter().collect();
     let asked = layouts.asked();
     let (text, share) = made?;
     let text = if shared.facts == crate::Facts::Stripped { crate::facts::stripped(&text) } else { text };

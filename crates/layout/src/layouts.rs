@@ -76,6 +76,8 @@ pub struct Layouts {
     /// What's been asked for a number since [`Self::note_asked`], each the first time, in order,
     /// while that's being noted.
     noting: std::cell::RefCell<Option<Vec<AskedNow>>>,
+    /// The layouts read since [`Self::note_reads`], by number, while that's being noted.
+    reading: std::cell::RefCell<Option<BTreeSet<u32>>>,
     /// The structs with no words at all: no fields, or only fields that are such structs. A dict
     /// keeps a value of one in a block, as before, since an entry has nowhere to hold it.
     wordless: BTreeSet<String>,
@@ -84,6 +86,26 @@ pub struct Layouts {
     decided: Option<BTreeSet<String>>,
     /// Why these layouts can't be built from, when they can't: a bug in deciding them.
     problem: Option<String>,
+}
+
+/// One layout as a line of [`Layouts::fingerprint`]: its name, size, whether it's boxed or a cell,
+/// and each field's name, kind (as `kind` writes it) and place, then each case's. A field's
+/// default isn't in it: native code never reads one.
+fn layout_line(out: &mut String, layout: &Layout, kind: &dyn Fn(Ty) -> String) {
+    use std::fmt::Write as _;
+    let Layout { name, fields: own, size, cases, boxed, cell } = layout;
+    let fields = |out: &mut String, fields: &[Field]| {
+        for Field { name, ty, offset, default: _ } in fields {
+            let _ = write!(out, " {name}:{}@{offset}", kind(*ty));
+        }
+    };
+    let _ = write!(out, "{name} {size} {boxed} {cell}");
+    fields(out, own);
+    for Case { name, fields: case } in cases.iter().flatten() {
+        let _ = write!(out, " | {name}");
+        fields(out, case);
+    }
+    out.push('\n');
 }
 
 /// What was asked for a number, as these layouts number it, until it's taken by names.
@@ -754,7 +776,12 @@ impl Layouts {
         self.all.len()
     }
 
+    /// The layout numbered `id`. Every read of a layout's fields, size or cases goes through
+    /// here, so each is noted while reads are (see [`Self::note_reads`]).
     pub fn get(&self, id: u32) -> Option<&Layout> {
+        if let Some(read) = self.reading.borrow_mut().as_mut() {
+            read.insert(id);
+        }
         self.all.get(usize::try_from(id).ok()?)
     }
 
@@ -855,6 +882,21 @@ impl Layouts {
     #[must_use]
     pub fn fingerprint(&self) -> String {
         use std::fmt::Write as _;
+        let mut out = self.whole_fingerprint();
+        for (id, layout) in self.all.iter().enumerate() {
+            let _ = write!(out, "{id} ");
+            layout_line(&mut out, layout, &|ty| format!("{ty:?}"));
+        }
+        out
+    }
+
+    /// [`Self::fingerprint`] but for each layout's own fields, size and cases: how these layouts
+    /// lay everything out, which every unit is written against, and how many layouts there are
+    /// and the number each has. A unit reads the layouts it uses one by one (see
+    /// [`Self::layout_fingerprint`]), so a type's edit reaches only the units that read its layout.
+    #[must_use]
+    pub fn whole_fingerprint(&self) -> String {
+        use std::fmt::Write as _;
         let Layouts {
             by_name,
             all,
@@ -866,32 +908,60 @@ impl Layouts {
             through_lists,
             dict_values,
             noting: _,
+            reading: _,
             wordless,
             decided,
             problem,
         } = self;
         let InPlace { text_headers, counted_fields, results } = in_place;
-        let mut out =
-            format!("{one_word_optionals} {native_buffers} {text_headers} {counted_fields} {results}\n");
-        let fields = |out: &mut String, fields: &[Field]| {
-            for Field { name, ty, offset, default: _ } in fields {
-                let _ = write!(out, " {name}:{ty:?}@{offset}");
-            }
-        };
-        for (id, Layout { name, fields: own, size, cases, boxed, cell }) in all.iter().enumerate() {
-            let _ = write!(out, "{id} {name} {size} {boxed} {cell}");
-            fields(&mut out, own);
-            for Case { name, fields: case } in cases.iter().flatten() {
-                let _ = write!(out, " | {name}");
-                fields(&mut out, case);
-            }
-            out.push('\n');
-        }
+        let mut out = format!(
+            "{one_word_optionals} {native_buffers} {text_headers} {counted_fields} {results} {}\n",
+            all.len()
+        );
         let by_name: BTreeMap<&String, &u32> = by_name.iter().collect();
         let owners: BTreeMap<&String, &Vec<String>> = owners.iter().collect();
         let _ = writeln!(out, "{by_name:?}\n{owners:?}\n{:?}\n{through_lists:?}", blocks.borrow());
         let _ = writeln!(out, "{:?}\n{wordless:?}\n{decided:?}\n{problem:?}", dict_values.borrow());
         out
+    }
+
+    /// The layout named `name` as text that's the same whenever it is: its size, whether it's
+    /// boxed or a cell, and each field's name, kind and place, with each enum case's. Each kind
+    /// goes by names rather than numbers, since a kind of block is numbered as units ask for it,
+    /// and a build reads this before and while it writes them. Reading it isn't noted.
+    #[must_use]
+    pub fn layout_fingerprint(&self, name: &str) -> Option<String> {
+        let reading = self.reading.borrow_mut().take();
+        let layout = self.by_name.get(name).and_then(|id| self.all.get(usize::try_from(*id).ok()?));
+        let text = layout.map(|layout| {
+            let mut out = String::new();
+            layout_line(&mut out, layout, &|ty| match self.named(ty) {
+                Some(named) => format!("{named:?}"),
+                None => format!("{ty:?}"),
+            });
+            out
+        });
+        *self.reading.borrow_mut() = reading;
+        text
+    }
+
+    /// Notes each layout read from now on, until [`Self::layouts_read`] takes them: a unit kept to
+    /// be used again is used again only while each layout it read is as it was.
+    pub fn note_reads(&self) {
+        *self.reading.borrow_mut() = Some(BTreeSet::new());
+    }
+
+    /// The names of the layouts read since [`Self::note_reads`], in order, and stops noting.
+    /// `None` if they weren't being noted.
+    #[must_use]
+    pub fn layouts_read(&self) -> Option<Vec<String>> {
+        let read = self.reading.borrow_mut().take()?;
+        let mut names: Vec<String> = read
+            .into_iter()
+            .filter_map(|id| self.all.get(usize::try_from(id).ok()?).map(|layout| layout.name.clone()))
+            .collect();
+        names.sort();
+        Some(names)
     }
 
     /// Notes what's asked for a number from now on: each kind of block and each plain type a dict

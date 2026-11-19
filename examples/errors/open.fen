@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    with open("notes.txt") as notes:
+        stdout.print(notes.read())

@@ -1,0 +1,7 @@
+error: Fennec doesn't have `__name__`
+ --> examples/errors/dunder_name_main.fen:4:4
+  |
+4 | if __name__ == "__main__":
+  |    ^^^^^^^^
+  |
+  = help: Fennec runs `main` by itself: take out the `if __name__ == "__main__":` and the call under it

@@ -1,0 +1,7 @@
+error: Fennec doesn't have `finally`
+ --> examples/errors/finally.fen:6:5
+  |
+6 |     finally:
+  |     ^^^^^^^
+  |
+  = help: a failure is handled at the call: pass it up with `?`, or put `except` after the call, as `x = f() except why:`

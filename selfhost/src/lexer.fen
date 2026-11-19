@@ -233,6 +233,8 @@ struct Lexer:
         c = self.peek(0)
         pair = c + self.peek(1)
         triple = pair + self.peek(2)
+        if pair == ":=":
+            fail self.walrus(start)
         if is_three_char_punct(triple):
             self.pos += 3
             self.push(.Punct(triple), start)
@@ -242,14 +244,78 @@ struct Lexer:
             self.push(.Punct(pair), start)
             return
         if c not in "()[]{},:.?+-*/%=<>&|^~@":
-            span = Span(start=self.offset(start), end=self.offset(start) + utf8_width(c))
-            fail Diagnostic(message=f"unexpected character `{c}`", span=span)
+            fail self.unexpected(start)
         if c in "([{":
             self.depth += 1
         elif c in ")]}" and self.depth > 0:
             self.depth -= 1
         self.pos += 1
         self.push(.Punct(c), start)
+
+    ## A character no token starts with, at character `start`. Where it's a habit from Python,
+    ## what to write instead: `;` between statements, a string in `'`s, a `\` that goes on to the
+    ## next line, `!r` in an f-string's `{}`, or `!` for `not`.
+    def unexpected(self, start: int) -> Diagnostic:
+        character = self.peek(0)
+        one = Span(start=self.offset(start), end=self.offset(start) + utf8_width(character))
+        rest = self.text(start, len(self.chars)).rstrip()
+        if character == ";":
+            return Diagnostic(message="Fennec doesn't use `;`", span=one, help="put each statement on its own line")
+        if character == "'":
+            return self.single_quoted(start, one)
+        if character == "\\" and self.ends_line(start + 1):
+            return Diagnostic(
+                message="Fennec doesn't go on to the next line with `\\`",
+                span=one,
+                help="put what goes on in brackets, which can span lines, as `total = (1 +` with `2)` on the next line",
+            )
+        if rest in ["!r", "!s", "!a"]:
+            return Diagnostic(
+                message=f"an f-string has no `{rest}`",
+                span=Span(start=self.offset(start), end=self.offset(start) + 2),
+                help="`{name}` shows the value as `str(name)` does, and a format goes after `:`, as `{price:.2f}`",
+            )
+        if character == "!":
+            return Diagnostic(message="Fennec writes `not`, not `!`", span=one, help="write `not done`")
+        return Diagnostic(message=f"unexpected character `{character}`", span=one)
+
+    ## A string in `'`s from character `start`: the text up to the closing `'` on its line, in
+    ## `"`s, when it can go in them as it is.
+    def single_quoted(self, start: int, one: Span) -> Diagnostic:
+        mut at = start + 1
+        while at < len(self.chars) and self.chars[at] != "'" and self.chars[at] != "\n":
+            at += 1
+        text = self.text(start + 1, at)
+        plain = "\"" not in text and "\\" not in text and "{" not in text and "}" not in text
+        if at < len(self.chars) and self.chars[at] == "'" and plain:
+            return Diagnostic(
+                message="a string is written in double quotes",
+                span=Span(start=self.offset(start), end=self.offset(at + 1)),
+                help=f"write `\"{text}\"`",
+            )
+        return Diagnostic(message="a string is written in double quotes", span=one, help="write it in `\"`s, as `\"text\"`")
+
+    ## Whether only spaces, tabs and `\r` come between character `at` and the line's end.
+    def ends_line(self, at: int) -> bool:
+        mut after = at
+        while after < len(self.chars) and self.chars[after] in [" ", "\t", "\r"]:
+            after += 1
+        return after == len(self.chars) or self.chars[after] == "\n"
+
+    ## `:=`, Python's way to name a value inside an expression, at character `start`.
+    def walrus(self, start: int) -> Diagnostic:
+        mut help = "give the value a name on a line of its own first, then use the name"
+        if len(self.tokens) > 0:
+            match self.tokens[-1].tok:
+                case .Name(name):
+                    help = f"give `{name}` its value on a line of its own first, as `{name} = ...`, then use it"
+                case _:
+                    pass
+        return Diagnostic(
+            message="Fennec doesn't have `:=`",
+            span=Span(start=self.offset(start), end=self.offset(start) + 2),
+            help=help,
+        )
 
     def string(ref self, start: int) fails Diagnostic:
         self.pos += 1

@@ -1,0 +1,8 @@
+struct Player:
+    score = 0
+
+def main(stdout: Stdout):
+    mut players = [Player(), Player()]
+    for player in players:
+        player.score += 1
+    stdout.print(players)

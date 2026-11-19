@@ -100,6 +100,16 @@ extend Parser:
     ## the case's.
     def except_handler(ref self) -> Expr fails Diagnostic:
         start = self.advance().span
+        # Python's `except InvalidValue as problem:`.
+        if self.peek_at(1) == .Keyword("as"):
+            failure = self.name_at(0)
+            name = self.name_at(2)
+            if failure is not None and name is not None:
+                fail Diagnostic(
+                    message="Fennec doesn't name a failure with `as`",
+                    span=self.span().to(self.tokens[self.pos + 2].span),
+                    help=f"write `except {name}:` to name any failure, or `except {failure}(): ...` to handle only `{failure}`",
+                )
         if self.peek_at(1) == .Punct(":"):
             match self.peek():
                 case .Name(name):
@@ -430,6 +440,8 @@ extend Parser:
             case .TStr(parts):
                 return template(parts, span)?
             case .Name(name):
+                if name == "lambda" and (is_name(self.peek()) or self.peek() == .Punct(":")):
+                    fail self.python_lambda(span)
                 ExprKind.Name(name)
             case .Keyword(word):
                 self.keyword_atom(word, span)?
@@ -437,13 +449,62 @@ extend Parser:
                 if text == "(": return self.parenthesized(span)?
                 if text == "[": return self.list(span)?
                 if text == "{": return self.braces(span)?
+                if (text == "*" or text == "**") and is_name(self.peek()):
+                    fail python_unpacking(text, span.to(self.span()))
                 if text != ".":
                     self.pos -= 1
                     fail Diagnostic(message=f"expected a value, found `{text}`", span=span)
                 ExprKind.Variant(self.name("an enum case after `.`")?)
+            case .Indent:
+                # A chain of calls going on to the next line outside brackets, as `text` with
+                # `.strip()` under it.
+                if self.peek() == .Punct("."):
+                    mut call = self.span()
+                    if self.pos + 1 < len(self.tokens):
+                        call = self.span().to(self.tokens[self.pos + 1].span)
+                    fail Diagnostic(
+                        message="a chain of calls goes on to the next line only inside brackets",
+                        span=call,
+                        help="open a `(` before the chain's first value and close it after its last call, as `short = (text` with `.upper())` on the last line",
+                    )
+                fail Diagnostic(message=f"expected a value, found {describe(.Indent)}", span=span)
             case other:
                 fail Diagnostic(message=f"expected a value, found {describe(other)}", span=span)
         return Expr(kind=kind, span=span.to(self.prev_span()))
+
+    ## The name `ahead` tokens on, if a name is there.
+    def name_at(self, ahead: int) -> str?:
+        match self.peek_at(ahead):
+            case .Name(name):
+                return name
+            case _:
+                return None
+
+    ## Python's `lambda x: ...`, after `lambda`, which is at `start`: what the arrow function
+    ## with its parameters is.
+    def python_lambda(self, start: Span) -> Diagnostic:
+        mut params = list[str]()
+        mut end = start
+        mut at = self.pos
+        while at < len(self.tokens):
+            token = self.tokens[at]
+            match token.tok:
+                case .Name(name):
+                    params.append(name)
+                case .Punct(text):
+                    if text != ",":
+                        break
+                case _:
+                    break
+            end = token.span
+            at += 1
+        joined = ", ".join(params)
+        arrow = f"{joined} => ..." if len(params) == 1 else f"({joined}) => ..."
+        return Diagnostic(
+            message="Fennec doesn't have `lambda`",
+            span=start.to(end),
+            help=f"write an arrow function: `{arrow}`",
+        )
 
     ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
     def keyword_atom(ref self, word: str, span: Span) -> ExprKind fails Diagnostic:
@@ -656,3 +717,17 @@ def leaving_match(start: Span, body: list[Stmt], span: Span, failure: str? = Non
     # Expressions are told apart by span, and nothing's written here, so it's empty.
     subject = Expr(kind=.Bool(False), span=Span(start=start.start, end=start.start))
     return Expr(kind=.Match(subject, [arm]), span=span)
+
+## Python's `*items` or `**options` before a value, at `span`: Fennec unpacks neither.
+def python_unpacking(star: str, span: Span) -> Diagnostic:
+    if star == "**":
+        return Diagnostic(
+            message="Fennec doesn't unpack with `**`",
+            span=span,
+            help="name each argument, as `configure(width=3)`",
+        )
+    return Diagnostic(
+        message="Fennec doesn't unpack with `*`",
+        span=span,
+        help="take the parts by place, as `first = items[0]` and `rest = items[1:]`, or pass the list itself",
+    )

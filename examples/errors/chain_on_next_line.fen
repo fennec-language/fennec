@@ -1,0 +1,6 @@
+def main(stdout: Stdout):
+    text = " A b "
+    short = text
+        .strip()
+        .upper()
+    stdout.print(short)

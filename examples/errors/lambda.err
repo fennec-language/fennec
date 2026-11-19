@@ -1,0 +1,7 @@
+error: Fennec doesn't have `lambda`
+ --> examples/errors/lambda.fen:3:33
+  |
+3 |     longest = sorted(names, key=lambda name: len(name))
+  |                                 ^^^^^^^^^^^
+  |
+  = help: write an arrow function: `name => ...`

@@ -42,7 +42,7 @@ extend Parser:
             case .Keyword(word):
                 self.keyword_stmt(word)?
             case .Name(word):
-                if self.is_python_only(word): fail python_only(word, start)
+                if self.is_python_only(word): fail python_only(word, after=self.name_after(), span=start)
                 # `shared scores = Scores()`: a plain value made `shared`, written out.
                 if word == "shared" and is_name(self.peek_at(1)) and self.peek_at(2) == .Punct("="):
                     declared = self.shared_declaration()?
@@ -79,13 +79,25 @@ extend Parser:
             case _:
                 return .Pass
 
-    ## `raise x`, `try:` and `except x:` at the start of a statement: Python habits Fennec
-    ## catches with a pointer to what to write instead.
+    ## `raise x`, `try:` and `except x:` at the start of a statement, and `global x`,
+    ## `nonlocal x`, `del x`, `class X` and `async def`: Python habits Fennec catches with a
+    ## pointer to what to write instead.
     def is_python_only(self, word: str) -> bool:
-        return (
-            word in ["raise", "try", "except", "finally"]
-            and not (self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")])
-        )
+        if word in ["raise", "try", "except", "finally"]:
+            return not (self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")])
+        if word in ["global", "nonlocal", "del", "class"]:
+            return is_name(self.peek_at(1))
+        if word == "async":
+            return self.peek_at(1) in [.Keyword("def"), .Keyword("for"), .Keyword("with")]
+        return False
+
+    ## The name after a Python-only word, as `Point` in `class Point:`.
+    def name_after(self) -> str?:
+        match self.peek_at(1):
+            case .Name(name):
+                return name
+            case _:
+                return None
 
     ## `lend value`, or `lend value except:` and the block that runs when the caller's fails.
     ## `lend value else:`, its form before 2026-11-11, is read too.
@@ -171,6 +183,16 @@ extend Parser:
         if not is_assignable(target, op is None):
             fail Diagnostic(message="this can't be assigned to", span=target.span)
         value = self.assigned()? if op is None else self.expr()?
+        # Python's `a = b = 0`, which gives two names one value.
+        if op is None and self.at_punct("="):
+            first = expr_name(target)
+            second = expr_name(value)
+            if first is not None and second is not None:
+                fail Diagnostic(
+                    message="Fennec gives one name its value at a time",
+                    span=self.span(),
+                    help=f"give each its own line: `{first} = ...`, then `{second} = ...`",
+                )
         return .Assign(target, op, value, declare_mut=False, ty=None)
 
     ## What `name = ...` is given: a value, or a `lock` block whose last line is the value, written
@@ -210,6 +232,13 @@ extend Parser:
     ## case and nothing in it, which nothing else parses to.
     def asserted(ref self) -> StmtKind fails Diagnostic:
         value = self.expr()?
+        # Python's `assert condition, "message"`.
+        if self.at_punct(","):
+            fail Diagnostic(
+                message="an `assert` takes no message after a `,`",
+                span=self.span(),
+                help="take out the `,` and the message: a failed `assert` shows its line and the values in it, and a `#` comment above it can say why",
+            )
         if not self.at_fails(): return .Assert(value)
         _ = self.advance()
         at = self.span()
@@ -373,12 +402,23 @@ def assignment_op(tok: Tok) -> BinOp?:
 def starts_assignment(tok: Tok) -> bool:
     return tok == .Punct("=") or assignment_op(tok) is not None
 
-def python_only(word: str, span: Span) -> Diagnostic:
-    mut help = "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"
+def python_only(word: str, after: str?, span: Span) -> Diagnostic:
+    name = after else "Point"
+    mut help = "Fennec has no exceptions: pass a failure up with `?`, or handle it with `except` after the call"
     if word == "raise":
         help = "Fennec has no exceptions: write `fail SomeError(...)`, which returns the error"
     elif word == "try" or word == "finally":
         help = "a failure is handled at the call: pass it up with `?`, or put `except` after the call, as `x = f() except why:`"
+    elif word == "global":
+        help = f"a name at the top of a file is a constant: pass what changes in as a `ref` parameter, as `def bump(ref {name}: int)`, called as `bump(ref {name})`"
+    elif word == "nonlocal":
+        help = f"a function inside another can't change the names around it: give back the new value, and change `{name}` outside it"
+    elif word == "del":
+        help = "take an item out of a list with `_ = items.pop(at)`, or a key out of a dict with `_ = table.remove(key)`"
+    elif word == "class":
+        help = f"write `struct {name}:`, with its fields under it: it makes its own constructor from them, as `{name}(x=1)`"
+    elif word == "async":
+        help = "write a plain `def`: a call waits where it's written, and `launch` runs work beside it"
     return Diagnostic(message=f"Fennec doesn't have `{word}`", span=span, help=help)
 
 ## Whether a value can start with this token, so `lend` before it starts a `lend`.
@@ -402,3 +442,11 @@ def starts_value(tok: Tok) -> bool:
             return text in ["(", "[", "{", ".", "-"]
         case _:
             return False
+
+## The name an expression is, if it's only a name.
+def expr_name(expr: Expr) -> str?:
+    match expr.kind:
+        case .Name(name):
+            return name
+        case _:
+            return None

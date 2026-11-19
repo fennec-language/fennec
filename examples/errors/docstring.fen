@@ -1,0 +1,6 @@
+def double(number: int) -> int:
+    """Doubles a number."""
+    return number * 2
+
+def main(stdout: Stdout):
+    stdout.print(double(2))

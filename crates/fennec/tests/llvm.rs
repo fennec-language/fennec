@@ -11994,6 +11994,22 @@ def main(stdout: Stdout):
     )
 }
 
+/// A string across lines in `"""`s, plain and as an f-string, prints its lines less the spaces
+/// before its closing `"""`, ending with the newline before that line (#294).
+#[test]
+fn strings_in_triple_quotes_print_their_lines() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "triple_quoted",
+        "def main(stdout: Stdout):\n    name = \"Ada\"\n    usage = \"\"\"\n        Usage: tool <path>\n\n          \
+         --dry-run\n        \"\"\"\n    stdout.print(usage)\n    stdout.print(f\"\"\"\n        Hello, {name}!\n        \
+         \"\"\")\n",
+        "Usage: tool <path>\n\n  --dry-run\n\nHello, Ada!\n\n",
+    )
+}
+
 /// An f-string made in one go from its pieces where they are: strings inline and in blocks,
 /// ASCII or not, ints at their ends, floats short and long, formats, values written out, and
 /// results that fit in a header and that don't, on both sides of 23 bytes.
@@ -23323,6 +23339,66 @@ def main(stdout: Stdout) fails Nope:
         stdout.print(store.run("ab")?)
 "#,
         "lite 3 pg 8\n1 2 3\n2\n4\n6\n",
+    )
+}
+
+/// A `ref self` method called on a union known to hold one member, after `is`, is given that
+/// member and puts it back changed. So is one called on each union in a list, or on a union field,
+/// and a union given by `ref` to a function that takes the union can be changed to another member.
+/// One given by `ref` where its member is taken is given the member, and gets it back changed.
+#[test]
+fn a_ref_self_method_on_a_narrowed_union_changes_the_member_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_ref_self",
+        r"struct Box:
+    items: list[int]
+
+    def grow(ref self) -> int:
+        self.items.append(9)
+        return len(self.items)
+
+struct Bag:
+    held: int
+
+    def grow(ref self) -> int:
+        self.held += 1
+        return self.held
+
+struct Holder:
+    shape: Box | Bag
+
+def reset(ref shape: Box | Bag) -> int:
+    grown = shape.grow()
+    shape = Bag(held=100)
+    return grown
+
+def grow_box(ref box: Box) -> int:
+    return box.grow()
+
+def main(stdout: Stdout):
+    mut shape: Box | Bag = Box(items=[1])
+    stdout.print(shape.grow())
+    if shape is Box:
+        stdout.print(shape.grow(), shape.items)
+    mut shapes: list[Box | Bag] = [Bag(held=0), Box(items=[])]
+    for ref each in shapes:
+        stdout.print(each.grow())
+    stdout.print(shapes)
+    mut holder = Holder(shape=Bag(held=5))
+    stdout.print(holder.shape.grow(), holder.shape)
+    mut other: Box | Bag = Box(items=[])
+    if other is Box:
+        stdout.print(reset(ref other))
+    stdout.print(other)
+    mut third: Box | Bag = Box(items=[])
+    if third is Box:
+        stdout.print(grow_box(ref third), third)
+    return
+",
+        "2\n3 [1, 9, 9]\n1\n1\n[Bag(held=1), Box(items=[9])]\n6 Bag(held=6)\n1\nBag(held=100)\n1 Box(items=[9])\n",
     )
 }
 

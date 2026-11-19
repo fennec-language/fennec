@@ -99,7 +99,9 @@ rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled
 # Stopping a program `process.run` started, with whatever it started in turn: on Unix it runs in a
 # process group of its own, and the group is killed at its timeout, which the standard library
 # can't do without `unsafe`. rustix is already here under cap-std; this is its safe call for it.
-rustix = { version = "=1.1.6", default-features = false, features = ["fs", "process", "std"] }
+# The build daemon also takes a build's printing into files for the command that asked for it, by
+# putting a file in standard output's and error's place for the build (`stdio`), safely.
+rustix = { version = "=1.1.6", default-features = false, features = ["fs", "process", "std", "stdio"] }
 # On macOS, being told when a program `process.run` started has ended, by kqueue's `EVFILT_PROC`,
 # so a task waiting for it parks until then rather than looking. rustix reaches `kevent` only
 # through an `unsafe` call, and nix's `Kqueue` is safe. It's already here under ctrlc. Under MIT.

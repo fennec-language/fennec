@@ -80,6 +80,9 @@ struct Scope {
     /// A `parallel` loop's or comprehension's body, which runs on other tasks: a generator that
     /// can fail, from outside it, can't pass its failure up from there.
     apart: bool,
+    /// The names in this scope that may hold what a `with` lent, with the type it lent and the
+    /// scope its block is: they're kept inside that block (see `lent.rs`).
+    lent: Vec<(String, Type, usize)>,
 }
 
 /// What a function's body gives back.
@@ -90,6 +93,9 @@ pub(crate) struct BodyType {
 
 pub(crate) struct FnCx<'c> {
     pub(crate) checker: &'c mut Checker,
+    /// Each name the body gives a value with `=`, and where: one read above that line is read too
+    /// early, which says more than that it doesn't exist.
+    pub(crate) assigned: Vec<(String, Span)>,
     /// The function's name in the signature table, for naming the functions inside it.
     pub(crate) key: String,
     /// The function's own name, for messages.
@@ -203,10 +209,11 @@ impl<'c> FnCx<'c> {
     pub(crate) fn new(checker: &'c mut Checker, key: &str, name: &str, report: bool) -> Self {
         let first_var = checker.vars.len();
         FnCx {
+            assigned: Vec::new(),
             checker,
             key: key.to_owned(),
             name: name.to_owned(),
-            scopes: vec![Scope { bindings: Vec::new(), barrier: false, apart: false }],
+            scopes: vec![Scope { bindings: Vec::new(), barrier: false, apart: false, lent: Vec::new() }],
             report,
             declared: None,
             generator: false,
@@ -332,6 +339,7 @@ impl<'c> FnCx<'c> {
         report: bool,
     ) -> BodyType {
         let mut cx = FnCx::new(checker, key, &def.name, report);
+        assigned_in(&def.body, &mut cx.assigned);
         let entry = cx.checker.program.functions.get(key);
         cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
         cx.declared = crate::program::written_ret(def).map(|ret| cx.resolve(ret));
@@ -353,7 +361,13 @@ impl<'c> FnCx<'c> {
                 // one is expected of the default.
                 let actual =
                     if written.ty.is_some() { cx.expr_as(default, &param.ty) } else { cx.expr(default) };
-                cx.check_arg(param, &actual, default.span);
+                if let (ExprKind::None, Some(ty)) = (&default.kind, &written.ty)
+                    && !param.ty.maybe_none()
+                {
+                    cx.error(none_for_plain_type(&param.name, &param.ty, ty.span, default.span));
+                } else {
+                    cx.check_arg(param, &actual, default.span);
+                }
             }
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
         }
@@ -544,7 +558,12 @@ impl<'c> FnCx<'c> {
         if self.generator || passed_through || self.checker.fits(declared, &actual) {
             return;
         }
-        let diagnostic = if actual.maybe_none() && !declared.maybe_none() {
+        let diagnostic = if actual == Type::None && !declared.maybe_none() {
+            // Python's `return None` from a function that gives back a plain value.
+            let shown = crate::types::a(declared);
+            Diagnostic::new(format!("`{}` gives back {shown}, which can't be `None`", self.name), span)
+                .with_help(format!("write `-> {declared}?` to give back `None` when there's nothing"))
+        } else if actual.maybe_none() && !declared.maybe_none() {
             crate::messages::might_be_none(span)
         } else if matches!(actual, Type::Result(..)) {
             crate::messages::unhandled_result(span)
@@ -751,7 +770,44 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn push(&mut self, barrier: bool) {
-        self.scopes.push(Scope { bindings: Vec::new(), barrier, apart: false });
+        self.scopes.push(Scope { bindings: Vec::new(), barrier, apart: false, lent: Vec::new() });
+    }
+
+    /// Where the innermost scope is, counting out from the function's own.
+    pub(crate) fn innermost_scope(&self) -> usize {
+        self.scopes.len().saturating_sub(1)
+    }
+
+    /// The scope the name in sight is declared in, counting out from the function's own.
+    pub(crate) fn scope_of(&self, name: &str) -> Option<usize> {
+        self.scopes.iter().rposition(|scope| scope.bindings.iter().any(|binding| binding.name == name))
+    }
+
+    /// What a `with` lent that the name declared in scope `at` may hold: each by its type and the
+    /// scope of the `with` block that lent it.
+    pub(crate) fn lent_in(&self, at: usize, name: &str) -> Vec<(Type, usize)> {
+        let Some(scope) = self.scopes.get(at) else { return Vec::new() };
+        scope
+            .lent
+            .iter()
+            .filter(|(held, ..)| held == name)
+            .map(|(_, lent, block)| (lent.clone(), *block))
+            .collect()
+    }
+
+    /// Notes that the name declared in scope `at` may hold what the `with` block at scope `block`
+    /// lent, of type `lent`.
+    pub(crate) fn hold_lent(&mut self, at: usize, name: &str, (lent, block): (Type, usize)) {
+        if let Some(scope) = self.scopes.get_mut(at)
+            && !scope.lent.iter().any(|(held, had, from)| held == name && *had == lent && *from == block)
+        {
+            scope.lent.push((name.to_owned(), lent, block));
+        }
+    }
+
+    /// Whether any name in sight may hold what a `with` lent.
+    pub(crate) fn any_lent(&self) -> bool {
+        self.scopes.iter().any(|scope| !scope.lent.is_empty())
     }
 
     /// Marks the innermost scope as a `parallel` loop's or comprehension's body, which runs on
@@ -1347,5 +1403,31 @@ fn failing_generator_reached(name: &str, ty: &Type, span: Span, param: bool) -> 
         crate::messages::failing_generator_given_to_arrow(name, holds, span)
     } else {
         crate::messages::failing_generator_inside(name, holds, span)
+    }
+}
+
+/// Python's `name: str = None`: a `None` default for a parameter of a plain type, which can't be
+/// `None`. The `?` that lets it be is a fix to make by hand, since every use of it changes.
+fn none_for_plain_type(name: &str, ty: &Type, written: Span, default: Span) -> Diagnostic {
+    let shown = crate::types::a(ty);
+    Diagnostic::new(format!("`{name}` is {shown}, which can't be `None`"), default).with_hint(
+        format!("write `{name}: {ty}? = None` to let it be left out"),
+        Span { start: written.end, end: written.end },
+        "?",
+    )
+}
+
+/// Each name `body` gives a value with `=`, however deep in its blocks, and where. `+=` and the
+/// like change a value the name already has, so they don't count.
+fn assigned_in(body: &[Stmt], found: &mut Vec<(String, Span)>) {
+    for stmt in body {
+        if let StmtKind::Assign { target, op: None, .. } = &stmt.kind
+            && let ExprKind::Name(name) = &target.kind
+        {
+            found.push((name.clone(), stmt.span));
+        }
+        for block in blocks(stmt) {
+            assigned_in(block, found);
+        }
     }
 }

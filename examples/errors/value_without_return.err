@@ -1,0 +1,7 @@
+error: a `def` gives its value with `return`
+ --> examples/errors/value_without_return.fen:2:5
+  |
+2 |     number * 2
+  |     ^^^^^^^^^^
+  |
+  = help: write `return` at the start of the line: `fennec fix` writes it in

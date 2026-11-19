@@ -22,7 +22,53 @@ use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
     SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
+use super::ast::{InOrder, OrderStep};
+use super::ast::{NarrowWay, Narrowing};
 use super::source::LONG_PIECE;
+
+/// A `Narrowed` statement's union as the evaluator holds it: a `Crate{id}`'s list or a `Heap{id}`'s
+/// int.
+#[derive(Clone, Debug)]
+enum Member {
+    Crate(Vec<i64>),
+    Heap(i64),
+}
+
+impl Member {
+    /// What `grow` does to it, and what it gives back.
+    fn grow(&mut self) -> i64 {
+        match self {
+            Member::Crate(items) => {
+                let length = |items: &Vec<i64>| i64::try_from(items.len()).unwrap_or(i64::MAX);
+                items.push(length(items) + 7);
+                length(items)
+            }
+            Member::Heap(held) => {
+                *held += 3;
+                *held
+            }
+        }
+    }
+
+    /// What `shown{id}` gives back for it.
+    fn shown(&self) -> String {
+        match self {
+            Member::Crate(items) => {
+                let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+                format!("crate [{}]", items.join(", "))
+            }
+            Member::Heap(held) => format!("heap {held}"),
+        }
+    }
+
+    /// The other member, holding what `swapped{id}` gives it: `grown`.
+    fn swapped(&self, grown: i64) -> Member {
+        match self {
+            Member::Crate(_) => Member::Heap(grown),
+            Member::Heap(_) => Member::Crate(vec![grown]),
+        }
+    }
+}
 
 /// A `Swapped`'s struct as the evaluator holds it: its counts and its lists, each in the order
 /// their keys went in.
@@ -739,6 +785,24 @@ fn drained(value: &mut Kept, at: usize, n: i64) -> Option<String> {
             Some(shown(&Value::Ints(counts.iter().map(|(_, count)| *count).collect())))
         }
         _ => None,
+    }
+}
+
+/// A `Tally{id}` of an `Ordered` statement as the evaluator keeps it: its items, its count, and
+/// what its dict holds at `"a"`, its only key.
+#[derive(Clone)]
+struct Tallied {
+    items: Vec<i64>,
+    count: i64,
+    named: i64,
+}
+
+impl Tallied {
+    /// `grow(by)`: appends `count + by`, then gives back the count, 1 more.
+    fn grow(&mut self, by: i64) -> Ran<i64> {
+        self.items.push(self.count.checked_add(by).ok_or(Stop::Unsure)?);
+        self.count = self.count.checked_add(1).ok_or(Stop::Unsure)?;
+        Ok(self.count)
     }
 }
 
@@ -1837,6 +1901,7 @@ impl Machine {
             Stmt::GuardAll(items) => self.guard_all(items),
             Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::Turned(turning) => self.turned(turning)?,
+            Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
             Stmt::Constants(constants) => self.constants(constants)?,
@@ -1848,6 +1913,7 @@ impl Machine {
             Stmt::Listened(listening) => self.listened(listening),
             Stmt::RefCased(casing) => self.ref_cased(*casing),
             Stmt::Captured(capturing) => self.captured(*capturing),
+            Stmt::Narrowed(narrowing) => self.narrowed(*narrowing),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -2390,6 +2456,81 @@ impl Machine {
         }
     }
 
+    /// What `narrowed{id}` prints: each `grow` changes the member the union holds, whether it's
+    /// called on a narrowed name, a `match` case, a `for ref` item, a field or a `ref` parameter, and
+    /// a `ref` call taking the union leaves it the other member.
+    fn narrowed(&mut self, narrowing: Narrowing) {
+        let Narrowing { way, crate_first, n, .. } = narrowing;
+        let start = if crate_first { Member::Crate(vec![n]) } else { Member::Heap(n) };
+        let other = if crate_first { Member::Heap(n + 1) } else { Member::Crate(vec![n + 1]) };
+        let mut shape = start.clone();
+        let mut lines: Vec<String> = Vec::new();
+        match way {
+            NarrowWay::Given => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+                shape = other;
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Is => {
+                let grown = shape.grow();
+                let read = match &shape {
+                    Member::Crate(_) => shape.shown().replacen("crate ", "", 1),
+                    Member::Heap(held) => held.to_string(),
+                };
+                lines.push(format!("{grown} {read}"));
+                lines.push(shape.shown());
+            }
+            NarrowWay::Left => {
+                let grown = shape.grow();
+                let added = if crate_first { 100 } else { 0 };
+                lines.push((grown + added).to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Whole | NarrowWay::Field => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Matched => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::ForRef => {
+                let mut shapes = [start, other];
+                for each in &mut shapes {
+                    lines.push(each.grow().to_string());
+                    if matches!(each, Member::Crate(_)) {
+                        lines.push(each.grow().to_string());
+                    }
+                }
+                lines.extend(shapes.iter().map(Member::shown));
+            }
+            NarrowWay::RefMember => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+                let mut given = start;
+                lines.push(given.grow().to_string());
+                lines.push(given.shown());
+            }
+            NarrowWay::RefUnion | NarrowWay::RefUnionGrown => {
+                let grown = shape.grow();
+                shape = shape.swapped(grown);
+                lines.push(grown.to_string());
+                if way == NarrowWay::RefUnion {
+                    lines.push(shape.shown());
+                }
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+        }
+        for line in lines {
+            let _ = writeln!(self.out, "{line}");
+        }
+    }
+
     /// Each name meaning what it does where it's written: the nested function's, the loop's, the
     /// case's or the arrow's own parameter or name, and the function the source calls, not the
     /// caller's parameter of that name.
@@ -2661,6 +2802,96 @@ impl Machine {
         for (n, value) in kept.iter().enumerate() {
             let _ = writeln!(self.out, "{} {}", alias_name(n), kept_shown(aliasing.id, value));
         }
+        Ok(())
+    }
+
+    /// What `ordered{id}` prints: each line read left to right, as `ordered_written` writes it,
+    /// then what the tally and the pair hold.
+    fn ordered(&mut self, in_order: &InOrder) -> Ran<()> {
+        let base = in_order.base;
+        let mut tally = Tallied { items: vec![base, base + 1, base + 2, base + 3], count: base, named: base };
+        let (mut left, right) = (tally.clone(), base);
+        let ints = |items: &[i64]| shown(&Value::Ints(items.to_vec()));
+        for &(step, n) in &in_order.steps {
+            let line = match step {
+                OrderStep::Receiver => {
+                    let (items, count) = (ints(&tally.items), tally.count);
+                    format!("receiver {items} {count} {}", tally.grow(n)?)
+                }
+                OrderStep::FieldReceiver => {
+                    let count = left.count;
+                    format!("field receiver {count} {right} {}", left.grow(n)?)
+                }
+                OrderStep::Counted => {
+                    let items = tally.items.clone();
+                    let grown = tally.grow(n)?;
+                    format!("counted {}", items.iter().filter(|item| **item == grown).count())
+                }
+                OrderStep::Got | OrderStep::Keyed => {
+                    let named = tally.named;
+                    tally.named = tally.named.checked_add(n).ok_or(Stop::Unsure)?;
+                    format!("{} {named}", if step == OrderStep::Got { "got" } else { "keyed" })
+                }
+                OrderStep::Indexed => {
+                    let items = tally.items.clone();
+                    let at = usize::try_from(tally.grow(n)? % 4).map_err(|_| Stop::Unsure)?;
+                    format!("indexed {}", items.get(at).ok_or(Stop::Unsure)?)
+                }
+                OrderStep::Arguments => {
+                    let first = tally.count;
+                    let second = tally.grow(n)?;
+                    format!("arguments {first} {second} {}", tally.count)
+                }
+                OrderStep::PlusBefore => {
+                    let count = tally.count;
+                    format!("plus before {}", count.checked_add(tally.grow(n)?).ok_or(Stop::Unsure)?)
+                }
+                OrderStep::PlusAfter => {
+                    let grown = tally.grow(n)?;
+                    format!("plus after {}", grown.checked_add(tally.count).ok_or(Stop::Unsure)?)
+                }
+                OrderStep::Listed | OrderStep::Text => {
+                    let first = tally.count;
+                    let second = tally.grow(n)?;
+                    let third = tally.count;
+                    if step == OrderStep::Listed {
+                        format!("listed {}", ints(&[first, second, third]))
+                    } else {
+                        format!("text {first} {second} {third}")
+                    }
+                }
+                OrderStep::AtLeast => {
+                    let count = tally.count;
+                    let grown = tally.grow(n)?;
+                    format!("at least {}", if count >= grown { "True" } else { "False" })
+                }
+                OrderStep::FieldWrite => {
+                    tally.count = tally.grow(n)?.checked_add(n).ok_or(Stop::Unsure)?;
+                    format!("field write {}", tally.count)
+                }
+                OrderStep::IndexWrite => {
+                    let at = usize::try_from(tally.grow(n)? % 4).map_err(|_| Stop::Unsure)?;
+                    let put = tally.grow(n)?;
+                    *tally.items.get_mut(at).ok_or(Stop::Unsure)? = put;
+                    format!("index write {}", ints(&tally.items))
+                }
+                OrderStep::Added => {
+                    let count = tally.count;
+                    tally.count = count.checked_add(tally.grow(n)?).ok_or(Stop::Unsure)?;
+                    format!("added {}", tally.count)
+                }
+            };
+            let _ = writeln!(self.out, "{line}");
+        }
+        let _ = writeln!(
+            self.out,
+            "tally {} {} {{\"a\": {}}}\npair {} {} {right}",
+            ints(&tally.items),
+            tally.count,
+            tally.named,
+            ints(&left.items),
+            left.count
+        );
         Ok(())
     }
 

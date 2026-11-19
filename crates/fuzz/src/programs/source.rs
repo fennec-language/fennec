@@ -13,6 +13,8 @@ use super::ast::{
     Between, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, Looping, REF_TEXTS,
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
+use super::ast::{InOrder, OrderStep};
+use super::ast::{NarrowWay, Narrowing};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -869,6 +871,163 @@ fn shelved_written(shelving: &Shelving) -> String {
 }
 
 /// `listened{id}`, the function a `Listened` calls, after the functions it uses.
+/// `narrowed{id}`, the function a `Narrowed` calls, after its two structs and the functions it
+/// uses: `shown{id}`, which prints either member, and for some ways `made{id}`, which gives back
+/// a member the checker can't narrow by what it was given, `Holder{id}`, `left{id}`,
+/// `grow_crate{id}` and `grow_heap{id}`, or `swapped{id}`.
+fn narrowed_written(narrowing: &Narrowing) -> String {
+    let Narrowing { id, way, crate_first, n } = *narrowing;
+    let union = format!("Crate{id} | Heap{id}");
+    let (start, other) = if crate_first {
+        (format!("Crate{id}(items=[{n}])"), format!("Heap{id}(held={})", n + 1))
+    } else {
+        (format!("Heap{id}(held={n})"), format!("Crate{id}(items=[{}])", n + 1))
+    };
+    let member = if crate_first { "Crate" } else { "Heap" };
+    let made = format!("made{id}(crate={}, n={n})", if crate_first { "True" } else { "False" });
+    let mut out = format!(
+        "struct Crate{id}:\n    items: list[int]\n\n    def grow(ref self) -> int:\n        \
+         self.items.append(len(self.items) + 7)\n        return len(self.items)\n\n\
+         struct Heap{id}:\n    held: int\n\n    def grow(ref self) -> int:\n        \
+         self.held += 3\n        return self.held\n\n\
+         def shown{id}(shape: {union}) -> str:\n    match shape:\n        \
+         case Crate{id}(items=_):\n            return f\"crate {{shape.items}}\"\n        \
+         case Heap{id}(held=_):\n            return f\"heap {{shape.held}}\"\n\n"
+    );
+    if matches!(
+        way,
+        NarrowWay::Is
+            | NarrowWay::Left
+            | NarrowWay::Whole
+            | NarrowWay::Matched
+            | NarrowWay::RefMember
+            | NarrowWay::RefUnion
+    ) {
+        let _ = write!(
+            out,
+            "def made{id}(crate: bool, n: int) -> {union}:\n    if crate:\n        \
+             return Crate{id}(items=[n])\n    return Heap{id}(held=n)\n\n"
+        );
+    }
+    match way {
+        NarrowWay::Field => {
+            let _ = write!(out, "struct Holder{id}:\n    shape: {union}\n\n");
+        }
+        NarrowWay::Left => {
+            let _ = write!(
+                out,
+                "def left{id}(ref shape: {union}) -> int:\n    if shape is Heap{id}:\n        \
+                 return shape.grow()\n    return shape.grow() + 100\n\n"
+            );
+        }
+        NarrowWay::RefMember => {
+            let _ = write!(
+                out,
+                "def grow_crate{id}(ref crate: Crate{id}) -> int:\n    return crate.grow()\n\n\
+                 def grow_heap{id}(ref heap: Heap{id}) -> int:\n    return heap.grow()\n\n"
+            );
+        }
+        NarrowWay::RefUnion | NarrowWay::RefUnionGrown => {
+            let _ = write!(
+                out,
+                "def swapped{id}(ref shape: {union}, to_heap: bool) -> int:\n    grown = shape.grow()\n    \
+                 if to_heap:\n        shape = Heap{id}(held=grown)\n    else:\n        \
+                 shape = Crate{id}(items=[grown])\n    return grown\n\n"
+            );
+        }
+        _ => {}
+    }
+    let to_heap = if crate_first { "True" } else { "False" };
+    let lines: Vec<String> = match way {
+        NarrowWay::Given => vec![
+            format!("mut shape: {union} = {start}"),
+            "stdout.print(shape.grow())".to_owned(),
+            "stdout.print(shape.grow())".to_owned(),
+            format!("stdout.print(shown{id}(shape))"),
+            format!("shape = {other}"),
+            "stdout.print(shape.grow())".to_owned(),
+            format!("stdout.print(shown{id}(shape))"),
+        ],
+        NarrowWay::Is => vec![
+            format!("mut shape = {made}"),
+            format!("if shape is Crate{id}:"),
+            "    stdout.print(shape.grow(), shape.items)".to_owned(),
+            format!("if shape is Heap{id}:"),
+            "    stdout.print(shape.grow(), shape.held)".to_owned(),
+            format!("stdout.print(shown{id}(shape))"),
+        ],
+        NarrowWay::Left => vec![
+            format!("mut shape = {made}"),
+            format!("stdout.print(left{id}(ref shape))"),
+            format!("stdout.print(shown{id}(shape))"),
+        ],
+        NarrowWay::Whole => vec![
+            format!("mut shape = {made}"),
+            "stdout.print(shape.grow())".to_owned(),
+            "stdout.print(shape.grow())".to_owned(),
+            format!("stdout.print(shown{id}(shape))"),
+        ],
+        NarrowWay::Matched => vec![
+            format!("mut shape = {made}"),
+            "match shape:".to_owned(),
+            format!("    case Crate{id}(items=_):"),
+            "        stdout.print(shape.grow())".to_owned(),
+            format!("    case Heap{id}(held=_):"),
+            "        stdout.print(shape.grow())".to_owned(),
+            format!("stdout.print(shown{id}(shape))"),
+        ],
+        NarrowWay::ForRef => vec![
+            format!("mut shapes: list[{union}] = [{start}, {other}]"),
+            "for ref each in shapes:".to_owned(),
+            "    stdout.print(each.grow())".to_owned(),
+            format!("    if each is Crate{id}:"),
+            "        stdout.print(each.grow())".to_owned(),
+            "for each in shapes:".to_owned(),
+            format!("    stdout.print(shown{id}(each))"),
+        ],
+        NarrowWay::Field => vec![
+            format!("mut holder = Holder{id}(shape={start})"),
+            "stdout.print(holder.shape.grow())".to_owned(),
+            "stdout.print(holder.shape.grow())".to_owned(),
+            format!("stdout.print(shown{id}(holder.shape))"),
+        ],
+        NarrowWay::RefMember => {
+            let grow = if crate_first { "grow_crate" } else { "grow_heap" };
+            vec![
+                format!("mut shape = {made}"),
+                format!("if shape is Crate{id}:"),
+                format!("    stdout.print(grow_crate{id}(ref shape))"),
+                format!("if shape is Heap{id}:"),
+                format!("    stdout.print(grow_heap{id}(ref shape))"),
+                format!("stdout.print(shown{id}(shape))"),
+                format!("mut given: {union} = {start}"),
+                format!("stdout.print({grow}{id}(ref given))"),
+                format!("stdout.print(shown{id}(given))"),
+            ]
+        }
+        NarrowWay::RefUnion => vec![
+            format!("mut shape = {made}"),
+            format!("if shape is {member}{id}:"),
+            format!("    stdout.print(swapped{id}(ref shape, to_heap={to_heap}))"),
+            format!("stdout.print(shown{id}(shape))"),
+            "stdout.print(shape.grow())".to_owned(),
+            format!("stdout.print(shown{id}(shape))"),
+        ],
+        NarrowWay::RefUnionGrown => vec![
+            format!("mut shape: {union} = {start}"),
+            format!("stdout.print(swapped{id}(ref shape, to_heap={to_heap}))"),
+            "stdout.print(shape.grow())".to_owned(),
+            format!("stdout.print(shown{id}(shape))"),
+        ],
+    };
+    let _ = writeln!(out, "def narrowed{id}(stdout: Stdout):");
+    for line in lines {
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push('\n');
+    out
+}
+
 /// The value a `RefCased` starts from, of type `ty` (`Named` or `Held`), as `REF_STARTS` counts
 /// them.
 fn ref_start_written(start: usize, ty: &str) -> String {
@@ -1804,6 +1963,63 @@ fn plus_written(field: Field, plus: bool, n: i64) -> String {
     }
 }
 
+/// `ordered{id}`, the function an `Ordered` calls, after its structs and `three{id}`: a line for
+/// each step, then what `tally` and `pair` hold at the end.
+fn ordered_written(in_order: &InOrder) -> String {
+    let InOrder { id, base, steps } = in_order;
+    let mut out = format!(
+        "struct Tally{id}:\n    items: list[int]\n    count: int\n    names: dict[str, int]\n\n    def grow(ref \
+         self, by: int) -> int:\n        self.items.append(self.count + by)\n        self.count += 1\n        return \
+         self.count\n\n    def key(ref self, by: int) -> str:\n        self.names[\"a\"] = self.names[\"a\"] + \
+         by\n        return \"a\"\n\n    def show(self, given: int) -> str:\n        return f\"{{self.items}} \
+         {{self.count}} {{given}}\"\n\nstruct Pair{id}:\n    left: Tally{id}\n    right: int\n\n    def \
+         shown(self, given: int) -> str:\n        return f\"{{self.left.count}} {{self.right}} {{given}}\"\n\ndef \
+         three{id}(first: int, second: int, third: int) -> str:\n    return f\"{{first}} {{second}} \
+         {{third}}\"\n\ndef ordered{id}(stdout: Stdout):\n    mut tally = Tally{id}(items=[{base}, {}, {}, {}], \
+         count={base}, names={{\"a\": {base}}})\n    mut pair = Pair{id}(left=tally, right={base})\n",
+        base + 1,
+        base + 2,
+        base + 3
+    );
+    for (step, n) in steps {
+        let grow = format!("tally.grow({n})");
+        let line = match step {
+            OrderStep::Receiver => format!("stdout.print(\"receiver\", tally.show({grow}))"),
+            OrderStep::FieldReceiver => {
+                format!("stdout.print(\"field receiver\", pair.shown(pair.left.grow({n})))")
+            }
+            OrderStep::Counted => format!("stdout.print(\"counted\", tally.items.count({grow}))"),
+            OrderStep::Got => format!("stdout.print(\"got\", tally.names.get(tally.key({n})))"),
+            OrderStep::Indexed => format!("stdout.print(\"indexed\", tally.items[{grow} % 4])"),
+            OrderStep::Keyed => format!("stdout.print(\"keyed\", tally.names[tally.key({n})])"),
+            OrderStep::Arguments => format!(
+                "stdout.print(\"arguments\", three{id}(tally.count, second={grow}, third=tally.count))"
+            ),
+            OrderStep::PlusBefore => format!("stdout.print(\"plus before\", tally.count + {grow})"),
+            OrderStep::PlusAfter => format!("stdout.print(\"plus after\", {grow} + tally.count)"),
+            OrderStep::Listed => format!("stdout.print(\"listed\", [tally.count, {grow}, tally.count])"),
+            OrderStep::Text => {
+                format!("stdout.print(\"text\", f\"{{tally.count}} {{{grow}}} {{tally.count}}\")")
+            }
+            OrderStep::AtLeast => format!("stdout.print(\"at least\", tally.count >= {grow})"),
+            OrderStep::FieldWrite => {
+                format!("tally.count = {grow} + {n}\n    stdout.print(\"field write\", tally.count)")
+            }
+            OrderStep::IndexWrite => {
+                format!("tally.items[{grow} % 4] = {grow}\n    stdout.print(\"index write\", tally.items)")
+            }
+            OrderStep::Added => format!("tally.count += {grow}\n    stdout.print(\"added\", tally.count)"),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    let _ = writeln!(
+        out,
+        "    stdout.print(\"tally\", tally.items, tally.count, tally.names)\n    stdout.print(\"pair\", \
+         pair.left.items, pair.left.count, pair.right)\n    return\n"
+    );
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -2508,6 +2724,10 @@ impl Writer {
                 let _ = write!(self.helpers, "{}", captured_written(capturing));
                 self.line(indent, &format!("captured{}(stdout)", capturing.id));
             }
+            Stmt::Narrowed(narrowing) => {
+                let _ = write!(self.helpers, "{}", narrowed_written(narrowing));
+                self.line(indent, &format!("narrowed{}(stdout)", narrowing.id));
+            }
             Stmt::Listened(listening) => {
                 let _ = write!(self.helpers, "{}", listened_written(listening));
                 self.stopped(
@@ -2546,6 +2766,10 @@ impl Writer {
             Stmt::Turned(turning) => {
                 let _ = write!(self.helpers, "{}", turned_written(turning));
                 self.line(indent, &format!("turned{}(stdout)", turning.id));
+            }
+            Stmt::Ordered(in_order) => {
+                let _ = write!(self.helpers, "{}", ordered_written(in_order));
+                self.line(indent, &format!("ordered{}(stdout)", in_order.id));
             }
             Stmt::Left { id, depth, together, rounds, at, how } => {
                 let _ = write!(self.helpers, "{}", left_written(*id, *depth, *together, *rounds, *at, *how));

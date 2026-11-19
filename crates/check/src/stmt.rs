@@ -47,6 +47,7 @@ impl FnCx<'_> {
             if matches!(stmt.kind, StmtKind::Expr(_)) && !(last && used) && !this.exits {
                 match self.checker.settled(&this.ty) {
                     Type::Result(..) => self.error(unhandled(stmt.span)),
+                    _ if is_text_alone(stmt) => self.error(text_alone(stmt.span)),
                     ty if gives_something(&ty) => self.error(unused(&ty, stmt.span)),
                     _ => {}
                 }
@@ -184,6 +185,7 @@ impl FnCx<'_> {
         };
         if let Some(value) = value {
             self.passes_up_unmarked(value, &ty);
+            self.lent_not_given(value, &ty, "gives back");
         }
         // A function that says `fails E` returns nothing without an arrow, or fails.
         let checked = self.declared.clone().or_else(|| self.fails.as_ref().map(|_| Type::Unit));
@@ -212,6 +214,7 @@ impl FnCx<'_> {
             "work out the items under the lock, then yield them after the block",
         );
         let ty = self.expr(value);
+        self.lent_not_given(value, &ty, "yields");
         // `-> Iterator[T]` says what each item it yields is.
         if let Some(Type::Iterator(item, _) | Type::List(item)) = self.declared.clone()
             && !self.checker.fits(&item, &ty)
@@ -432,6 +435,7 @@ impl FnCx<'_> {
             self.set_apart();
         }
         self.bind_names(names, &item, is_mut, (iter.span, span));
+        self.lent_loop(names, iter);
         self.stmts(body, false);
         self.pop();
         let after = self.snapshot();
@@ -782,6 +786,17 @@ fn names_read(expr: &Expr, reads: &mut Vec<String>) {
 /// Whether a value is something, so a statement that gives it and drops it loses it.
 fn gives_something(ty: &Type) -> bool {
     !matches!(ty, Type::Unit | Type::Unknown | Type::Var(_) | Type::None)
+}
+
+/// Whether a statement is only text, as Python's docstring is.
+fn is_text_alone(stmt: &Stmt) -> bool {
+    matches!(&stmt.kind, StmtKind::Expr(expr) if matches!(expr.kind, ExprKind::Str(_) | ExprKind::FStr(_)))
+}
+
+/// Text on a line of its own, as a docstring: it does nothing, and a doc comment is `##`.
+fn text_alone(span: Span) -> Diagnostic {
+    Diagnostic::new("a string on its own line does nothing", span)
+        .with_help("a doc comment is `##` above what it's about, as `## Doubles a number.` above the `def`")
 }
 
 /// A statement's value, thrown away without saying so. Throwing it away could hide a mistake,

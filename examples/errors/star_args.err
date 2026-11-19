@@ -1,0 +1,7 @@
+error: Fennec doesn't have `*numbers`
+ --> examples/errors/star_args.fen:1:11
+  |
+1 | def total(*numbers: int) -> int:
+  |           ^^^^^^^^
+  |
+  = help: take a list, as `numbers: list[int]`, and pass one, as `[1, 2, 3]`

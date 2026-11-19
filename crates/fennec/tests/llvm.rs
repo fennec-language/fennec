@@ -5711,6 +5711,39 @@ def main(stdout: Stdout):
     stdout.print(h)
 "#;
 
+/// A list a loop right after fills is made with room for every turn first: written
+/// `mut xs = list[int]()`, several filled in one loop, and filled past a test, as a walk through
+/// a `Table`'s live slots with some removed, or a comprehension with a filter. A list a loop inside
+/// the loop fills keeps growing as it goes. It prints what the reference evaluator prints, with
+/// nothing left, built either way and built checking proofs, which checks each append a room
+/// check was left out of stays inside the room.
+#[test]
+fn a_list_a_loop_fills_is_made_with_room_for_every_turn() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/lists_sized_by_their_loop.fen");
+    let wanted = include_str!("fixtures/lists_sized_by_their_loop.out");
+    prints_in_both_builds("lists_sized_by_their_loop", source, wanted)?;
+    assert!(counts_of("lists_sized_by_their_loop_counts", source)?.ends_with(" live 0"));
+    let dir = folder("lists_sized_by_their_loop_proofs")?;
+    let (program, executable) = (dir.join("sized.fen"), dir.join("sized"));
+    std::fs::write(&program, source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_CHECK_PROOFS", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
 /// Lists and `Table`s a loop changes are made alone once, on the way into the loop, when nothing in
 /// it can give them another owner, and not checked again inside it. Shared before the loop, copied
 /// in it, given to a closure in it, written anew in it, changed by `Id`, and held by a task in it:
@@ -7976,6 +8009,8 @@ def main(stdout: Stdout):
 /// holds, and a dict's set writes a value held in place into its entry's own block: what each
 /// prints, a list shared before it's turned round keeping its order, and the blocks made,
 /// one copy for that shared list and none for a sort, are as pinned, with nothing left held.
+/// The comprehension whose item is `… if … else None` is made with room for every turn, since
+/// every turn appends past the two ways joining.
 #[test]
 fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -> std::io::Result<()> {
     if !ready() {
@@ -7984,7 +8019,7 @@ fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -
     prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
     assert_eq!(
         counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
-        "copies 1 copied_bytes 672 largest_copy 672 allocations 111 allocated_bytes 12032 live 0"
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 110 allocated_bytes 11720 live 0"
     );
     Ok(())
 }
@@ -15710,6 +15745,131 @@ def main(stdout: Stdout):
         stdout.print("kept failed", why)
         return
     stdout.print("kept worked")
+"#;
+
+/// A launched task whose free closes a generator let go partway, whose cleanup then fails, stops
+/// at that line as `main`'s thread does, saying so: nothing after it runs, and its `with launch`
+/// block ends with `Crashed`. It once only held the stop and ran on to its next checked call, so
+/// the line after the call that let go of the generator ran (#2127).
+#[test]
+fn a_task_whose_free_closes_a_generator_that_fails_stops_there() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("task_generator_failing")?;
+    let program = dir.join("task.fen");
+    std::fs::write(&program, TASK_GENERATOR_FAILING)?;
+    let executable = dir.join("task");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(out, "after kept\nclosing kept\nthe task crashed\n", "{err}");
+    assert!(
+        err.contains(
+            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"kept\")"
+        ),
+        "{err}"
+    );
+    Ok(())
+}
+
+const TASK_GENERATOR_FAILING: &str = r#"from std.concurrent import Crashed
+
+error Shut:
+    Stuck(name: str)
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail .Stuck(name=name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def kept(stdout: Stdout) fails Shut:
+    walk = held("kept", stdout)?
+    for n in walk:
+        break
+    stdout.print("after kept")
+
+def in_a_task(stdout: Stdout):
+    kept(stdout) except why:
+        stdout.print("kept failed", why)
+        return
+    stdout.print("ran on past the stop")
+
+def launched(stdout: Stdout) fails Crashed:
+    with launch(() => in_a_task(stdout)):
+        pass
+
+def main(stdout: Stdout):
+    launched(stdout) except Crashed():
+        stdout.print("the task crashed")
+        return
+    stdout.print("the task ended")
+"#;
+
+/// A list cleared in the runtime only queues the generators it lets go of: one let go partway,
+/// whose cleanup crashes, is closed at the line that cleared it, which stops there, rather than
+/// at whatever free came next (#2127).
+#[test]
+fn a_generator_let_go_by_clearing_its_list_is_closed_at_that_line() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("cleared_generators")?;
+    let program = dir.join("cleared.fen");
+    std::fs::write(&program, CLEARED_GENERATORS)?;
+    let executable = dir.join("cleared");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(code, Some(1), "{err}");
+    assert_eq!(out, "closing listed\n", "{err}");
+    assert!(err.contains("index 6 is out of range for length 1"), "{err}");
+    Ok(())
+}
+
+const CLEARED_GENERATORS: &str = r#"struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    stuck = [0]
+    stdout.print(stuck[len(name)])
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def advanced(stdout: Stdout) -> Iterator[int]:
+    walk = held("listed", stdout)
+    for n in walk:
+        break
+    return walk
+
+def listed(stdout: Stdout):
+    mut walks = [advanced(stdout)]
+    walks.clear()
+    stdout.print("ran on past the stop", len(walks))
+
+def main(stdout: Stdout):
+    listed(stdout)
+    stdout.print("listed ended")
 "#;
 
 /// A generator that can fail, taken out of its call by `?` for a loop, goes when the loop does,

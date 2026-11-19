@@ -209,7 +209,7 @@ impl Emit<'_, '_, '_> {
                 self.store_field(kind, &fields, at, "");
                 // What it holds outlives the block it came in.
                 self.retain_inline(kind, at);
-                self.release(&value);
+                self.release_block(&value, kind);
                 return Ok(());
             }
             // An optional string: all zeros for `None`, otherwise as a string is held.

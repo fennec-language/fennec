@@ -133,11 +133,13 @@ fn kept_for(huge: &[&Unit]) -> Result<(String, Vec<String>), String> {
 /// for a build to say so. Only a module of more than `SMALLEST_HUGE` bytes is looked through.
 #[must_use]
 pub fn huge_functions(units: &[Unit]) -> Vec<String> {
-    units
-        .iter()
-        .filter(|unit| unit.text.len() > SMALLEST_HUGE && huge(&unit.text))
-        .map(|unit| unit.function.clone())
-        .collect()
+    units.iter().filter(|unit| unit.huge).map(|unit| unit.function.clone()).collect()
+}
+
+/// Whether a module defines a function too big to optimize. Only a module of more than
+/// `SMALLEST_HUGE` bytes is looked through.
+pub(crate) fn is_huge(text: &str) -> bool {
+    text.len() > SMALLEST_HUGE && huge(text)
 }
 
 /// The fewest bytes a module of a huge function has: one has thousands of allocas and of blocks,
@@ -462,7 +464,7 @@ pub fn compile_whole(
     std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let mut inputs = Vec::with_capacity(units.len() + 2);
     let (apart, together): (Numbered<'_>, Numbered<'_>) =
-        units.iter().enumerate().partition(|(_, unit)| huge(&unit.text));
+        units.iter().enumerate().partition(|(_, unit)| unit.huge);
     let kept = work.join("kept.txt");
     let mut keep = vec!["main".to_owned()];
     if !apart.is_empty() {
@@ -628,15 +630,37 @@ fn whole_object(
     std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
 }
 
+/// What compiling says when a unit used again without writing it has lost its object from the
+/// cache: it has no text to compile again from, so the build is made again writing every unit.
+pub const USED_AGAIN_OBJECT_GONE: &str =
+    "a unit used again lost its compiled object, and has no text to compile";
+
 /// One function's module compiled on its own, with no cache: for a dev build whose kept object
 /// for it went from the cache before the link.
 ///
 /// # Errors
-/// When LLVM's tools fail on it.
+/// When LLVM's tools fail on it, and [`USED_AGAIN_OBJECT_GONE`] for a unit used again, which has
+/// no text.
 pub fn compile_again(tools: &Tools, unit: &Unit, work: &Path) -> Result<Vec<u8>, String> {
+    if unit.text.is_empty() {
+        return Err(USED_AGAIN_OBJECT_GONE.to_owned());
+    }
     std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
-    let way = if huge(&unit.text) { Way::Quickly } else { Way::Optimized };
+    let way = if unit.huge { Way::Quickly } else { Way::Optimized };
     one(tools, &unit.text, work, "again", way)
+}
+
+/// Whether the cache holds the object a unit with this text's hash compiles to, as `tools` and
+/// this build's passes make it: a build uses a unit again without writing it only then.
+///
+/// # Errors
+/// When `llc` can't be run to ask its version.
+pub fn has_object(cache: &Cache, tools: &Tools) -> Result<impl Fn(&fennec_blake3::Hash) -> bool, String> {
+    let (version, pipeline) = (tools.version()?, pipeline());
+    let cache = cache.clone();
+    Ok(move |text: &fennec_blake3::Hash| {
+        cache.kept_object(KIND, &object_key(&version, &pipeline, text)).is_some()
+    })
 }
 
 /// What names a function's compiled object in the cache: the hash of its module's text, with the
@@ -645,6 +669,9 @@ fn object_key(version: &str, pipeline: &str, text: &fennec_blake3::Hash) -> Stri
     fennec_blake3::hash(format!("{version}\n{pipeline}\n{}", text.to_hex()).as_bytes()).to_hex()
 }
 
+/// What a build asked to stop gives instead of its objects.
+pub const STOPPED: &str = "the build was stopped";
+
 /// Compiles every function's module, using the cache's copy of any it already has, and `entry`.
 /// The cache comes with the hash of each unit's text, in order, which the build has already
 /// worked out for its root hash.
@@ -652,7 +679,7 @@ pub fn compile(
     tools: &Tools,
     units: &[Unit],
     entry: &str,
-    cache: Option<(&Cache, &[fennec_blake3::Hash])>,
+    cache: Option<&Cache>,
     work: &Path,
 ) -> Result<Built, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
@@ -668,6 +695,10 @@ pub fn compile(
         for _ in 0..threads.saturating_sub(1).max(1) {
             scope.spawn(|| {
                 loop {
+                    // A build asked to stop compiles nothing more (`fennec_build::cancel`).
+                    if fennec_build::cancelled() {
+                        return;
+                    }
                     let at = {
                         let Ok(mut next) = next.lock() else { return };
                         let at = *next;
@@ -675,19 +706,19 @@ pub fn compile(
                         at
                     };
                     let Some(unit) = units.get(at) else { return };
-                    // A unit without a hash isn't looked for in the cache, or kept there.
-                    let keyed = cache.and_then(|(cache, hashes)| {
-                        Some((cache, object_key(&version, &pipeline, hashes.get(at)?)))
-                    });
+                    let keyed = cache.map(|cache| (cache, object_key(&version, &pipeline, &unit.hash)));
                     // The cache's own file, which the linker reads where it lies.
                     let cached = keyed
                         .as_ref()
                         .and_then(|(cache, key)| cache.kept_object(KIND, key).map(Object::Kept));
                     let result = match cached {
                         Some(object) => Ok((object, false)),
+                        // A unit used again without writing it has no text to compile: it was
+                        // used because its object was there, so cleanup took it since.
+                        None if unit.text.is_empty() => Err(USED_AGAIN_OBJECT_GONE.to_owned()),
                         None => {
                             // Which way is the text's own doing, so the key needn't say.
-                            let way = if huge(&unit.text) { Way::Quickly } else { Way::Optimized };
+                            let way = if unit.huge { Way::Quickly } else { Way::Optimized };
                             one(tools, &unit.text, work, &format!("f{at}"), way)
                         }
                         .map(|bytes| match &keyed {
@@ -713,6 +744,9 @@ pub fn compile(
     });
     let mut results =
         results.into_inner().map_err(|_| "a compiling thread stopped unexpectedly".to_owned())?;
+    if fennec_build::cancelled() {
+        return Err(STOPPED.to_owned());
+    }
     results.sort_by_key(|(at, _)| *at);
     let mut built = Built::default();
     for (_, result) in results {

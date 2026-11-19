@@ -71,7 +71,9 @@ impl Parser {
                 self.shared_declaration()?
             }
             Tok::Kw(Kw::Ref) => self.ref_declaration()?,
-            Tok::Name(word) if self.is_python_only(&word) => return Err(python_only(&word, start)),
+            Tok::Name(word) if self.is_python_only(&word) => {
+                return Err(python_only(&word, self.name_after().as_deref(), start));
+            }
             _ => self.expr_or_assign()?,
         };
         let span = start.to(self.prev_span());
@@ -79,14 +81,27 @@ impl Parser {
         Ok(Stmt { kind, span })
     }
 
-    /// `raise x`, `try:` and `except x:` at the start of a statement: Python habits Fennec
-    /// catches with a pointer to what to write instead.
+    /// `raise x`, `try:` and `except x:` at the start of a statement, and `global x`,
+    /// `nonlocal x`, `del x`, `class X` and `async def`: Python habits Fennec catches with a
+    /// pointer to what to write instead.
     fn is_python_only(&self, word: &str) -> bool {
-        matches!(word, "raise" | "try" | "except" | "finally")
-            && !matches!(
+        match word {
+            "raise" | "try" | "except" | "finally" => !matches!(
                 self.peek_at(1),
                 Tok::P(Punct::Assign | Punct::Dot | Punct::LParen | Punct::LBracket)
-            )
+            ),
+            "global" | "nonlocal" | "del" | "class" => matches!(self.peek_at(1), Tok::Name(_)),
+            "async" => matches!(self.peek_at(1), Tok::Kw(Kw::Def | Kw::For | Kw::With)),
+            _ => false,
+        }
+    }
+
+    /// The name after a Python-only word, as `Point` in `class Point:`.
+    fn name_after(&self) -> Option<String> {
+        match self.peek_at(1) {
+            Tok::Name(name) => Some(name.clone()),
+            _ => None,
+        }
     }
 
     fn keyword_stmt(&mut self, kind: StmtKind) -> StmtKind {
@@ -100,6 +115,12 @@ impl Parser {
     fn assert_stmt(&mut self) -> Result<StmtKind, Diagnostic> {
         self.advance();
         let value = self.expr()?;
+        // Python's `assert condition, "message"`.
+        if self.at_p(Punct::Comma) {
+            return Err(Diagnostic::new("an `assert` takes no message after a `,`", self.span()).with_help(
+                "take out the `,` and the message: a failed `assert` shows its line and the values in it, and a `#` comment above it can say why",
+            ));
+        }
         if !self.at_fails() {
             return Ok(StmtKind::Assert(value));
         }
@@ -174,6 +195,14 @@ impl Parser {
             return Err(Diagnostic::new("this can't be assigned to", target.span));
         }
         let value = if op.is_none() { self.assigned()? } else { self.expr()? };
+        // Python's `a = b = 0`, which gives two names one value.
+        if op.is_none()
+            && self.at_p(Punct::Assign)
+            && let (ExprKind::Name(first), ExprKind::Name(second)) = (&target.kind, &value.kind)
+        {
+            return Err(Diagnostic::new("Fennec gives one name its value at a time", self.span())
+                .with_help(format!("give each its own line: `{first} = ...`, then `{second} = ...`")));
+        }
         Ok(StmtKind::Assign { target, op, value, declare_mut: false, ty: None })
     }
 
@@ -400,15 +429,25 @@ impl Parser {
     }
 }
 
-fn python_only(word: &str, span: Span) -> Diagnostic {
+fn python_only(word: &str, name: Option<&str>, span: Span) -> Diagnostic {
+    let name = name.unwrap_or("Point");
     let help = match word {
-        "raise" => "Fennec has no exceptions: write `fail SomeError(...)`, which returns the error",
+        "raise" => "Fennec has no exceptions: write `fail SomeError(...)`, which returns the error".to_owned(),
         "try" | "finally" => {
-            "a failure is handled at the call: pass it up with `?`, or put `except` after the call, as `x = f() except why:`"
+            "a failure is handled at the call: pass it up with `?`, or put `except` after the call, as `x = f() except why:`".to_owned()
         }
-        _ => {
-            "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"
-        }
+        "global" => format!(
+            "a name at the top of a file is a constant: pass what changes in as a `ref` parameter, as `def bump(ref {name}: int)`, called as `bump(ref {name})`"
+        ),
+        "nonlocal" => format!(
+            "a function inside another can't change the names around it: give back the new value, and change `{name}` outside it"
+        ),
+        "del" => "take an item out of a list with `_ = items.pop(at)`, or a key out of a dict with `_ = table.remove(key)`".to_owned(),
+        "class" => format!(
+            "write `struct {name}:`, with its fields under it: it makes its own constructor from them, as `{name}(x=1)`"
+        ),
+        "async" => "write a plain `def`: a call waits where it's written, and `launch` runs work beside it".to_owned(),
+        _ => "Fennec has no exceptions: pass a failure up with `?`, or handle it with `except` after the call".to_owned(),
     };
     Diagnostic::new(format!("Fennec doesn't have `{word}`"), span).with_help(help)
 }

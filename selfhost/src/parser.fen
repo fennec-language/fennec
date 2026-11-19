@@ -22,6 +22,8 @@ def no_double_underscores(tokens: list[Token]) fails Diagnostic:
     for token in tokens:
         match token.tok:
             case .Name(name):
+                if is_python_dunder(name):
+                    fail python_dunder(name, token.span)
                 if "__" in name:
                     mut one = name
                     while "__" in one:
@@ -37,6 +39,79 @@ def no_double_underscores(tokens: list[Token]) fails Diagnostic:
                 in_parts(parts)?
             case _:
                 pass
+
+## Python's `*name` or `**name` parameter, at `span`: a list, or a parameter with a default for
+## each option.
+def python_star_param(star: str, name: str, span: Span) -> Diagnostic:
+    if star == "**":
+        return Diagnostic(
+            message=f"Fennec doesn't have `**{name}`",
+            span=span,
+            help="give each option a parameter with a default, as `width = 80`: a call names the ones it sets, as `configure(width=3)`",
+        )
+    return Diagnostic(
+        message=f"Fennec doesn't have `*{name}`",
+        span=span,
+        help=f"take a list, as `{name}: list[int]`, and pass one, as `[1, 2, 3]`",
+    )
+
+## What to write instead of a Python decorator that Fennec has no annotation for, or `None` for
+## any other name.
+def python_decorator(name: str) -> str?:
+    if name == "dataclass":
+        return "a `struct` is one already, and makes its own constructor from its fields: take out `@dataclass`"
+    if name == "staticmethod" or name == "classmethod":
+        return "a `def` in a type with no `self` is called on the type, as `Point.origin()`: take out the decorator"
+    if name == "property":
+        return "a field is read as `point.x`, and a method that works something out is called as `point.area()`: take out `@property`"
+    if name == "abstractmethod":
+        return "an `interface` lists what a type must have, as `def area(self) -> float` under `interface Shape:`"
+    return None
+
+## Whether `name` is one of Python's special names, as `__init__` or `__name__`: two underscores,
+## a word, and two more.
+def is_python_dunder(name: str) -> bool:
+    if len(name) <= 4 or not name.startswith("__") or not name.endswith("__"):
+        return False
+    for character in name[2:len(name) - 2]:
+        if character not in "abcdefghijklmnopqrstuvwxyz0123456789":
+            return False
+    return True
+
+## What a Python special name is written as in Fennec. There's no fix: `_init_`, the name with
+## one underscore, would be wrong.
+def python_dunder(name: str, span: Span) -> Diagnostic:
+    word = name[2:len(name) - 2]
+    mut help = "Python's special names are written as what they stand for in Fennec, as `def str(self, ref out: StrWriter)` or `def +(self, other: T) -> T`"
+    if word == "init":
+        help = "a `struct` makes its own constructor from its fields: take out `__init__`, and give a field a default where it's declared, as `count = 0`"
+    elif word == "str" or word == "repr":
+        help = "write `def str(self, ref out: StrWriter)`, which `str(x)`, f-strings and `print` call, and add its text with `out.write(...)`"
+    elif word == "len":
+        help = "write `def len(self) -> int`, which `len(x)` calls"
+    elif word == "contains":
+        help = "write `def in(self, item: T) -> bool`, which `item in x` calls"
+    elif word == "getitem":
+        help = "write `def [](self, at: int) -> T`, which `x[at]` calls"
+    elif word == "name" or word == "main":
+        help = "Fennec runs `main` by itself: take out the `if __name__ == \"__main__\":` and the call under it"
+    elif word == "del" or word == "enter" or word == "exit":
+        help = "nothing runs when a value goes away: open what needs cleaning up with `with`, from a `def` that gives `-> with T` and `lend`s it"
+    else:
+        operator = dunder_operator(word)
+        if operator is not None:
+            gives = "bool" if operator in ["==", "<"] else "T"
+            help = f"write `def {operator}(self, other: T) -> {gives}`, which `{operator}` calls"
+    return Diagnostic(message=f"Fennec doesn't have `{name}`", span=span, help=help)
+
+## The operator a Python special method's word stands for, as `+` for `add`.
+def dunder_operator(word: str) -> str?:
+    words = ["add", "sub", "mul", "truediv", "floordiv", "mod", "eq", "lt"]
+    operators = ["+", "-", "*", "/", "//", "%", "==", "<"]
+    for at, each in enumerate(words):
+        if each == word:
+            return operators[at]
+    return None
 
 ## What's inside an f-string's or a template's braces, held to the same rule.
 def in_parts(parts: list[FPart]) fails Diagnostic:
@@ -380,6 +455,9 @@ struct Parser:
         while self.at_punct("@"):
             start = self.advance().span
             name = self.name("an annotation's name")?
+            decorator = python_decorator(name)
+            if decorator is not None:
+                fail Diagnostic(message=f"Fennec doesn't have `@{name}`", span=start.to(self.prev_span()), help=decorator)
             mut args = []
             if self.eat_punct("("):
                 args = self.call_args()?
@@ -636,6 +714,13 @@ struct Parser:
 
     def param(ref self) -> Param fails Diagnostic:
         start = self.span()
+        if self.peek() in [.Punct("*"), .Punct("**")]:
+            match self.peek_at(1):
+                case .Name(name):
+                    star = "**" if self.peek() == .Punct("**") else "*"
+                    fail python_star_param(star, name=name, span=start.to(self.tokens[self.pos + 1].span))
+                case _:
+                    pass
         is_mut = self.eat_ref("a parameter")
         name = self.name("a parameter name")?
         if name == "self":

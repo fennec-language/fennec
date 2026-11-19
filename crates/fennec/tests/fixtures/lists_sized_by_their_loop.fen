@@ -1,0 +1,71 @@
+# Lists a loop right after fills are made with room for every turn first, once the loop's count is
+# known: written `mut xs = list[int]()` as well as `xs = []`, several in one loop, and filled past
+# the test a walk through a `Table`'s live slots makes. A loop inside the loop could append more
+# than once a turn, and a filter may append on few turns, so those lists grow as they go. So does
+# a list appended to outside its loop too, after it or in another loop, and a `list[str]` joined
+# with "" is made as the string it's joined into, as it was.
+
+from std.collections import Id, Table
+
+struct Spot:
+    across: int
+    down: int
+    moved: bool
+
+def main(stdout: Stdout):
+    mut spots = Table[Spot]()
+    mut ids = list[Id[Spot]]()
+    for at in range(40):
+        ids.append(spots.add(Spot(across=at * 7 % 23, down=at * 11 % 19, moved=at % 3 == 0)))
+    # Removed items leave slots a walk passes over, so there are more slots than items.
+    for at in range(0, 40, 4):
+        _ = spots.remove(ids[at])
+    mut acrosses = list[int]()
+    mut downs = list[int]()
+    for spot in spots:
+        acrosses.append(spot.across)
+        downs.append(spot.down)
+    stdout.print(len(acrosses), sum(acrosses), len(downs), sum(downs))
+    moved = [spot.across + spot.down for spot in spots if spot.moved]
+    stdout.print(len(moved), moved)
+    evens = [at for at in range(25) if at % 2 == 0]
+    stdout.print(evens)
+    mut pairs = list[int]()
+    for at in range(6):
+        for again in range(at):
+            pairs.append(at * 10 + again)
+    stdout.print(len(pairs), pairs)
+    # Filled again in a loop that runs twice: made afresh each time, with its own room.
+    for turn in range(2):
+        mut seen = list[int]()
+        for spot in spots:
+            seen.append(spot.across + turn)
+        stdout.print(len(seen), seen[0], seen[len(seen) - 1])
+    # Zeros from a count, then one more after the loop.
+    mut counts = list[int]()
+    for _ in range(3):
+        counts.append(0)
+    counts.append(7)
+    stdout.print(counts)
+    # Filled by one loop, then grown well past that loop's room by another.
+    mut grown = list[int]()
+    for at in range(8):
+        grown.append(at)
+    for at in range(1000):
+        grown.append(at)
+    stdout.print(len(grown), grown[7], grown[1007])
+    # Filled, read, then made empty again and filled by a second loop.
+    mut again = list[int]()
+    for at in range(10):
+        again.append(at)
+    stdout.print(len(again))
+    again = []
+    for at in range(4):
+        again.append(at * 3)
+    stdout.print(len(again), again)
+    # Pieces joined with "", kept as the string they're joined into.
+    mut parts = list[str]()
+    for at in range(5):
+        parts.append(f"{at},")
+    stdout.print("".join(parts))
+    return

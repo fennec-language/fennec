@@ -1,0 +1,7 @@
+error: Fennec gives one name its value at a time
+ --> examples/errors/chained_assignment.fen:2:11
+  |
+2 |     a = b = 0
+  |           ^
+  |
+  = help: give each its own line: `a = ...`, then `b = ...`

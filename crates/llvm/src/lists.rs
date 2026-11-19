@@ -7,6 +7,7 @@ use fennec_layout::ListItem;
 use fennec_rt::embed::layout::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM};
 use fennec_syntax::{BinOp, Span};
 
+use crate::analysis::Reserved;
 use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, VALUE_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::uniqueness::{FieldPath, item_step, list_place};
@@ -2435,7 +2436,9 @@ impl Emit<'_, '_, '_> {
             return self.assign(dest, &text);
         }
         // A list a loop right after fills is made once the loop's count is known.
-        if self.known.reservations.get(&block).is_some_and(|(list, _)| *list == dest.0) && items.is_empty() {
+        if items.is_empty()
+            && self.reserved_at(block).iter().any(|one| one.list == dest.0 || one.copied_from == Some(dest.0))
+        {
             return Ok(());
         }
         let kind = self.kind_of(dest)?.clone();
@@ -2498,6 +2501,20 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{list} = phi ptr [ {kept}, %{before} ], [ {made}, %{made_end} ]"));
         self.retain_value(&list, &kind);
         self.assign(dest, &list)
+    }
+
+    /// The lists made at the end of `block` with room for the loop after it. Only those kept as
+    /// lists: a `list[str]` kept as the string it's joined into is made as that string, and so
+    /// is the empty one copied into it, as any such list is.
+    pub(crate) fn reserved_at(&self, block: usize) -> Vec<Reserved> {
+        let is_list = |local: usize| matches!(self.kind_of(LocalId(local)), Ok(Kind::List(_)));
+        self.known.reservations.get(&block).map_or_else(Vec::new, |reserved| {
+            reserved
+                .iter()
+                .filter(|one| is_list(one.list) && one.copied_from.is_none_or(is_list))
+                .cloned()
+                .collect()
+        })
     }
 
     /// Makes an empty list with room for what the loop after this block adds, or, for a loop

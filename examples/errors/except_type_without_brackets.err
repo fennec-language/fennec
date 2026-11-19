@@ -1,0 +1,7 @@
+error: `InvalidValue` after `except` would name any failure
+ --> examples/errors/except_type_without_brackets.fen:3:36
+  |
+3 |     count = int.parse(text) except InvalidValue: 0
+  |                                    ^^^^^^^^^^^^
+  |
+  = help: write `except InvalidValue():` to handle only `InvalidValue`, or a lowercase name to handle any failure

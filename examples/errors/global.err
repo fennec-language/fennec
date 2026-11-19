@@ -1,0 +1,7 @@
+error: Fennec doesn't have `global`
+ --> examples/errors/global.fen:4:5
+  |
+4 |     global count
+  |     ^^^^^^
+  |
+  = help: a name at the top of a file is a constant: pass what changes in as a `ref` parameter, as `def bump(ref count: int)`, called as `bump(ref count)`

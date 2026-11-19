@@ -53,7 +53,9 @@ mod generators;
 mod headers;
 mod holding;
 mod idmaps;
+mod index;
 mod json;
+mod keys;
 mod kinds;
 mod lists;
 mod locks;
@@ -79,14 +81,14 @@ use fennec_layout::{ListItem, Written, generator_definition};
 use fennec_rt::embed::dicts::Word;
 
 pub use build::{
-    Built, Object, Tools, audited, compile, compile_again, compile_whole, huge_functions, output_switches,
-    sanitize_flag,
+    Built, Object, STOPPED, Tools, USED_AGAIN_OBJECT_GONE, audited, compile, compile_again, compile_whole,
+    has_object, huge_functions, output_switches, sanitize_flag,
 };
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use copies_made::{CopyMade, Why as CopyWhy, changed_in_place, copies_made};
 pub use emit::{
-    Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs, strip_facts,
-    trust_native_blocks,
+    Cpu, Reuse, Unit, check_proofs, emit, emit_for, emit_reusing, emit_traced, emit_tracing_costs,
+    strip_facts, trust_native_blocks,
 };
 pub use entry::{Image, entry, tests_entry};
 pub use failure_checks::unchecked_failures;

@@ -1,0 +1,8 @@
+struct Point:
+    x = 0
+
+    def __str__(self) -> str:
+        return f"({self.x})"
+
+def main(stdout: Stdout):
+    stdout.print(Point())

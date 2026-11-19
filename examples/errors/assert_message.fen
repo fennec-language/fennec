@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    count = 3
+    assert count > 0, "count must be positive"
+    stdout.print(count)

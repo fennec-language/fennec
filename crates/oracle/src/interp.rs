@@ -444,6 +444,22 @@ impl Interp {
         Ok(previous)
     }
 
+    /// What letting go of a generator partway came to: a stop with compiled code's words where its
+    /// cleanup failed.
+    pub(crate) fn came_of_letting_go(&mut self, came: Option<stream::LetGo>, span: Span) -> Run<()> {
+        match came {
+            None | Some(stream::LetGo::Ended) => Ok(()),
+            Some(stream::LetGo::Failed(error)) => {
+                let shown = self.display(&error)?;
+                crash(
+                    format!("a generator's cleanup failed as it was let go by its last owner: {shown}"),
+                    span,
+                )
+            }
+            Some(stream::LetGo::Refused(why)) => unsupported(why),
+        }
+    }
+
     pub(crate) fn pop_frame(&mut self, previous: usize) {
         self.frames.pop();
         self.depth = self.depth.saturating_sub(1);
@@ -536,8 +552,9 @@ impl Interp {
         let frame = self.frame_mut()?;
         match frame.vars.iter_mut().rev().find(|(bound, _)| bound == name) {
             Some((_, Binding::Value(held))) => {
-                *held = value;
-                Ok(())
+                let before = std::mem::replace(held, value);
+                let came = stream::letting_go(|| drop(before));
+                self.came_of_letting_go(came, span)
             }
             Some((_, Binding::Ref(place))) => {
                 let place = place.clone();

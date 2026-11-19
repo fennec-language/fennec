@@ -187,7 +187,8 @@ fn a_name_is_only_known_after_it_is_made() {
         stdout.print(early)
         early = 1
     ";
-    assert_eq!(in_main(program), ["`early` doesn't exist @ early"]);
+    // It's read above the line that gives it its value, which the message says.
+    assert_eq!(in_main(program), ["`early` is used before it's given a value @ early"]);
 }
 
 #[test]

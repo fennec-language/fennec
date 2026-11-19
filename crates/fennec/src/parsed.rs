@@ -14,11 +14,15 @@ const PARSES: &str = "parses";
 pub(crate) struct Kept {
     cache: Cache,
     build: &'static str,
+    /// Whether the standard library's parse is read from and kept in the toolchain's store too.
+    /// A test of a home's own cache leaves it alone: the store beside the test's binary outlives
+    /// the test, so a second run would read the first one's.
+    toolchain: bool,
 }
 
 impl Kept {
     pub(crate) fn new(cache: Cache) -> Self {
-        Kept { cache, build: env!("FENNEC_BUILD") }
+        Kept { cache, build: env!("FENNEC_BUILD"), toolchain: true }
     }
 
     /// What a parse is kept as: the text, and the build that parsed it, since another build may
@@ -69,7 +73,8 @@ impl fennec_syntax::KeptPrelude for Kept {
     /// The home's, or the toolchain's, which every home of this build reads (see `toolchain`).
     fn prelude(&self) -> Option<Vec<Module>> {
         let name = self.prelude_name();
-        let bytes = self.cache.read(PRELUDE, &name).or_else(|| crate::toolchain::read(PRELUDE, &name))?;
+        let toolchain = || self.toolchain.then(|| crate::toolchain::read(PRELUDE, &name)).flatten();
+        let bytes = self.cache.read(PRELUDE, &name).or_else(toolchain)?;
         Vec::<Module>::decode(&mut Reader::new(&bytes))
     }
 
@@ -80,7 +85,9 @@ impl fennec_syntax::KeptPrelude for Kept {
         // A cache that can't be written only means parsing the standard library again next time.
         let prelude = self.cache.write(PRELUDE, &name, &bytes);
         fennec_build::kept("keep the prelude's parse", prelude);
-        crate::toolchain::keep(PRELUDE, &name, &bytes);
+        if self.toolchain {
+            crate::toolchain::keep(PRELUDE, &name, &bytes);
+        }
     }
 }
 
@@ -95,7 +102,7 @@ mod tests {
     }
 
     fn kept(dir: &std::path::Path, build: &'static str) -> Kept {
-        Kept { cache: fennec_build::Cache::new(dir), build }
+        Kept { cache: fennec_build::Cache::new(dir), build, toolchain: false }
     }
 
     /// A parse kept at one offset is read back at another as parsing there would give it, and an

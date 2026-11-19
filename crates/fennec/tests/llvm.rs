@@ -12396,6 +12396,61 @@ def main(stdout: Stdout):
     )
 }
 
+/// What a method is called on is read before its arguments, and a closure before its own: an
+/// argument that changes it, like `tally.show(tally.grow())`, leaves the call made on it as it was.
+#[test]
+fn a_call_reads_what_it_is_made_on_before_its_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "receiver_first",
+        r#"struct Box:
+    items: list[int]
+    count: int
+
+    def show(self, given: int) -> str:
+        return f"{self.items} {self.count} {given}"
+
+    def grow(ref self) -> int:
+        self.items.append(9)
+        self.count += 1
+        return self.count
+
+    def again(ref self) -> str:
+        return self.show(self.grow())
+
+struct Pair:
+    left: Box
+    right: int
+
+    def shown(self, given: int) -> str:
+        return f"{self.left.count} {self.right} {given}"
+
+def swap(ref called: (int) -> int) -> int:
+    first = called(0)
+    called = (x) => x * 10
+    return first
+
+def main(stdout: Stdout):
+    mut tally = Box(items=[1], count=0)
+    stdout.print(tally.show(tally.grow()))
+    stdout.print(tally.show(given=tally.grow()))
+    stdout.print(tally.again(), tally.count)
+    stdout.print(tally.show(0) + " " + tally.show(tally.grow()))
+    stdout.print(tally.show(tally.grow()).upper(), tally.count)
+    mut pair = Pair(left=Box(items=[], count=0), right=7)
+    stdout.print(pair.shown(pair.left.grow()))
+    stdout.print(pair.left.show(pair.left.grow()))
+    mut boxes = [Box(items=[], count=0)]
+    stdout.print(boxes[0].show(boxes[0].grow()))
+    mut called: (int) -> int = (x) => x + 1
+    stdout.print(called(swap(ref called)), called(1))
+    return
+"#,
+    )
+}
+
 /// Programs that don't build natively yet, each waiting on named backend work. A listed program
 /// that does build natively fails the tests below, so the list only ever shrinks.
 const NOT_NATIVE_YET: &[&str] = &[];

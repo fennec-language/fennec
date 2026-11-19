@@ -272,7 +272,9 @@ struct Node {
 /// A range that's started on a thread: where what it makes starts, what was running before it, in a
 /// recording or a replay, and where it starts.
 struct Started {
-    since: usize,
+    /// Where its thread's list of what it made was as it started, or `None` for a range run as a
+    /// task of its own, which lists as a launched task does and hands over all it holds.
+    since: Option<usize>,
     was: Option<crate::replay::Task>,
     from: usize,
     /// The capture what was running before printed into, put back as the range ends.
@@ -434,7 +436,7 @@ impl Run {
 
     /// Starts the range at `from` on this thread, giving back where what it makes starts, and what
     /// was running before it, in a recording or a replay, for `keep_made` to put back.
-    fn range_starts(&self, from: usize) -> Started {
+    fn range_starts(&self, from: usize, own: bool) -> Started {
         let before = (!self.on_caller()).then(|| {
             pool::range_starts(self.lent.read().unwrap_or_else(PoisonError::into_inner).clone());
             pool::range_off_its_caller_starts(&self.calling)
@@ -443,7 +445,11 @@ impl Run {
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
         super::swap_capture(&mut capture);
-        Started { since: super::threads::made_scope_starts(), was, from, capture, before }
+        // A range run as a task of its own lists what it makes as a launched task does, letting the
+        // list go once it's long, and is found by its mark as it ends: marked, a range's list was
+        // kept whole for as long as it ran, a word for every block it made (#1842).
+        let since = (!own).then(super::threads::made_scope_starts);
+        Started { since, was, from, capture, before }
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
@@ -459,13 +465,18 @@ impl Run {
             self.pieces_stopped.store(true, Ordering::Release);
         }
         super::swap_capture(&mut capture);
-        super::threads::made_scope_ends(self.on_caller());
+        if since.is_some() {
+            super::threads::made_scope_ends(self.on_caller());
+        }
         if let Some(before) = before {
             pool::range_off_its_caller_ends(before);
         }
         if !self.on_caller() {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
-            let made = super::threads::hand_over(since);
+            let made = match since {
+                Some(since) => super::threads::hand_over(since),
+                None => super::threads::hand_over_all(),
+            };
             if !made.is_empty() {
                 self.made.lock().unwrap_or_else(PoisonError::into_inner).extend(made);
             }
@@ -495,7 +506,9 @@ impl Run {
     ///   made. They're let go of here, while the block is still this thread's to count: once
     ///   it's handed over, letting go of it would reach nothing, and the block would never go.
     fn ran(&self, (from, to): (usize, usize), body: impl FnOnce() -> i64) -> i64 {
-        let started = self.range_starts(from);
+        // Taken, so a range of a call the body makes, run here, isn't taken for its own task.
+        let (flag, own) = super::threads::take_own_range();
+        let started = self.range_starts(from, own);
         let off_its_caller = started.before.is_some();
         let code = if off_its_caller && self.waiting && self.stop_keeps_from_beginning((from, to)) {
             1
@@ -509,6 +522,7 @@ impl Run {
             });
         }
         self.keep_made(started);
+        super::threads::put_own_range(flag);
         code
     }
 

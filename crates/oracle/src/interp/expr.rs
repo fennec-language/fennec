@@ -155,7 +155,12 @@ impl Interp {
                 self.attr(object, name, expr.span)
             }
             ExprKind::Index { object, index } => {
-                if let Some(place) = self.place_of(object)? {
+                // Left to right: what's indexed is read before the index. It's read where it is,
+                // after the index, only when the index can't change it or stop the program. A read
+                // of the whole is cheap, as its parts are shared until one is changed.
+                if reads_only(index)
+                    && let Some(place) = self.place_of(object)?
+                {
                     let at = self.eval(index)?;
                     let own =
                         self.peek_place(&place, expr.span, |held| matches!(held, Value::Instance(_)))?;
@@ -1136,6 +1141,17 @@ fn slice(object: Value, start: Option<Value>, end: Option<Value>) -> Run<Value> 
             Ok(Value::Bytes(data.into_iter().skip(from).take(to.saturating_sub(from)).collect()))
         }
         other => unsupported(format!("slicing a {}", other.kind())),
+    }
+}
+
+/// Whether working out `expr` only reads, and can't stop the program: a name, a value written
+/// out, or a field of one. A call could change what's around it, and an operator or an index could
+/// stop the program before what's left of it is read.
+fn reads_only(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Attr { object, optional: false, .. } => reads_only(object),
+        _ => expr.is_plain_value(),
     }
 }
 

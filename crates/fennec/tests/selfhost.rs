@@ -23,6 +23,16 @@ const LEX_CASES: &[(&str, &str)] = &[
     ("code_escape_too_big", "x = \"\\U00110000\"\n"),
     ("raw_strings", "x = r\"\\d+ \\n {}\" + r\"\" + rx + r\n"),
     ("raw_unterminated", "x = r\"abc\\\n"),
+    (
+        "triple_quoted",
+        "x = \"\"\"\n    one\n      two\n  \n\n    \\\"\\\"\\\" \\t\n    \"\"\"\ny = \"\"\"once\n  more\"\"\" + \"\"\"\"\"\"\n\
+         z = f\"\"\"\n    {a} and {{b}} {c=}\n    \"\"\" + r\"\"\"\\d{x}\"\"\" + t\"\"\"Usage\n  {d}\n  \"\"\"\n",
+    ),
+    ("triple_unclosed", "x = 1\ny = \"\"\"abc\n\nz = 2\n"),
+    ("triple_under_indented", "x = \"\"\"\n    one\n  two\n    \"\"\"\n"),
+    ("triple_backslash_ends_line", "x = \"\"\"\n    one\\\n    \"\"\"\n"),
+    ("triple_brace_open", "x = f\"\"\"\n    {a\n    }\n    \"\"\"\n"),
+    ("triple_quote_in_brace", "x = f\"\"\"\n    {d[\"k\"]}\n    \"\"\"\n"),
     ("fstring_unterminated", "x = f\"{name\"\n"),
     ("fstring_open_brace", "x = f\"{name\n"),
     ("fstring_lone_close", "x = f\"a}b\"\n"),

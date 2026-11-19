@@ -189,3 +189,20 @@ fn where_outside_a_field_rule_is_a_name() {
 fn a_slice_after_mut_has_no_spaces() {
     check("def f(xs: list[int]):\n    mut ys = xs[1:3]\n", "def f(xs: list[int]):\n    mut ys = xs[1:3]\n");
 }
+
+/// A string in `"""`s is kept byte for byte, its spaces at line ends and its indent included,
+/// and is as wide as its first line, so a call around a long one isn't broken (#294).
+#[test]
+fn a_string_in_triple_quotes_is_kept_and_as_wide_as_its_first_line() {
+    let long = "a line of text that goes on past the width the formatter breaks a list of arguments at";
+    let kept = format!(
+        "def f(stdout: Stdout):\n    stdout.print(len(\"\"\"\n        {long}\n          two   \n        \"\"\"))\n    \
+         x = f\"\"\"\n  {{stdout}}\n  \"\"\"\n"
+    );
+    check(&kept, &kept);
+    // Space around it is still the formatter's, inside it never.
+    check(
+        "def f():\n    x  =  \"\"\"\n     a  b\n    \"\"\"\n",
+        "def f():\n    x = \"\"\"\n     a  b\n    \"\"\"\n",
+    );
+}

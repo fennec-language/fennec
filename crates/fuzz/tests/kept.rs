@@ -142,10 +142,29 @@ fn a_short_run_of_every_target_finds_nothing() {
 /// Where nothing can be built natively, each passes without running.
 #[test]
 fn large_hostile_inputs_run_clean() {
-    let seeds = Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds/pack");
     // A packed `list[int]`'s header, up to where the count of its items starts, from its seed.
-    let ints = std::fs::read(seeds.join("ints.bin")).unwrap();
-    let header = ints.get(..16).unwrap_or_default();
+    let ints = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds/pack/ints.bin")).unwrap();
+    let inputs = [large_data(ints.get(..16).unwrap_or_default()), large_messages(), large_text()].concat();
+    let dir = std::env::temp_dir().join(format!("fennec-fuzz-large-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (at, (target, what, input)) in inputs.iter().enumerate() {
+        let file = dir.join(format!("{at}"));
+        std::fs::write(&file, input).unwrap();
+        let output = fuzz().args(["one", target]).arg(&file).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{target}, {what}: {}\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Large inputs for the readers of data: JSON, TOML, `std.pack` after the `header` of a packed
+/// list, routes, HTML, URLs and CSV.
+fn large_data(header: &[u8]) -> Vec<(&'static str, &'static str, Vec<u8>)> {
     let varint = |mut n: u64| {
         let mut out = Vec::new();
         while n >= 0x80 {
@@ -156,7 +175,7 @@ fn large_hostile_inputs_run_clean() {
         out
     };
     let keys: String = (0..200_000).map(|n| format!("\"k{n}\":\"v\"")).collect::<Vec<_>>().join(",");
-    let inputs: Vec<(&str, &str, Vec<u8>)> = vec![
+    vec![
         ("json", "100,000 arrays open", "[".repeat(100_000).into_bytes()),
         ("json", "a million digits", "1".repeat(1_000_000).into_bytes()),
         ("json", "a 5 MB string", format!("\"{}\"", "a".repeat(5_000_000)).into_bytes()),
@@ -174,6 +193,26 @@ fn large_hostile_inputs_run_clean() {
             "a link after a million spaces",
             format!("{}javascript:x", " ".repeat(1_000_000)).into_bytes(),
         ),
+        ("url", "a million characters", format!("http://a/{}", "a".repeat(1_000_000)).into_bytes()),
+        ("url", "a million escapes", "%41".repeat(1_000_000).into_bytes()),
+        ("url", "a port of a million digits", format!("http://a:{}/", "9".repeat(1_000_000)).into_bytes()),
+        ("csv", "a million quotes", "\"".repeat(1_000_000).into_bytes()),
+        ("csv", "a 5 MB field", format!("\"{}\"", "a".repeat(5_000_000)).into_bytes()),
+        ("csv", "a million rows", "a,b\n".repeat(1_000_000).into_bytes()),
+        ("toml", "a 5 MB string", format!("a = \"{}\"", "x".repeat(5_000_000)).into_bytes()),
+        (
+            "toml-rules",
+            "100,000 tables",
+            (0..100_000).map(|n| format!("[t{n}]\nk = 1\n")).collect::<Vec<_>>().concat().into_bytes(),
+        ),
+        ("toml-rules", "100,000 inline tables open", format!("a = {}", "{b = ".repeat(100_000)).into_bytes()),
+        ("json-rules", "a million items", format!("[{}1]", "1,".repeat(999_999)).into_bytes()),
+    ]
+}
+
+/// Large inputs for the readers of what comes over a connection: HTTP both ways and Postgres.
+fn large_messages() -> Vec<(&'static str, &'static str, Vec<u8>)> {
+    vec![
         ("http-server", "a million blank lines", "\r\n".repeat(1_000_000).into_bytes()),
         (
             "http-server",
@@ -241,20 +280,12 @@ fn large_hostile_inputs_run_clean() {
         ),
         ("postgres", "a message said to be 2 GB", b"R\x7f\xff\xff\xff".to_vec()),
         ("postgres", "a message said to be -1 bytes", b"R\xff\xff\xff\xff".to_vec()),
-        ("url", "a million characters", format!("http://a/{}", "a".repeat(1_000_000)).into_bytes()),
-        ("url", "a million escapes", "%41".repeat(1_000_000).into_bytes()),
-        ("url", "a port of a million digits", format!("http://a:{}/", "9".repeat(1_000_000)).into_bytes()),
-        ("csv", "a million quotes", "\"".repeat(1_000_000).into_bytes()),
-        ("csv", "a 5 MB field", format!("\"{}\"", "a".repeat(5_000_000)).into_bytes()),
-        ("csv", "a million rows", "a,b\n".repeat(1_000_000).into_bytes()),
-        ("toml", "a 5 MB string", format!("a = \"{}\"", "x".repeat(5_000_000)).into_bytes()),
-        (
-            "toml-rules",
-            "100,000 tables",
-            (0..100_000).map(|n| format!("[t{n}]\nk = 1\n")).collect::<String>().into_bytes(),
-        ),
-        ("toml-rules", "100,000 inline tables open", format!("a = {}", "{b = ".repeat(100_000)).into_bytes()),
-        ("json-rules", "a million items", format!("[{}1]", "1,".repeat(999_999)).into_bytes()),
+    ]
+}
+
+/// Large inputs for the readers of short text: numbers, times and base64.
+fn large_text() -> Vec<(&'static str, &'static str, Vec<u8>)> {
+    vec![
         ("numbers", "a million digits", "1".repeat(1_000_000).into_bytes()),
         ("numbers", "a float of a million digits", format!("0.{}", "1".repeat(1_000_000)).into_bytes()),
         ("numbers", "an exponent of a million digits", format!("1e{}", "9".repeat(1_000_000)).into_bytes()),
@@ -269,22 +300,7 @@ fn large_hostile_inputs_run_clean() {
         ("time", "an offset past the last year", b"2261-12-31T23:59:59.999999999-23:59".to_vec()),
         ("base64", "5 MB", "QUJD".repeat(1_250_000).into_bytes()),
         ("base64", "a million `=`", "=".repeat(1_000_000).into_bytes()),
-    ];
-    let dir = std::env::temp_dir().join(format!("fennec-fuzz-large-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    for (at, (target, what, input)) in inputs.iter().enumerate() {
-        let file = dir.join(format!("{at}"));
-        std::fs::write(&file, input).unwrap();
-        let output = fuzz().args(["one", target]).arg(&file).output().unwrap();
-        assert!(
-            output.status.success(),
-            "{target}, {what}: {}\n{}{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-    let _ = std::fs::remove_dir_all(&dir);
+    ]
 }
 
 /// Each program the `llvm` target starts from builds both ways and prints what's pinned for it,

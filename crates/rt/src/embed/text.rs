@@ -283,7 +283,7 @@ pub extern "C" fn append_header(text: i64, h0: u64, h1: u64, h2: u64) -> i64 {
         let (words, length) = bytes_of(state, &piece);
         copied.extend_from_slice(words.get(..length.div_ceil(8)).unwrap_or_default());
         let grown = super::strings::grow_by(state, text, &copied, length, chars);
-        state.heap.scratch = copied;
+        state.heap.keep_scratch(copied);
         grown.unwrap_or(text)
     })
 }

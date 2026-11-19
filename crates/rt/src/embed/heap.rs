@@ -154,7 +154,8 @@ pub(crate) struct Heap {
     pub(super) lent: Option<std::sync::Arc<super::table::Table>>,
     /// How this worker's range has changed the owners of lent blocks, for that thread to apply.
     pub(super) lent_owners: HashMap<u64, i64, BuildHasherDefault<AddressHasher>>,
-    /// Words copied out of one block on the way to another, kept to save making them anew.
+    /// Words copied out of one block on the way to another, kept to save making them anew: up to
+    /// `SCRATCH_KEPT_WORDS` of room (see `keep_scratch`).
     pub(super) scratch: Vec<u64>,
     /// Where blocks freed now go (see `give_back`).
     freed: Freed,
@@ -786,7 +787,21 @@ fn all_inline(block: &[u64]) -> bool {
     items.as_chunks::<3>().0.iter().all(|[_, _, last]| last & inline != 0)
 }
 
+/// The most room the heap's scratch words keep from one use to the next, as a regex buffer does
+/// (64 KB). More is let go of when its use ends: a list of 100,000 strings freed or copied once
+/// would hold 800 KB of it on its thread for the rest of the run.
+const SCRATCH_KEPT_WORDS: usize = 8 << 10;
+
 impl Heap {
+    /// Puts back the scratch words a use took, emptied, unless they've grown past
+    /// `SCRATCH_KEPT_WORDS`, when they're let go of.
+    pub(super) fn keep_scratch(&mut self, mut words: Vec<u64>) {
+        if words.capacity() <= SCRATCH_KEPT_WORDS {
+            words.clear();
+            self.scratch = words;
+        }
+    }
+
     /// Whether a list of this kind of item is known to hold no blocks. A worker's heap has no
     /// plans, so it doesn't know, and looks.
     /// How many words an item of kind `number` takes, if this heap worked it out.
@@ -2040,8 +2055,7 @@ pub extern "C" fn unshare(address: i64) -> i64 {
         for child in held.iter().copied() {
             retain(state, child);
         }
-        held.clear();
-        state.heap.scratch = held;
+        state.heap.keep_scratch(held);
         state.heap.insert(copy)
     })
 }

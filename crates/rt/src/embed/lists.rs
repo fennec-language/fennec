@@ -408,8 +408,7 @@ fn each_held_block(state: &mut State, element: &Element, words: &[u64], each: fn
     for address in found.iter().copied() {
         each(state, address);
     }
-    found.clear();
-    state.heap.scratch = found;
+    state.heap.keep_scratch(found);
 }
 
 /// One more owner for each block a list of this kind of item holds, for a new list that

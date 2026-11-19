@@ -124,6 +124,30 @@ fn a_list_of_tuples_reads_back_as_tuples() {
     finish();
 }
 
+/// A copy of a block that holds many others lets go of the room it listed them in once it's
+/// done, where a short one's is kept for the next: kept, one copy of a list of 20,000 strings
+/// held 160 KB of it on its thread for the rest of the run.
+#[test]
+fn copying_a_big_list_lets_its_scratch_room_go() {
+    let str = Rc::new(Element::Str);
+    let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
+    start(tables, crate::Inputs::default());
+    let room_after_copying = |count: usize| {
+        let texts: Vec<String> =
+            (0..count).map(|number| format!("item {number} of a list, long enough for a block")).collect();
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let list = with(|state| super::super::lists::list_of_strings(state, 0, &texts));
+        // Owned twice, so the copy is made.
+        with(|state| super::retain(state, list.cast_unsigned()));
+        assert_ne!(heap::unshare(list), 0);
+        with(|state| state.heap.scratch.capacity())
+    };
+    assert!(room_after_copying(100) >= 100, "a short list's room is kept");
+    let room = room_after_copying(20_000);
+    assert!(room <= super::SCRATCH_KEPT_WORDS, "{room} words kept after copying 20,000");
+    finish();
+}
+
 #[test]
 fn strings_have_their_methods() {
     let str = Rc::new(Element::Str);

@@ -61,7 +61,7 @@ rustls-platform-verifier = "=0.7.1"
 ring = { version = "=0.17.14", default-features = false }
 # Inflating a release's `.tar.gz` when the launcher installs it, after its hash is checked: pure
 # Rust with no `unsafe`, the inflater most Rust tools use. Under MIT, Zlib or Apache-2.0.
-miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
 # The deques of the work-stealing pool `parallel` runs on, for programs with tasks: well-tested
 # Chase-Lev deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
 crossbeam-deque = { version = "=0.8.8", default-features = false, features = ["std"] }

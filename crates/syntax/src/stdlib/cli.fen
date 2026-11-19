@@ -163,14 +163,14 @@ export struct Cli:
         assert all(each.name != taken.name for each in self.takes)
         return copy(self, takes=self.takes + [taken])
 
-    def _named(self, name: str) -> CliArg:
+    def _named(self, name: str) -> CliArg fails CliError:
         for taken in self.takes:
             if taken.name == name and not taken.positional: return taken
         fail CliError(message=f"there's no option `--{name}`")
 
     ## `-l`, `-lv` or `-n value`: short flags, the last of which may take a value. Gives back
     ## where the next argument starts.
-    def _shorts(self, arg: str, args: list[str], at: int, ref given: CliArgs) -> int:
+    def _shorts(self, arg: str, args: list[str], at: int, ref given: CliArgs) -> int fails CliError:
         mut next = at
         letters = arg[1:]
         for spot, letter in enumerate(letters):
@@ -194,7 +194,7 @@ export struct Cli:
         return next
 
     ## Gives each positional argument its value, in order.
-    def _place(self, positionals: list[str], ref given: CliArgs):
+    def _place(self, positionals: list[str], ref given: CliArgs) fails CliError:
         mut left = positionals
         for taken in self.takes:
             if not taken.positional: continue

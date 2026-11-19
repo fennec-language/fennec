@@ -1343,9 +1343,8 @@ impl Checker {
     }
 
     /// Reports each function that can fail without saying so, once every function's errors are
-    /// known: a signature says how a function can fail, so a reader sees it there, std's own
-    /// included, whose signatures hover and the docs show. `main` is the exception, since nothing
-    /// calls it and a failure out of it is printed, and so is a `test`.
+    /// known: a signature says how a function can fail, so a reader sees it there. `main` is the
+    /// exception, since nothing calls it and a failure out of it is printed, and so is a `test`.
     /// A `def` with no arrow that gives back a value has its `fails` written with its type, by
     /// `missing_return_type`.
     fn fails_unsaid(&mut self) {
@@ -1357,7 +1356,7 @@ impl Checker {
             // What the compiler writes in, like a crash's cleanup run as a function of its own, has
             // no reader to see a signature: what it can fail with is what its body says.
             let written = crate::lend_lowering::not_written_by_hand(def.span);
-            if def.fails.is_some() || def.name == "main" || test || written {
+            if entry.prelude || def.fails.is_some() || def.name == "main" || test || written {
                 continue;
             }
             let Some(State::Done(signature)) = self.states.get(key) else { continue };

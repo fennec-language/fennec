@@ -3,3 +3,5 @@ error: a `def` gives its value with `return`
   |
 2 |     number * 2
   |     ^^^^^^^^^^
+  |
+  = help: write `return` at the start of the line: `fennec fix` writes it in

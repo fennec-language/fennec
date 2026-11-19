@@ -3,3 +3,5 @@ error: a str has no method `format`
   |
 3 |     stdout.print("{} items".format(count))
   |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: Fennec formats text with f-strings, as `f"{count} items"`

@@ -1,7 +1,7 @@
-error: `self` doesn't exist
+error: `shifted` has no `self`
  --> examples/errors/self_not_a_parameter.fen:5:16
   |
 5 |         return self.x + by
   |                ^^^^
   |
-  = help: give it a value first, as `self = ...`, or check the spelling
+  = help: write `self` first among its parameters, as `def shifted(self, ...)`, to call it on a `Point`

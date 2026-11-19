@@ -33,10 +33,18 @@ fn built(found: Result<(fennec_check::Signatures, bool), Vec<fennec_syntax::Diag
         .map_err(|problems| problems.iter().map(|problem| format!("{problem:?}")).collect())
 }
 
+/// `source` parsed, or what's wrong with it.
+fn parsed(source: &str) -> Result<fennec_syntax::Module, Vec<String>> {
+    fennec_syntax::parse(source).map_err(|diagnostic| vec![format!("parse: {}", diagnostic.message)])
+}
+
 /// A build of `source` that keeps what its check finds, carrying over from `kept`, with each check
 /// that carried anything over compared with checking it all again.
 fn kept_build(source: &str, kept: Option<KeptCheck>) -> (Built, Option<KeptCheck>) {
-    let mut module = fennec_syntax::parse(source).unwrap();
+    let mut module = match parsed(source) {
+        Ok(module) => module,
+        Err(problems) => return (Err(problems), None),
+    };
     match check_to_build_keeping(&mut module, kept, true) {
         Ok((signatures, as_left, kept)) => (built(Ok((signatures, as_left))), Some(kept)),
         Err(problems) => (built(Err(problems)), None),
@@ -45,7 +53,7 @@ fn kept_build(source: &str, kept: Option<KeptCheck>) -> (Built, Option<KeptCheck
 
 /// A build of `source` that keeps nothing.
 fn cold_build(source: &str) -> Built {
-    let mut module = fennec_syntax::parse(source).unwrap();
+    let mut module = parsed(source)?;
     built(check_to_build_saying(&mut module))
 }
 
@@ -120,11 +128,12 @@ fn an_edit_to_what_is_declared_carries_nothing_over() {
 /// The program as written, but with a number inside its last function that has one made one more:
 /// a change to a body, as an edit makes. Nothing when it has none.
 fn with_a_number_changed(source: &str) -> Option<String> {
-    let lines: Vec<&str> = source.lines().collect();
-    // The last line inside a function written at the top, with a number of one digit on it.
-    let mut inside = false;
-    let mut last = None;
-    for (at, line) in lines.iter().enumerate() {
+    // The last number of one digit on a line inside a function written at the top, before any
+    // comment or text.
+    let (mut inside, mut last, mut offset) = (false, None, 0);
+    for line in source.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
         if !line.starts_with(' ') && !line.trim().is_empty() {
             inside = line.starts_with("def ");
             continue;
@@ -132,24 +141,22 @@ fn with_a_number_changed(source: &str) -> Option<String> {
         if !inside {
             continue;
         }
-        let bytes = line.as_bytes();
-        let word = |at: usize| bytes.get(at).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'.');
-        let digit = (0..bytes.len()).find(|&column| {
-            (b'1'..=b'8').contains(&bytes[column])
-                && (column == 0 || !word(column - 1))
-                && !word(column + 1)
-                && !line[..column].contains('"')
-                && !line[..column].contains('#')
-        });
-        if let Some(column) = digit {
-            last = Some((at, column));
+        let code = line.split(['#', '"']).next().unwrap_or_default();
+        let chars: Vec<(usize, char)> = code.char_indices().collect();
+        let word = |at: Option<&(usize, char)>| {
+            at.is_some_and(|(_, found)| found.is_alphanumeric() || *found == '_' || *found == '.')
+        };
+        for (index, (column, found)) in chars.iter().enumerate() {
+            let before = index.checked_sub(1).and_then(|before| chars.get(before));
+            if ('1'..='8').contains(found) && !word(before) && !word(chars.get(index + 1)) {
+                last = Some(start + column);
+            }
         }
     }
-    let (line, column) = last?;
-    let mut edited: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
-    let digit = edited[line].as_bytes()[column];
-    edited[line].replace_range(column..=column, &char::from(digit + 1).to_string());
-    Some(format!("{}\n", edited.join("\n")))
+    let at = last?;
+    let digit = source.get(at..=at)?.chars().next()?.to_digit(10)?;
+    let bumped = char::from_digit(digit + 1, 10)?;
+    Some(format!("{}{bumped}{}", source.get(..at)?, source.get(at + 1..)?))
 }
 
 /// Every kernel, the eight real programs among them, every example and every real-world program

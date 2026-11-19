@@ -587,12 +587,7 @@ impl Type {
 
     /// Whether a type variable still open is anywhere in this type.
     pub(crate) fn has_var(&self) -> bool {
-        self.any_part(&|part| matches!(part, Type::Var(_)))
-    }
-
-    /// Whether this type, or any type inside it, passes `test`.
-    pub(crate) fn any_part(&self, test: &dyn Fn(&Type) -> bool) -> bool {
-        test(self) || self.children().iter().any(|child| child.any_part(test))
+        matches!(self, Type::Var(_)) || self.children().iter().any(|child| child.has_var())
     }
 
     /// Whether `var` appears anywhere in this type.

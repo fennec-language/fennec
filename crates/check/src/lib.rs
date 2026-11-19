@@ -644,7 +644,7 @@ pub fn check_to_build_saying(module: &mut Module) -> Result<(Signatures, bool), 
     // the module again types as what's written there: the first check's types are only those of
     // a module it left as it was.
     let seen = module.clone();
-    resolved_saying(module, (checked, seen), checker::Scope::Building, Keep::Nothing)
+    resolved_saying(module, (checked, seen), checker::Scope::Building)
 }
 
 /// What a build's first check of a program found, kept for checking the program again once it's
@@ -690,15 +690,15 @@ pub fn check_to_build_keeping(
     let names = own_types_apart(module);
     refuse_reserved(module)?;
     let declared = declarations(module);
-    let checker = match kept.filter(|kept| kept.declared == declared) {
-        Some(kept) => checker::Checker::carrying(module, kept.first, checker::Carrying::Edit),
+    let first_check = match kept.filter(|kept| kept.declared == declared) {
+        Some(kept) => checker::Checker::carrying(module, kept.first),
         None => checker::Checker::keeping(module),
     };
-    let carriable = checker.carriable();
-    let found = checker.run(checker::Scope::Building);
+    let carriable = first_check.carriable();
+    let found = first_check.run(checker::Scope::Building);
     if compare
         && carriable > 0
-        && let Some(part) = differs_from_checked_again(module, checker::Scope::Building, false, &found)
+        && let Some(part) = differs_from_checked_again(module, checker::Scope::Building, &found)
     {
         return Err(vec![kept_check_differs(&part)]);
     }
@@ -708,8 +708,7 @@ pub fn check_to_build_keeping(
     // over from it as it is.
     let first = checked.clone();
     let seen = module.clone();
-    let (signatures, as_left) =
-        resolved_saying(module, (checked, seen), checker::Scope::Building, Keep::Apart { compare })?;
+    let (signatures, as_left) = resolved_saying(module, (checked, seen), checker::Scope::Building)?;
     Ok((signatures, as_left, KeptCheck { first, declared, carriable }))
 }
 
@@ -837,7 +836,7 @@ fn resolved(
     checked: Checked,
     scope: checker::Scope,
 ) -> Result<Signatures, Vec<Diagnostic>> {
-    resolved_within(module, checked, scope, MOST_ROUNDS, None, Keep::Nothing).map(|(signatures, _, _)| signatures)
+    resolved_within(module, checked, scope, MOST_ROUNDS, None).map(|(signatures, _, _)| signatures)
 }
 
 /// Like `resolved`, saying too whether the signatures are of the module as it's left: whether the
@@ -848,23 +847,9 @@ fn resolved_saying(
     module: &mut Module,
     (checked, seen): (Checked, Module),
     scope: checker::Scope,
-    keep: Keep,
 ) -> Result<(Signatures, bool), Vec<Diagnostic>> {
-    resolved_within(module, checked, scope, MOST_ROUNDS, Some(seen), keep)
+    resolved_within(module, checked, scope, MOST_ROUNDS, Some(seen))
         .map(|(signatures, as_left, _)| (signatures, as_left))
-}
-
-/// Whether a build keeps what its checks find apart by function, for a later check to carry over
-/// (`checker::Checker::carrying`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Keep {
-    /// Nothing's kept, and nothing's carried over: a build that won't check the program again
-    /// checks it as it always has.
-    Nothing,
-    /// What each check finds is kept apart, and each round of rewriting carries over what the
-    /// check before it found for what the round left as it was. With `compare`, a check that
-    /// carried anything over is compared with checking it all again.
-    Apart { compare: bool },
 }
 
 /// The most rounds of writing in what a check found, and checking again, a program is given. This
@@ -884,19 +869,14 @@ fn resolved_within(
     scope: checker::Scope,
     most: usize,
     mut seen: Option<Module>,
-    keep: Keep,
 ) -> Result<(Signatures, bool, usize), Vec<Diagnostic>> {
     let mut first = true;
     for round in 1.. {
         // Only the last round's changes are looked at, to name what didn't stop changing.
         let before = (round >= most).then(|| module.clone());
-        // What the module declares as the check saw it, besides its functions: while a round
-        // only adds to it, what's found for a function the round leaves as it was carries over.
-        let declared = (keep != Keep::Nothing).then(|| declarations(module));
         // The library's functions this program needs rewritten go through this round with its own.
         let std_in = std_rewritten_in(module, &checked);
-        let mut only_written = Written::default();
-        let written = resolved_round(module, &checked, declared.as_ref().map(|_| &mut only_written));
+        let written = resolved_round(module, &checked);
         std_rewritten_out(module);
         if lend_lowering::program_copies_ran_out() {
             return Err(vec![no_room_for_copies()]);
@@ -926,25 +906,9 @@ fn resolved_within(
         if let Some(seen) = &mut seen {
             seen.clone_from(module);
         }
-        let shared_retyped = declared.and_then(|declared| still_declared(&declared, &declarations(module)));
-        let next = if let Some(shared_retyped) = shared_retyped {
-            let how = checker::Carrying::Round { shared_retyped, only_written: &only_written };
-            checker::Checker::carrying(module, std::mem::take(&mut checked), how)
-        } else {
-            let mut next = checker::Checker::new(module);
-            next.again = true;
-            next.keeping = keep != Keep::Nothing;
-            next
-        };
-        let carries = next.carries_any();
-        let found = next.run(scope);
-        if keep == (Keep::Apart { compare: true })
-            && carries
-            && let Some(part) = differs_from_checked_again(module, scope, true, &found)
-        {
-            return Err(vec![kept_check_differs(&part)]);
-        }
-        checked = found.map_err(|problems| {
+        let mut next = checker::Checker::new(module);
+        next.again = true;
+        checked = next.run(scope).map_err(|problems| {
             problems.iter().map(|problem| not_checked_again(problem, &module.copied)).collect::<Vec<_>>()
         })?;
     }
@@ -970,35 +934,6 @@ fn declarations(module: &Module) -> Vec<Item> {
             other => Some(other.clone()),
         })
         .collect()
-}
-
-/// Whether everything `before` declares is still declared, as it was and in the same order, with
-/// only imports added, or the structs lock lowering writes in for `shared` types: what a round of
-/// rewriting may do while a check carries over what the round before found. `None` when it did
-/// more, since a type added can change what a function written as it was means. Otherwise whether
-/// a `shared` type's struct was added, which changes what each written `shared T` means.
-fn still_declared(before: &[Item], after: &[Item]) -> Option<bool> {
-    let shared = fennec_syntax::shared_declaration("");
-    let mut retyped = false;
-    let mut added = |item: &Item| match item {
-        Item::Import(_) => true,
-        Item::Struct(def) if def.name.starts_with(&shared) => {
-            retyped = true;
-            true
-        }
-        _ => false,
-    };
-    let mut after = after.iter();
-    for item in before {
-        loop {
-            match after.next() {
-                Some(now) if now == item => break,
-                Some(now) if added(now) => {}
-                _ => return None,
-            }
-        }
-    }
-    after.all(&mut added).then_some(retyped)
 }
 
 /// `text` with each open type variable's number taken out: `Var(12)` as `Var(_)`.
@@ -1064,18 +999,14 @@ fn differing_table(one: &Checked, other: &Checked) -> &'static str {
 }
 
 /// Where a check that carried over what a check before it found, `carried`, disagrees with
-/// checking all of `module` again, as a round's check when `again`: whether it passes, what it
-/// finds wrong, its signatures, typed bodies and what it found to write in. Nothing when they
-/// agree.
+/// checking all of `module` again: whether it passes, what it finds wrong, its signatures, typed
+/// bodies and what it found to write in. Nothing when they agree.
 fn differs_from_checked_again(
     module: &Module,
     scope: checker::Scope,
-    again: bool,
     carried: &Result<Checked, Vec<Diagnostic>>,
 ) -> Option<String> {
-    let mut whole = checker::Checker::new(module);
-    whole.again = again;
-    let whole = whole.run(scope);
+    let whole = checker::Checker::new(module).run(scope);
     let (whole, carried) = match (whole, carried) {
         (Ok(whole), Ok(carried)) => (whole, carried.clone()),
         (Err(whole), Err(carried)) => {
@@ -1166,37 +1097,6 @@ fn differing_part(again: &Checked, carried: &Checked) -> String {
             format!("what it found to write in, in `{}`", differing_table(again, carried))
         }
     }
-}
-
-/// Each function, method and test of a module, by its name and the span of its text.
-#[derive(Default)]
-pub(crate) struct Written {
-    pub(crate) defs: BTreeMap<(String, u32, u32), fennec_syntax::FnDef>,
-    pub(crate) tests: BTreeMap<(String, u32, u32), fennec_syntax::TestDef>,
-}
-
-/// Each function, method and test of `module` as it is: what a round left them once it wrote in
-/// what the check found, before rewriting any, so the round's check can carry over what the round
-/// before found for one that was only written into.
-fn written(module: &Module) -> Written {
-    let mut found = Written::default();
-    let mut defs = std::mem::take(&mut found.defs);
-    let mut add = |def: &fennec_syntax::FnDef| {
-        defs.insert((def.name.clone(), def.span.start, def.span.end), def.clone());
-    };
-    for item in &module.items {
-        match item {
-            Item::Function(def) => add(def),
-            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.methods.iter().for_each(&mut add),
-            Item::Extend(extension) => extension.methods.iter().for_each(&mut add),
-            Item::Test(test) => {
-                found.tests.insert((test.name.clone(), test.span.start, test.span.end), test.clone());
-            }
-            _ => {}
-        }
-    }
-    found.defs = defs;
-    found
 }
 
 /// What's said when the program's text leaves no room for the copies of its `with` sources
@@ -1325,16 +1225,16 @@ fn library_functions() -> Vec<(String, fennec_syntax::FnDef)> {
 
 /// One round of writing in what the check found, saying whether anything was written that needs
 /// checking again.
-fn resolved_round(module: &mut Module, checked: &Checked, only_written: Option<&mut Written>) -> Round {
+fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     // What a round writes in more than once is noted where it went, with what's there already.
     lend_lowering::copies_from(module);
-    let round = written_in_round(module, checked, only_written);
+    let round = written_in_round(module, checked);
     lend_lowering::copies_into(module);
     round
 }
 
 /// What `resolved_round` writes in.
-fn written_in_round(module: &mut Module, checked: &Checked, only_written: Option<&mut Written>) -> Round {
+fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     unqualified_cases(module, &checked.signatures);
@@ -1389,11 +1289,6 @@ fn written_in_round(module: &mut Module, checked: &Checked, only_written: Option
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
-    // What the check found is written in; what's rewritten below changes what's written. It's
-    // looked at only by a build that carries over what a check found.
-    if let Some(only_written) = only_written {
-        *only_written = written(module);
-    }
     let rewritten = sources_copied(module, checked) || widened_values(module, &checked.widened_values);
     if rewritten || routes::lower(module, &checked.routes) {
         return Round::Again;
@@ -2028,16 +1923,14 @@ mod rounds {
         let mut module = fennec_syntax::parse(source).unwrap();
         module.files = vec![Span { start: 0, end: Span::WRITTEN - 16 }];
         let checked = checked_typed_in(&module, checker::Scope::Reached).unwrap();
-        let resolved =
-            resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None, Keep::Nothing);
+        let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None);
         let Err(problems) = resolved else { panic!("a program with no room for its copies was written in") };
         assert!(problems.iter().any(|problem| problem.message.contains("leave no room")), "{problems:?}");
     }
 
     /// Every kernel, the eight real programs among them, every example and every real-world
     /// program is written in and checked again in a quarter of the rounds it's given, at most:
-    /// the bound is never what ends a real program's check. Each round carries over what the check
-    /// before it found, and is compared with checking it all again.
+    /// the bound is never what ends a real program's check.
     #[test]
     fn every_kernel_example_and_real_program_ends_well_inside_its_rounds() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -2060,13 +1953,12 @@ mod rounds {
             if refuse_reserved(&module).is_err() {
                 continue;
             }
-            let Ok(checked) = checker::Checker::keeping(&module).run(checker::Scope::Reached) else { continue };
+            let Ok(checked) = checked_typed_in(&module, checker::Scope::Reached) else { continue };
             if refuse_old_forms(&module, &checked).is_err() {
                 continue;
             }
             let shown = path.display().to_string();
-            let keep = Keep::Apart { compare: true };
-            let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None, keep);
+            let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None);
             let rounds = match resolved {
                 Ok((_, _, rounds)) => rounds,
                 Err(problems) => panic!("{shown}: {problems:?}"),
@@ -2092,8 +1984,7 @@ mod rounds {
         library_parses().unwrap();
         let _ = own_types_apart(&mut module);
         let checked = checker::Checker::new(&module).run(checker::Scope::Reached).unwrap();
-        let problems =
-            resolved_within(&mut module, checked, checker::Scope::Reached, 1, None, Keep::Nothing).unwrap_err();
+        let problems = resolved_within(&mut module, checked, checker::Scope::Reached, 1, None).unwrap_err();
         let [problem] = problems.as_slice() else { panic!("{problems:?}") };
         assert!(
             problem

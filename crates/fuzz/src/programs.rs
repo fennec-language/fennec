@@ -907,8 +907,10 @@ mod tests {
         use super::ast::{InOrder, ORDER_STEPS, Program, Stmt};
         let body = (0..3)
             .map(|round| {
-                let steps =
-                    ORDER_STEPS.iter().enumerate().map(|(at, step)| (*step, (at as i64 + round * 4) % 10));
+                let steps = ORDER_STEPS
+                    .iter()
+                    .enumerate()
+                    .map(|(at, step)| (*step, (i64::try_from(at).unwrap_or(0) + round * 4) % 10));
                 Stmt::Ordered(InOrder {
                     id: usize::try_from(round).unwrap_or(0) + 1,
                     base: round * 3,

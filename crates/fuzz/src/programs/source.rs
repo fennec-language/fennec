@@ -15,6 +15,7 @@ use super::ast::{
 };
 use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{GenericStep, GenericTy, Genericking};
+use super::ast::{IfaceStep, Interfacing};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
@@ -2434,6 +2435,123 @@ fn stuck_written(sticking: Sticking) -> String {
     )
 }
 
+/// The interface, its two types and the generic functions an `Interfaced` statement calls, `{N}`
+/// standing for its id.
+const INTERFACED_TYPES: &str = "error Nope{N}:
+    code: int
+
+interface Grower{N}:
+    def grow(ref self, by: int) -> int
+    def size(self) -> int
+    def tried(ref self, by: int) -> int fails Nope{N}
+    def counts(self) -> Iterator[int]
+
+struct Crate{N}:
+    items: list[int]
+
+    def grow(ref self, by: int) -> int:
+        self.items.append(len(self.items) + by)
+        return len(self.items)
+
+    def size(self) -> int:
+        return len(self.items)
+
+    def tried(ref self, by: int) -> int fails Nope{N}:
+        self.items.append(by)
+        if by > 5:
+            fail Nope{N}(code=by)
+        return len(self.items)
+
+    def counts(self) -> Iterator[int]:
+        for item in self.items:
+            yield item
+
+struct Heap{N}:
+    held: int
+
+    def grow(ref self, by: int) -> int:
+        self.held += by + 3
+        return self.held
+
+    def size(self) -> int:
+        return self.held
+
+    def tried(ref self, by: int) -> int fails Nope{N}:
+        self.held += by
+        if by > 5:
+            fail Nope{N}(code=by)
+        return self.held
+
+    def counts(self) -> Iterator[int]:
+        for at in range(self.held % 4):
+            yield at
+
+def grown_all{N}[G: Grower{N}](ref items: list[G], by: int) -> int:
+    mut total = 0
+    for ref item in items:
+        total += item.grow(by)
+    return total
+
+def bumped{N}[G: Grower{N}](ref item: G, by: int):
+    _ = item.grow(by)
+    _ = item.grow(by + 1)
+
+def copied{N}[G: Grower{N}](item: G, by: int) -> G:
+    mut mine = item
+    _ = mine.grow(by)
+    return mine
+
+def summed{N}[G: Grower{N}](item: G) -> int:
+    return sum(item.counts())
+
+def tried_twice{N}[G: Grower{N}](ref item: G, by: int) -> int fails Nope{N}:
+    first = item.tried(by)?
+    second = item.tried(by + 4)?
+    return first + second
+
+def sized{N}[G: Grower{N}](items: list[G]) -> int:
+    mut total = 0
+    for item in items:
+        total += item.size()
+    return total
+
+";
+
+/// `interfaced{id}`, the function an `Interfaced` calls, after its types and functions: a list
+/// of each type and one of each, a line for each step, then what each holds.
+fn interfaced_written(interfacing: &Interfacing) -> String {
+    let Interfacing { id, steps } = interfacing;
+    let mut out = INTERFACED_TYPES.replace("{N}", &id.to_string());
+    let _ = write!(
+        out,
+        "def interfaced{id}(stdout: Stdout):\n    mut crates = [Crate{id}(items=[1]), Crate{id}(items=[])]\n    mut \
+         heaps = [Heap{id}(held=2), Heap{id}(held=5)]\n    mut crate = Crate{id}(items=[5])\n    mut heap = \
+         Heap{id}(held=1)\n"
+    );
+    for (at, &(step, crate_first, n)) in steps.iter().enumerate() {
+        let (items, item) = if crate_first { ("crates", "crate") } else { ("heaps", "heap") };
+        let line = match step {
+            IfaceStep::GrownAll => format!("stdout.print(grown_all{id}(ref {items}, by={n}))"),
+            IfaceStep::Bumped => format!("bumped{id}(ref {item}, by={n})"),
+            IfaceStep::Copied => format!("stdout.print(copied{id}({item}, by={n}), {item})"),
+            IfaceStep::Summed => format!("stdout.print(summed{id}({item}))"),
+            IfaceStep::Tried => format!(
+                "got{at} = tried_twice{id}(ref {item}, by={n}) except why:\n        stdout.print(\"failed\", \
+                 why)\n        -1\n    stdout.print(got{at})"
+            ),
+            IfaceStep::EachBumped => {
+                format!("for ref each in {items}:\n        bumped{id}(ref each, by={n})")
+            }
+            IfaceStep::Sized => format!("stdout.print(sized{id}({items}))"),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push_str(
+        "    stdout.print(crates)\n    stdout.print(heaps)\n    stdout.print(crate)\n    stdout.print(heap)\n\n",
+    );
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -3193,6 +3311,10 @@ impl Writer {
                 let _ = write!(self.helpers, "{}", stuck_written(*sticking));
                 self.line(indent, &format!("stuck{}(stdout) except why:", sticking.id));
                 self.line(indent + 1, "stdout.print(\"failed\", why)");
+            }
+            Stmt::Interfaced(interfacing) => {
+                let _ = write!(self.helpers, "{}", interfaced_written(interfacing));
+                self.line(indent, &format!("interfaced{}(stdout)", interfacing.id));
             }
             Stmt::Ordered(in_order) => {
                 let _ = write!(self.helpers, "{}", ordered_written(in_order));

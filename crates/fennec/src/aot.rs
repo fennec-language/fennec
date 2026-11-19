@@ -162,7 +162,14 @@ pub(crate) fn build_kept(
     release: bool,
 ) -> Result<(fennec_kit::Program, Built), ExitCode> {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return Err(ExitCode::FAILURE) };
+    // A build the daemon runs for a command that has gone stops between its steps.
+    if fennec_build::cancelled() {
+        return Err(ExitCode::FAILURE);
+    }
     let checked = crate::run::checked_to_build(&mut program)?;
+    if fennec_build::cancelled() {
+        return Err(ExitCode::FAILURE);
+    }
     let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
     match executable_checked(&program, &output, release, checked) {
         Ok(built) => {
@@ -360,6 +367,9 @@ fn built_and_linked(
     let started = Instant::now();
     let (built, units) = llvm_objects(program, release, (checked, reusing))?;
     let compiled = started.elapsed();
+    if fennec_build::cancelled() {
+        return Err(fennec_llvm::STOPPED.to_owned());
+    }
     // A release built with the runtime's bitcode has its Rust inside already.
     let runtime_in = release && runtime_bitcode(built.runtime, built.statically).is_some();
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
@@ -710,6 +720,9 @@ fn emitted_as_written(
         // A test's network is a fake, which answers a server's connections in order.
         fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true, serve_in_order: tests },
     );
+    if fennec_build::cancelled() {
+        return Err(fennec_llvm::STOPPED.to_owned());
+    }
     // On threads, a value crossing the edge of a `shared` value's lock is copied.
     if fennec_llvm::uses_parallel(&lowered) {
         fennec_ir::guard_shared(&mut lowered);

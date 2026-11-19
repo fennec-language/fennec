@@ -418,6 +418,10 @@ pub(crate) fn emit_keeping(
     // Each written unit's IR key, by its place in `units`, for the index.
     let mut written = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
+        // A build asked to stop writes no more (`fennec_build::cancel`).
+        if fennec_build::cancelled() {
+            return Err(crate::STOPPED.to_owned());
+        }
         let ir = using.as_ref().map(|_| crate::keys::ir_key(function));
         if let (Some(using), Some(ir)) = (&mut using, ir)
             && let Some(record) = using.usable(&function.name, &ir)

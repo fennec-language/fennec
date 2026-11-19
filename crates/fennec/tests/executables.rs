@@ -363,7 +363,11 @@ impl Drop for Running {
 /// runtime would meet the old one. A test that needs the library says so when it couldn't be built.
 pub(crate) fn fennec_command() -> Command {
     runtime_built();
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fennec"));
+    // A test builds in its own process, as a first build does: one that wants the build daemon
+    // takes this away (`with_daemon` in cli.rs), so no test leaves daemons behind.
+    command.env("FENNEC_NO_DAEMON", "1");
+    command
 }
 
 /// Cargo, to build a runtime library from inside a test as it's built outside one. `cargo test`

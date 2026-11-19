@@ -470,7 +470,7 @@ def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
 
 /// The programs the targets that read an input natively run it through, each reading the file
 /// it's given. A program here may fail, but never crash or get stuck.
-const READERS: [(&str, &str); 9] = [
+const READERS: [(&str, &str); 12] = [
     ("postgres", crate::postgres_rules::READER),
     ("http-client", crate::http_rules::CLIENT),
     ("http-server", crate::http_rules::SERVER),
@@ -480,6 +480,9 @@ const READERS: [(&str, &str); 9] = [
     ("json", JSON_READER),
     ("toml", TOML_READER),
     ("utf8", UTF8_READER),
+    ("numbers", crate::numbers_rules::READER),
+    ("time", crate::time_rules::READER),
+    ("base64", crate::base64_rules::READER),
 ];
 
 /// The Fennec program the target `name` reads its inputs through, if it has one.

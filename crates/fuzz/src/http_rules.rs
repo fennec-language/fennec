@@ -235,11 +235,23 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     {
         return refused(400);
     }
-    let headers = match headers(input, at, first.len()) {
+    // A target is a path, `*` for an `OPTIONS` of the server as a whole, or a whole `http` or
+    // `https` URL, whose host stands for the `host` header.
+    let (target, host) = if target.starts_with('/') || (*target == "*" && *method == "OPTIONS") {
+        ((*target).to_owned(), None)
+    } else {
+        let Some((host, rest)) = whole_target(target) else { return refused(400) };
+        (rest, Some(host))
+    };
+    let mut headers = match headers(input, at, first.len()) {
         Ok(headers) => headers,
         Err(Early::Refused(status)) => return refused(status),
         Err(Early::Stop(stop)) => return Err(stop),
     };
+    if let Some(host) = host {
+        headers.retain(|(name, _)| name != "host");
+        headers.push(("host".to_owned(), host));
+    }
     let header =
         |wanted: &str| headers.iter().find(|(name, _)| name == wanted).map(|(_, value)| value.as_str());
     // Both, or a coding that isn't plainly `chunked`, never; `chunked` alone, not yet.
@@ -265,7 +277,7 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     if *method == "HEAD" {
         return Ok((Wanted::Head, keep));
     }
-    let (path, query_text) = target.split_once('?').unwrap_or((target, ""));
+    let (path, query_text) = target.split_once('?').unwrap_or((&target, ""));
     let (path, query) =
         (decoded(path, false), if target.contains('?') { query(query_text) } else { Vec::new() });
     // A NUL decoded into the path or the query is refused.
@@ -274,6 +286,27 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     }
     let answer = Wanted::Echoed { method: (*method).to_owned(), path, query, headers, body };
     Ok((answer, keep))
+}
+
+/// The host of a whole `http` or `https` URL, in any case, and the rest from the `/` or `?` after
+/// it, `/` when there's none: a URL with a user before its host isn't taken.
+fn whole_target(target: &str) -> Option<(String, String)> {
+    let lower = target.to_ascii_lowercase();
+    let start = if lower.starts_with("http://") {
+        7
+    } else if lower.starts_with("https://") {
+        8
+    } else {
+        return None;
+    };
+    let after = target.get(start..)?;
+    let end = after.find(['/', '?']).unwrap_or(after.len());
+    let (host, rest) = after.split_at(end);
+    if host.is_empty() || host.contains('@') {
+        return None;
+    }
+    let rest = if rest.starts_with('/') { rest.to_owned() } else { format!("/{rest}") };
+    Some((host.to_owned(), rest))
 }
 
 /// How reading headers ended early.
@@ -478,7 +511,28 @@ pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MOST_HEADER_BYTES, MOST_LINE_BYTES, Stop, Wanted, wanted};
+    use super::{Answer, MOST_HEADER_BYTES, MOST_LINE_BYTES, Stop, Wanted, answer, wanted};
+
+    #[test]
+    fn a_status_is_read_only_from_a_status_line() {
+        let read = |line: &str| answer(format!("{line}\r\n\r\n").as_bytes()).unwrap_or_else(|stop| stop);
+        assert_eq!(read("HTTP/1.1 404 Not Found"), Answer::Read(404, Vec::new()));
+        assert_eq!(read("HTTP/1.0 200"), Answer::Read(200, Vec::new()));
+        // Whitespace other than one space between its parts is read either way.
+        assert_eq!(read("HTTP/1.1\t200 OK"), Answer::Unpromised);
+        assert_eq!(read("HTTP/1.1  200 OK"), Answer::Unpromised);
+        for line in [
+            "HTTP/1.\t1 200",
+            "HTTP/1.1 0200 OK",
+            "HTTP/1.1 999 Odd",
+            "HTTP/1.1 20 OK",
+            "HTTP/2 200",
+            "HTTP/1.1x 200",
+            "ICY 200 OK",
+        ] {
+            assert_eq!(read(line), Answer::Fails, "{line:?}");
+        }
+    }
 
     #[test]
     fn the_reader_here_takes_requests_apart_as_http_says() {
@@ -493,6 +547,18 @@ mod tests {
         assert_eq!(query, &[("x".to_owned(), "1 2".to_owned())]);
         assert_eq!(headers, &[("host".to_owned(), "h".to_owned()), ("x-y".to_owned(), "z".to_owned())]);
         assert_eq!(body, b"hi");
+        // A whole URL's host stands for the `host` header, and its path is the path.
+        let (answers, _) =
+            wanted(b"GET HTTP://h:8/a?b=c HTTP/1.1\r\nHost: other\r\n\r\nGET http://h HTTP/1.1\r\n\r\n");
+        let [Wanted::Echoed { path, query, headers, .. }, Wanted::Echoed { path: bare, .. }] =
+            answers.as_slice()
+        else {
+            assert_eq!(answers.len(), 2, "{answers:?}");
+            return;
+        };
+        assert_eq!((path.as_str(), bare.as_str()), ("/a", "/"));
+        assert_eq!(query, &[("b".to_owned(), "c".to_owned())]);
+        assert_eq!(headers, &[("host".to_owned(), "h:8".to_owned())]);
         // A first line longer than a whole head may be, and one longer than the runtime reads,
         // whatever ends it.
         let long_target = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(MOST_HEADER_BYTES));
@@ -507,6 +573,11 @@ mod tests {
             (b"GET / HTTP/1.1\nHost: a\r\n\r\n", 400),
             (b"\nGET / HTTP/1.1\r\n\r\n", 400),
             (long_target.as_bytes(), 414),
+            (b"GET abc HTTP/1.1\r\n\r\n", 400),
+            (b"GET * HTTP/1.1\r\n\r\n", 400),
+            (b"GET http://u@h/ HTTP/1.1\r\n\r\n", 400),
+            (b"GET http:///a HTTP/1.1\r\n\r\n", 400),
+            (b"GET ftp://h/a HTTP/1.1\r\n\r\n", 400),
             (long_line.as_bytes(), 414),
         ] {
             let (answers, _) = wanted(asked);
@@ -515,6 +586,37 @@ mod tests {
                 "{answers:?}"
             );
         }
+    }
+}
+
+/// The most a response's status line and headers may take together, the most headers it may have,
+/// and the most its body may be, as `std.net`'s client reads one.
+const CLIENT_MOST_IN_HEADERS: usize = 1 << 20;
+const CLIENT_MOST_HEADERS: usize = 1000;
+const CLIENT_MOST_BODY: usize = 64 << 20;
+
+/// The status a response's first line gives. HTTP/1.1 writes it `HTTP/1.` and a digit, a space,
+/// three digits from 100 to 599, a space and a reason, and lets a client take any run of
+/// whitespace for each space, so a status is certain only where both readings give it: a line
+/// neither reads as one fails, and one the two read differently is unpromised.
+fn status_line(line: &[u8]) -> Result<u16, Answer> {
+    let status = |version: Option<&[u8]>, code: Option<&[u8]>| -> Option<u16> {
+        let minor = version?.strip_prefix(b"HTTP/1.")?;
+        let code = code?;
+        let written = matches!(minor, [digit] if digit.is_ascii_digit())
+            && code.len() == 3
+            && code.iter().all(u8::is_ascii_digit);
+        let status: u16 = std::str::from_utf8(code).ok()?.parse().ok()?;
+        (written && (100..=599).contains(&status)).then_some(status)
+    };
+    let mut spaced = line.splitn(3, |byte| *byte == b' ');
+    let spaced = status(spaced.next(), spaced.next());
+    let mut loose = line.split(|byte| b" \t\x0b\x0c".contains(byte)).filter(|part| !part.is_empty());
+    let loose = status(loose.next(), loose.next());
+    match (spaced, loose) {
+        (None, None) => Err(Answer::Fails),
+        (Some(spaced), Some(loose)) if spaced == loose => Ok(spaced),
+        _ => Err(Answer::Unpromised),
     }
 }
 
@@ -550,25 +652,19 @@ fn answer(input: &[u8]) -> Result<Answer, Answer> {
     let (status, headers) = loop {
         let line = crlf_line(input, &mut at)?;
         let line = String::from_utf8(line).map_err(|_| Answer::Unpromised)?;
-        let parts: Vec<&str> = line.splitn(3, ' ').collect();
-        let (Some(version), Some(code)) = (parts.first(), parts.get(1)) else {
-            return Err(Answer::Unpromised);
-        };
-        if !version.starts_with("HTTP/1.")
-            || code.len() != 3
-            || !code.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return Err(Answer::Unpromised);
-        }
-        let status: u16 = code.parse().map_err(|_| Answer::Unpromised)?;
-        if !(100..=599).contains(&status) {
-            return Err(Answer::Unpromised);
-        }
+        let status = status_line(line.as_bytes())?;
         let mut headers: Vec<(String, String)> = Vec::new();
         loop {
             let line = crlf_line(input, &mut at)?;
+            // Every line of the head so far, interim responses' too, counts against its limit.
+            if at > CLIENT_MOST_IN_HEADERS {
+                return Err(Answer::Fails);
+            }
             if line.is_empty() {
                 break;
+            }
+            if headers.len() == CLIENT_MOST_HEADERS {
+                return Err(Answer::Fails);
             }
             let line = String::from_utf8(line).map_err(|_| Answer::Unpromised)?;
             let (name, value) = line.split_once(':').ok_or(Answer::Unpromised)?;
@@ -597,7 +693,11 @@ fn answer(input: &[u8]) -> Result<Answer, Answer> {
     match lengths.as_slice() {
         [] => Ok(Answer::Read(i64::from(status), input.get(at..).unwrap_or_default().to_vec())),
         [length] if !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit()) => {
-            let length: usize = length.parse().map_err(|_| Answer::Unpromised)?;
+            // A length past the most a body may be is refused before any of it's read.
+            let length: usize = length.parse().map_err(|_| Answer::Fails)?;
+            if length > CLIENT_MOST_BODY {
+                return Err(Answer::Fails);
+            }
             input
                 .get(at..at + length)
                 .map(|body| Answer::Read(i64::from(status), body.to_vec()))

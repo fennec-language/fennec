@@ -7699,7 +7699,8 @@ def main(stdout: Stdout):
 }
 
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
-/// largest `int` a digit at a time, failing cleanly past the top. And `u64`'s `wrapping_` and
+/// largest `int` a digit at a time, failing cleanly past the top, from the same text `int` reads:
+/// with space around it and a `+` before it. And `u64`'s `wrapping_` and
 /// `saturating_` methods, worked out on its 64 bits without going past them.
 #[test]
 fn a_u64_from_outside_and_its_wrapping_and_saturating_methods() -> std::io::Result<()> {
@@ -7720,6 +7721,7 @@ def main(stdout: Stdout):
     stdout.print(top.wrapping_add(2), u64(1).wrapping_sub(3), top.wrapping_mul(top), half.wrapping_mul(2), u64(3037000500).wrapping_mul(3037000500))
     stdout.print(top.saturating_add(1), u64(1).saturating_sub(2), half.saturating_mul(2), u64(6).saturating_mul(7), top.saturating_mul(0))
     stdout.print(i8(u64(100)), u32(half >> 33), top << 4, u64(3) << 63)
+    stdout.print(said(() => u64.parse(\" 18446744073709551615\\n\")?), said(() => u64.parse(\"+18446744073709551615\")?), said(() => u64.parse(\"+ 18446744073709551615\")?), said(() => u64.parse(\" 18446744073709551616 \")?))
 ",
     )?;
     let too_big = |text: &str| format!("[{text} doesn't fit in u64, which holds 0 to 18446744073709551615]");
@@ -7729,10 +7731,12 @@ def main(stdout: Stdout):
             "18446744073709551615 9223372036854775808 42 7 {} {} {} [\"seven\" isn't an int]\n\
              1 18446744073709551614 1 0 9223372037000250000\n\
              18446744073709551615 0 18446744073709551615 42 0\n\
-             100 1073741824 18446744073709551600 9223372036854775808\n",
+             100 1073741824 18446744073709551600 9223372036854775808\n\
+             18446744073709551615 18446744073709551615 [\"+ 18446744073709551615\" isn't an int] {}\n",
             too_big("-1"),
             too_big("18446744073709551616"),
-            too_big("-3")
+            too_big("-3"),
+            too_big("18446744073709551616")
         )
     );
     Ok(())
@@ -17136,6 +17140,92 @@ fn a_loop_over_a_split_makes_no_list() -> std::io::Result<()> {
     assert_eq!(lines.next(), Some("error: `split` was called with the wrong arguments"), "{said}");
     assert!(lines.next().is_some_and(|place| place.ends_with("empty.fen:3:17")), "{said}");
     Ok(())
+}
+
+const SPLIT_PART: &str = r#"def swap(ref line: str) -> int:
+    line = f"x {line}"
+    return 1
+
+def part_of(path: str, at: int) -> str:
+    return path.split("/")[at]
+
+def main(stdout: Stdout):
+    path = "/users/12"
+    stdout.print(path.split("/")[0], path.split("/")[1], path.split("/")[2])
+    # A separator from a name and longer than a byte, one that overlaps itself, and text that
+    # isn't ASCII.
+    between = "->"
+    stdout.print("a->b->->c".split(between)[2], "a->b->->c".split(between)[3], "é,ü,ß".split(",")[1])
+    stdout.print("aaaaa".split("aa")[2], "日本語の日本".split("日本")[1])
+    # A place from a name, counting from the end when it's below zero.
+    for at in range(-3, 3):
+        stdout.print(at, part_of("/a/bc", at))
+    stdout.print("x,y,z".split(",")[-1], "x,y,z".split(",")[-3])
+    # Working out the place changes the text's name: the part is of the text as it was read.
+    mut line = "a b c"
+    stdout.print(line.split(" ")[swap(ref line)], line)
+    # Parts that are blocks of their own.
+    long = "a long part of more than twenty-three bytes|and another one just as long as that one"
+    stdout.print(long.split("|")[1], long.split("|")[0])
+    # Texts made as the program runs, a part of each and none of their lists.
+    mut total = 0
+    for i in range(1000):
+        total = total + len(f"/users/{i}".split("/")[2]) + len(f"{i},,{i}".split(",")[1])
+    stdout.print(total)
+"#;
+
+/// `text.split(separator)[place]` finds the part where it is, with no list of them all made: the
+/// parts before it are passed over as a loop over the split goes through them. Places from a name
+/// and written as numbers, from the end, a separator from a name and longer than a byte, one that
+/// overlaps itself, text that isn't ASCII, parts that are blocks of their own, and a place whose
+/// working out changes the text's name each give what `split`'s list gives. Two thousand parts
+/// taken from texts made as it runs make no list, and nothing is left. A place past the last part
+/// stops the program as `items[place]` does, and an empty separator fails as `split` does, before
+/// the place is worked out.
+#[test]
+fn a_part_of_a_split_is_found_with_no_list_made() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by("split_part", SPLIT_PART)?,
+        " users 12\n c ü\na 語の\n-3 \n-2 a\n-1 bc\n0 \n1 a\n2 bc\nz x\nb x a b c\n\
+         and another one just as long as that one a long part of more than twenty-three bytes\n2890\n"
+    );
+    let counts = counts_of("split_part_counts", SPLIT_PART)?;
+    assert!(counts.contains(" allocations 18 ") && counts.ends_with(" live 0"), "{counts}");
+    let past = "def main(stdout: Stdout):\n    at = 3\n    stdout.print(\"a/b\".split(\"/\")[at - 2])\n    \
+                stdout.print(\"a/b\".split(\"/\")[at])\n";
+    let (printed, said) = stopped_by("split_part_past", past)?;
+    assert_eq!(printed, "b\n");
+    let mut lines = said.lines();
+    assert_eq!(lines.next(), Some("error: index 3 is out of range for length 2"), "{said}");
+    assert!(lines.next().is_some_and(|place| place.ends_with("split_part_past.fen:4:18")), "{said}");
+    let empty = "def place(stdout: Stdout) -> int:\n    stdout.print(\"the place\")\n    return 0\n\n\
+                 def main(stdout: Stdout):\n    separator = \"\"\n    \
+                 stdout.print(\"abc\".split(separator)[place(stdout)])\n";
+    let (printed, said) = stopped_by("split_part_empty", empty)?;
+    assert_eq!(printed, "");
+    let mut lines = said.lines();
+    assert_eq!(lines.next(), Some("error: `split` was called with the wrong arguments"), "{said}");
+    assert!(lines.next().is_some_and(|place| place.ends_with("split_part_empty.fen:7:18")), "{said}");
+    Ok(())
+}
+
+/// Builds and runs a program through LLVM that stops, giving back what it printed and what it
+/// said as it stopped.
+fn stopped_by(name: &str, source: &str) -> std::io::Result<(String, String)> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let executable = dir.join(name);
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success(), "{name} ran to its end");
+    Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), String::from_utf8_lossy(&ran.stderr).into_owned()))
 }
 
 /// What a borrowed field can't outlast: the variable written while the loop runs, given away

@@ -415,7 +415,7 @@ impl Emit<'_, '_, '_> {
         let shown = self.shown_text(&value, &kind)?;
         let start = self.literal(start);
         let text = self.joined(&start, &shown, true);
-        self.stop_with(&text, span);
+        self.stop_owned(&text, span);
         let after = self.label("stopped");
         self.start_block(&after);
         Ok(())
@@ -575,7 +575,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Two strings joined into a new one, letting go of the first and, if it's owned, the second.
-    fn joined(&mut self, first: &str, second: &str, second_owned: bool) -> String {
+    pub(crate) fn joined(&mut self, first: &str, second: &str, second_owned: bool) -> String {
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         let text = self.temp();
         self.line(&format!("{text} = call ptr @fennec_str_concat(ptr {first}, ptr {second})"));

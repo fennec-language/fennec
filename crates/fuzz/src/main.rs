@@ -39,6 +39,7 @@ mod generate;
 mod html_rules;
 mod http_rules;
 mod json_rules;
+mod killed_writes;
 mod llvm;
 mod minimize;
 mod mutate;
@@ -74,6 +75,7 @@ fn main() -> ExitCode {
         ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
         ["show", "programs", file] => show(Path::new(file), programs::written),
         ["show", "replay", file] => show(Path::new(file), replay_rules::written),
+        ["show", "killed-writes", file] => show(Path::new(file), killed_writes::written),
         ["show", "reader", name] => llvm::reader_source(name).map_or_else(
             || Err(format!("there's no reader for `{name}`; there are {}", llvm::reader_names().join(", "))),
             |source| {
@@ -231,7 +233,8 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
         options.names.iter().map(|name| target_named(name)).collect::<Result<_, _>>()?
     };
     let native = |target: &&Target| {
-        [targets::LLVM.name, targets::RANDOM_PROGRAMS.name, targets::REPLAY.name].contains(&target.name)
+        [targets::LLVM.name, targets::RANDOM_PROGRAMS.name, targets::REPLAY.name, targets::KILLED_WRITES.name]
+            .contains(&target.name)
             || targets::NATIVE.contains(&target.name)
     };
     if chosen.iter().any(native) {

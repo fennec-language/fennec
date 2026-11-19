@@ -13,6 +13,7 @@ use super::ast::{
     Between, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, Looping, REF_TEXTS,
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
+use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
@@ -646,7 +647,9 @@ pub(crate) fn source(program: &Program) -> String {
         (false, true) => "from std.concurrent import Sender, channel\n",
         (false, false) => "",
     };
-    format!("{channels}{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+    // Only a program holding a `Filed` statement reaches the disk, so only it takes an `Fs`.
+    let fs = if writer.helpers.contains("(fs: Fs, stdout: Stdout)") { ", fs: Fs" } else { "" };
+    format!("{channels}{HEADER}{tasks}{}def main(stdout: Stdout{fs}):\n{}", writer.helpers, writer.out)
 }
 
 /// `streamed{id}`, the function a `Streamed` calls: its stream, made and read.
@@ -2021,6 +2024,155 @@ fn ordered_written(in_order: &InOrder) -> String {
     out
 }
 
+/// `text` as a Fennec string literal.
+fn text_literal(text: &str) -> String {
+    let mut out = String::from("\"");
+    for character in text.chars() {
+        match character {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The functions a `Filed` statement calls, `{N}` standing for its id: its failure, the writes
+/// that can stop partway, what a file holds, and a file cleared if it's there.
+const FILED_TYPES: &str = "error Halt{N}:
+    at: int
+
+def saved{N}(fs: Fs, path: str, pieces: list[str], stop_at: int) fails IoError | Halt{N}:
+    with fs.create(path)? as file:
+        mut at = 0
+        for piece in pieces:
+            if at == stop_at:
+                fail Halt{N}(at=at)
+            file.write_text(piece)?
+            at += 1
+
+def halted{N}(at: int, stop_at: int) fails Halt{N}:
+    if at == stop_at:
+        fail Halt{N}(at=at)
+
+def questioned{N}(fs: Fs, path: str, pieces: list[str], stop_at: int) fails IoError | Halt{N}:
+    with fs.create(path, durable=False)? as file:
+        mut at = 0
+        for piece in pieces:
+            file.write_text(piece)?
+            file.sync()?
+            halted{N}(at, stop_at=stop_at)?
+            at += 1
+
+def both{N}(fs: Fs, first: str, second: str, pieces: list[str], stop_at: int) fails IoError | Halt{N}:
+    with fs.create(first)? as one, fs.create(second)? as two:
+        mut at = 0
+        for piece in pieces:
+            one.write_text(piece)?
+            if at == stop_at:
+                fail Halt{N}(at=at)
+            two.write_text(piece)?
+            at += 1
+
+def shown{N}(fs: Fs, path: str) -> str:
+    found = fs.read_text_if_present(path) except why:
+        return f\"unreadable {why}\"
+    text = found else return \"nothing\"
+    return f\"[{text}]\"
+
+def cleared{N}(fs: Fs, path: str) fails IoError:
+    if fs.exists(path)?:
+        fs.remove(path)?
+
+";
+
+/// The task a `Filed` statement's `Tasked` steps launch, which crashes partway through its write,
+/// and the function that launches it. Only a statement with such a step has them, since a program
+/// without threads can't launch.
+const FILED_TASKS: &str = "def written{N}(fs: Fs, path: str, pieces: list[str], stop_at: int) fails IoError:
+    with fs.create(path)? as file:
+        mut at = 0
+        for piece in pieces:
+            file.write_text(piece)?
+            if at == stop_at:
+                _ = pieces[at + 99]
+            at += 1
+
+def tasked{N}(fs: Fs, path: str, pieces: list[str], stop_at: int) fails Crashed | IoError:
+    with launch(() => written{N}(fs, path, pieces, stop_at=stop_at)?) as task:
+        pass
+
+";
+
+/// `filed{id}`, the function a `Filed` calls, after the functions it calls: its folder made if
+/// it's not there, both files cleared, then each step and what the file holds after it.
+fn filed_written(filing: &Filing) -> String {
+    let Filing { id, steps } = filing;
+    let mut out = FILED_TYPES.replace("{N}", &id.to_string());
+    if steps.iter().any(|step| step.way == FileWay::Tasked) {
+        out.push_str(&FILED_TASKS.replace("{N}", &id.to_string()));
+    }
+    let failed = |indent: &str| format!("except why:\n{indent}    stdout.print(\"failed\", why)");
+    let (first, second) = (format!("\"d{id}/f.txt\""), format!("\"d{id}/g.txt\""));
+    let _ = write!(
+        out,
+        "def filed{id}(fs: Fs, stdout: Stdout):\n    present = fs.exists(\"d{id}\") {}\n        return\n    if not \
+         present:\n        fs.make_dir(\"d{id}\") {}\n            return\n    cleared{id}(fs, {first}) {}\n        \
+         return\n    cleared{id}(fs, {second}) {}\n        return\n",
+        failed("    "),
+        failed("        "),
+        failed("    "),
+        failed("    "),
+    );
+    for step in steps {
+        let path = if step.second { &second } else { &first };
+        let pieces: Vec<String> =
+            step.pieces.iter().map(|at| text_literal(FILE_PIECES.get(*at).copied().unwrap_or(""))).collect();
+        let whole: String =
+            step.pieces.iter().map(|at| FILE_PIECES.get(*at).copied().unwrap_or("")).collect();
+        let (pieces, stop_at, whole) = (pieces.join(", "), step.stop_at, text_literal(&whole));
+        let shown = format!("stdout.print(shown{id}(fs, {path}))");
+        let lines = match step.way {
+            FileWay::Saved | FileWay::Questioned => {
+                let called = if step.way == FileWay::Saved { "saved" } else { "questioned" };
+                format!(
+                    "{called}{id}(fs, {path}, pieces=[{pieces}], stop_at={stop_at}) {}\n    {shown}",
+                    failed("    ")
+                )
+            }
+            FileWay::Tasked => format!(
+                "tasked{id}(fs, {path}, pieces=[{pieces}], stop_at={stop_at}) except why:\n        case \
+                 Crashed():\n            stdout.print(\"crashed\")\n        case _:\n            \
+                 stdout.print(\"failed\", why)\n    {shown}"
+            ),
+            FileWay::Both => format!(
+                "both{id}(fs, first={first}, second={second}, pieces=[{pieces}], stop_at={stop_at}) {}\n    \
+                 stdout.print(shown{id}(fs, {first}), shown{id}(fs, {second}))",
+                failed("    ")
+            ),
+            FileWay::Plain => format!("fs.write_text({path}, {whole}) {}\n    {shown}", failed("    ")),
+            FileWay::ReadOnly => format!(
+                "fs.read_only().write_text({path}, {whole}) except why:\n        stdout.print(\"refused\", \
+                 why)\n    {shown}"
+            ),
+            FileWay::Outside => format!(
+                "fs.only(\"d{id}\").write_text(\"elsewhere.txt\", {whole}) except why:\n        case \
+                 .PermissionDenied():\n            stdout.print(\"refused outside\")\n        case _:\n            \
+                 stdout.print(\"failed\", why)"
+            ),
+            FileWay::Removed => format!(
+                "fs.remove({path}) except why:\n        case .NotFound():\n            stdout.print(\"not \
+                 there\")\n        case _:\n            stdout.print(\"failed\", why)\n    {shown}"
+            ),
+        };
+        let _ = writeln!(out, "    {lines}");
+    }
+    out.push('\n');
+    out
+}
+
 /// The types an `Owned` statement changes through their own `def []`, `{N}` standing for its id:
 /// a failing `Part`, a `Shelf`, `Keyed`, `Room` and `Rows` with the plain form and a `def []=`
 /// that counts its writes, and `Slots` with the `ref` form, `len` and `is_live`.
@@ -2913,6 +3065,10 @@ impl Writer {
             Stmt::Turned(turning) => {
                 let _ = write!(self.helpers, "{}", turned_written(turning));
                 self.line(indent, &format!("turned{}(stdout)", turning.id));
+            }
+            Stmt::Filed(filing) => {
+                let _ = write!(self.helpers, "{}", filed_written(filing));
+                self.line(indent, &format!("filed{}(fs, stdout)", filing.id));
             }
             Stmt::Ordered(in_order) => {
                 let _ = write!(self.helpers, "{}", ordered_written(in_order));

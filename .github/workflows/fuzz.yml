@@ -58,12 +58,14 @@ jobs:
             target: ""
             only: programs
           # Tasks and a server's rounds that print and make way, each recorded on 1 and 4 threads
-          # and replayed on 1, 4 and 16, which have to print what the recording printed.
+          # and replayed on 1, 4 and 16, which have to print what the recording printed. And a
+          # program putting a new file in place of an old one, killed partway, which has to leave
+          # the old file or the new one, never a torn one.
           - name: Replay
             toolchain: ""
             flags: ""
             target: ""
-            only: replay
+            only: replay killed-writes
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:

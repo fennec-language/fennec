@@ -206,13 +206,23 @@ mod unix {
         "WINDOWID",
     ];
 
+    /// What the allocator's own settings start with. They change how a process holds memory, not
+    /// what a build makes, and the daemon is started with one of its own (`start`).
+    const ALLOCATOR: &str = "MIMALLOC_";
+
     /// A short hash of this process's environment but for what's only a terminal's: a daemon
     /// builds in the environment it was started in, which `cc`, the linker and every setting read,
     /// so a command whose environment differs has a daemon of its own.
     fn environment() -> String {
+        environment_of(std::env::vars_os())
+    }
+
+    /// `environment`, of these variables.
+    fn environment_of(variables: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>) -> String {
         use std::os::unix::ffi::OsStrExt as _;
-        let mut variables: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
+        let mut variables: Vec<(std::ffi::OsString, std::ffi::OsString)> = variables
             .filter(|(name, _)| !PER_TERMINAL.iter().any(|terminal| name == terminal))
+            .filter(|(name, _)| !name.as_bytes().starts_with(ALLOCATOR.as_bytes()))
             .collect();
         variables.sort();
         let mut text = Vec::new();
@@ -521,9 +531,13 @@ mod unix {
     pub(super) fn start(home: &Path) -> Option<()> {
         let socket = socket_path(home, false)?;
         let exe = std::env::current_exe().ok()?;
-        // The daemon outlives the command that starts it, so it's never waited for.
+        // The daemon outlives the command that starts it, so it's never waited for. It gives what a
+        // build let go of back to the system at once: mimalloc otherwise does so only as later
+        // allocations come, which an idle daemon never makes, and a 200k-line build left 2.2 GB held
+        // through the idle half hour. That costs a build about 0.8% more instructions.
         let _daemon = std::process::Command::new(exe)
             .args(["daemon", "serve"])
+            .env("MIMALLOC_PURGE_DELAY", "0")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1027,6 +1041,21 @@ mod unix {
             std::fs::write(&plain, "").unwrap();
             assert!(!socket_owned_by(&plain, me));
             assert!(super::connect(&plain, &folder).is_none());
+        }
+
+        /// The environment's hash leaves out what differs from terminal to terminal and the
+        /// allocator's settings, which the daemon is started with one of, and nothing else.
+        #[test]
+        fn the_environment_hash_leaves_out_terminals_and_the_allocator() {
+            let of = |pairs: &[(&str, &str)]| {
+                super::environment_of(pairs.iter().map(|(name, value)| ((*name).into(), (*value).into())))
+            };
+            let base = of(&[("PATH", "/usr/bin"), ("CC", "cc")]);
+            let terminal =
+                of(&[("PATH", "/usr/bin"), ("PWD", "/x"), ("CC", "cc"), ("MIMALLOC_PURGE_DELAY", "0")]);
+            assert_eq!(base, terminal);
+            assert_ne!(base, of(&[("PATH", "/opt/bin"), ("CC", "cc")]));
+            assert_ne!(base, of(&[("PATH", "/usr/bin"), ("CC", "cc"), ("LD", "ld")]));
         }
 
         /// A command that goes while its build runs, by Ctrl-C or otherwise, closes its connection,

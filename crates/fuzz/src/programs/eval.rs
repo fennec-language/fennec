@@ -28,6 +28,7 @@ use super::ast::{IfaceStep, Interfacing};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{Sticking, StuckWay};
 use super::source::LONG_PIECE;
 
 /// A `Narrowed` statement's union as the evaluator holds it: a `Crate{id}`'s list or a `Heap{id}`'s
@@ -2024,6 +2025,7 @@ impl Machine {
             Stmt::Turned(turning) => self.turned(turning)?,
             Stmt::Filed(filing) => self.filed(filing),
             Stmt::Generic(generic) => self.generic(generic),
+            Stmt::Stuck(sticking) => self.stuck(*sticking)?,
             Stmt::Interfaced(interfacing) => self.interfaced(interfacing)?,
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
@@ -3156,6 +3158,30 @@ impl Machine {
         let _ = writeln!(self.out, "Holder{id}(item={}, items=[])", shown(&outer));
         let _ = writeln!(self.out, "[{}, {}]", shown(&pair[0]), shown(&pair[1]));
         let _ = writeln!(self.out, "{{\"k\": {}}}", shown(&table));
+    }
+
+    /// What `stuck{id}` prints: a wait with a time limit times out and the program goes on, and
+    /// one without is a deadlock, which stops the program after what it printed.
+    fn stuck(&mut self, sticking: Sticking) -> Ran<()> {
+        let Sticking { id, way, n } = sticking;
+        let _ = writeln!(self.out, "stuck{id} {n}");
+        match way {
+            StuckWay::TimedReceive => {
+                let _ = writeln!(self.out, "received -1");
+                return Ok(());
+            }
+            StuckWay::TimedSend => {
+                let _ = writeln!(self.out, "send timed out");
+                return Ok(());
+            }
+            StuckWay::BlockEnd => {
+                let _ = writeln!(self.out, "drained{id} waits");
+            }
+            StuckWay::Received | StuckWay::SentFull | StuckWay::Rounds => {}
+        }
+        self.said =
+            Some("a deadlock: every task is waiting for another, and nothing can wake them".to_owned());
+        Err(Stop::Failed)
     }
 
     /// What `interfaced{id}` prints: each generic call runs the method of the type it's given,

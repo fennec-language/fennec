@@ -2746,6 +2746,102 @@ fn a_types_own_index_reads_writes_back_and_gives_positions() {
     );
 }
 
+/// Through a type's own `def []`, every built-in method that changes its value is written back
+/// through `def []=`, as compiled code does: a list's `sort`, with a key too, and `remove_where`,
+/// and a table's `add`, `modify` and `remove_where`. One that only reads, a list's `count`,
+/// `index` and `get` or a table's `values` and `get`, writes nothing back. What it prints is what
+/// the compiled program printed, built for dev and with `--release`.
+#[test]
+fn every_change_through_a_types_own_index_is_written_back() {
+    prints(
+        "
+        from std.collections import Table
+
+        struct Point:
+            x: int
+
+        def bump(ref point: Point):
+            point.x += 5
+
+        struct Shelf:
+            rows: list[list[int]]
+            writes = 0
+
+            def [](self, at: int) -> list[int]:
+                return self.rows[at]
+
+            def []=(ref self, at: int, row: list[int]):
+                self.rows[at] = row
+                self.writes += 1
+
+        struct Desk:
+            tables: list[Table[Point]]
+            writes = 0
+
+            def [](self, at: int) -> Table[Point]:
+                return self.tables[at]
+
+            def []=(ref self, at: int, table: Table[Point]):
+                self.tables[at] = table
+                self.writes += 1
+
+        def main(stdout: Stdout):
+            mut shelf = Shelf(rows=[[3, 1, 3], [5, 4, 6]])
+            stdout.print(shelf[0].count(3), shelf[0].index(1), shelf[0].get(9), shelf.writes)
+            shelf[0].sort()
+            stdout.print(shelf.rows, shelf.writes)
+            shelf[1].sort(key=item => 0 - item)
+            stdout.print(shelf.rows, shelf.writes)
+            shelf[1].remove_where(item => item > 5)
+            stdout.print(shelf.rows, shelf.writes)
+            mut desk = Desk(tables=[Table[Point]()])
+            made = desk[0].add(Point(x=1))
+            other = desk[0].add(Point(x=2))
+            stdout.print(len(desk[0].values()), desk.writes)
+            _ = desk[0].modify(made, bump)
+            stdout.print(desk[0].get(made), desk.writes)
+            desk[0].remove_where(point => point.x > 3)
+            stdout.print(desk[0].get(made), desk[0].get(other), desk.writes)
+            return
+        ",
+        "2 1 None 0\n\
+         [[1, 3, 3], [5, 4, 6]] 1\n\
+         [[1, 3, 3], [6, 5, 4]] 2\n\
+         [[1, 3, 3], [5, 4]] 3\n\
+         2 2\n\
+         Point(x=6) 3\n\
+         None Point(x=2) 4\n",
+    );
+}
+
+/// A built-in method the oracle doesn't know changes its value or only reads it, called through
+/// a type's own `def []`, is refused: writing it back or not could each be wrong.
+#[test]
+fn a_method_through_a_types_own_index_not_known_to_change_or_read_is_refused() {
+    let (_, ended) = ran("
+        struct Blobs:
+            items: list[bytes]
+
+            def [](self, at: int) -> bytes:
+                return self.items[at]
+
+            def []=(ref self, at: int, item: bytes):
+                self.items[at] = item
+
+        def main(stdout: Stdout):
+            mut blobs = Blobs(items=['hi'.encode()])
+            stdout.print(blobs[0].hex())
+            return
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "the method `hex` through a type's own `def []`, not known to change its value or only read it"
+                .to_owned()
+        )
+    );
+}
+
 /// A change through a type's own `def []=` that fails partway keeps what it changed before the
 /// failure: the part is written back, since only `lock ... as ref` rolls back. What it prints is
 /// what the compiled program printed, built for dev and with `--release`.

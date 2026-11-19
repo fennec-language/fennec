@@ -420,6 +420,20 @@ impl Interp {
     }
 }
 
+/// Whether calling the built-in method `name` changes the value it's called on: one of `CHANGES`,
+/// or a list's or a table's `sort`, `remove_where` and `modify`, which are worked out from the
+/// whole value and put back.
+pub(crate) fn changes(name: &str) -> bool {
+    CHANGES.contains(&name) || matches!(name, "sort" | "remove_where" | "modify")
+}
+
+/// Whether calling the built-in method `name` on what's held only reads it: `only_reads`, or a
+/// table's `get`, `values`, `ids` and `items`.
+pub(crate) fn reads(held: &Value, name: &str) -> bool {
+    only_reads(held, name)
+        || matches!(held, Value::Table(_)) && matches!(name, "get" | "values" | "ids" | "items")
+}
+
 /// The methods that change a list, dict or set where it is.
 pub(crate) const CHANGES: &[&str] = &[
     "append",

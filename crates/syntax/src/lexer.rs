@@ -53,6 +53,15 @@ fn hidden_direction(source: &str, base: u32) -> Option<Diagnostic> {
     )
 }
 
+/// Which string a `"""` one is: `"""`, `r"""`, `f"""` or `t"""`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Quoted {
+    Plain,
+    Raw,
+    Formatted,
+    Template,
+}
+
 struct Lexer<'a> {
     source: &'a str,
     chars: Vec<(usize, char)>,
@@ -85,6 +94,10 @@ impl Lexer<'_> {
                     }
                 }
                 '#' => self.skip_comment(),
+                '"' if self.triple_at(0) => self.triple(start, 0, Quoted::Plain)?,
+                'r' if self.triple_at(1) => self.triple(start, 1, Quoted::Raw)?,
+                'f' if self.triple_at(1) => self.triple(start, 1, Quoted::Formatted)?,
+                't' if self.triple_at(1) => self.triple(start, 1, Quoted::Template)?,
                 '"' => self.string(start)?,
                 'f' if self.peek(1) == Some('"') => self.fstring(start, false)?,
                 't' if self.peek(1) == Some('"') => self.fstring(start, true)?,
@@ -403,32 +416,7 @@ impl Lexer<'_> {
                 None | Some('\n') => return Err(self.unterminated(start)),
                 Some('"') => break,
                 Some('\\') => text.push(self.escape(start)?),
-                Some('{') if self.peek(1) == Some('{') => {
-                    text.push('{');
-                    self.pos += 2;
-                }
-                Some('}') if self.peek(1) == Some('}') => {
-                    text.push('}');
-                    self.pos += 2;
-                }
-                Some('{') => {
-                    let mut part = self.fstring_expr(start)?;
-                    // `{hp=}` shows what's written and then its value: `hp=100`.
-                    if let FPart::Expr { source, .. } = &mut part
-                        && let Some(shown) = shown_as_written(source)
-                    {
-                        text.push_str(source);
-                        *source = shown;
-                    }
-                    if !text.is_empty() {
-                        parts.push(FPart::Text(std::mem::take(&mut text)));
-                    }
-                    parts.push(part);
-                }
-                Some('}') => {
-                    return Err(Diagnostic::new("`}` without a matching `{`", self.span(self.offset()))
-                        .with_help("write `}}` for a literal brace"));
-                }
+                Some('{' | '}') => self.fstring_brace(start, &mut text, &mut parts)?,
                 Some(c) => {
                     text.push(c);
                     self.pos += 1;
@@ -441,6 +429,197 @@ impl Lexer<'_> {
         }
         self.push(if template { Tok::TStr(parts) } else { Tok::FStr(parts) }, start);
         Ok(())
+    }
+
+    /// A brace in an f-string or a template string, where the lexer is: `{{` or `}}` for one
+    /// brace, or `{expression}`, which ends the text before it.
+    fn fstring_brace(
+        &mut self,
+        start: usize,
+        text: &mut String,
+        parts: &mut Vec<FPart>,
+    ) -> Result<(), Diagnostic> {
+        match (self.peek(0), self.peek(1)) {
+            (Some(brace @ ('{' | '}')), Some(next)) if next == brace => {
+                text.push(brace);
+                self.pos += 2;
+            }
+            (Some('{'), _) => {
+                let mut part = self.fstring_expr(start)?;
+                // `{hp=}` shows what's written and then its value: `hp=100`.
+                if let FPart::Expr { source, .. } = &mut part
+                    && let Some(shown) = shown_as_written(source)
+                {
+                    text.push_str(source);
+                    *source = shown;
+                }
+                if !text.is_empty() {
+                    parts.push(FPart::Text(std::mem::take(text)));
+                }
+                parts.push(part);
+            }
+            _ => {
+                return Err(Diagnostic::new("`}` without a matching `{`", self.span(self.offset()))
+                    .with_help("write `}}` for a literal brace"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `"""` starts `ahead` characters on.
+    fn triple_at(&self, ahead: usize) -> bool {
+        (ahead..ahead + 3).all(|at| self.peek(at) == Some('"'))
+    }
+
+    fn char_at(&self, at: usize) -> Option<char> {
+        self.chars.get(at).map(|&(_, c)| c)
+    }
+
+    fn offset_at(&self, at: usize) -> usize {
+        self.chars.get(at).map_or(self.source.len(), |&(offset, _)| offset)
+    }
+
+    /// A string between `"""`s, which may span lines, after `prefix` letters, as the `f` of
+    /// `f"""`. A newline right after the opening `"""` isn't part of it. When the closing `"""` is
+    /// on a line of its own, the spaces before it come off the front of every line after the
+    /// opening one, and a line with fewer is refused; a line of nothing but spaces may have fewer,
+    /// and is empty. The newline before that closing line is kept. Escapes and `{}`s are read as on
+    /// one line.
+    fn triple(&mut self, start: usize, prefix: usize, kind: Quoted) -> Result<(), Diagnostic> {
+        let content = self.pos + prefix + 3;
+        // Where the closing `"""` is: a backslash escapes what follows it, but not in a raw one.
+        let mut end = content;
+        loop {
+            match self.char_at(end) {
+                None => return Err(self.unclosed_triple(start, prefix)),
+                Some('\\') if kind != Quoted::Raw => end += 2,
+                Some('"') if self.char_at(end + 1) == Some('"') && self.char_at(end + 2) == Some('"') => {
+                    break;
+                }
+                Some(_) => end += 1,
+            }
+        }
+        let first = if self.char_at(content) == Some('\n') { content + 1 } else { content };
+        // The closing `"""` alone on its line: the spaces before it, and the text up to and with
+        // the newline before them.
+        let last_newline = (content..end).rev().find(|&at| self.char_at(at) == Some('\n'));
+        let (indent, body_end) = match last_newline {
+            Some(newline) if (newline + 1..end).all(|at| self.char_at(at) == Some(' ')) => {
+                (end - newline - 1, newline + 1)
+            }
+            _ => (0, end),
+        };
+        self.pos = first;
+        let mut text = String::new();
+        let mut parts = Vec::new();
+        // Text right after the opening `"""` has no spaces of its own to take off.
+        let mut line_start = first != content;
+        while self.pos < body_end {
+            if line_start {
+                line_start = false;
+                let spaces = (self.pos..body_end).take_while(|&at| self.char_at(at) == Some(' ')).count();
+                if self.char_at(self.pos + spaces) == Some('\n') {
+                    self.pos += spaces.min(indent);
+                } else if spaces < indent {
+                    return Err(self.under_indented(self.pos + spaces, indent));
+                } else {
+                    self.pos += indent;
+                }
+                continue;
+            }
+            match self.peek(0) {
+                Some('\n') => {
+                    text.push('\n');
+                    self.pos += 1;
+                    line_start = true;
+                }
+                Some('\\') if kind != Quoted::Raw && self.peek(1) == Some('\n') => {
+                    return Err(Diagnostic::new(
+                        "a `\\` can't end a line in a string",
+                        self.span(self.offset()),
+                    )
+                    .with_help("write `\\n` for a newline, or take the `\\` out"));
+                }
+                Some('\\') if kind != Quoted::Raw => text.push(self.escape(start)?),
+                Some('{' | '}') if matches!(kind, Quoted::Formatted | Quoted::Template) => {
+                    if self.peek(0) == Some('{') && self.peek(1) != Some('{') {
+                        self.brace_on_its_line()?;
+                    }
+                    self.fstring_brace(start, &mut text, &mut parts)?;
+                }
+                Some(c) => {
+                    text.push(c);
+                    self.pos += 1;
+                }
+                None => break,
+            }
+        }
+        self.pos = end + 3;
+        let tok = match kind {
+            Quoted::Plain | Quoted::Raw => Tok::Str(text),
+            Quoted::Formatted | Quoted::Template => {
+                if !text.is_empty() {
+                    parts.push(FPart::Text(text));
+                }
+                if kind == Quoted::Template { Tok::TStr(parts) } else { Tok::FStr(parts) }
+            }
+        };
+        self.push(tok, start);
+        Ok(())
+    }
+
+    /// A `{` in a `"""` string closes on its own line and holds no `"`, as in a string on one line.
+    fn brace_on_its_line(&self) -> Result<(), Diagnostic> {
+        let mut nesting = 0_usize;
+        let mut at = self.pos + 1;
+        loop {
+            match self.char_at(at) {
+                None | Some('\n') => {
+                    return Err(Diagnostic::new(
+                        "this `{` isn't closed on its line",
+                        self.span(self.offset()),
+                    )
+                    .with_help("close it with `}` on the same line, or write `{{` for a brace"));
+                }
+                Some('"') => {
+                    let quote = Span::new(self.offset_at(at), self.offset_at(at) + 1).shifted(self.base);
+                    return Err(Diagnostic::new("a `\"` can't go inside `{}` in a string", quote).with_help(
+                        "give the value a name before the string, and write the name in the `{}`",
+                    ));
+                }
+                Some('(' | '[' | '{') => nesting += 1,
+                Some(')' | ']') => nesting = nesting.saturating_sub(1),
+                Some('}') if nesting == 0 => return Ok(()),
+                Some('}') => nesting -= 1,
+                Some(_) => {}
+            }
+            at += 1;
+        }
+    }
+
+    /// A `"""` with no `"""` after it, named by the line it's on, which may be far above where
+    /// the file ends.
+    fn unclosed_triple(&self, start: usize, prefix: usize) -> Diagnostic {
+        let line = self.source.get(..start).map_or(0, |before| before.matches('\n').count()) + 1;
+        Diagnostic::new(
+            format!("the `\"\"\"` on line {line} is never closed"),
+            Span::new(start, start + prefix + 3).shifted(self.base),
+        )
+        .with_help("close it with `\"\"\"`")
+    }
+
+    /// A line of a `"""` string with fewer spaces before it than the closing `"""` has, at its
+    /// first character.
+    fn under_indented(&self, at: usize, indent: usize) -> Diagnostic {
+        let offset = self.offset_at(at);
+        let width = self.char_at(at).map_or(1, char::len_utf8);
+        Diagnostic::new(
+            "this line is indented less than the closing `\"\"\"`",
+            Span::new(offset, offset + width).shifted(self.base),
+        )
+        .with_help(format!(
+            "indent it at least {indent} spaces, as far as the closing `\"\"\"` is, or move the closing `\"\"\"` left"
+        ))
     }
 
     /// Reads `{expression}` or `{expression:spec}` inside an f-string.
@@ -594,5 +773,77 @@ mod tests {
         assert_eq!(parts("f\"{ hp = }\""), [FPart::Text(" hp = ".to_owned()), code(" hp ", 3, None)]);
         assert_eq!(parts("f\"{hp == 1}\""), [code("hp == 1", 3, None)]);
         assert_eq!(parts("f\"{hp >= 1}\""), [code("hp >= 1", 3, None)]);
+    }
+
+    /// The first token of `source`, which is a string.
+    fn first(source: &str) -> Tok {
+        lex(source, 0).unwrap().into_iter().map(|token| token.tok).next().unwrap()
+    }
+
+    /// A `"""` string keeps its lines, and loses the newline after its opening `"""` and the
+    /// spaces before a closing `"""` on its own line, from every line (#294).
+    #[test]
+    fn a_string_in_triple_quotes_keeps_its_lines_less_the_closing_indent() {
+        let text = |source: &str| match first(source) {
+            Tok::Str(text) => text,
+            other => panic!("not a string: {other:?}"),
+        };
+        assert_eq!(text("\"\"\"\n    one\n      two\n\n    three\n    \"\"\""), "one\n  two\n\nthree\n");
+        // A line of nothing but spaces may have fewer, and keeps those past the indent.
+        assert_eq!(text("\"\"\"\n    one\n  \n      \n    two\n    \"\"\""), "one\n\n  \ntwo\n");
+        // Closed after text, nothing comes off; text after the opening `"""` has none to lose.
+        assert_eq!(text("\"\"\"one\n  two\"\"\""), "one\n  two");
+        assert_eq!(text("\"\"\"Usage\n    more\n    \"\"\""), "Usage\nmore\n");
+        assert_eq!(text("\"\"\"\"\"\""), "");
+        assert_eq!(text("\"\"\"\n\"\"\""), "");
+        // Escapes as on one line, and three quotes written with them; a raw one keeps backslashes.
+        assert_eq!(text("\"\"\"\n    a\\tb \\\"\\\"\\\" c\n    \"\"\""), "a\tb \"\"\" c\n");
+        assert_eq!(text("r\"\"\"\n    \\d+ {x}\n    \"\"\""), "\\d+ {x}\n");
+        // The statement goes on after it, on its last line.
+        let tokens: Vec<Tok> = lex("x = \"\"\"\n    a\n    \"\"\" + \"b\"\ny = 1\n", 0)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.tok)
+            .collect();
+        assert!(tokens.contains(&Tok::Str("a\n".to_owned())) && tokens.contains(&Tok::Str("b".to_owned())));
+        assert_eq!(tokens.iter().filter(|tok| **tok == Tok::Newline).count(), 2, "{tokens:?}");
+    }
+
+    /// An f-string or a template in `"""`s reads its `{}`s where they're written in the file.
+    #[test]
+    fn an_fstring_in_triple_quotes_reads_its_braces_where_they_are() {
+        use crate::token::FPart;
+        let source = "f\"\"\"\n    Hello, {name}!\n      {{you}}\n    \"\"\"";
+        let at = u32::try_from(source.find("name").unwrap()).unwrap();
+        let expected = [
+            FPart::Text("Hello, ".to_owned()),
+            FPart::Expr { source: "name".to_owned(), offset: at, spec: None },
+            FPart::Text("!\n  {you}\n".to_owned()),
+        ];
+        assert_eq!(first(source), Tok::FStr(expected.to_vec()));
+        assert_eq!(first(&source.replacen('f', "t", 1)), Tok::TStr(expected.to_vec()));
+    }
+
+    /// Each mistake in a `"""` string is said where it is, with how to fix it.
+    #[test]
+    fn a_string_in_triple_quotes_says_what_is_wrong_and_where() {
+        let wrong = |source: &str, at: &str| {
+            let problem = lex(source, 0).unwrap_err();
+            let place = u32::try_from(source.find(at).unwrap()).unwrap();
+            assert_eq!(problem.span.start, place, "{source}: {}", problem.message);
+            (problem.message, problem.help.unwrap_or_default())
+        };
+        let (said, help) = wrong("x = 1\ny = \"\"\"abc\n\nz = 2\n", "\"\"\"");
+        assert_eq!(said, "the `\"\"\"` on line 2 is never closed");
+        assert_eq!(help, "close it with `\"\"\"`");
+        let (said, help) = wrong("x = \"\"\"\n    one\n  two\n    \"\"\"\n", "two");
+        assert_eq!(said, "this line is indented less than the closing `\"\"\"`");
+        assert!(help.contains("at least 4 spaces"), "{help}");
+        let (said, _) = wrong("x = \"\"\"\n    one\\\n    \"\"\"\n", "\\");
+        assert_eq!(said, "a `\\` can't end a line in a string");
+        let (said, _) = wrong("x = f\"\"\"\n    {a\n    }\n    \"\"\"\n", "{");
+        assert_eq!(said, "this `{` isn't closed on its line");
+        let (said, _) = wrong("x = f\"\"\"\n    {d[\"k\"]}\n    \"\"\"\n", "\"k");
+        assert_eq!(said, "a `\"` can't go inside `{}` in a string");
     }
 }

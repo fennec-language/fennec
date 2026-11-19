@@ -91,7 +91,18 @@ impl FnCx<'_> {
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Binary { op, lhs, rhs } => {
+                // `work is None` reads only whether there's a function, so it calls none.
+                let tested = match (op, &lhs.kind, &rhs.kind) {
+                    (BinOp::Is | BinOp::IsNot, ExprKind::Name(_), ExprKind::None) => Some(lhs.span),
+                    (BinOp::Is | BinOp::IsNot, ExprKind::None, ExprKind::Name(_)) => Some(rhs.span),
+                    _ => None,
+                };
+                let outer = self.direct_read;
+                if let Some(tested) = tested {
+                    self.direct_read = Some((tested.start, tested.end));
+                }
                 let (left, right) = self.operands(lhs, rhs);
+                self.direct_read = outer;
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
@@ -298,6 +309,7 @@ impl FnCx<'_> {
             self.note_outer();
         }
         if !outer && let Some((ty, _)) = self.lookup(name) {
+            self.note_function_read(name, span);
             // A generator that can fail passes its failure up from where it's looped over, so only
             // the function that made it, and counts its failure, may loop over it: not one around
             // it, from a name that is one or that holds one in a list, a tuple or a struct.
@@ -1001,8 +1013,33 @@ impl FnCx<'_> {
     }
 
     fn no_field(&mut self, ty: &Type, name: &str, span: Span) -> Type {
+        // A union some of whose members have it, as one known to hold one member was, until a
+        // `ref` call that could change its member: it's read once it's known to be one again.
+        let having: Vec<String> = match ty {
+            Type::Union(members) => members
+                .iter()
+                .filter(|member| {
+                    member.type_name().and_then(|owner| self.checker.program.type_info(owner)).is_some_and(
+                        |info| {
+                            info.def.cases.is_empty()
+                                && info.def.fields.iter().any(|field| field.name == name)
+                        },
+                    )
+                })
+                .map(|member| format!("`{member}`"))
+                .collect(),
+            _ => Vec::new(),
+        };
         let help = if self.has_method(ty, name) {
             format!("`{name}` is a method: call it, as `.{name}()`")
+        } else if let [first, rest @ ..] = having.as_slice() {
+            let (which, has) = match (rest, having.split_last()) {
+                ([], _) | (_, None) => (first.clone(), "has"),
+                (_, Some((last, before))) => (format!("{} and {last}", before.join(", ")), "have"),
+            };
+            format!(
+                "only {which} {has} `.{name}`: read it where it's known to be one, after an `is` check or in a `match` case for it"
+            )
         } else {
             format!("take `.{name}` off: {} has no fields", describe(ty))
         };

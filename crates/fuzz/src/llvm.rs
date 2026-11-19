@@ -26,7 +26,7 @@ fn fennec() -> PathBuf {
 }
 
 /// This process's own folder to build in.
-fn work() -> PathBuf {
+pub(crate) fn work() -> PathBuf {
     work_of(std::process::id())
 }
 
@@ -117,7 +117,7 @@ fn built_within(command: &mut Command) -> Result<std::process::Output, String> {
 
 /// Builds `source` in `work`, giving back the executable, or None when the backend doesn't take
 /// the program yet.
-fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, String> {
+pub(crate) fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("{}: {err}", work.display()))?;
     let (program, executable) = (work.join("program.fen"), work.join("program"));
     std::fs::write(&program, source).map_err(|err| format!("{}: {err}", program.display()))?;

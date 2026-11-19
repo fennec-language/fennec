@@ -63,6 +63,11 @@ pub extern "C" fn free_plain(address: i64) {
 /// go of: out of the table and kept for reuse, with nothing to walk. A string's place kept in it,
 /// and the runtime's copy of its text, are forgotten, as [`free_block`] does. False, having done
 /// nothing, for any other block, which [`free_block`] frees.
+#[expect(
+    clippy::inline_always,
+    reason = "both frees go through this, and as a call of its own it cost api_handler 0.85% of its instructions"
+)]
+#[inline(always)]
 fn free_plain_list(state: &mut State, address: u64) -> bool {
     if crate::embed::threads::held_elsewhere(address) {
         return false;

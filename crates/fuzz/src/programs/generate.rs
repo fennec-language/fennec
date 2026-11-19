@@ -24,6 +24,7 @@ use super::ast::{
     REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
     Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
+use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, FileWay, Filing};
 use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
@@ -45,6 +46,13 @@ const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 /// ordered stream since #1479. Turned off, no input reads the byte that picks it, so the shape
 /// can be taken out without changing what any other input writes.
 const PARALLEL_STREAMS: bool = true;
+
+/// Whether random programs write files in a folder of their own (`Filed`): through `with
+/// fs.create(...)` failing, passing a failure up with `?` or crashing partway, which leaves the old
+/// file byte for byte, or ending well, which replaces it whole; two files in one `with`; a plain
+/// write; and an `Fs` narrowed with `read_only` or `only` refusing. The second row of the coverage
+/// map: nothing wrote a file before.
+const FILE_WRITES: bool = true;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
@@ -702,6 +710,7 @@ impl Writer<'_> {
             26 if REF_CASES && self.choice(4) == 0 => self.ref_cases(body),
             26 if NAME_CAPTURE && self.choice(4) == 0 => self.captures(body),
             26 if EVALUATION_ORDER && self.choice(4) == 0 => self.in_order(body),
+            26 if FILE_WRITES && self.choice(4) == 0 => self.files(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
             // each of their cases still comes up as often.
@@ -1412,6 +1421,25 @@ impl Writer<'_> {
             steps.push(Alias::Written { to: from, how, at, n });
         }
         body.push(Stmt::Aliased(Aliasing { id, base, steps }));
+    }
+
+    /// A `Filed` statement: 2 to 8 steps, each writing 1 to 4 pieces and stopping at a piece from
+    /// the first to one past the last, so some finish. A program without threads
+    /// can't launch, so it saves plainly where it would in a task.
+    fn files(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut steps = Vec::new();
+        for _ in 0..2 + self.choice(7) {
+            let mut way = FILE_WAYS.get(self.choice(FILE_WAYS.len())).copied().unwrap_or(FileWay::Saved);
+            if way == FileWay::Tasked && self.threadless {
+                way = FileWay::Saved;
+            }
+            let pieces: Vec<usize> = (0..=self.choice(4)).map(|_| self.choice(FILE_PIECES.len())).collect();
+            let stop_at = self.choice(pieces.len() + 1);
+            steps.push(FileStep { way, second: self.choice(2) == 0, pieces, stop_at });
+        }
+        body.push(Stmt::Filed(Filing { id, steps }));
     }
 
     /// An `Owned` statement: 3 to 10 steps, each at a position from 0 to 2 and with what it adds,

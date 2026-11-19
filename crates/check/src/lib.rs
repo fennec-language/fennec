@@ -406,6 +406,7 @@ fn checked_and_resolved_in(
     module: &mut Module,
     scope: checker::Scope,
 ) -> Result<Signatures, Vec<Diagnostic>> {
+    lend_lowering::start_program();
     let names = own_types_apart(module);
     refuse_reserved(module)?;
     let checked = checked_typed_in(module, scope).map_err(|problems| as_written(problems, &names))?;
@@ -632,6 +633,7 @@ pub fn check_to_build(module: &mut Module) -> Result<Option<Signatures>, Vec<Dia
 /// What the checker finds wrong with it.
 pub fn check_to_build_saying(module: &mut Module) -> Result<(Signatures, bool), Vec<Diagnostic>> {
     library_parses()?;
+    lend_lowering::start_program();
     let names = own_types_apart(module);
     refuse_reserved(module)?;
     let checked = checker::Checker::new(module)
@@ -642,7 +644,81 @@ pub fn check_to_build_saying(module: &mut Module) -> Result<(Signatures, bool), 
     // the module again types as what's written there: the first check's types are only those of
     // a module it left as it was.
     let seen = module.clone();
-    resolved_saying(module, (checked, seen), checker::Scope::Building)
+    resolved_saying(module, (checked, seen), checker::Scope::Building, Keep::Nothing)
+}
+
+/// What a build's first check of a program found, kept for checking the program again once it's
+/// edited (`check_to_build_keeping`): what it found for each function, kept apart by function,
+/// and what the program declared besides its functions.
+pub struct KeptCheck {
+    first: Checked,
+    declared: Vec<Item>,
+    /// How many functions and tests the check that kept this could carry over from the build
+    /// before it.
+    carriable: usize,
+}
+
+impl KeptCheck {
+    /// How many functions and tests the check that kept this could carry over from the build
+    /// before it, those written inside another counted with it: none when that build kept
+    /// nothing, or the edit changed what the program declares or which functions it has.
+    #[must_use]
+    pub fn carried_over(&self) -> usize {
+        self.carriable
+    }
+}
+
+/// `check_to_build_saying`, keeping what the first check finds for a build after an edit, and
+/// carrying over from `kept`, what the build before it kept, what was found for each function the
+/// edit left as it was. Nothing's carried over when the edit changed anything the program declares
+/// besides what's inside its functions and tests, or added, took away or renamed a function. Each
+/// round of rewriting carries over what the check before it found the same way.
+///
+/// With `compare`, each check that carried anything over is compared with checking it all again,
+/// and a difference is the compiler's mistake, said as one (`compares_kept_check`).
+///
+/// # Errors
+///
+/// What the checker finds wrong with it, then nothing's kept.
+pub fn check_to_build_keeping(
+    module: &mut Module,
+    kept: Option<KeptCheck>,
+    compare: bool,
+) -> Result<(Signatures, bool, KeptCheck), Vec<Diagnostic>> {
+    library_parses()?;
+    lend_lowering::start_program();
+    let names = own_types_apart(module);
+    refuse_reserved(module)?;
+    let declared = declarations(module);
+    let checker = match kept.filter(|kept| kept.declared == declared) {
+        Some(kept) => checker::Checker::carrying(module, kept.first, checker::Carrying::Edit),
+        None => checker::Checker::keeping(module),
+    };
+    let carriable = checker.carriable();
+    let found = checker.run(checker::Scope::Building);
+    if compare
+        && carriable > 0
+        && let Some(part) = differs_from_checked_again(module, checker::Scope::Building, false, &found)
+    {
+        return Err(vec![kept_check_differs(&part)]);
+    }
+    let checked = found.map_err(|problems| as_written(problems, &names))?;
+    refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
+    // The rounds carry over from the first check, taking what they carry; the next build carries
+    // over from it as it is.
+    let first = checked.clone();
+    let seen = module.clone();
+    let (signatures, as_left) =
+        resolved_saying(module, (checked, seen), checker::Scope::Building, Keep::Apart { compare })?;
+    Ok((signatures, as_left, KeptCheck { first, declared, carriable }))
+}
+
+/// Whether a dev build whose inputs hash to `inputs` compares a check that carried anything over
+/// with checking it all again: one in 8, picked by the inputs, so the same build always does or
+/// doesn't. A release compiler compares only when it's asked to.
+#[must_use]
+pub fn compares_kept_check(inputs: u64) -> bool {
+    cfg!(debug_assertions) && inputs.is_multiple_of(8)
 }
 
 /// Like `check_to_run`, with every standard library type's fields typed too, so the module can
@@ -653,6 +729,7 @@ pub fn check_to_lower(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>
 
 fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, Vec<Diagnostic>> {
     library_parses()?;
+    lend_lowering::start_program();
     let names = own_types_apart(module);
     refuse_reserved(module)?;
     let checked =
@@ -760,7 +837,7 @@ fn resolved(
     checked: Checked,
     scope: checker::Scope,
 ) -> Result<Signatures, Vec<Diagnostic>> {
-    resolved_within(module, checked, scope, MOST_ROUNDS, None).map(|(signatures, _, _)| signatures)
+    resolved_within(module, checked, scope, MOST_ROUNDS, None, Keep::Nothing).map(|(signatures, _, _)| signatures)
 }
 
 /// Like `resolved`, saying too whether the signatures are of the module as it's left: whether the
@@ -771,9 +848,23 @@ fn resolved_saying(
     module: &mut Module,
     (checked, seen): (Checked, Module),
     scope: checker::Scope,
+    keep: Keep,
 ) -> Result<(Signatures, bool), Vec<Diagnostic>> {
-    resolved_within(module, checked, scope, MOST_ROUNDS, Some(seen))
+    resolved_within(module, checked, scope, MOST_ROUNDS, Some(seen), keep)
         .map(|(signatures, as_left, _)| (signatures, as_left))
+}
+
+/// Whether a build keeps what its checks find apart by function, for a later check to carry over
+/// (`checker::Checker::carrying`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Keep {
+    /// Nothing's kept, and nothing's carried over: a build that won't check the program again
+    /// checks it as it always has.
+    Nothing,
+    /// What each check finds is kept apart, and each round of rewriting carries over what the
+    /// check before it found for what the round left as it was. With `compare`, a check that
+    /// carried anything over is compared with checking it all again.
+    Apart { compare: bool },
 }
 
 /// The most rounds of writing in what a check found, and checking again, a program is given. This
@@ -793,6 +884,7 @@ fn resolved_within(
     scope: checker::Scope,
     most: usize,
     mut seen: Option<Module>,
+    keep: Keep,
 ) -> Result<(Signatures, bool, usize), Vec<Diagnostic>> {
     let mut first = true;
     for round in 1.. {
@@ -800,11 +892,11 @@ fn resolved_within(
         let before = (round >= most).then(|| module.clone());
         // What the module declares as the check saw it, besides its functions: while a round
         // only adds to it, what's found for a function the round leaves as it was carries over.
-        let declared = declarations(module);
+        let declared = (keep != Keep::Nothing).then(|| declarations(module));
         // The library's functions this program needs rewritten go through this round with its own.
         let std_in = std_rewritten_in(module, &checked);
         let mut only_written = Written::default();
-        let written = resolved_round(module, &checked, &mut only_written);
+        let written = resolved_round(module, &checked, declared.as_ref().map(|_| &mut only_written));
         std_rewritten_out(module);
         if lend_lowering::program_copies_ran_out() {
             return Err(vec![no_room_for_copies()]);
@@ -834,20 +926,27 @@ fn resolved_within(
         if let Some(seen) = &mut seen {
             seen.clone_from(module);
         }
-        let next = if let Some(shared_retyped) = still_declared(&declared, &declarations(module)) {
-            checker::Checker::carrying(module, std::mem::take(&mut checked), (shared_retyped, &only_written))
+        let shared_retyped = declared.and_then(|declared| still_declared(&declared, &declarations(module)));
+        let next = if let Some(shared_retyped) = shared_retyped {
+            let how = checker::Carrying::Round { shared_retyped, only_written: &only_written };
+            checker::Checker::carrying(module, std::mem::take(&mut checked), how)
         } else {
             let mut next = checker::Checker::new(module);
             next.again = true;
+            next.keeping = keep != Keep::Nothing;
             next
         };
         let carries = next.carries_any();
-        checked = next.run(scope).map_err(|problems| {
+        let found = next.run(scope);
+        if keep == (Keep::Apart { compare: true })
+            && carries
+            && let Some(part) = differs_from_checked_again(module, scope, true, &found)
+        {
+            return Err(vec![kept_check_differs(&part)]);
+        }
+        checked = found.map_err(|problems| {
             problems.iter().map(|problem| not_checked_again(problem, &module.copied)).collect::<Vec<_>>()
         })?;
-        if cfg!(debug_assertions) && carries {
-            same_as_checked_again(module, scope, &checked);
-        }
     }
     unreachable!("the rounds go on until one returns")
 }
@@ -964,35 +1063,59 @@ fn differing_table(one: &Checked, other: &Checked) -> &'static str {
     "something else"
 }
 
-/// In a dev build, that a round which carried over what the round before found agrees with
-/// checking all of the module again: its signatures, typed bodies and what it found to write in.
-/// It's the compiler's mistake if they don't.
-fn same_as_checked_again(module: &Module, scope: checker::Scope, carried: &Checked) {
-    let mut again = checker::Checker::new(module);
-    again.again = true;
-    let again = again.run(scope);
-    assert!(
-        again.is_ok(),
-        "a round that carried over what the round before found passed, but checking it all again doesn't"
-    );
-    let Ok(again) = again else { return };
+/// Where a check that carried over what a check before it found, `carried`, disagrees with
+/// checking all of `module` again, as a round's check when `again`: whether it passes, what it
+/// finds wrong, its signatures, typed bodies and what it found to write in. Nothing when they
+/// agree.
+fn differs_from_checked_again(
+    module: &Module,
+    scope: checker::Scope,
+    again: bool,
+    carried: &Result<Checked, Vec<Diagnostic>>,
+) -> Option<String> {
+    let mut whole = checker::Checker::new(module);
+    whole.again = again;
+    let whole = whole.run(scope);
+    let (whole, carried) = match (whole, carried) {
+        (Ok(whole), Ok(carried)) => (whole, carried.clone()),
+        (Err(whole), Err(carried)) => {
+            return (&whole != carried).then(|| {
+                format!("what it finds wrong: {:?} against {:?}", whole.first(), carried.first())
+            });
+        }
+        (whole, _) => {
+            let passes = |passes: bool| if passes { "passes" } else { "doesn't" };
+            return Some(format!(
+                "whether it passes: checking it all again {}, and carrying over {}",
+                passes(whole.is_ok()),
+                passes(carried.is_ok())
+            ));
+        }
+    };
+    // What's kept apart for a later check isn't what the check found.
     let comparable = |mut checked: Checked| {
         checked.tables_of.clear();
         checked.graph_of.clear();
         checked.defs.clear();
+        checked.tests.clear();
         checked
     };
-    let (again, carried) = (comparable(again), comparable(carried.clone()));
+    let (whole, carried) = (comparable(whole), comparable(carried));
     // A type variable left open is numbered by the check that made it, so two checks that
     // agree on everything else can number theirs apart.
-    let part = (again != carried
-        && without_var_numbers(&format!("{again:?}")) != without_var_numbers(&format!("{carried:?}")))
-    .then(|| differing_part(&again, &carried));
-    assert!(
-        part.is_none(),
-        "a round that carried over what the round before found disagrees with checking it all again, in {}: a mistake in the compiler",
-        part.unwrap_or_default()
+    (whole != carried
+        && without_var_numbers(&format!("{whole:?}")) != without_var_numbers(&format!("{carried:?}")))
+    .then(|| differing_part(&whole, &carried))
+}
+
+/// What's said when a check that carried over what one before it found disagrees with checking
+/// it all again, in `part`: the compiler's mistake, which fails the build.
+fn kept_check_differs(part: &str) -> Diagnostic {
+    let message = format!(
+        "internal error: a check that carried over what one before it found disagrees with checking it all again, in {part}"
     );
+    Diagnostic::new(message, Span::default())
+        .with_help("this is a mistake in the compiler, not in the program: please report it with the program")
 }
 
 /// What two checks of a module disagree on, first: a function's signature, then the rest of the
@@ -1202,7 +1325,7 @@ fn library_functions() -> Vec<(String, fennec_syntax::FnDef)> {
 
 /// One round of writing in what the check found, saying whether anything was written that needs
 /// checking again.
-fn resolved_round(module: &mut Module, checked: &Checked, only_written: &mut Written) -> Round {
+fn resolved_round(module: &mut Module, checked: &Checked, only_written: Option<&mut Written>) -> Round {
     // What a round writes in more than once is noted where it went, with what's there already.
     lend_lowering::copies_from(module);
     let round = written_in_round(module, checked, only_written);
@@ -1211,7 +1334,7 @@ fn resolved_round(module: &mut Module, checked: &Checked, only_written: &mut Wri
 }
 
 /// What `resolved_round` writes in.
-fn written_in_round(module: &mut Module, checked: &Checked, only_written: &mut Written) -> Round {
+fn written_in_round(module: &mut Module, checked: &Checked, only_written: Option<&mut Written>) -> Round {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     unqualified_cases(module, &checked.signatures);
@@ -1266,8 +1389,11 @@ fn written_in_round(module: &mut Module, checked: &Checked, only_written: &mut W
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
-    // What the check found is written in; what's rewritten below changes what's written.
-    *only_written = written(module);
+    // What the check found is written in; what's rewritten below changes what's written. It's
+    // looked at only by a build that carries over what a check found.
+    if let Some(only_written) = only_written {
+        *only_written = written(module);
+    }
     let rewritten = sources_copied(module, checked) || widened_values(module, &checked.widened_values);
     if rewritten || routes::lower(module, &checked.routes) {
         return Round::Again;
@@ -1902,14 +2028,16 @@ mod rounds {
         let mut module = fennec_syntax::parse(source).unwrap();
         module.files = vec![Span { start: 0, end: Span::WRITTEN - 16 }];
         let checked = checked_typed_in(&module, checker::Scope::Reached).unwrap();
-        let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None);
+        let resolved =
+            resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None, Keep::Nothing);
         let Err(problems) = resolved else { panic!("a program with no room for its copies was written in") };
         assert!(problems.iter().any(|problem| problem.message.contains("leave no room")), "{problems:?}");
     }
 
     /// Every kernel, the eight real programs among them, every example and every real-world
     /// program is written in and checked again in a quarter of the rounds it's given, at most:
-    /// the bound is never what ends a real program's check.
+    /// the bound is never what ends a real program's check. Each round carries over what the check
+    /// before it found, and is compared with checking it all again.
     #[test]
     fn every_kernel_example_and_real_program_ends_well_inside_its_rounds() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1932,12 +2060,13 @@ mod rounds {
             if refuse_reserved(&module).is_err() {
                 continue;
             }
-            let Ok(checked) = checked_typed_in(&module, checker::Scope::Reached) else { continue };
+            let Ok(checked) = checker::Checker::keeping(&module).run(checker::Scope::Reached) else { continue };
             if refuse_old_forms(&module, &checked).is_err() {
                 continue;
             }
             let shown = path.display().to_string();
-            let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None);
+            let keep = Keep::Apart { compare: true };
+            let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None, keep);
             let rounds = match resolved {
                 Ok((_, _, rounds)) => rounds,
                 Err(problems) => panic!("{shown}: {problems:?}"),
@@ -1963,7 +2092,8 @@ mod rounds {
         library_parses().unwrap();
         let _ = own_types_apart(&mut module);
         let checked = checker::Checker::new(&module).run(checker::Scope::Reached).unwrap();
-        let problems = resolved_within(&mut module, checked, checker::Scope::Reached, 1, None).unwrap_err();
+        let problems =
+            resolved_within(&mut module, checked, checker::Scope::Reached, 1, None, Keep::Nothing).unwrap_err();
         let [problem] = problems.as_slice() else { panic!("{problems:?}") };
         assert!(
             problem

@@ -154,6 +154,23 @@ impl Checker {
         self.put_graph(all);
     }
 
+    /// Keeps apart, by `key`, what a function's or test's check just wrote in the tables and added
+    /// to what's followed, and puts back what was there before it, `around`. A test's `reached`
+    /// is the functions it called itself.
+    fn keep_apart(&mut self, key: &str, around: (Tables, Graph), reached: BTreeSet<String>) {
+        let (tables, followed) = around;
+        let own = self.take_tables();
+        self.put_tables(tables);
+        if self.tables_merged {
+            self.add_tables(&own);
+        }
+        self.tables_of.insert(key.to_owned(), own);
+        let found = Graph { reached, ..self.take_graph() };
+        self.put_graph(followed);
+        self.found_graph(&found);
+        self.graph_of.insert(key.to_owned(), found);
+    }
+
     /// What a function's check found, `graph`, goes into what's followed once the outermost
     /// check it's inside is done: one checked inside another's, as a callee is when it's first
     /// called, isn't part of that other's own.
@@ -231,7 +248,20 @@ impl Tables {
     }
 }
 
-/// What the round before's check found for one function, to carry over.
+/// What a check that carries over what one before it found (`Checker::carrying`) is given.
+#[derive(Clone, Copy)]
+pub(crate) enum Carrying<'a> {
+    /// The round before's check, of the module before this round of rewriting: the round only
+    /// added to what the module declares, a `shared` type's struct among it when
+    /// `shared_retyped`, and wrote into some functions only what their check found, as they are
+    /// in `only_written`.
+    Round { shared_retyped: bool, only_written: &'a crate::Written },
+    /// The first check of the program before it was edited, which declared everything just as it
+    /// does now: an edit changed only what's written inside functions and tests.
+    Edit,
+}
+
+/// What the check before found for one function, to carry over.
 struct Carried {
     /// For a test, what it fails with, by its span.
     test_error: Option<((u32, u32), Type)>,
@@ -401,6 +431,10 @@ pub(crate) struct Checker {
     test_reaching: Option<BTreeSet<String>>,
     /// Each function's signature as the round before's check had it, but those carried over.
     before: BTreeMap<String, Signature>,
+    /// Whether what each function's check finds is kept apart, by its key, for a later check to
+    /// carry over (`carrying`). A build that won't check again keeps nothing, and checks as it
+    /// would with none of this.
+    pub(crate) keeping: bool,
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
@@ -458,6 +492,13 @@ impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
         let mut checker = Checker::with_imports_unchecked(module);
         checker.diagnostics.extend(crate::imports::unimported(module, &checker.program));
+        checker
+    }
+
+    /// `new`, keeping what each function's check finds apart, for a later check to carry over.
+    pub(crate) fn keeping(module: &Module) -> Self {
+        let mut checker = Checker::new(module);
+        checker.keeping = true;
         checker
     }
 
@@ -534,6 +575,7 @@ impl Checker {
             inner_graph: Graph::default(),
             test_reaching: None,
             before: BTreeMap::new(),
+            keeping: false,
             values: crate::waits::Values::default(),
             handovers: crate::holds::Handovers::default(),
             holds: module.holds.clone(),
@@ -543,25 +585,42 @@ impl Checker {
         }
     }
 
-    /// A check of a module a round of rewriting left, as the round before's check, `previous`,
-    /// saw it but for what the round wrote in, which only adds to what the module declares.
-    /// What `previous` found for each function the round left as it was is carried over, with the
-    /// functions written inside it: what it gives back and fails with, its typed body and locals,
-    /// what it wrote in the tables and what it adds to what's followed across functions. One that
-    /// calls a function that's gone is checked again, and so are the callers of each function
-    /// checked again that gives back or fails with something else now (`run`).
-    /// Whether anything can be carried over from the round before.
+    /// Whether anything can be carried over from the check before.
     pub(crate) fn carries_any(&self) -> bool {
         !self.carriable.is_empty()
     }
 
-    pub(crate) fn carrying(
-        module: &Module,
-        mut previous: Checked,
-        (shared_retyped, only_written): (bool, &crate::Written),
-    ) -> Checker {
+    /// How many functions and tests can be carried over from the check before, those written
+    /// inside another counted with it.
+    pub(crate) fn carriable(&self) -> usize {
+        self.carriable.len()
+    }
+
+    /// A check of `module`, carrying over what a check before it, `previous`, found for each
+    /// function left as it was, with the functions written inside it: what it gives back and fails
+    /// with, its typed body and locals, what it wrote in the tables and what it adds to what's
+    /// followed across functions. `how` says what `previous` was a check of. One that calls a
+    /// function that's gone is checked again, and so are the callers of each function checked
+    /// again that gives back or fails with something else now (`run`). It keeps what it finds
+    /// apart too, for a check after it.
+    pub(crate) fn carrying(module: &Module, mut previous: Checked, how: Carrying<'_>) -> Checker {
+        let none = crate::Written::default();
+        let (shared_retyped, only_written) = match how {
+            Carrying::Round { shared_retyped, only_written } => (shared_retyped, only_written),
+            Carrying::Edit => (false, &none),
+        };
         let mut next = Checker::with_imports_unchecked(module);
-        next.again = true;
+        next.again = matches!(how, Carrying::Round { .. });
+        next.keeping = true;
+        // An edit that adds, takes away or renames a function, but one written inside another,
+        // can change what a name means in one left as it was: everything's checked again.
+        let outer = |functions: &BTreeMap<String, FnEntry>| -> Vec<String> {
+            functions.iter().filter(|(_, entry)| !entry.nested).map(|(key, _)| key.clone()).collect()
+        };
+        if matches!(how, Carrying::Edit) && outer(&previous.defs) != outer(&next.program.functions) {
+            next.diagnostics.extend(crate::imports::unimported(module, &next.program));
+            return next;
+        }
         let mut carried = BTreeSet::new();
         // Those the round only wrote into what their check found, of the kinds a check of what's
         // written finds again or nothing more of.
@@ -687,10 +746,10 @@ impl Checker {
                     .remove(&key)
                     .map(|tables| if written_into.contains(&key) { tables.spent() } else { tables }),
                 // What it hands over is judged in the first check alone (`holds::refused`).
-                graph: previous
-                    .graph_of
-                    .remove(&key)
-                    .map(|graph| Graph { handovers: crate::holds::Handovers::default(), ..graph }),
+                graph: previous.graph_of.remove(&key).map(|graph| match how {
+                    Carrying::Round { .. } => Graph { handovers: crate::holds::Handovers::default(), ..graph },
+                    Carrying::Edit => graph,
+                }),
                 locals: locals.remove(&key).unwrap_or_default(),
                 entry: entry.filter(|_| !next.program.functions.contains_key(&key)),
                 nested: nested.remove(&key).unwrap_or_default(),
@@ -782,22 +841,18 @@ impl Checker {
         for test in self.program.tests.clone() {
             // A test's check writes its own, kept by its key, as a function's does (`check_with`).
             let key = crate::program::test_key(&test.name);
+            if !self.keeping {
+                FnCx::check_test(&mut self, &test);
+                continue;
+            }
             if self.carry(&key) {
                 continue;
             }
-            let around = self.take_tables();
-            let followed = self.take_graph();
+            let around = (self.take_tables(), self.take_graph());
             self.test_reaching = Some(BTreeSet::new());
             FnCx::check_test(&mut self, &test);
             let reached = self.test_reaching.take().unwrap_or_default();
-            let own = self.take_tables();
-            self.put_tables(around);
-            self.add_tables(&own);
-            self.tables_of.insert(key.clone(), own);
-            let found = Graph { reached, ..self.take_graph() };
-            self.put_graph(followed);
-            self.found_graph(&found);
-            self.graph_of.insert(key, found);
+            self.keep_apart(&key, around, reached);
         }
         let types: Vec<String> = self
             .program
@@ -1046,8 +1101,12 @@ impl Checker {
             holds: self.worked_out,
             tables_of,
             graph_of,
-            tests: tests_by_key(&self.program.tests).map(|(key, test)| (key, test.clone())).collect(),
-            defs: std::mem::take(&mut self.program.functions),
+            tests: if self.keeping {
+                tests_by_key(&self.program.tests).map(|(key, test)| (key, test.clone())).collect()
+            } else {
+                BTreeMap::new()
+            },
+            defs: if self.keeping { std::mem::take(&mut self.program.functions) } else { BTreeMap::new() },
         }
     }
 
@@ -1342,23 +1401,15 @@ impl Checker {
         // back is this check's from here on, not the round before's.
         self.carried.remove(key);
         let effects = effects::of_body(&def.body);
-        // What this function's check writes is its own, kept by its key: what's in the tables
-        // already is put back after.
-        let around = self.take_tables();
-        let followed = self.take_graph();
+        // When keeping, what this function's check writes is its own, kept by its key: what's in
+        // the tables already is put back after.
+        let around = self.keeping.then(|| (self.take_tables(), self.take_graph()));
         self.checking.push(key.to_owned());
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
         self.checking.pop();
-        let own = self.take_tables();
-        self.put_tables(around);
-        if self.tables_merged {
-            self.add_tables(&own);
+        if let Some((tables, followed)) = around {
+            self.keep_apart(key, (tables, followed), BTreeSet::new());
         }
-        self.tables_of.insert(key.to_owned(), own);
-        let found = self.take_graph();
-        self.put_graph(followed);
-        self.found_graph(&found);
-        self.graph_of.insert(key.to_owned(), found);
         // No arrow means it gives back nothing. One that gives back a value anyway has to
         // write its type, and until it does, callers see the value so they aren't reported
         // as well.

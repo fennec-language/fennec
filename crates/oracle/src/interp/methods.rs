@@ -703,7 +703,9 @@ impl Interp {
                 }
                 Ok(Value::None)
             }
-            ("remove", [item]) => {
+            // The first item equal to `item`, taken out: `remove` gives it back, or `None` when
+            // there's none, and `discard` gives nothing.
+            ("remove" | "discard", [item]) => {
                 let mut items = items;
                 let mut found = None;
                 for (at, each) in items.iter().enumerate() {
@@ -712,9 +714,12 @@ impl Interp {
                         break;
                     }
                 }
-                let Some(at) = found else { return crash("the item to remove isn't in the list", span) };
-                items.remove(at);
-                self.put_back(receiver, Value::List(Held::new(items)), span)
+                let Some(at) = found else {
+                    return Ok(if name == "remove" { Value::None } else { Value::Unit });
+                };
+                let removed = items.remove(at);
+                self.put_back(receiver, Value::List(Held::new(items)), span)?;
+                Ok(if name == "remove" { removed } else { Value::Unit })
             }
             _ => unsupported(format!("the list method `{name}`")),
         }
@@ -860,6 +865,12 @@ fn dict_change(
             Ok(None) => Ok(Value::None),
             Err(flow) => Err(flow),
         },
+        ("discard", [key]) => found(pairs, key).map(|at| {
+            if let Some(at) = at {
+                pairs.remove(at);
+            }
+            Value::Unit
+        }),
         ("clear", []) => {
             pairs.clear();
             Ok(Value::Unit)
@@ -904,11 +915,8 @@ fn set_change(items: &mut Vec<Value>, name: &str, args: &mut [Value], span: Span
             Value::Unit
         }),
         ("remove", [item]) => match at(items, item) {
-            Ok(Some(found)) => {
-                items.remove(found);
-                Ok(Value::Unit)
-            }
-            Ok(None) => crash("the item to remove isn't in the set", span),
+            Ok(Some(found)) => Ok(items.remove(found)),
+            Ok(None) => Ok(Value::None),
             Err(flow) => Err(flow),
         },
         ("clear", []) => {

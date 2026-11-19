@@ -8025,27 +8025,28 @@ def main(stdout: Stdout):
     return
 "#;
 
-/// `set.remove` of a key that isn't there fails as pinned.
+/// `set.remove` of an item that isn't there gives `None` and leaves the set as it was, and of
+/// one that is gives it back, whatever the item is: an int, text held inline, or text in a block of
+/// its own.
 #[test]
-fn removing_what_a_set_lacks_fails_as_pinned() -> std::io::Result<()> {
+fn removing_what_a_set_lacks_gives_none() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    for (name, set, key) in [
-        ("remove_int", "{1, 2}", "3"),
-        ("remove_str", "{\"a\"}", "\"b\""),
-        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\""),
+    for (name, set, key, kept) in [
+        ("remove_int", "{1, 2}", "3", "1"),
+        ("remove_str", "{\"a\"}", "\"b\"", "\"a\""),
+        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\"", "\"a\""),
     ] {
-        same_message_as_pinned(
-            name,
-            &format!(
-                "def main(stdout: Stdout):
+        let program = format!(
+            "def main(stdout: Stdout):
     mut held = {set}
-    held.remove({key})
-    stdout.print(held)
+    stdout.print(held.remove({key}), held)
+    stdout.print(held.remove({kept}), len(held))
 "
-            ),
-        )?;
+        );
+        let wanted = format!("None {set}\n{kept} {}\n", if set == "{1, 2}" { 1 } else { 0 });
+        assert_eq!(printed_by(name, &program)?, wanted, "{name}");
     }
     Ok(())
 }
@@ -34933,7 +34934,7 @@ def main(stdout: Stdout):
 
 /// A function whose only way to fail is one of these still says it can, so it builds.
 #[test]
-fn a_function_failing_only_in_max_min_or_remove_builds() -> std::io::Result<()> {
+fn a_function_failing_only_in_max_min_or_pop_builds() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -34951,22 +34952,23 @@ def longest(words: list[str]) -> str:
 def shortest(words: list[str]) -> str:
     return min(words, key=word => len(word))
 
-def gone(ref values: list[int]):
-    values.remove(9)
+def gone(ref ages: dict[str, int]):
+    _ = ages.pop("nine")
 
 def main(stdout: Stdout):
-    mut values = [1, 9, 2]
+    values = [1, 9, 2]
+    mut ages = {"nine": 9}
     stdout.print(top(values), smallest(values))
     stdout.print(longest(["a", "bcd"]), shortest(["a", "bcd"]))
-    gone(ref values)
-    stdout.print(values)
-    gone(ref values)
+    gone(ref ages)
+    stdout.print(ages)
+    gone(ref ages)
     stdout.print("never")
 "#,
     )
 }
 
-/// `max` of nothing, and removing what isn't there, fail as pinned.
+/// `max` of nothing, and popping where nothing is, fail as pinned.
 #[test]
 fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -34981,10 +34983,10 @@ fn small_calls_fail_as_pinned() -> std::io::Result<()> {
 ",
     )?;
     same_message_as_pinned(
-        "remove_missing",
+        "pop_missing",
         "def main(stdout: Stdout):
     mut some = [1]
-    some.remove(2)
+    _ = some.pop(2)
     stdout.print(some)
 ",
     )

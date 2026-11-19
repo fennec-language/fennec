@@ -454,10 +454,11 @@ export struct Tree[T]:
     ## Takes a node out of its parent's children, or out of the roots.
     def _unlink(ref self, id: Id[TreeNode[T]]):
         parent = self._nodes[id].parent
+        # A node is always among its parent's children, or the roots: one that isn't is a bug here.
         if parent is None:
-            self._roots.remove(id)
+            assert self._roots.remove(id) is not None
         else:
-            self._nodes[parent].children.remove(id)
+            assert self._nodes[parent].children.remove(id) is not None
 
 ## One node of a `SortedMap`'s B-tree: keys in order, their values, and for a node that isn't
 ## a leaf, the children between and around them.
@@ -871,12 +872,12 @@ export struct SortedSet[T: Ordered]:
 
     ## Removes `item` if it's there.
     def discard(ref self, item: T):
-        if item in self._items:
-            self._items.remove(item)
+        _ = self._items.remove(item)
 
-    ## Removes `item`. One that isn't there stops the program, like a set.
-    def remove(ref self, item: T):
-        assert self._items.remove(item) is not None
+    ## Takes out `item` and gives it back, or `None` when it isn't there, as a set's `remove` does.
+    def remove(ref self, item: T) -> T?:
+        if self._items.remove(item) is None: return None
+        return item
 
     ## `item in set`.
     def in(self, item: T) -> bool:

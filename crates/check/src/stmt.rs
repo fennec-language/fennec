@@ -48,7 +48,10 @@ impl FnCx<'_> {
                 match self.checker.settled(&this.ty) {
                     Type::Result(..) => self.error(unhandled(stmt.span)),
                     _ if is_text_alone(stmt) => self.error(text_alone(stmt.span)),
-                    ty if gives_something(&ty) => self.error(unused(&ty, stmt.span)),
+                    ty if gives_something(&ty) => match self.discarding(stmt) {
+                        Some(name) => self.error(removed_unused(&ty, stmt.span, name)),
+                        None => self.error(unused(&ty, stmt.span)),
+                    },
                     _ => {}
                 }
             }
@@ -797,6 +800,27 @@ fn is_text_alone(stmt: &Stmt) -> bool {
 fn text_alone(span: Span) -> Diagnostic {
     Diagnostic::new("a string on its own line does nothing", span)
         .with_help("a doc comment is `##` above what it's about, as `## Doubles a number.` above the `def`")
+}
+
+impl FnCx<'_> {
+    /// Where `remove` is written in a statement that only takes something out of a list, a set or a
+    /// dict, as `items.remove(x)`: `discard` is the one that gives nothing back, so it's the fix.
+    fn discarding(&self, stmt: &Stmt) -> Option<Span> {
+        let StmtKind::Expr(expr) = &stmt.kind else { return None };
+        let ExprKind::Call { callee, .. } = &expr.kind else { return None };
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
+        let collection = matches!(self.recorded(object.span)?, Type::List(_) | Type::Set(_) | Type::Dict(..));
+        let start = callee.span.end.checked_sub(u32::try_from(name.len()).ok()?)?;
+        (name == "remove" && collection).then_some(Span { start, end: callee.span.end })
+    }
+}
+
+/// `items.remove(x)` on a line of its own: `remove` gives back what it took out, which nothing
+/// uses, and `discard` is the one that only takes it out.
+fn removed_unused(ty: &Type, span: Span, name: Span) -> Diagnostic {
+    Diagnostic::new(format!("this gives back {}, and nothing uses it", crate::types::a(ty)), span)
+        .with_help("to only take it out, write `discard`, which gives nothing back: `fennec fix` makes this change")
+        .with_fix(name, "discard")
 }
 
 /// A statement's value, thrown away without saying so. Throwing it away could hide a mistake,

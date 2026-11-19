@@ -24,6 +24,7 @@ use super::ast::{
 };
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
+use super::ast::{OwnIndexing, OwnStep};
 use super::source::LONG_PIECE;
 
 /// A `Narrowed` statement's union as the evaluator holds it: a `Crate{id}`'s list or a `Heap{id}`'s
@@ -785,6 +786,50 @@ fn drained(value: &mut Kept, at: usize, n: i64) -> Option<String> {
             Some(shown(&Value::Ints(counts.iter().map(|(_, count)| *count).collect())))
         }
         _ => None,
+    }
+}
+
+/// A `Part{id}` of an `Owned` statement as the evaluator keeps it.
+#[derive(Clone)]
+struct OwnPart {
+    name: &'static str,
+    x: i64,
+    marks: Vec<i64>,
+}
+
+impl OwnPart {
+    fn new(name: &'static str, x: i64) -> OwnPart {
+        OwnPart { name, x, marks: Vec::new() }
+    }
+
+    /// `moved(by)`: adds `by` twice, noting it between.
+    fn moved(&mut self, by: i64) -> Ran<()> {
+        self.x = checked(self.x.checked_add(by))?;
+        self.marks.push(by);
+        self.x = checked(self.x.checked_add(by))?;
+        Ok(())
+    }
+
+    /// `shift(by)`: adds `by` and notes it, then fails past 5, and otherwise adds 100. Whether it
+    /// failed.
+    fn shift(&mut self, by: i64) -> Ran<bool> {
+        self.x = checked(self.x.checked_add(by))?;
+        self.marks.push(by);
+        if by > 5 {
+            return Ok(true);
+        }
+        self.x = checked(self.x.checked_add(100))?;
+        Ok(false)
+    }
+
+    /// How it prints, as `Part{id}(name="a", x=1, marks=[2])`.
+    fn shown(&self, id: usize) -> String {
+        format!(
+            "Part{id}(name=\"{}\", x={}, marks={})",
+            self.name,
+            self.x,
+            shown(&Value::Ints(self.marks.clone()))
+        )
     }
 }
 
@@ -1902,6 +1947,7 @@ impl Machine {
             Stmt::Left { depth, rounds, at, how, .. } => self.left(*depth, *rounds, *at, *how)?,
             Stmt::Turned(turning) => self.turned(turning)?,
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
+            Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
             Stmt::Constants(constants) => self.constants(constants)?,
@@ -2802,6 +2848,112 @@ impl Machine {
         for (n, value) in kept.iter().enumerate() {
             let _ = writeln!(self.out, "{} {}", alias_name(n), kept_shown(aliasing.id, value));
         }
+        Ok(())
+    }
+
+    /// What `owned{id}` prints: each change through a type's own `def []` written back once
+    /// through its `def []=`, as far as it got when it fails, and each `ref` form's place changed
+    /// where it is, then what each value holds and how often its `def []=` ran.
+    fn owned(&mut self, owning: &OwnIndexing) -> Ran<()> {
+        let OwnIndexing { id, base, ref steps } = *owning;
+        let mut shelved = [OwnPart::new("a", base), OwnPart::new("b", base + 1)];
+        let mut keyed = OwnPart::new("k", base);
+        let mut room = [OwnPart::new("c", base), OwnPart::new("d", base + 1)];
+        let mut rows = [vec![base + 2, base, base + 2], vec![base + 4, base + 3, base + 5]];
+        let mut slots = [base, base + 1, base + 2];
+        let (mut shelf_writes, mut keyed_writes, mut room_shelf_writes, mut room_writes, mut rows_writes) =
+            (0, 0, 0, 0, 0);
+        let add = |held: &mut i64, by: i64| -> Ran<()> {
+            *held = checked(held.checked_add(by))?;
+            Ok(())
+        };
+        for &(step, at, n) in steps {
+            let pair = at % 2;
+            let other = 1 - pair;
+            let slot = slots.get_mut(at).ok_or(Stop::Unsure)?;
+            let part = shelved.get_mut(pair).ok_or(Stop::Unsure)?;
+            match step {
+                OwnStep::Plus | OwnStep::RefField => add(&mut part.x, n)?,
+                OwnStep::Set => part.x = n,
+                OwnStep::Moved => part.moved(n)?,
+                OwnStep::Appended => part.marks.push(n),
+                OwnStep::Shifted | OwnStep::Passed => {
+                    if part.shift(n)? {
+                        let _ = writeln!(self.out, "failed {n}");
+                    } else if step == OwnStep::Passed {
+                        add(&mut part.x, 1000)?;
+                        shelf_writes += 1;
+                    }
+                }
+                OwnStep::PlusOther => {
+                    let read = shelved.get(other).ok_or(Stop::Unsure)?.x;
+                    add(&mut shelved.get_mut(pair).ok_or(Stop::Unsure)?.x, read)?;
+                }
+                OwnStep::Keyed => add(&mut keyed.x, n)?,
+                OwnStep::KeyedMoved => keyed.moved(n)?,
+                OwnStep::Nested | OwnStep::NestedRef => {
+                    add(&mut room.get_mut(pair).ok_or(Stop::Unsure)?.x, n)?;
+                }
+                OwnStep::NestedMoved => room.get_mut(pair).ok_or(Stop::Unsure)?.moved(n)?,
+                OwnStep::Counted => {
+                    let row = rows.get(pair).ok_or(Stop::Unsure)?;
+                    let count = row.iter().filter(|item| **item == n).count();
+                    let got = usize::try_from(n).ok().and_then(|at| row.get(at));
+                    let got = got.map_or_else(|| "None".to_owned(), ToString::to_string);
+                    let _ = writeln!(self.out, "counted {count} {got} {rows_writes}");
+                }
+                OwnStep::Sorted => rows.get_mut(pair).ok_or(Stop::Unsure)?.sort_unstable(),
+                OwnStep::SortedKey => rows.get_mut(pair).ok_or(Stop::Unsure)?.sort_by(|a, b| b.cmp(a)),
+                OwnStep::Removed => rows.get_mut(pair).ok_or(Stop::Unsure)?.retain(|item| *item <= n),
+                OwnStep::SlotSet => *slot = n,
+                OwnStep::SlotPlus | OwnStep::SlotRef => add(slot, n)?,
+                OwnStep::ForRef | OwnStep::ParallelRef => {
+                    // The middle position is empty, so `for ref` passes it over.
+                    for (place, held) in slots.iter_mut().enumerate() {
+                        if place == 1 {
+                            continue;
+                        }
+                        *held = if step == OwnStep::ForRef {
+                            checked(held.checked_mul(2).and_then(|twice| twice.checked_add(n)))?
+                        } else {
+                            checked(held.checked_add(n))?
+                        };
+                    }
+                }
+            }
+            match step {
+                OwnStep::Plus
+                | OwnStep::Set
+                | OwnStep::Moved
+                | OwnStep::Appended
+                | OwnStep::Shifted
+                | OwnStep::Passed
+                | OwnStep::RefField
+                | OwnStep::PlusOther => shelf_writes += 1,
+                OwnStep::Keyed | OwnStep::KeyedMoved => keyed_writes += 1,
+                OwnStep::Nested | OwnStep::NestedMoved | OwnStep::NestedRef => {
+                    room_shelf_writes += 1;
+                    room_writes += 1;
+                }
+                OwnStep::Sorted | OwnStep::SortedKey | OwnStep::Removed => rows_writes += 1,
+                OwnStep::Counted
+                | OwnStep::SlotSet
+                | OwnStep::SlotPlus
+                | OwnStep::SlotRef
+                | OwnStep::ForRef
+                | OwnStep::ParallelRef => {}
+            }
+        }
+        let parts = |parts: &[OwnPart]| {
+            let parts: Vec<String> = parts.iter().map(|part| part.shown(id)).collect();
+            format!("[{}]", parts.join(", "))
+        };
+        let lists: Vec<String> = rows.iter().map(|row| shown(&Value::Ints(row.clone()))).collect();
+        let _ = writeln!(self.out, "shelf {} {shelf_writes}", parts(&shelved));
+        let _ = writeln!(self.out, "keyed {{\"k\": {}}} {keyed_writes}", keyed.shown(id));
+        let _ = writeln!(self.out, "room {} {room_shelf_writes} {room_writes}", parts(&room));
+        let _ = writeln!(self.out, "rows [{}] {rows_writes}", lists.join(", "));
+        let _ = writeln!(self.out, "slots {}", shown(&Value::Ints(slots.to_vec())));
         Ok(())
     }
 

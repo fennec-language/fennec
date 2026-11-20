@@ -436,10 +436,20 @@ pub(crate) const KILLED_WRITES: Target = Target {
     stuck: Duration::from_secs(60),
 };
 
+/// A program edited a piece at a time, each version checked and built reusing what the one before
+/// it kept, which has to make what checking and building it from nothing makes.
+pub(crate) const EDITS: Target = Target {
+    name: "edits",
+    corpus: &["crates/fuzz/seeds/edits"],
+    tokens: &ANYTHING,
+    run: crate::edits::edits,
+    stuck: Duration::from_secs(120),
+};
+
 pub(crate) fn find(name: &str) -> Option<&'static Target> {
     TARGETS
         .iter()
-        .chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY, &KILLED_WRITES])
+        .chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY, &KILLED_WRITES, &EDITS])
         .find(|target| target.name == name)
 }
 

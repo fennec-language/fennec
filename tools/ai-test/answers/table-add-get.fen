@@ -1,0 +1,11 @@
+from std.collections import Table
+
+struct Unit:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    _ = units.add(Unit(name="Ana", hp=50))
+    bo = units.add(Unit(name="Bo", hp=70))
+    stdout.print(units[bo].name, units[bo].hp)

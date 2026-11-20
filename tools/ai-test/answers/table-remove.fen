@@ -1,0 +1,12 @@
+from std.collections import Table
+
+struct Unit:
+    name: str
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    _ = units.add(Unit(name="A"))
+    b = units.add(Unit(name="B"))
+    _ = units.add(Unit(name="C"))
+    _ = units.remove(b)
+    stdout.print(len(units), units.get(b) is not None)

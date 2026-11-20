@@ -1,0 +1,11 @@
+def strongest(items: list[int]) -> int?:
+    mut best: int? = None
+    for item in items:
+        if best is None or item > best:
+            best = item
+    return best
+
+def main(stdout: Stdout):
+    empty: list[int] = []
+    shown = strongest(empty)
+    stdout.print(strongest([4, 9, 2]) else 0, "none" if shown is None else "some")

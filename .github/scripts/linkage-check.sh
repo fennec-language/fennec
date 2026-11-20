@@ -57,8 +57,9 @@ found() {
 }
 
 # Builds `name` from `source`, as a release build ships.
+# A program, from its file, built as `$work/<name>`.
 built() {
-  printf '%s' "$2" > "$work/$1.fen"
+  cp "$2" "$work/$1.fen"
   if ! .github/scripts/within.sh 120 "$fennec" build --release "$work/$1.fen" -o "$work/$1" > "$work/said" 2>&1; then
     echo "::error::$1 didn't build"
     cat "$work/said"
@@ -67,24 +68,15 @@ built() {
 }
 
 if [ "$symbols" = yes ]; then
-  built uses_sqlite "$(cat examples/std_sqlite.fen)"
+  built uses_sqlite examples/std_sqlite.fen
   if ! found uses_sqlite "$work/uses_sqlite" | grep -q sqlite; then
     echo "::error::a program that uses SQLite wasn't seen linking it, so this check can't see it anywhere"
     exit 1
   fi
 fi
 
-built hello 'def main(stdout: Stdout):
-    stdout.print("hello")
-    return
-'
-built fs 'def main(stdout: Stdout, fs: Fs):
-    text = fs.read_text("hello.fen") except why:
-        stdout.print(why)
-        return
-    stdout.print(len(text))
-    return
-'
+built hello .github/programs/hello.fen
+built fs .github/programs/reads-a-file.fen
 if [ "$symbols" = yes ]; then
   {
     found hello "$work/hello"

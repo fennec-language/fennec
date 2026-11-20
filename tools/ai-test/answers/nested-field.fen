@@ -1,0 +1,11 @@
+struct Unit:
+    hp: int
+
+struct Team:
+    leader: Unit
+    size: int
+
+def main(stdout: Stdout):
+    mut team = Team(leader=Unit(hp=20), size=4)
+    team.leader.hp += 10
+    stdout.print(team.leader.hp, team.size)

@@ -261,7 +261,8 @@ fn method(known: &Known<'_>, at: u32, name: &str) -> Vec<Shape> {
                 .collect();
             own.into_iter().flat_map(|owner| of(owner, true)).collect()
         }
-        None => Vec::new(),
+        // A module's function's signature isn't offered yet.
+        Some(Object::Module(_)) | None => Vec::new(),
     }
 }
 
@@ -307,7 +308,7 @@ pub(crate) fn help(program: &Path, file: &Path, text: &str, offset: usize, mut o
     }) else {
         return Json::Null;
     };
-    let known = Known { module: &loaded.module, sources: &loaded.sources };
+    let known = Known { module: &loaded.module, sources: &loaded.sources, checked: None };
     let path = text::shown(file);
     let shapes = match &callee {
         Callee::Name(name) => named(&known, name, &path),

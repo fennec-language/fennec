@@ -1,0 +1,18 @@
+crashed, named against their order
+10 [7] [[7], [7, 7]] {"t": [7]}
+5 [8] [[8], [8, 8]] {"t": [8]}
+crashed, named in their order
+10 [7] [[7], [7, 7]] {"t": [7]}
+5 [8] [[8], [8, 8]] {"t": [8]}
+failed Refused.Declined(why="refused")
+10 [7] [[7], [7, 7]] {"t": [7]}
+5 [8] [[8], [8, 8]] {"t": [8]}
+crashed, by key
+10 [7] [[7], [7, 7]] {"t": [7]}
+5 [8] [[8], [8, 8]] {"t": [8]}
+crashed, against their order, their lists untouched
+10 [7] [[7], [7, 7]] {"t": [7]}
+5 [8] [[8], [8, 8]] {"t": [8]}
+crashed, against their order, one held to read
+10 [7] [[7], [7, 7]] {"t": [7]}
+5 [8] [[8], [8, 8]] {"t": [8]}

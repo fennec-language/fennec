@@ -1,0 +1,7 @@
+# `linkage-check.sh` builds this to see what a program reading a file links.
+def main(stdout: Stdout, fs: Fs):
+    text = fs.read_text("hello.fen") except why:
+        stdout.print(why)
+        return
+    stdout.print(len(text))
+    return

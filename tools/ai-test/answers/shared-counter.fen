@@ -1,0 +1,18 @@
+struct Hits:
+    count = 0
+
+    def add(ref self):
+        self.count += 1
+
+    def total(self) -> int:
+        return self.count
+
+def main(stdout: Stdout):
+    shared hits = Hits()
+    same = hits
+    lock hits as ref current:
+        current.add()
+    lock same as ref current:
+        current.add()
+    lock hits as current:
+        stdout.print(current.total())

@@ -386,6 +386,18 @@ pub fn builtin_method_changes(ty: &Type, name: &str) -> Option<bool> {
     builtins::method(ty, name).map(|method| method.changes)
 }
 
+/// The signature of a method written in Rust, of a built-in type or one of the standard
+/// library's, as a hover shows it: `def split(self, str) -> list[str]`. `None` when the type has
+/// no such method: one written in Fennec has a declaration to show instead.
+#[must_use]
+pub fn builtin_method_shown(ty: &Type, name: &str) -> Option<String> {
+    let method = builtins::method(ty, name).or_else(|| match ty {
+        Type::Named(owner) | Type::Generic(owner, _) => stdlib::method(owner, name),
+        _ => None,
+    })?;
+    Some(method.shown(name))
+}
+
 /// The types a method the engines provide on a type takes, after the value it's called on:
 /// `dict.get` on a `dict[int | str, int]` takes an `int | str`. `None` when the type has no
 /// such method.
@@ -984,6 +996,9 @@ fn resolved_from(
         if lend_lowering::program_copies_ran_out() {
             return Err(vec![no_room_for_copies()]);
         }
+        if lend_lowering::std_copies_ran_out() {
+            return Err(vec![no_room_for_std_copies()]);
+        }
         let again = match written {
             Round::Again => {
                 // Each `_` has a name of its own, as the first check gave it.
@@ -1273,6 +1288,19 @@ fn no_room_for_copies() -> Diagnostic {
         Span::default(),
     )
     .with_help("each file takes a slot of 256 KiB, or more for a bigger one, of the room spans have: a program of fewer files fits (#2114)")
+}
+
+/// What's said when the copies of the standard library's text a program needs written in, a
+/// source's body and its cleanup at each way out of its block, find no room left: a limit of the
+/// compiler's, said as one, never copies written over each other.
+fn no_room_for_std_copies() -> Diagnostic {
+    Diagnostic::new(
+        "this program writes in more copies of the standard library's text than the compiler has room for",
+        Span::default(),
+    )
+    .with_help(
+        "this is a limit of the compiler, not a mistake in the program: please report it with the program",
+    )
 }
 
 /// What's said when writing in what the check found is still changing the program after every
@@ -2119,6 +2147,80 @@ mod rounds {
         let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None);
         let Err(problems) = resolved else { panic!("a program with no room for its copies was written in") };
         assert!(problems.iter().any(|problem| problem.message.contains("leave no room")), "{problems:?}");
+    }
+
+    /// The standard library's text written into a function, once the rounds are done, is on spans
+    /// nothing else in the function has, the functions written inside it included: a copy's types
+    /// and what's found for it, by span, are never another copy's (#2056, #2208). A source's
+    /// cleanup is written in at each way out of its block and again in the function a crash runs,
+    /// each copy on spans of its own. Two kinds still share spans and are left out here, #2236: a
+    /// call's left-out literal default, written in with the callee's span, and the `deserialize`
+    /// methods the compiler generates.
+    #[test]
+    fn std_text_written_into_a_function_is_on_spans_of_its_own() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for folder in ["bench/kernels", "examples", "bench/realworld"] {
+            for entry in std::fs::read_dir(root.join(folder)).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|extension| extension == "fen") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        library_parses().unwrap();
+        let (mut shared, mut programs) = (Vec::new(), 0);
+        for path in files {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+            let _ = own_types_apart(&mut module);
+            if refuse_reserved(&module).is_err() {
+                continue;
+            }
+            let Ok(checked) = checked_typed_in(&module, checker::Scope::Reached) else { continue };
+            if refuse_old_forms(&module, &checked).is_err() {
+                continue;
+            }
+            if resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None).is_err() {
+                continue;
+            }
+            programs += 1;
+            for item in &module.items {
+                let defs: Vec<&fennec_syntax::FnDef> = match item {
+                    Item::Function(def) => vec![def],
+                    Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.methods.iter().collect(),
+                    Item::Extend(extension) => extension.methods.iter().collect(),
+                    _ => Vec::new(),
+                };
+                let generated = |def: &&fennec_syntax::FnDef| {
+                    def.name == "deserialize" || def.name.starts_with("fennec_tuple_deserialize")
+                };
+                for def in defs.into_iter().filter(|def| !generated(def)) {
+                    let mut body = def.body.clone();
+                    let mut seen: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+                    fennec_syntax::visit::in_stmts(&mut body, &mut |expr| {
+                        let literal = matches!(
+                            expr.kind,
+                            ExprKind::Bool(_)
+                                | ExprKind::None
+                                | ExprKind::Int(_)
+                                | ExprKind::Float(_)
+                                | ExprKind::Str(_)
+                        );
+                        if expr.span.in_prelude() && expr.span.start < expr.span.end && !literal {
+                            *seen.entry((expr.span.start, expr.span.end)).or_default() += 1;
+                        }
+                    });
+                    if let Some((at, count)) = seen.iter().find(|(_, count)| **count > 1) {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        shared.push(format!("{name}: `{}` holds {at:?} {count} times", def.name));
+                    }
+                }
+            }
+        }
+        assert!(programs >= 100, "only {programs} programs were written in");
+        assert!(shared.is_empty(), "{shared:#?}");
     }
 
     /// Every kernel, the eight real programs among them, every example and every real-world

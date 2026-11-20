@@ -1,0 +1,4 @@
+# The release dry run builds this on its own and runs it with `one two`, which it prints after
+# their count.
+def main(stdout: Stdout, args: Args):
+    stdout.print(len(args), args[0], args[1])

@@ -1,0 +1,7 @@
+struct Unit:
+    name: str
+    target: str?
+
+def main(stdout: Stdout):
+    for unit in [Unit(name="Ana", target="Bo"), Unit(name="Cy", target=None)]:
+        stdout.print(unit.name, unit.target else "nobody")

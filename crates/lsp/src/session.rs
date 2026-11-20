@@ -36,13 +36,52 @@ pub struct Session {
     clean: Option<Clean>,
     /// The URIs each program last published diagnostics for, to clear them when they're gone.
     published: BTreeMap<PathBuf, BTreeSet<String>>,
+    /// Whether a program's lints and costs wait for `finish`, after its mistakes are published.
+    staged: bool,
+    /// The document whose program's lints and costs are still to be published, by its URI and
+    /// path, with the program.
+    unfinished: Option<(String, PathBuf, PathBuf)>,
     shut_down: bool,
     exited: bool,
 }
 
 impl Session {
+    /// A session that answers each message in full: what it publishes for a program with no
+    /// mistakes holds what the linter finds and what may copy too.
     pub fn new() -> Self {
         Session::default()
+    }
+
+    /// A session that publishes a program's mistakes as soon as the checker has found them, and
+    /// leaves what the linter finds and what may copy, which take longer, to `finish`, as the
+    /// server runs it. On a program of 200,000 lines, that's the difference between about 6
+    /// seconds and about 20 before an editor shows anything.
+    pub fn staged() -> Self {
+        Session { staged: true, ..Session::default() }
+    }
+
+    /// Whether the program last checked still has its lints and costs to work out.
+    pub fn pending(&self) -> bool {
+        self.cached.as_ref().is_some_and(|(_, _, analysis)| analysis.pending)
+    }
+
+    /// Works out what the linter finds and what may copy in the program last checked, when that's
+    /// still to do, and publishes them with its diagnostics again.
+    pub fn finish(&mut self) -> Vec<Json> {
+        let unfinished = self.unfinished.take();
+        let Some((program, _, analysis)) = self.cached.as_mut() else { return Vec::new() };
+        if !analysis.pending {
+            return Vec::new();
+        }
+        analysis.finish(program.is_dir());
+        if let Some(clean) = Clean::of(program, analysis) {
+            self.clean = Some(clean);
+        }
+        let program = program.clone();
+        match unfinished {
+            Some((uri, file, of)) if of == program => self.publish(&uri, &file, program),
+            _ => Vec::new(),
+        }
     }
 
     /// Whether the editor has said it's done: the session ends after this.
@@ -59,6 +98,17 @@ impl Session {
     /// new diagnostics after a change.
     pub fn handle(&mut self, message: &Json) -> Vec<Json> {
         let method = message.get("method").and_then(Json::as_str).unwrap_or("");
+        // A code action may be a lint's fix, and an inlay hint may be a copy, so these wait for
+        // lints and costs, as does `fennec/settled`, which is answered once everything is.
+        let mut answers = match method {
+            "textDocument/codeAction" | "textDocument/inlayHint" | "fennec/settled" => self.finish(),
+            _ => Vec::new(),
+        };
+        answers.extend(self.answer(message, method));
+        answers
+    }
+
+    fn answer(&mut self, message: &Json, method: &str) -> Vec<Json> {
         let params = message.get("params").unwrap_or(&Json::Null);
         let Some(id) = message.get("id").cloned() else {
             return self.notification(method, params);
@@ -68,6 +118,9 @@ impl Session {
         }
         let result = match method {
             "initialize" => Some(capabilities()),
+            // Answered once everything the last change asked for is published, so whatever
+            // sends it knows the server has finished, as the budgets time it.
+            "fennec/settled" => Some(Json::Null),
             "shutdown" => {
                 self.shut_down = true;
                 Some(Json::Null)
@@ -136,7 +189,7 @@ impl Session {
             Some(analysis) => self.cached = Some((program.clone(), self.changes, analysis)),
             None => self.refresh(&program),
         }
-        self.publish(uri, &file, program)
+        self.publish_checked(uri, &file, program)
     }
 
     /// Checks again the program a changed document belongs to, and publishes what it finds.
@@ -145,7 +198,14 @@ impl Session {
         let Some(file) = text::path_of(uri).map(|path| canonical(&path)) else { return Vec::new() };
         let program = program_of(&file);
         self.refresh(&program);
-        self.publish(uri, &file, program)
+        self.publish_checked(uri, &file, program)
+    }
+
+    /// Publishes what the checker found, and keeps what's needed to publish again once the
+    /// lints and costs are worked out, when they wait for `finish`.
+    fn publish_checked(&mut self, uri: &str, file: &Path, program: PathBuf) -> Vec<Json> {
+        self.unfinished = self.pending().then(|| (uri.to_owned(), file.to_path_buf(), program.clone()));
+        self.publish(uri, file, program)
     }
 
     /// Publishes what's in each file of the analysis. A file that no longer has anything gets an
@@ -182,7 +242,10 @@ impl Session {
                 if cached == program && *changes == self.changes && !analysis.partial
         );
         if !fresh {
-            let analysis = analyze(program, &self.overlay());
+            let mut analysis = analyze(program, &self.overlay());
+            if !self.staged {
+                analysis.finish(program.is_dir());
+            }
             if let Some(clean) = Clean::of(program, &analysis) {
                 self.clean = Some(clean);
             }
@@ -354,8 +417,26 @@ impl Session {
     /// What can be written at a position.
     fn completion(&mut self, params: &Json) -> Json {
         let Some((file, text, offset)) = self.document_at(params) else { return Json::Null };
-        let items = completion::complete(&program_of(&file), &file, &text, offset, self.overlay());
-        Json::object([("isIncomplete", Json::Bool(false)), ("items", Json::Array(items))])
+        let program = program_of(&file);
+        // As an edit is checked: only the edited file and what it imports, typed, when the edit
+        // is to bodies. A big program checked whole took seconds for each request.
+        let quick = completion::mend(&text, offset).and_then(|mend| {
+            let mut overlay = self.overlay();
+            overlay.insert(file.clone(), mend.text.clone());
+            let mut analysis = edited_bodies(self.clean.as_ref()?, &program, &overlay)?;
+            analysis.typed();
+            let checked = analysis.checked.as_ref()?;
+            let known = completion::Known {
+                module: analysis.module.as_ref()?,
+                sources: &analysis.sources,
+                checked: Some(checked),
+            };
+            Some(completion::offer(&mend, &text::shown(&file), &known))
+        });
+        let items =
+            quick.unwrap_or_else(|| completion::complete(&program, &file, &text, offset, self.overlay()));
+        let (items, more) = completion::without_hooks(items, &text, offset);
+        Json::object([("isIncomplete", Json::Bool(more)), ("items", Json::Array(items))])
     }
 
     /// The signature of the call a position is in.
@@ -391,9 +472,15 @@ impl Session {
                 hover_text(declaration, &name, sources)
             })
             .collect();
-        if shown.is_empty() {
-            return Json::Null;
-        }
+        let shown = if shown.is_empty() {
+            // A method written in Rust has no declaration: what the checker knows of it.
+            match builtin_signature(&found, analysis.checked.as_ref()) {
+                Some(signature) => vec![signature],
+                None => return Json::Null,
+            }
+        } else {
+            shown
+        };
         let contents = Json::object([
             ("kind", Json::string("markdown")),
             ("value", Json::string(shown.join("\n\n---\n\n"))),
@@ -515,4 +602,18 @@ fn capabilities() -> Json {
         ("version", Json::string(env!("CARGO_PKG_VERSION"))),
     ]);
     Json::object([("capabilities", capabilities), ("serverInfo", info)])
+}
+
+/// The signature of a method written in Rust, of a built-in type or the standard library's, that
+/// `target` calls, for a hover, since it has no declaration to show: `def split(self, str) ->
+/// list[str]`, and which type it's built into.
+fn builtin_signature(target: &Target, checked: Option<&fennec_check::Checked>) -> Option<String> {
+    let Target::Member { object, name, function } = target else { return None };
+    let ty = checked?.types.body(function)?.expr(*object)?;
+    let ty = match ty {
+        fennec_check::Type::Optional(inner) => inner,
+        other => other,
+    };
+    let shown = fennec_check::builtin_method_shown(ty, name)?;
+    Some(format!("```fennec\n{shown}\n```\n\nbuilt into `{ty}`"))
 }

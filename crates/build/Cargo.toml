@@ -23,6 +23,11 @@ fennec-dist.workspace = true
 fennec-rt.workspace = true
 fennec-syntax.workspace = true
 
+# How much space is free on the cache's disk, so its cap is never more than a tenth of it: rustix's
+# safe `statvfs`, already here under the runtime and cap-std. The standard library can't say.
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 fennec-temp.workspace = true
 

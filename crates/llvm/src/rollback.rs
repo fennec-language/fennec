@@ -17,8 +17,8 @@ use crate::emit::Emit;
 use crate::kinds::Kind;
 use crate::lists::FIELDS_OFFSET;
 
-/// The prefix of the `shared` types `lock` is lowered onto.
-const LOCKED: &str = "Shared__";
+/// The prefix of every `shared` value's hidden type, `Shared__T`, which `lock` is lowered onto.
+pub(crate) const LOCKED: &str = "Shared__";
 
 /// What a word of a lock's own cell holds, for the runtime to know what it's putting back.
 #[derive(Clone, Copy)]
@@ -98,6 +98,29 @@ pub(crate) fn given_back_on_crash(function: &Function) -> Vec<usize> {
         }
     }
     found
+}
+
+/// The handles each `lock` of several values takes together, among `on_crash`, where there are
+/// two or more: a crash gives them back as their own unlock does (see `roll_back_on_crash`).
+fn taken_together(function: &Function, on_crash: &[usize]) -> Vec<Vec<usize>> {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .filter_map(|inst| match &inst.kind {
+            InstKind::LockAll { handles } => Some(
+                handles
+                    .iter()
+                    .filter_map(|(handle, _)| match handle {
+                        Operand::Local(local) if on_crash.contains(&local.0) => Some(local.0),
+                        _ => None,
+                    })
+                    .collect::<Vec<usize>>(),
+            ),
+            _ => None,
+        })
+        .filter(|together| together.len() > 1)
+        .collect()
 }
 
 /// A plain save, written into this thread's buffer as the runtime would (`rollback::Buffer` in
@@ -596,8 +619,22 @@ impl Emit<'_, '_, '_> {
     /// A read lock still held is only given back.
     /// The runtime puts back the words of blocks in its tables, and native code the words of the
     /// lock's own cell, which it's told one at a time.
+    ///
+    /// Values one `lock` takes together go as their own unlock has them go (`roll_back_together`):
+    /// taken in order of address, they're given back in the opposite order, whatever order they're
+    /// named in.
     pub(crate) fn roll_back_on_crash(&mut self) -> Result<(), String> {
+        let together = taken_together(self.function, &self.on_crash);
+        let mut done: Vec<usize> = Vec::new();
         for local in self.on_crash.clone().into_iter().rev() {
+            if done.contains(&local) {
+                continue;
+            }
+            if let Some(group) = together.iter().find(|group| group.contains(&local)) {
+                self.roll_back_together(group)?;
+                done.extend(group);
+                continue;
+            }
             let handle = Operand::Local(LocalId(local));
             if self.is_crash_cleanup(local) {
                 self.run_crash_cleanup(&handle)?;
@@ -618,6 +655,38 @@ impl Emit<'_, '_, '_> {
             self.start_block(&next);
         }
         Ok(())
+    }
+
+    /// Where a crash leaves values one `lock` took together: each still held has what it changed put
+    /// back, the last named first, as each began its log, and only then are their locks given back,
+    /// in the opposite order from how they were taken, which was by address. Each value's table is
+    /// a stack with the others', so given back in the order they're named, as a lone lock's is, two
+    /// named against their order of address each went back with the other's table, and their lists
+    /// and dicts, whose blocks are in those tables, read as `None` (#2223).
+    fn roll_back_together(&mut self, group: &[usize]) -> Result<(), String> {
+        // Whether each is held, read before any is put back, which clears it.
+        let mut held = Vec::with_capacity(group.len());
+        for local in group {
+            let handle = Operand::Local(LocalId(*local));
+            let Some(flag) = self.held_flag(&handle) else { continue };
+            let now = self.temp();
+            self.line(&format!("{now} = load i1, ptr {flag}"));
+            held.push((handle, flag, now));
+        }
+        for (handle, flag, now) in held.iter().rev() {
+            let (undo, next) = (self.label("crash_undo"), self.label("crash_next"));
+            self.line(&format!("br i1 {now}, label %{undo}, label %{next}"));
+            self.start_block(&undo);
+            if self.saves_changes(handle) {
+                self.undo_changes(handle)?;
+            } else {
+                self.line(&format!("store i1 false, ptr {flag}"));
+            }
+            self.line(&format!("br label %{next}"));
+            self.start_block(&next);
+        }
+        let held: Vec<(Operand, String)> = held.into_iter().map(|(handle, _, now)| (handle, now)).collect();
+        self.give_back_all_on_crash(&held)
     }
 
     /// Whether `local` is a cleanup a crash runs, a closure, where the rest a crash goes through

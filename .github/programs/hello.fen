@@ -1,0 +1,4 @@
+# `linkage-check.sh` builds this to see what the least of programs links.
+def main(stdout: Stdout):
+    stdout.print("hello")
+    return

@@ -2694,7 +2694,7 @@ fn popped_written(popping: &Popping) -> String {
             PopWay::Discarded => format!("{place}.discard({v})"),
             PopWay::DiscardedNone => format!("{place}.discard(None)"),
             PopWay::ByRef => {
-                format!("taken{n} = taken{id}(ref {place}) else {missing}\n    stdout.print(taken{n})")
+                format!("through{n} = taken{id}(ref {place}) else {missing}\n    stdout.print(through{n})")
             }
             PopWay::Empty => {
                 format!("mut empty{n} = list[{t}?]()\n    stdout.print(empty{n}.pop() else {missing})")

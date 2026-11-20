@@ -45,8 +45,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The folder this build's entries live in, `<version>-<hash of all its source>`.
 pub const FOLDER: &str = concat!(env!("CARGO_PKG_VERSION"), "-", env!("FENNEC_BUILD"));
 
-/// The cache's size cap unless `FENNEC_CACHE_CAP` sets one, in bytes.
-pub const DEFAULT_CAP: u64 = 1 << 30;
+/// The cache's size cap unless `FENNEC_CACHE_CAP` sets one, in bytes: room for many programs'
+/// builds, as a 200,000-line program's dev build keeps about half a gigabyte, so cleanup doesn't
+/// take the objects of one being edited. A tenth of the space free on the cache's disk is the cap
+/// when that's less (see [`Cache::cap`]).
+pub const DEFAULT_CAP: u64 = 20 << 30;
 
 /// An entry used this recently is already near the end of cleanup's order.
 const MARKED_RECENTLY: Duration = Duration::from_secs(600);
@@ -130,9 +133,14 @@ impl Cache {
         }
     }
 
-    /// The size cap: `FENNEC_CACHE_CAP` in bytes, or 1 GiB.
+    /// The size cap: `FENNEC_CACHE_CAP` in bytes, or [`DEFAULT_CAP`], or a tenth of the space free
+    /// on the disk Fennec's home is on if that's less, so the cache never fills a disk that's
+    /// nearly full. It's asked at each cleanup, so the cap falls as the disk fills.
     pub fn cap() -> u64 {
-        std::env::var("FENNEC_CACHE_CAP").ok().and_then(|text| text.parse().ok()).unwrap_or(DEFAULT_CAP)
+        if let Some(cap) = std::env::var("FENNEC_CACHE_CAP").ok().and_then(|text| text.parse().ok()) {
+            return cap;
+        }
+        cap_for(crate::fennec_home().and_then(|home| free_space(&home)))
     }
 
     /// Where an entry of this build lives: `cache/<version>-<build>/<kind>/<name>`.
@@ -540,6 +548,24 @@ fn kept_at(path: &Path, sum: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The cap when nothing sets one, with `free` bytes free on the cache's disk, when that's known.
+fn cap_for(free: Option<u64>) -> u64 {
+    free.map_or(DEFAULT_CAP, |free| DEFAULT_CAP.min(free / 10))
+}
+
+/// How many bytes this user may still write on the disk `path` is on, as the system says.
+#[cfg(unix)]
+fn free_space(path: &Path) -> Option<u64> {
+    let stats = rustix::fs::statvfs(path).ok()?;
+    stats.f_bavail.checked_mul(stats.f_frsize)
+}
+
+/// Not asked where there's no safe call for it: the cap is [`DEFAULT_CAP`] there.
+#[cfg(not(unix))]
+fn free_space(_: &Path) -> Option<u64> {
+    None
+}
+
 /// Where a kept object is: the entry's name with `.o` after it, which no other entry's name ends in.
 fn object_at(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -833,6 +859,19 @@ fn read_only_program(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::is_stale;
     use std::time::Duration;
+
+    /// The cap with nothing setting it is 20 GiB, or a tenth of the space free on the disk if that's
+    /// less; and on Unix the free space of a folder that's there is found.
+    #[test]
+    fn the_cap_is_twenty_gibibytes_or_a_tenth_of_the_free_space() {
+        let gib = 1_u64 << 30;
+        assert_eq!(super::cap_for(None), 20 * gib);
+        assert_eq!(super::cap_for(Some(1000 * gib)), 20 * gib);
+        assert_eq!(super::cap_for(Some(50 * gib)), 5 * gib);
+        assert_eq!(super::cap_for(Some(0)), 0);
+        #[cfg(unix)]
+        assert!(super::free_space(&std::env::temp_dir()).is_some_and(|free| free > 0));
+    }
 
     /// An object kept is a file holding just its bytes, for the linker to read where it lies, found
     /// again by its name and never written again: kept a second time under the same name, it's the

@@ -11,7 +11,7 @@ from std.io import Reader, Writer, read_all
 ## assert csv.loads("name,age\nAna,31\n")? == [["name", "age"], ["Ana", "31"]]
 ## assert csv.loads("a,\"b,c\"\n")? == [["a", "b,c"]]
 ## ```
-export def loads(text: str, delimiter = ",") -> list[list[str]]:
+export def loads(text: str, delimiter = ",") -> list[list[str]] fails ParseError:
     return [row for _, row in rows_in(text, delimiter)?]
 
 ## The rows after the first as dicts, with the first row's fields as their keys. A row
@@ -22,7 +22,7 @@ export def loads(text: str, delimiter = ",") -> list[list[str]]:
 ## rows = csv.records("name,age\nAna,31\nBo,40\n")?
 ## assert rows[1]["name"] == "Bo" and rows[1]["age"] == "40"
 ## ```
-export def records(text: str, delimiter = ",") -> list[dict[str, str]]:
+export def records(text: str, delimiter = ",") -> list[dict[str, str]] fails ParseError:
     rows = rows_in(text, delimiter)?
     if len(rows) == 0: return []
     _, names = rows[0]
@@ -110,7 +110,7 @@ def parse_problem(problem: str, line: int, column: int) -> ParseError:
 
 ## Each row, with the line it starts on. It goes through the characters once, since
 ## finding a character by its position can mean walking from the start.
-def rows_in(text: str, delimiter: str) -> list[(int, list[str])]:
+def rows_in(text: str, delimiter: str) -> list[(int, list[str])] fails ParseError:
     wrong = delimiter_problem(delimiter)
     if wrong != "": fail parse_problem(wrong, 1, 1)
     mut rows = []

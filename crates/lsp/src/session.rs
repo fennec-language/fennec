@@ -417,7 +417,24 @@ impl Session {
     /// What can be written at a position.
     fn completion(&mut self, params: &Json) -> Json {
         let Some((file, text, offset)) = self.document_at(params) else { return Json::Null };
-        let items = completion::complete(&program_of(&file), &file, &text, offset, self.overlay());
+        let program = program_of(&file);
+        // As an edit is checked: only the edited file and what it imports, typed, when the edit
+        // is to bodies. A big program checked whole took seconds for each request.
+        let quick = completion::mend(&text, offset).and_then(|mend| {
+            let mut overlay = self.overlay();
+            overlay.insert(file.clone(), mend.text.clone());
+            let mut analysis = edited_bodies(self.clean.as_ref()?, &program, &overlay)?;
+            analysis.typed();
+            let checked = analysis.checked.as_ref()?;
+            let known = completion::Known {
+                module: analysis.module.as_ref()?,
+                sources: &analysis.sources,
+                checked: Some(checked),
+            };
+            Some(completion::offer(&mend, &text::shown(&file), &known))
+        });
+        let items =
+            quick.unwrap_or_else(|| completion::complete(&program, &file, &text, offset, self.overlay()));
         Json::object([("isIncomplete", Json::Bool(false)), ("items", Json::Array(items))])
     }
 
@@ -454,9 +471,15 @@ impl Session {
                 hover_text(declaration, &name, sources)
             })
             .collect();
-        if shown.is_empty() {
-            return Json::Null;
-        }
+        let shown = if shown.is_empty() {
+            // A method written in Rust has no declaration: what the checker knows of it.
+            match builtin_signature(&found, analysis.checked.as_ref()) {
+                Some(signature) => vec![signature],
+                None => return Json::Null,
+            }
+        } else {
+            shown
+        };
         let contents = Json::object([
             ("kind", Json::string("markdown")),
             ("value", Json::string(shown.join("\n\n---\n\n"))),
@@ -578,4 +601,18 @@ fn capabilities() -> Json {
         ("version", Json::string(env!("CARGO_PKG_VERSION"))),
     ]);
     Json::object([("capabilities", capabilities), ("serverInfo", info)])
+}
+
+/// The signature of a method written in Rust, of a built-in type or the standard library's, that
+/// `target` calls, for a hover, since it has no declaration to show: `def split(self, str) ->
+/// list[str]`, and which type it's built into.
+fn builtin_signature(target: &Target, checked: Option<&fennec_check::Checked>) -> Option<String> {
+    let Target::Member { object, name, function } = target else { return None };
+    let ty = checked?.types.body(function)?.expr(*object)?;
+    let ty = match ty {
+        fennec_check::Type::Optional(inner) => inner,
+        other => other,
+    };
+    let shown = fennec_check::builtin_method_shown(ty, name)?;
+    Some(format!("```fennec\n{shown}\n```\n\nbuilt into `{ty}`"))
 }

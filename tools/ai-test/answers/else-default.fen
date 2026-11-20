@@ -1,0 +1,5 @@
+def main(stdout: Stdout):
+    mut counts: dict[str, int] = {}
+    for word in "a b a c a b".split(" "):
+        counts[word] = (counts.get(word) else 0) + 1
+    stdout.print(counts["a"], counts["b"], counts["c"], counts.get("z") else 0)

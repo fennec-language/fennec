@@ -1,0 +1,13 @@
+from std.collections import Table
+
+struct Unit:
+    hp: int
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    for hp in [5, 10, 20]:
+        _ = units.add(Unit(hp=hp))
+    mut total = 0
+    for unit in units:
+        total += unit.hp
+    stdout.print(total)

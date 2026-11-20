@@ -1,0 +1,21 @@
+error SellError:
+    NotFound(item: str)
+    OutOfStock(item: str)
+
+def sell(stock: dict[str, int], item: str) -> int fails SellError:
+    count = stock.get(item) else fail .NotFound(item)
+    if count == 0:
+        fail .OutOfStock(item)
+    return count - 1
+
+def main(stdout: Stdout):
+    stock = {"apple": 1, "pear": 0}
+    for item in ["apple", "pear", "fig"]:
+        left = sell(stock, item) except why:
+            case .NotFound(name):
+                stdout.print("missing", name)
+                continue
+            case .OutOfStock(name):
+                stdout.print("none of", name)
+                continue
+        stdout.print(left)

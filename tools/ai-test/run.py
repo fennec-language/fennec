@@ -326,6 +326,10 @@ def main() -> int:
     args = parser.parse_args()
 
     tasks = tomllib.loads((HERE / "tasks.toml").read_text())["task"]
+    # Each task's reference answer is a program of its own, `answers/<id>.fen`, where a test of
+    # Fennec's checks it against the language as it is now.
+    for task in tasks:
+        task["reference"] = (HERE / "answers" / f"{task['id']}.fen").read_text()
     if args.tasks:
         if args.tasks.isdigit():
             tasks = tasks[: int(args.tasks)]

@@ -1,0 +1,17 @@
+struct Account:
+    total = 0
+
+    def balance(self) -> int:
+        return self.total
+
+def transfer(source: shared Account, target: shared Account, amount: int):
+    lock source, target as ref giving, ref getting:
+        giving.total -= amount
+        getting.total += amount
+
+def main(stdout: Stdout):
+    shared savings = Account(total=100)
+    shared checking = Account()
+    transfer(savings, target=checking, amount=30)
+    lock savings, checking as first, second:
+        stdout.print(first.balance(), second.balance())

@@ -1,0 +1,5 @@
+# A program that never ends, which CI's `within.sh` must stop at its time limit, along with what it
+# started, on every platform.
+def main():
+    while True:
+        pass

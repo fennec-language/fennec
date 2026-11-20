@@ -62,7 +62,7 @@ broke() {
   fi
 }
 
-printf 'def main(stdout: Stdout):\n    stdout.print("ran")\n    return\n' > "$work/selftest.fen"
+cp .github/programs/audit-selftest.fen "$work/selftest.fen"
 status=0
 FENNEC_AUDIT_SELFTEST=1 .github/scripts/within.sh 120 "$fennec" run "$work/selftest.fen" \
   > "$printed" 2> "$said" || status=$?

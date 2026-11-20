@@ -1,0 +1,7 @@
+def main(stdout: Stdout, stdin: Stdin):
+    lines = stdin.lines()
+    mut total = 0
+    for line in lines:
+        int_value = int(line) except InvalidValue(): 0
+        total += int_value
+    stdout.print(len(lines), total)

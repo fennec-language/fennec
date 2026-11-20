@@ -258,6 +258,36 @@ pub(in crate::embed) fn swap_task_writes(writes: bool) -> bool {
 /// How much output is kept before a live run writes it.
 const LIVE_OUTPUT: usize = 1 << 13;
 
+/// How long after a live run last wrote its output a line printed to a pipe or a file is written,
+/// however little is kept, so a program killed loses only its last moment's lines.
+const OUTPUT_AGE: std::time::Duration = std::time::Duration::from_millis(100);
+
+thread_local! {
+    /// When this thread last wrote its output, if it has.
+    static WRITTEN_AT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+}
+
+/// Whether standard output is a terminal, where a person waits on each line.
+#[cfg(not(test))]
+fn to_terminal() -> bool {
+    use std::io::IsTerminal;
+    static TERMINAL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::io::stdout().is_terminal());
+    *TERMINAL
+}
+
+/// Tests write to `WRITTEN`, not to a terminal.
+#[cfg(test)]
+const fn to_terminal() -> bool {
+    false
+}
+
+/// Whether a live run writes the lines it has kept, now that a piece ending one has come: at once
+/// to a terminal, and to a pipe or a file once `LIVE_OUTPUT` bytes are kept or `OUTPUT_AGE` has
+/// gone since the last write, which is only read when the others haven't said yes.
+fn due(kept: usize, terminal: bool, since_written: impl FnOnce() -> Option<std::time::Duration>) -> bool {
+    terminal || kept >= LIVE_OUTPUT || since_written().is_none_or(|since| since >= OUTPUT_AGE)
+}
+
 impl Output {
     /// Writes the first `length` bytes kept, in one go, so nothing another thread writes lands
     /// among them.
@@ -265,7 +295,20 @@ impl Output {
         let mut kept = self.0.borrow_mut();
         write_whole(kept.get(..length).unwrap_or_default())?;
         kept.drain(..length);
+        WRITTEN_AT.set(Some(std::time::Instant::now()));
         Ok(())
+    }
+
+    /// Whether this run writes the `kept` bytes' lines now (`due`), if it writes as it goes. A
+    /// recording's output breaks only at waits and at 8 KB kept by the program itself, as before
+    /// lines went out in time, whatever the clock or the terminal: its replay writes the bursts the
+    /// recording logged, and one the clock broke off there would wait for bytes the replay keeps.
+    fn due(&self, kept: usize) -> bool {
+        if crate::replay::active() {
+            return self.1 && kept >= LIVE_OUTPUT;
+        }
+        let since_written = || WRITTEN_AT.get().map(|written| written.elapsed());
+        (self.1 || TASK_WRITES.get()) && due(kept, to_terminal(), since_written)
     }
 }
 
@@ -308,11 +351,15 @@ fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
 }
 
 impl Write for Output {
-    /// Keeps what's printed, and once a live run has kept enough, writes it up to the last whole
-    /// line, as one print comes here in pieces and threads share the output.
+    /// Keeps what's printed, and once a run that writes as it goes is due to (`due`), writes it up
+    /// to the last whole line, as one print comes here in pieces and threads share the output.
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0.borrow_mut().extend_from_slice(bytes);
-        if self.1 && self.0.borrow().len() >= LIVE_OUTPUT {
+        let kept = self.0.borrow().len();
+        // Only a piece with a line's end in it finishes a line, so the clock is read once a line,
+        // not once a piece. 8 KB kept writes the lines before it as well.
+        let may_write = kept >= LIVE_OUTPUT || bytes.contains(&b'\n');
+        if may_write && self.due(kept) {
             let lines = self.0.borrow().iter().rposition(|byte| *byte == b'\n');
             if let Some(last) = lines {
                 self.write_out(last + 1)?;

@@ -120,3 +120,20 @@ fn only_what_could_have_been_freed_is_left_over() {
     assert_eq!(super::with(|state| state.heap.leftover()), before);
     super::finish();
 }
+
+/// A live run's lines go out as they're printed to a terminal. To a pipe or a file they go once
+/// 8 KB is kept, at the first line, or at a line printed 100 ms or more after the last write, and
+/// the clock is read only for that last.
+#[test]
+fn a_live_runs_lines_are_written_when_due() {
+    let moment = std::time::Duration::from_millis(1);
+    let later = std::time::Duration::from_millis(100);
+    assert!(
+        super::due(6, true, || panic!("the clock isn't read for a terminal")),
+        "a terminal's line goes out"
+    );
+    assert!(!super::due(6, false, || Some(moment)), "a pipe's line a moment after the last write waits");
+    assert!(super::due(super::LIVE_OUTPUT, false, || panic!("nor once 8 KB is kept")), "8 KB goes out");
+    assert!(super::due(6, false, || Some(later)), "a line 100 ms after the last write goes out");
+    assert!(super::due(6, false, || None), "the first line goes out");
+}

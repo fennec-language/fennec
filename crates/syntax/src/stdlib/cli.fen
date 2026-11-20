@@ -1,6 +1,12 @@
 from std.string import quoted_input
 
 ## Arguments a program wasn't given in a way it understands. `message` says what's wrong.
+##
+## ```fennec
+## from std.cli import Cli, CliError
+## cli = Cli(name="greet").option("name", required=True)
+## assert cli.parse([]) fails CliError(message="`--name` is required")
+## ```
 export error CliError:
     message: str
 
@@ -18,6 +24,12 @@ struct CliArg:
     many = False
 
 ## The arguments a program was given, read the way its `Cli` describes.
+##
+## ```fennec
+## from std.cli import Cli
+## given = Cli(name="copy").flag("force").positional("from").parse(["--force", "a.txt"])?
+## assert given.flag("force") and given.value("from") == "a.txt"
+## ```
 export struct CliArgs:
     flags: set[str] = set()
     values: dict[str, str] = {}
@@ -26,23 +38,45 @@ export struct CliArgs:
     wants_help = False
 
     ## Whether a flag was given.
+    ##
+    ## ```fennec
+    ## from std.cli import Cli
+    ## given = Cli(name="greet").flag("loud", short="l").parse(["-l"])?
+    ## assert given.flag("loud")
+    ## ```
     def flag(self, name: str) -> bool:
         return name in self.flags
 
     ## An option's or positional argument's value, its default when it wasn't given, or None
     ## when it has neither.
+    ##
+    ## ```fennec
+    ## from std.cli import Cli
+    ## cli = Cli(name="greet").option("name", default="world")
+    ## assert cli.parse([])?.value("name") == "world"
+    ## assert cli.parse(["--name=Ana"])?.value("name") == "Ana"
+    ## ```
     def value(self, name: str) -> str?:
         return self.values.get(name)
 
     ## What the last positional argument collected, when it takes many.
+    ##
+    ## ```fennec
+    ## from std.cli import Cli
+    ## given = Cli(name="cat").positional("files", many=True).parse(["a.txt", "b.txt"])?
+    ## assert given.many() == ["a.txt", "b.txt"]
+    ## ```
     def many(self) -> list[str]:
         return self.rest
 
 ## What a program takes on its command line, built up one argument at a time, then used to
 ## read `args` and to write the help:
 ## ```fennec
+## from std.cli import Cli
+##
 ## cli = Cli(name="greet").flag("loud", short="l").option("name", default="world")
-## given = cli.parse([arg for arg in args])?
+## given = cli.parse(["-l", "--name", "Ana"])?
+## assert given.flag("loud") and given.value("name") == "Ana"
 ## ```
 ## Options are written `--name value`, `--name=value` or `-n value`. Flags take no value, and
 ## short ones can be written together, `-lv`. Everything after `--` is positional.
@@ -52,11 +86,23 @@ export struct Cli:
     takes: list[CliArg] = []
 
     ## A flag, which is either given or not.
+    ##
+    ## ```fennec
+    ## from std.cli import Cli
+    ## cli = Cli(name="greet").flag("loud", short="l", help="shout it")
+    ## assert cli.parse(["--loud"])?.flag("loud")
+    ## ```
     def flag(self, name: str, short = "", help = "") -> Cli:
         return self._with(CliArg(name=name, short=short, help=help))
 
     ## An option, which takes a value. With no default and not required, it has no value
     ## unless it's given.
+    ##
+    ## ```fennec
+    ## from std.cli import Cli
+    ## cli = Cli(name="serve").option("port", short="p", default="8080")
+    ## assert cli.parse(["-p", "9000"])?.value("port") == "9000"
+    ## ```
     def option(self, name: str, short = "", help = "", default = "", required = False) -> Cli:
         return self._with(
             CliArg(
@@ -70,6 +116,12 @@ export struct Cli:
         )
 
     ## A positional argument, given in order. `many` makes it collect all the rest.
+    ##
+    ## ```fennec
+    ## from std.cli import Cli
+    ## cli = Cli(name="open").positional("path")
+    ## assert cli.parse(["notes.txt"])?.value("path") == "notes.txt"
+    ## ```
     def positional(self, name: str, help = "", required = True, many = False) -> Cli:
         return self._with(
             CliArg(
@@ -84,6 +136,14 @@ export struct Cli:
 
     ## Reads `args`, the program's arguments without its name. Arguments that don't fit fail
     ## with a `CliError` that says why.
+    ##
+    ## ```fennec
+    ## from std.cli import Cli
+    ## cli = Cli(name="greet").flag("loud", short="l").option("name")
+    ## given = cli.parse(["-l", "--name", "Ana"])?
+    ## assert given.flag("loud") and given.value("name") == "Ana"
+    ## assert cli.parse(["--colour"]) fails CliError()
+    ## ```
     def parse(self, args: list[str]) -> CliArgs:
         mut given = CliArgs()
         mut positionals = []
@@ -132,6 +192,18 @@ export struct Cli:
         return given
 
     ## What the program takes, for `--help`.
+    ##
+    ## ```fennec
+    ## from std.cli import Cli
+    ## stdout.write(Cli(name="greet").flag("loud", short="l", help="shout it").help())
+    ## ```
+    ## ```output
+    ## usage: greet [options]
+    ##
+    ## options:
+    ##   -l, --loud  shout it
+    ##   -h, --help  show this help
+    ## ```
     def help(self) -> str:
         mut lines = [f"usage: {self.name}{self._usage()}"]
         if self.about != "":

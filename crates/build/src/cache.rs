@@ -45,8 +45,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The folder this build's entries live in, `<version>-<hash of all its source>`.
 pub const FOLDER: &str = concat!(env!("CARGO_PKG_VERSION"), "-", env!("FENNEC_BUILD"));
 
-/// The cache's size cap unless `FENNEC_CACHE_CAP` sets one, in bytes.
-pub const DEFAULT_CAP: u64 = 1 << 30;
+/// The cache's size cap unless `FENNEC_CACHE_CAP` sets one, in bytes: room for many programs'
+/// builds, as a 200,000-line program's dev build keeps about half a gigabyte, so cleanup doesn't
+/// take the objects of one being edited. A tenth of the space free on the cache's disk is the cap
+/// when that's less (see [`Cache::cap`]).
+pub const DEFAULT_CAP: u64 = 20 << 30;
 
 /// An entry used this recently is already near the end of cleanup's order.
 const MARKED_RECENTLY: Duration = Duration::from_secs(600);
@@ -81,6 +84,10 @@ const HASH_LEN: usize = 32;
 /// The ending of the file beside a kept program that holds its hash.
 const SUM: &str = "sum";
 
+/// The kind of entry that names what a program holds: its kind of object on the first line, then
+/// each object's name, a line each (see [`Cache::hold`]).
+pub const HOLDS: &str = "holds";
+
 /// What a cleanup did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cleanup {
@@ -103,6 +110,9 @@ struct Entry {
     links: u64,
     /// For a kept program, the entry's file that names it, which goes with it.
     sum: Option<PathBuf>,
+    /// For an object a program holds, the newest list naming it (see [`Cache::hold`]), and when
+    /// that was last used as the walk saw it: the object is used as recently as that.
+    holder: Option<(PathBuf, SystemTime)>,
 }
 
 impl Cache {
@@ -123,9 +133,14 @@ impl Cache {
         }
     }
 
-    /// The size cap: `FENNEC_CACHE_CAP` in bytes, or 1 GiB.
+    /// The size cap: `FENNEC_CACHE_CAP` in bytes, or [`DEFAULT_CAP`], or a tenth of the space free
+    /// on the disk Fennec's home is on if that's less, so the cache never fills a disk that's
+    /// nearly full. It's asked at each cleanup, so the cap falls as the disk fills.
     pub fn cap() -> u64 {
-        std::env::var("FENNEC_CACHE_CAP").ok().and_then(|text| text.parse().ok()).unwrap_or(DEFAULT_CAP)
+        if let Some(cap) = std::env::var("FENNEC_CACHE_CAP").ok().and_then(|text| text.parse().ok()) {
+            return cap;
+        }
+        cap_for(crate::fennec_home().and_then(|home| free_space(&home)))
     }
 
     /// Where an entry of this build lives: `cache/<version>-<build>/<kind>/<name>`.
@@ -181,6 +196,19 @@ impl Cache {
     /// notes). Cleanup never takes an entry used in the last [`KEPT_RECENT`], so one a build just
     /// found stays while it links.
     pub fn kept_object(&self, kind: &str, name: &str) -> Option<PathBuf> {
+        self.found_object(kind, name, true)
+    }
+
+    /// [`Self::kept_object`], for an object a program's list keeps (see [`Self::hold`]), as a
+    /// unit a build uses again without writing it has: it's found by one look, and not marked.
+    /// The build marked the list as it started, which marks every object it names at once, so a
+    /// big program's edit marks one file rather than every object it holds.
+    pub fn held_object(&self, kind: &str, name: &str) -> Option<PathBuf> {
+        self.found_object(kind, name, false)
+    }
+
+    /// Where the object kept under `name` is, if it's there, marked as just used if `mark` says.
+    fn found_object(&self, kind: &str, name: &str, mark: bool) -> Option<PathBuf> {
         if !self.usable() {
             return None;
         }
@@ -201,10 +229,35 @@ impl Cache {
             }
         };
         // Marking costs a write, so an object marked in the last few minutes isn't marked again.
-        if changed.elapsed().ok().is_none_or(|age| age > MARKED_RECENTLY) {
+        if mark && changed.elapsed().ok().is_none_or(|age| age > MARKED_RECENTLY) {
             crate::touched("mark what it used as used", set_time(&path, SystemTime::now()));
         }
         Some(path)
+    }
+
+    /// Keeps the list of the objects of kind `kind` the program `name` holds, as an entry of its
+    /// own: cleanup counts each as used as recently as the list was, so a build marks the list
+    /// (see [`Self::mark`]) rather than each object it finds again.
+    pub fn hold(&self, name: &str, kind: &str, held: &[String]) -> std::io::Result<()> {
+        let mut text = format!("{kind}\n");
+        for object in held {
+            text.push_str(object);
+            text.push('\n');
+        }
+        self.write(HOLDS, name, text.as_bytes())
+    }
+
+    /// Marks an entry as just used without reading it, as [`Self::read`] marks one, unless it was
+    /// marked in the last few minutes. An entry that isn't there is nothing to mark.
+    pub fn mark(&self, kind: &str, name: &str) {
+        if !self.usable() {
+            return;
+        }
+        let path = self.path(kind, name);
+        let Ok(changed) = std::fs::metadata(&path).and_then(|metadata| metadata.modified()) else { return };
+        if changed.elapsed().ok().is_none_or(|age| age > MARKED_RECENTLY) {
+            mark_used(&path);
+        }
     }
 
     /// Keeps a compiled object as a file of its own under `name`, written once and never again,
@@ -407,6 +460,7 @@ impl Cache {
         }
         let (gone, mut kept): (Vec<Entry>, Vec<Entry>) =
             entries.into_iter().partition(|entry| unused.contains(&entry.build));
+        held_as_recently_as_their_lists(&mut kept);
         cleanup.removed = gone.len();
         cleanup.freed = gone.iter().map(|entry| entry.size).sum();
         let mut size: u64 = kept.iter().map(|entry| entry.size).sum();
@@ -455,6 +509,12 @@ impl Entry {
     /// started meanwhile: what a build that found it did, as it marked it as just used. One that's
     /// gone already wasn't.
     fn used_since(&self) -> bool {
+        // The list holding it was marked since, by a build starting that may link it.
+        if let Some((list, used)) = &self.holder
+            && std::fs::metadata(list).and_then(|metadata| metadata.modified()).is_ok_and(|now| now > *used)
+        {
+            return true;
+        }
         let Ok(now) = std::fs::metadata(&self.path) else { return false };
         #[cfg(unix)]
         let links = std::os::unix::fs::MetadataExt::nlink(&now);
@@ -486,6 +546,24 @@ fn kept_at(path: &Path, sum: &str) -> PathBuf {
     name.push(".");
     name.push(sum);
     PathBuf::from(name)
+}
+
+/// The cap when nothing sets one, with `free` bytes free on the cache's disk, when that's known.
+fn cap_for(free: Option<u64>) -> u64 {
+    free.map_or(DEFAULT_CAP, |free| DEFAULT_CAP.min(free / 10))
+}
+
+/// How many bytes this user may still write on the disk `path` is on, as the system says.
+#[cfg(unix)]
+fn free_space(path: &Path) -> Option<u64> {
+    let stats = rustix::fs::statvfs(path).ok()?;
+    stats.f_bavail.checked_mul(stats.f_frsize)
+}
+
+/// Not asked where there's no safe call for it: the cap is [`DEFAULT_CAP`] there.
+#[cfg(not(unix))]
+fn free_space(_: &Path) -> Option<u64> {
+    None
 }
 
 /// Where a kept object is: the entry's name with `.o` after it, which no other entry's name ends in.
@@ -662,7 +740,48 @@ fn files(dir: &Path, build: &Path, found: &mut Vec<Entry>) {
                 build: build.to_path_buf(),
                 links,
                 sum: None,
+                holder: None,
             });
+        }
+    }
+}
+
+/// Counts each object a program's list holds (see [`Cache::hold`]) as used as recently as the
+/// newest list naming it was, as cleanup's walk found them. A list that can't be read, or whose
+/// bytes don't match its hash, holds nothing.
+fn held_as_recently_as_their_lists(entries: &mut [Entry]) {
+    let mut held: HashMap<PathBuf, (PathBuf, SystemTime)> = HashMap::new();
+    for list in
+        entries.iter().filter(|entry| entry.path.parent().is_some_and(|folder| folder.ends_with(HOLDS)))
+    {
+        let Ok(bytes) = std::fs::read(&list.path) else { continue };
+        let Some((text, hash)) =
+            bytes.len().checked_sub(HASH_LEN).and_then(|end| bytes.split_at_checked(end))
+        else {
+            continue;
+        };
+        if hash != fennec_blake3::hash(text).as_bytes() {
+            continue;
+        }
+        let mut lines = String::from_utf8_lossy(text)
+            .into_owned()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+            .into_iter();
+        let Some(kind) = lines.next() else { continue };
+        for name in lines.filter(|name| !name.is_empty()) {
+            let object = object_at(&list.build.join(&kind).join(&name));
+            let newer = held.get(&object).is_none_or(|(_, used)| *used < list.used);
+            if newer {
+                held.insert(object, (list.path.clone(), list.used));
+            }
+        }
+    }
+    for entry in entries {
+        if let Some((list, used)) = held.get(&entry.path) {
+            entry.used = entry.used.max(*used);
+            entry.holder = Some((list.clone(), *used));
         }
     }
 }
@@ -741,6 +860,19 @@ mod tests {
     use super::is_stale;
     use std::time::Duration;
 
+    /// The cap with nothing setting it is 20 GiB, or a tenth of the space free on the disk if that's
+    /// less; and on Unix the free space of a folder that's there is found.
+    #[test]
+    fn the_cap_is_twenty_gibibytes_or_a_tenth_of_the_free_space() {
+        let gib = 1_u64 << 30;
+        assert_eq!(super::cap_for(None), 20 * gib);
+        assert_eq!(super::cap_for(Some(1000 * gib)), 20 * gib);
+        assert_eq!(super::cap_for(Some(50 * gib)), 5 * gib);
+        assert_eq!(super::cap_for(Some(0)), 0);
+        #[cfg(unix)]
+        assert!(super::free_space(&std::env::temp_dir()).is_some_and(|free| free > 0));
+    }
+
     /// An object kept is a file holding just its bytes, for the linker to read where it lies, found
     /// again by its name and never written again: kept a second time under the same name, it's the
     /// file kept first. On Unix it's read-only from the start. An entry written as bytes, which end
@@ -789,6 +921,80 @@ mod tests {
         let cleanup = cache.cleanup_entries(walked, 0).unwrap();
         assert!(found.exists(), "cleanup took an object a build found while it walked the cache");
         assert!(!old.exists(), "an object nothing used stayed: {cleanup:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An object a program's list holds is used as recently as the list: cleanup leaves it while
+    /// the list was used lately, however long ago the object itself was marked, and takes it once
+    /// the list is old too. An object no list holds goes by its own time, as before.
+    #[test]
+    fn an_object_a_recent_list_holds_stays_with_no_mark_of_its_own() {
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-held-objects-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let held = cache.keep_object("llvm", "held", b"an object a program holds").unwrap().unwrap();
+        let loose = cache.keep_object("llvm", "loose", b"an object no program holds").unwrap().unwrap();
+        let long_ago = std::time::SystemTime::now() - super::KEPT_RECENT - Duration::from_secs(600);
+        super::set_time(&held, long_ago).unwrap();
+        super::set_time(&loose, long_ago).unwrap();
+        cache.hold("program", "llvm", &["held".to_owned()]).unwrap();
+        let cleanup = cache.cleanup(0).unwrap();
+        assert!(held.exists(), "cleanup took an object a list used just now holds: {cleanup:?}");
+        assert!(!loose.exists(), "an object nothing holds or used stayed: {cleanup:?}");
+        super::set_time(&cache.path(super::HOLDS, "program"), long_ago).unwrap();
+        let cleanup = cache.cleanup(0).unwrap();
+        assert!(!held.exists(), "an object only an old list holds stayed: {cleanup:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A unit used again finds its object without marking it, as the program's list marks it,
+    /// while finding one any other way marks it as just used.
+    #[test]
+    fn a_held_object_is_found_without_marking_it() {
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-held-object-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let kept = cache.keep_object("llvm", "key", b"an object").unwrap().unwrap();
+        let long_ago = std::time::SystemTime::now() - super::KEPT_RECENT - Duration::from_secs(600);
+        super::set_time(&kept, long_ago).unwrap();
+        let time = |path: &std::path::Path| std::fs::metadata(path).unwrap().modified().unwrap();
+        assert_eq!(cache.held_object("llvm", "key"), Some(kept.clone()));
+        assert_eq!(time(&kept), long_ago, "finding a held object marked it");
+        assert_eq!(cache.held_object("llvm", "gone"), None);
+        assert_eq!(cache.kept_object("llvm", "key"), Some(kept.clone()));
+        assert!(time(&kept) > long_ago, "finding a kept object didn't mark it");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An object whose program's list a build marks while cleanup walks the cache stays, though
+    /// the walk saw the list and the object both unused for long: the build is starting, and may
+    /// link it. One nothing holds goes.
+    #[test]
+    fn an_object_whose_list_a_build_marks_while_cleanup_walks_stays() {
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-held-walk-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let held = cache.keep_object("llvm", "held", b"an object a program holds").unwrap().unwrap();
+        let loose = cache.keep_object("llvm", "loose", b"an object no program holds").unwrap().unwrap();
+        cache.hold("program", "llvm", &["held".to_owned()]).unwrap();
+        let long_ago = std::time::SystemTime::now() - super::KEPT_RECENT - Duration::from_secs(600);
+        for path in [&held, &loose, &cache.path(super::HOLDS, "program")] {
+            super::set_time(path, long_ago).unwrap();
+        }
+        let walked = cache.entries();
+        cache.mark(super::HOLDS, "program");
+        let cleanup = cache.cleanup_entries(walked, 0).unwrap();
+        assert!(held.exists(), "cleanup took an object whose list a build marked as it walked: {cleanup:?}");
+        assert!(!loose.exists(), "an object nothing holds or used stayed: {cleanup:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

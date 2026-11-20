@@ -43,19 +43,65 @@ def escaped(text: str) -> str:
             out += c
     return out
 
+## The letters `a` to `z`.
+## ```fennec
+## from std import string
+## assert "q" in string.ASCII_LOWERCASE and "Q" not in string.ASCII_LOWERCASE
+## ```
 export ASCII_LOWERCASE = "abcdefghijklmnopqrstuvwxyz"
+## The letters `A` to `Z`.
+## ```fennec
+## from std import string
+## assert "Q" in string.ASCII_UPPERCASE
+## ```
 export ASCII_UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+## The letters `a` to `z`, then `A` to `Z`.
+## ```fennec
+## from std import string
+## assert all(c in string.ASCII_LETTERS for c in "Fennec")
+## ```
 export ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+## The digits `0` to `9`.
+## ```fennec
+## from std import string
+## assert all(c in string.DIGITS for c in "2026")
+## ```
 export DIGITS = "0123456789"
+## The hex digits, both cases.
+## ```fennec
+## from std import string
+## assert all(c in string.HEX_DIGITS for c in "ff0A") and "g" not in string.HEX_DIGITS
+## ```
 export HEX_DIGITS = "0123456789abcdefABCDEF"
+## The octal digits, `0` to `7`.
+## ```fennec
+## from std import string
+## assert "7" in string.OCT_DIGITS and "8" not in string.OCT_DIGITS
+## ```
 export OCT_DIGITS = "01234567"
+## The ASCII characters that are neither letters, digits nor space.
+## ```fennec
+## from std import string
+## assert "!" in string.PUNCTUATION and "a" not in string.PUNCTUATION
+## ```
 export PUNCTUATION = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+## The ASCII whitespace characters: space, tab, line feed, carriage return, vertical tab and form
+## feed.
+## ```fennec
+## from std import string
+## assert "\t" in string.WHITESPACE
+## ```
 export WHITESPACE = " \t\n\r\x0b\x0c"
 
 ## `text`'s words in lines of at most `width` characters, as many on each line as fit. Words
 ## are what's between spaces, tabs and line breaks, and a word longer than `width` is broken
 ## across lines. Text with no words gives no lines. A `width` under 1 can't hold any text, so
 ## it's a bug in the program, as Python says too.
+##
+## ```fennec
+## from std import string
+## assert string.wrap("the quick brown fox", 10) == ["the quick", "brown fox"]
+## ```
 export def wrap(text: str, width: int) -> list[str]:
     if width < 1:
         stop(f"a width of {width} can't hold any text: wrap takes 1 or more")
@@ -82,12 +128,22 @@ export def wrap(text: str, width: int) -> list[str]:
     return lines
 
 ## `text` wrapped to `width`, as `wrap` does it, with its lines joined by line breaks.
+##
+## ```fennec
+## from std import string
+## assert string.fill("the quick brown fox", 10) == "the quick\nbrown fox"
+## ```
 export def fill(text: str, width: int) -> str:
     return "\n".join(wrap(text, width=width))
 
 ## `text` with the spaces and tabs every line starts with taken off, so text indented to sit
 ## inside code can be written flush. Lines of only spaces and tabs don't count, and come out
 ## empty.
+##
+## ```fennec
+## from std import string
+## assert string.dedent("    a\n      b\n") == "a\n  b\n"
+## ```
 export def dedent(text: str) -> str:
     lines = text.split("\n")
     mut common = ""
@@ -107,5 +163,10 @@ export def dedent(text: str) -> str:
     return "\n".join(["" if line.strip() == "" else line[cut:] for line in lines])
 
 ## `text` with `prefix` before each line that isn't empty or only spaces and tabs.
+##
+## ```fennec
+## from std import string
+## assert string.indent("a\n\nb", prefix="> ") == "> a\n\n> b"
+## ```
 export def indent(text: str, prefix: str) -> str:
     return "\n".join([line if line.strip() == "" else prefix + line for line in text.split("\n")])

@@ -101,6 +101,7 @@ pub(crate) struct Heap {
     /// by address, and those already taken out of the table, each at its own address.
     pending: Vec<u64>,
     taken: Vec<Box<[u64]>>,
+    /// A freed block's children, kept up to `SCRATCH_KEPT_WORDS` of room (see `emptied_if_small`).
     found: Vec<u64>,
     /// The `Value`s cells hold, by the number in each cell, and unused numbers.
     cells: Vec<Value>,
@@ -154,7 +155,8 @@ pub(crate) struct Heap {
     pub(super) lent: Option<std::sync::Arc<super::table::Table>>,
     /// How this worker's range has changed the owners of lent blocks, for that thread to apply.
     pub(super) lent_owners: HashMap<u64, i64, BuildHasherDefault<AddressHasher>>,
-    /// Words copied out of one block on the way to another, kept to save making them anew.
+    /// Words copied out of one block on the way to another, kept to save making them anew: up to
+    /// `SCRATCH_KEPT_WORDS` of room (see `keep_scratch`).
     pub(super) scratch: Vec<u64>,
     /// Where blocks freed now go (see `give_back`).
     freed: Freed,
@@ -786,7 +788,28 @@ fn all_inline(block: &[u64]) -> bool {
     items.as_chunks::<3>().0.iter().all(|[_, _, last]| last & inline != 0)
 }
 
+/// The most room the heap's scratch words and a freed block's list of children keep from one use
+/// to the next, as a regex buffer does (64 KB). More is let go of when its use ends: a list of
+/// 100,000 strings freed or copied once would hold 800 KB of it on its thread for the rest of the
+/// run.
+const SCRATCH_KEPT_WORDS: usize = 8 << 10;
+
+/// Words a use took, emptied to be kept for the next, or let go of if they've grown past
+/// `SCRATCH_KEPT_WORDS`.
+fn emptied_if_small(mut words: Vec<u64>) -> Vec<u64> {
+    if words.capacity() > SCRATCH_KEPT_WORDS {
+        return Vec::new();
+    }
+    words.clear();
+    words
+}
+
 impl Heap {
+    /// Puts back the scratch words a use took (see `emptied_if_small`).
+    pub(super) fn keep_scratch(&mut self, words: Vec<u64>) {
+        self.scratch = emptied_if_small(words);
+    }
+
     /// Whether a list of this kind of item is known to hold no blocks. A worker's heap has no
     /// plans, so it doesn't know, and looks.
     /// How many words an item of kind `number` takes, if this heap worked it out.
@@ -1939,7 +1962,7 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
             return;
         }
         if super::dicts::is_dict(state, block) {
-            found.extend(super::dicts::children(state, block));
+            super::dicts::children(state, block, found);
             return;
         }
         if let Some(element) = super::lists::element_in(state, block) {
@@ -2033,9 +2056,14 @@ pub extern "C" fn unshare(address: i64) -> i64 {
         // The copy is this thread's, whoever made what it was copied from.
         mark_owner(&mut copy, state.heap.owner_bits);
         state.heap.copied(copy.len());
-        for child in children(state, &copy) {
+        // Listed in the heap's scratch words, taken while they're used, so none are made.
+        let mut held = std::mem::take(&mut state.heap.scratch);
+        held.clear();
+        children_into(state, &copy, &mut held);
+        for child in held.iter().copied() {
             retain(state, child);
         }
+        state.heap.keep_scratch(held);
         state.heap.insert(copy)
     })
 }

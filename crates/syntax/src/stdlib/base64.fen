@@ -6,19 +6,40 @@ from std.intrinsics import bytes_text, text_byte, text_size
 from std.string import quoted_input
 
 ## `data` as standard base64 text, like `aGk=` for `b"hi"`.
+##
+## ```fennec
+## from std import base64
+## assert base64.encode("hi".encode()) == "aGk="
+## ```
 export def encode(data: bytes) -> str:
     return written(data, url=False)
 
 ## `data` as base64 text that's safe in a URL or a file name, like `aGk` for `b"hi"`.
+##
+## ```fennec
+## from std import base64
+## assert base64.url_encode("hi?".encode()) == "aGk_"
+## ```
 export def url_encode(data: bytes) -> str:
     return written(data, url=True)
 
 ## The bytes standard base64 text stands for. Text that isn't fails with an `InvalidValue`
 ## saying where.
+##
+## ```fennec
+## from std import base64
+## assert base64.decode("aGk=")?.decode()? == "hi"
+## assert base64.decode("aGk") fails InvalidValue()
+## ```
 export def decode(text: str) -> bytes fails InvalidValue:
     return read_back(text, url=False)?
 
 ## The bytes URL-safe base64 text stands for, with or without `=` at its end.
+##
+## ```fennec
+## from std import base64
+## assert base64.url_decode("aGk_")?.decode()? == "hi?"
+## ```
 export def url_decode(text: str) -> bytes fails InvalidValue:
     return read_back(text, url=True)?
 

@@ -5136,8 +5136,14 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
         "{}",
         status()
     );
-    // The one snapshot is a few hundred bytes, under a tenth of a megabyte.
-    assert!(status().ends_with("\ncache: 0.0 MB of 1073.7 MB\n"), "{}", status());
+    // The one snapshot is a few hundred bytes, under a tenth of a megabyte. The cap is 20 GiB, or a
+    // tenth of the space free on the disk if that's less, so it's read rather than pinned.
+    let said = status();
+    let cap = said
+        .strip_suffix(" MB\n")
+        .and_then(|rest| rest.rsplit_once("\ncache: 0.0 MB of "))
+        .and_then(|(_, cap)| cap.parse::<f64>().ok());
+    assert!(cap.is_some_and(|cap| cap > 0.0 && cap <= 21_474.9), "{said}");
 
     let again = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
     assert_eq!(text(&again.stdout), "0 files parsed, 1 unchanged and not parsed again\nnothing changed\n");
@@ -6538,10 +6544,14 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
         let cached = edit_build(&dir, &step, true, false)?;
         same(what, &step, &cached, &edit_build(&dir, &format!("{step}-whole"), false, false)?);
         reused.push((*what, compiled_of(&cached.0)));
-        if at == 0 {
-            // A body's edit writes that function's text again, and uses the rest as kept.
+        // A body's edit writes that function's text again, and a type's field the text of what
+        // reads the type's layout, and each uses the rest as kept.
+        if at == 0 || *what == "a type's field" {
             let written = written_of(&cached.0);
-            assert!(written.is_some_and(|(written, total)| written > 0 && written < total), "{written:?}");
+            assert!(
+                written.is_some_and(|(written, total)| written > 0 && written < total),
+                "{what}: {written:?}"
+            );
         }
     }
     // Every edit compiles again only some of the functions, and an edit to a body at least one.
@@ -6572,7 +6582,8 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
 /// With `FENNEC_CACHE_AUDIT=1`, a build writes each unit it uses again anyway, into what's thrown
 /// away, and fails if it doesn't come out as kept: its text, what it shares, every kind it asks
 /// the layouts for, in order, and every read it makes. So each of these edit builds, one for
-/// every kind of edit, checks every unit it uses again. The first three edits use some again.
+/// every kind of edit, checks every unit it uses again. The first three edits use some again, and
+/// so does a type's field, which reaches only what reads the type's layout.
 #[test]
 fn an_edit_build_audited_writes_each_unit_it_uses_again_the_same() -> std::io::Result<()> {
     if !crate::llvm::ready() {
@@ -6605,6 +6616,10 @@ fn an_edit_build_audited_writes_each_unit_it_uses_again_the_same() -> std::io::R
     assert!(
         wrote.iter().skip(1).take(3).all(|(_, written)| written.is_some()),
         "edits that used nothing again: {wrote:?}"
+    );
+    assert!(
+        wrote.iter().any(|(what, written)| *what == "a type's field" && written.is_some()),
+        "a type's field used nothing again: {wrote:?}"
     );
     std::fs::remove_dir_all(&dir)?;
     Ok(())

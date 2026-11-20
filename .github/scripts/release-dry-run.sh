@@ -52,8 +52,9 @@ if [ -n "$exe" ]; then
 else
   tools="$work/tools"
   mkdir -p "$tools"
-  # `echo` too, which an example's program runs.
-  for tool in bash sh env diff cat sed grep awk sort paste tr mkdir rm cp mv ls find dirname basename uname mktemp head tail sleep kill wc echo; do
+  # And what examples' programs run for real: `echo`, and `true`, `printf`, `sleep` and `yes`
+  # in `std_process_hostile.fen`, which this list lacked until its dry run failed on them.
+  for tool in bash sh env diff cat sed grep awk sort paste tr mkdir rm cp mv ls find dirname basename uname mktemp head tail sleep kill wc echo true printf yes; do
     found=$(type -P "$tool") && ln -s "$found" "$tools/$tool"
   done
   reach="$bin:$tools"
@@ -117,7 +118,7 @@ done
 step "a kit with a dependency, built and run on its own"
 mkdir -p kits/greeting/src kits/hello/src
 printf 'name = "greeting"\nversion = "0.1.0"\nfennec = "%s"\n' "$version" > kits/greeting/kit.toml
-printf 'export def greet(name: str) -> str:\n    f"hello, {name}"\n\ntest "greets":\n    assert greet("Ann") == "hello, Ann"\n' > kits/greeting/src/lib.fen
+printf 'export def greet(name: str) -> str:\n    return f"hello, {name}"\n\ntest "greets":\n    assert greet("Ann") == "hello, Ann"\n' > kits/greeting/src/lib.fen
 printf 'name = "hello"\nversion = "0.1.0"\nfennec = "%s"\n\n[dependencies]\ngreeting = { path = "../greeting" }\n' "$version" > kits/hello/kit.toml
 printf 'from greeting import greet\n\ndef main(stdout: Stdout):\n    stdout.print(greet("kit"))\n' > kits/hello/src/main.fen
 printf 'hello, kit\n' > kits/hello.out
@@ -129,7 +130,7 @@ check "fennec build --release in a kit with a dependency" "" sh -c "cd kits/hell
 check "the kit's release program on its own" kits/hello.out "./built_release$exe"
 
 step "a program built on its own takes the arguments it's given"
-printf 'def main(stdout: Stdout, args: Args):\n    stdout.print(args.len(), args[0], args[1])\n' > told.fen
+printf 'def main(stdout: Stdout, args: Args):\n    stdout.print(len(args), args[0], args[1])\n' > told.fen
 printf '2 one two\n' > told.out
 check "fennec build --release of a program taking arguments" "" fennec build --release told.fen -o "told$exe"
 check "a program built on its own, given arguments" told.out "./told$exe" one two

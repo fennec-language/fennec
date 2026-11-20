@@ -31267,6 +31267,46 @@ fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Resul
     Ok(())
 }
 
+/// A key 20,000 deep that isn't there, in a launched task, whose own stack is small: the dict's
+/// lookup, a set's `remove` and a list's `remove` each say what's missing and crash only the task,
+/// as on the main thread. The key is read for the message with room for its depth, where it was
+/// read on the task's own stack, and stopped the whole program from about 8,000 deep.
+#[test]
+fn a_deep_key_missing_in_a_task_crashes_only_the_task_saying_what_is_missing() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("deep_missing")?;
+    let program = dir.join("deep_missing.fen");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deep_missing.fen"), &program)?;
+    let executable = dir.join("deep_missing");
+    let built = fennec(
+        &["build", "--release", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+        &dir,
+    )?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
+    let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    let start: String = said.chars().take(300).collect();
+    assert!(ran.status.success(), "{start}");
+    assert_eq!(printed, "dict: its task crashed\nset: its task crashed\nlist: its task crashed\nafter\n");
+    // Each failure names what's missing, all 20,000 levels of it.
+    let failures: Vec<&str> = said.lines().filter(|line| line.starts_with("error: ")).collect();
+    let [dict, set, list] = failures[..] else { panic!("{start}") };
+    assert!(dict.starts_with("error: the dict has no key Node(n=20000, kids=[Node(n=19999"), "{start}");
+    assert!(
+        set.starts_with("error: Node(n=20000, kids=[Node(n=19999") && set.ends_with("isn't in the set"),
+        "{start}"
+    );
+    assert!(
+        list.starts_with("error: Link(n=20000, next=Link(n=19999") && list.ends_with("isn't in the list"),
+        "{start}"
+    );
+    assert!(dict.contains("Node(n=-1, kids=[])"), "the key's last level is named too");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// `removesuffix` and `removeprefix` give what Rust's `strip_suffix` and `strip_prefix` do, or the
 /// text as it is: with an empty text or affix, an affix as long as the text or longer, one found
 /// only elsewhere, one twice over, characters of two and three bytes, and results either side of

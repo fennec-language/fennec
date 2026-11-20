@@ -107,7 +107,7 @@ fn grow(state: &mut State, text: i64, more: i64) -> Option<i64> {
     let mut copied = std::mem::take(&mut state.heap.scratch);
     let lengths = copy_text(state, more, &mut copied);
     let grown = lengths.and_then(|(extra, extra_chars)| grow_by(state, text, &copied, extra, extra_chars));
-    state.heap.scratch = copied;
+    state.heap.keep_scratch(copied);
     grown
 }
 
@@ -1288,7 +1288,7 @@ fn split_in_words(state: &mut State, text: &[u64; 3], separator: &[u64; 3]) -> O
     put_part_of_words(state, &mut items, &words, from, length.saturating_sub(from));
     let list = super::lists::list_of_texts(state, &items);
     SPLIT_ITEMS.set(items);
-    state.heap.scratch = words;
+    state.heap.keep_scratch(words);
     Some(list)
 }
 

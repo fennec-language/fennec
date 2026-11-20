@@ -282,6 +282,28 @@ fn a_database_url_written_with_its_password_is_refused() {
     assert_eq!(with_imports(imports, program), [refused, refused]);
 }
 
+/// A plain struct reads through a Postgres query with only `std.postgres` imported, as it does
+/// through `std.sqlite`'s: importing either turns on the saving and loading generated for it.
+#[test]
+fn a_struct_reads_through_a_postgres_query_with_nothing_else_imported() {
+    let source = "
+        from std import postgres
+        from std.crypto import Secret
+
+        struct Entry:
+            path: str
+            size: int
+
+        def main(net: Net, entropy: Entropy, stdout: Stdout):
+            url = Secret.of(\"postgres://ann:pw@db/shop\")
+            with postgres.connect(net, entropy, url)? as db:
+                with db.transaction()? as tx:
+                    rows = tx.query[Entry](t\"select path, size from entries\")?
+                    stdout.print(len(rows))
+    ";
+    assert_eq!(problems(&crate::dedent(source)), Vec::<String>::new());
+}
+
 /// Every case of every enum and error in the standard library is capitalized, as language.md says
 /// a case is, so an option reads like any other case: `extra=.Ignore`, `names=.CamelCase`.
 #[test]

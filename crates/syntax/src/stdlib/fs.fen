@@ -2,6 +2,12 @@ from std.intrinsics import bytes_builder, bytes_push_bytes
 
 ## What `fs.metadata(path)` finds out about a file or folder: its size in bytes, and whether
 ## it's a file or a folder. A folder's size depends on the system.
+##
+## ```fennec
+## fs.write_text("a.txt", "hello")?
+## found = fs.metadata("a.txt")?
+## assert found.size == 5 and found.is_file and not found.is_dir
+## ```
 export struct Metadata:
     size: int
     is_file: bool
@@ -12,6 +18,13 @@ export struct Metadata:
 ## `write_bytes`, `exists`, `list_dir`, `walk`, `make_dir`, `remove` and `metadata`. Each takes a
 ## `Path` or a `str` and fails with an `IoError`. Only `main` and tests are given one: it can't be
 ## made.
+##
+## ```fennec
+## fs.make_dir("saves")?
+## fs.write_text("saves/slot1.txt", "level 3")?
+## assert fs.read_text("saves/slot1.txt")? == "level 3"
+## assert fs.exists("saves")?
+## ```
 export struct Fs:
     _given: int
 
@@ -22,6 +35,12 @@ export struct Fs:
     ## nothing's held in memory however much is written. When the block ends, the file is on the
     ## disk, and so is its new name: `durable=False` skips that wait, for a file that doesn't
     ## matter if the power goes.
+    ##
+    ## ```fennec
+    ## with fs.create("save.txt")? as file:
+    ##     file.write_line("level 3")?
+    ## assert fs.read_text("save.txt")? == "level 3\n"
+    ## ```
     def create(self, path: str, durable = True) -> with File fails IoError:
         file = self._create(path, durable)?
         lend file except:
@@ -31,6 +50,12 @@ export struct Fs:
     ## The text at `path`, or `None` when nothing is there, for a file that may not be made yet:
     ## `text = fs.read_text_if_present(path)? else ""`. Anything else that goes wrong, as a folder
     ## at the path or one it isn't let into, still fails.
+    ##
+    ## ```fennec
+    ## assert fs.read_text_if_present("settings.toml")? is None
+    ## fs.write_text("settings.toml", "volume = 3")?
+    ## assert fs.read_text_if_present("settings.toml")? == "volume = 3"
+    ## ```
     def read_text_if_present(self, path: str) -> str? fails IoError:
         text = self.read_text(path) except why:
             case .NotFound():
@@ -40,6 +65,10 @@ export struct Fs:
         return text
 
     ## The bytes at `path`, or `None` when nothing is there, as `read_text_if_present` does.
+    ##
+    ## ```fennec
+    ## assert fs.read_bytes_if_present("cache.bin")? is None
+    ## ```
     def read_bytes_if_present(self, path: str) -> bytes? fails IoError:
         data = self.read_bytes(path) except why:
             case .NotFound():
@@ -50,6 +79,12 @@ export struct Fs:
 
     ## The file at `path` to read, lent for a `with` block: `with fs.open("save.txt")? as file:`.
     ## It's closed when the block ends.
+    ##
+    ## ```fennec
+    ## fs.write_text("save.txt", "level 3")?
+    ## with fs.open("save.txt")? as file:
+    ##     assert file.read_text()? == "level 3"
+    ## ```
     def open(self, path: str) -> with File fails IoError:
         file = self._open(path)?
         lend file except:
@@ -63,31 +98,78 @@ export struct Fs:
 ## `read_chunk(size)` gives up to `size` bytes, and empty bytes at the end; and `read_line()` gives
 ## the next line without its ending, or `None` at the end. Each fails with an `IoError`, as a read
 ## of a file made to write does. In a task, each waits on the disk without holding up the others.
+##
+## ```fennec
+## with fs.create("log.txt")? as file:
+##     file.write_line("started")?
+## with fs.open("log.txt")? as file:
+##     assert file.read_line()? == "started"
+## ```
 export struct File:
     _handle: int
 
+    ## Writes `text` as UTF-8.
+    ## ```fennec
+    ## with fs.create("note.txt")? as file:
+    ##     file.write_text("hi")?
+    ## assert fs.read_text("note.txt")? == "hi"
+    ## ```
     def write_text(self, text: str) fails IoError:
         self.write(text)?
 
+    ## Writes `data` as it is.
+    ## ```fennec
+    ## with fs.create("data.bin")? as file:
+    ##     file.write_bytes(bytes([1, 2, 3]))?
+    ## assert fs.read_bytes("data.bin")? == bytes([1, 2, 3])
+    ## ```
     def write_bytes(self, data: bytes) fails IoError:
         self.write(data)?
 
     ## Writes `text`, then a line break.
+    ##
+    ## ```fennec
+    ## with fs.create("list.txt")? as file:
+    ##     file.write_line("one")?
+    ##     file.write_line("two")?
+    ## assert fs.read_text("list.txt")? == "one\ntwo\n"
+    ## ```
     def write_line(self, text: str) fails IoError:
         self.write(text)?
         self.write("\n")?
 
     ## What's left in it, as text.
+    ##
+    ## ```fennec
+    ## fs.write_text("note.txt", "hi")?
+    ## with fs.open("note.txt")? as file:
+    ##     assert file.read_text()? == "hi"
+    ## ```
     def read_text(self) -> str fails IoError:
         data = self.read()?
         return data.decode() except InvalidValue(): fail .Other(reason="this file isn't UTF-8 text")
 
+    ## What's left in it, as bytes.
+    ## ```fennec
+    ## fs.write_bytes("data.bin", bytes([7, 8]))?
+    ## with fs.open("data.bin")? as file:
+    ##     assert file.read_bytes()? == bytes([7, 8])
+    ## ```
     def read_bytes(self) -> bytes fails IoError:
         return self.read()?
 
     ## What's left in it, `size` bytes at a time, the last chunk shorter: for reading a file far
     ## bigger than memory, as `blake3(file.chunks(1_000_000)?)` will. A failure to read fails the
     ## loop, rather than looking like the end of the file.
+    ##
+    ## ```fennec
+    ## fs.write_text("big.txt", "abcdefghij")?
+    ## mut sizes = list[int]()
+    ## with fs.open("big.txt")? as file:
+    ##     for chunk in file.chunks(4)?:
+    ##         sizes.append(len(chunk))
+    ## assert sizes == [4, 4, 2]
+    ## ```
     def chunks(self, size: int) -> Iterator[bytes] fails IoError:
         while True:
             chunk = self.read_chunk(size)?
@@ -96,6 +178,15 @@ export struct File:
 
     ## Each line left in it, without its line break, until the end or a failure. To tell those
     ## apart, call `read_line()` instead.
+    ##
+    ## ```fennec
+    ## fs.write_text("list.txt", "one\ntwo\n")?
+    ## mut read = list[str]()
+    ## with fs.open("list.txt")? as file:
+    ##     for line in file.lines()?:
+    ##         read.append(line)
+    ## assert read == ["one", "two"]
+    ## ```
     def lines(self) -> Iterator[str] fails IoError:
         while True:
             line = self.read_line()?

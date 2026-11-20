@@ -14,9 +14,12 @@ use super::ast::{
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
 use super::ast::{FILE_PIECES, FileWay, Filing};
+use super::ast::{GenericStep, GenericTy, Genericking};
+use super::ast::{IfaceStep, Interfacing};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{Sticking, StuckWay};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -2319,6 +2322,236 @@ fn owned_written(owning: &OwnIndexing) -> String {
     out
 }
 
+/// The generic holder and functions a `Generic` statement calls, `{N}` standing for its id.
+const GENERIC_FUNCTIONS: &str = "struct Holder{N}[T]:
+    item: T
+    items: list[T]
+
+    def put(ref self, value: T):
+        self.items.append(self.item)
+        self.item = value
+
+    def oldest(self) -> T:
+        if len(self.items) > 0:
+            return self.items[0]
+        return self.item
+
+def swapped{N}[T](ref one: T, ref other: T):
+    held = one
+    one = other
+    other = held
+
+def grown{N}[T](ref items: list[T], value: T, times: int):
+    for _ in range(times):
+        items.append(value)
+
+def doubled{N}[T](value: T) -> list[T]:
+    mut out = [value]
+    out.append(value)
+    return out
+
+def changed_copy{N}[T](holder: Holder{N}[T], value: T) -> Holder{N}[T]:
+    mut mine = holder
+    mine.put(value)
+    return mine
+
+";
+
+/// `generic{id}`, the function a `Generic` calls, after its holder and functions: the values, a
+/// line for each step, then what each holds.
+fn generic_written(generic: &Genericking) -> String {
+    let Genericking { id, ty, steps } = generic;
+    let mut out = String::new();
+    if *ty == GenericTy::Point {
+        let _ = write!(out, "struct Point{id}:\n    x: int\n    tags: list[str]\n\n");
+    }
+    out.push_str(&GENERIC_FUNCTIONS.replace("{N}", &id.to_string()));
+    let values = ty.values(*id);
+    let value = |at: usize| values.get(at).map_or("", |(written, _)| written.as_str()).to_owned();
+    let (t, v0, v1, v2) = (ty.written(*id), value(0), value(1), value(2));
+    let _ = write!(
+        out,
+        "def generic{id}(stdout: Stdout):\n    mut holder = Holder{id}[{t}](item={v0}, items=[])\n    mut other = \
+         Holder{id}[{t}](item={v1}, items=[{v2}])\n    mut outer = Holder{id}[Holder{id}[{t}]](item=holder, \
+         items=[])\n    mut pair = [holder, other]\n    mut table = {{\"k\": other}}\n"
+    );
+    for (at, &(step, which, count)) in steps.iter().enumerate() {
+        let v = value(which);
+        let line = match step {
+            GenericStep::Put => format!("holder.put({v})"),
+            GenericStep::Grown => format!("grown{id}(ref holder.items, value={v}, times={count})"),
+            GenericStep::Swapped => format!("swapped{id}(ref holder.item, ref other.item)"),
+            GenericStep::SwappedItems => format!("swapped{id}(ref holder.items, ref other.items)"),
+            GenericStep::Copied => format!("stdout.print(changed_copy{id}(holder, value={v}))"),
+            GenericStep::Doubled => format!("stdout.print(doubled{id}(holder.item))"),
+            GenericStep::Oldest => "stdout.print([holder.oldest()])".to_owned(),
+            GenericStep::Nested => format!("outer.item.put({v})"),
+            GenericStep::ForRef => format!("for ref each in pair:\n        each.put({v})"),
+            GenericStep::Popped => {
+                format!("taken{at} = holder.items.pop() else holder.item\n    stdout.print([taken{at}])")
+            }
+            GenericStep::DictPut => format!("table[\"k\"].put({v})"),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push_str(
+        "    stdout.print(holder)\n    stdout.print(other)\n    stdout.print(outer)\n    stdout.print(pair)\n    \
+         stdout.print(table)\n\n",
+    );
+    out
+}
+
+/// `stuck{id}`, the function a `Stuck` calls, and the two it may: `drained{id}`, a task receiving
+/// from the channel, and `taken{id}`, a round doing the same.
+fn stuck_written(sticking: Sticking) -> String {
+    let Sticking { id, way, n } = sticking;
+    let waiting = match way {
+        StuckWay::TimedReceive => format!(
+            "got = jobs.receive_within({n}ms) except Timeout(): -1\n        stdout.print(\"received\", got else -2)"
+        ),
+        StuckWay::TimedSend => format!(
+            "jobs.send(1)?\n        jobs.send_within(2, {n}ms) except why:\n            case Timeout():\n                \
+             stdout.print(\"send timed out\")\n            case _:\n                stdout.print(\"failed\", why)"
+        ),
+        StuckWay::Received => {
+            "number = jobs.receive() else return\n        stdout.print(\"never\", number)".to_owned()
+        }
+        StuckWay::SentFull => {
+            "jobs.send(1)?\n        jobs.send(2)?\n        stdout.print(\"never\")".to_owned()
+        }
+        StuckWay::BlockEnd => {
+            format!("with launch(() => drained{id}(jobs, stdout)) as task:\n            pass")
+        }
+        StuckWay::Rounds => {
+            format!("stdout.print([taken{id}(number, jobs=jobs) for number in parallel(range({n}))])")
+        }
+    };
+    format!(
+        "def drained{id}(jobs: Channel[int], stdout: Stdout):\n    stdout.print(\"drained{id} waits\")\n    number = \
+         jobs.receive() else return\n    stdout.print(\"never\", number)\n\ndef taken{id}(number: int, jobs: \
+         Channel[int]) -> int:\n    return (jobs.receive() else -1) + number\n\ndef stuck{id}(stdout: Stdout) fails \
+         Crashed | Closed | Timeout:\n    with channel[int](size=1) as jobs:\n        stdout.print(\"stuck{id}\", \
+         {n})\n        {waiting}\n\n"
+    )
+}
+
+/// The interface, its two types and the generic functions an `Interfaced` statement calls, `{N}`
+/// standing for its id.
+const INTERFACED_TYPES: &str = "error Nope{N}:
+    code: int
+
+interface Grower{N}:
+    def grow(ref self, by: int) -> int
+    def size(self) -> int
+    def tried(ref self, by: int) -> int fails Nope{N}
+    def counts(self) -> Iterator[int]
+
+struct Crate{N}:
+    items: list[int]
+
+    def grow(ref self, by: int) -> int:
+        self.items.append(len(self.items) + by)
+        return len(self.items)
+
+    def size(self) -> int:
+        return len(self.items)
+
+    def tried(ref self, by: int) -> int fails Nope{N}:
+        self.items.append(by)
+        if by > 5:
+            fail Nope{N}(code=by)
+        return len(self.items)
+
+    def counts(self) -> Iterator[int]:
+        for item in self.items:
+            yield item
+
+struct Heap{N}:
+    held: int
+
+    def grow(ref self, by: int) -> int:
+        self.held += by + 3
+        return self.held
+
+    def size(self) -> int:
+        return self.held
+
+    def tried(ref self, by: int) -> int fails Nope{N}:
+        self.held += by
+        if by > 5:
+            fail Nope{N}(code=by)
+        return self.held
+
+    def counts(self) -> Iterator[int]:
+        for at in range(self.held % 4):
+            yield at
+
+def grown_all{N}[G: Grower{N}](ref items: list[G], by: int) -> int:
+    mut total = 0
+    for ref item in items:
+        total += item.grow(by)
+    return total
+
+def bumped{N}[G: Grower{N}](ref item: G, by: int):
+    _ = item.grow(by)
+    _ = item.grow(by + 1)
+
+def copied{N}[G: Grower{N}](item: G, by: int) -> G:
+    mut mine = item
+    _ = mine.grow(by)
+    return mine
+
+def summed{N}[G: Grower{N}](item: G) -> int:
+    return sum(item.counts())
+
+def tried_twice{N}[G: Grower{N}](ref item: G, by: int) -> int fails Nope{N}:
+    first = item.tried(by)?
+    second = item.tried(by + 4)?
+    return first + second
+
+def sized{N}[G: Grower{N}](items: list[G]) -> int:
+    mut total = 0
+    for item in items:
+        total += item.size()
+    return total
+
+";
+
+/// `interfaced{id}`, the function an `Interfaced` calls, after its types and functions: a list
+/// of each type and one of each, a line for each step, then what each holds.
+fn interfaced_written(interfacing: &Interfacing) -> String {
+    let Interfacing { id, steps } = interfacing;
+    let mut out = INTERFACED_TYPES.replace("{N}", &id.to_string());
+    let _ = write!(
+        out,
+        "def interfaced{id}(stdout: Stdout):\n    mut crates = [Crate{id}(items=[1]), Crate{id}(items=[])]\n    mut \
+         heaps = [Heap{id}(held=2), Heap{id}(held=5)]\n    mut crate = Crate{id}(items=[5])\n    mut heap = \
+         Heap{id}(held=1)\n"
+    );
+    for (at, &(step, crate_first, n)) in steps.iter().enumerate() {
+        let (items, item) = if crate_first { ("crates", "crate") } else { ("heaps", "heap") };
+        let line = match step {
+            IfaceStep::GrownAll => format!("stdout.print(grown_all{id}(ref {items}, by={n}))"),
+            IfaceStep::Bumped => format!("bumped{id}(ref {item}, by={n})"),
+            IfaceStep::Copied => format!("stdout.print(copied{id}({item}, by={n}), {item})"),
+            IfaceStep::Summed => format!("stdout.print(summed{id}({item}))"),
+            IfaceStep::Tried => format!(
+                "got{at} = tried_twice{id}(ref {item}, by={n}) except why:\n        stdout.print(\"failed\", \
+                 why)\n        -1\n    stdout.print(got{at})"
+            ),
+            IfaceStep::EachBumped => {
+                format!("for ref each in {items}:\n        bumped{id}(ref each, by={n})")
+            }
+            IfaceStep::Sized => format!("stdout.print(sized{id}({items}))"),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push_str(
+        "    stdout.print(crates)\n    stdout.print(heaps)\n    stdout.print(crate)\n    stdout.print(heap)\n\n",
+    );
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -3069,6 +3302,19 @@ impl Writer {
             Stmt::Filed(filing) => {
                 let _ = write!(self.helpers, "{}", filed_written(filing));
                 self.line(indent, &format!("filed{}(fs, stdout)", filing.id));
+            }
+            Stmt::Generic(generic) => {
+                let _ = write!(self.helpers, "{}", generic_written(generic));
+                self.line(indent, &format!("generic{}(stdout)", generic.id));
+            }
+            Stmt::Stuck(sticking) => {
+                let _ = write!(self.helpers, "{}", stuck_written(*sticking));
+                self.line(indent, &format!("stuck{}(stdout) except why:", sticking.id));
+                self.line(indent + 1, "stdout.print(\"failed\", why)");
+            }
+            Stmt::Interfaced(interfacing) => {
+                let _ = write!(self.helpers, "{}", interfaced_written(interfacing));
+                self.line(indent, &format!("interfaced{}(stdout)", interfacing.id));
             }
             Stmt::Ordered(in_order) => {
                 let _ = write!(self.helpers, "{}", ordered_written(in_order));

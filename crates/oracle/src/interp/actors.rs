@@ -68,14 +68,24 @@ use super::tasks::Launched;
 use super::{Flow, Interp, Run, unsupported};
 use crate::value::{Channel, Text, Value, same};
 
-/// What a run where every task waits on another says.
+/// What a run where every task waits on another says, when the runtime wouldn't see it.
 const HANGS: &str = "every task waits on another, so the program hangs";
+
+/// How a run where every task waits on another ends when the runtime would see it: stopped, with
+/// exit code 1, after what it printed, as `docs/language.md` says. The runtime's report says this
+/// first, then who waits for what.
+pub(crate) const DEADLOCK: &str = "a deadlock: every task is waiting for another, and nothing can wake them";
 
 /// Each task's thread's stack.
 const TASK_STACK: usize = 64 << 20;
 
 /// The most tasks one run may launch.
 const MOST_TASKS: usize = 1_000;
+
+// The runtime reports a deadlock through at most 1,024 stuck ranges on one thread (`MOST_RANGES`
+// in `crates/rt/src/embed/serve.rs`), and past that the program hangs. A run with more tasks
+// than that could be said to stop where compiled code hangs, so the oracle refuses first.
+const _: () = assert!(MOST_TASKS <= 1024);
 
 /// Who runs, and the channels they share.
 #[derive(Default)]
@@ -298,6 +308,23 @@ struct Listener {
 }
 
 impl State {
+    /// What a run says when nothing can go on: `DEADLOCK` where the runtime finds one, as every
+    /// wait is a receive from a channel to one receiver, a send waiting for room or a block's end
+    /// waiting for its task, a `parallel` call's rounds' included, and `HANGS` otherwise. A
+    /// listener's wait on a channel to every listener isn't caught by the runtime yet, so a run
+    /// stuck in one is refused rather than said to stop.
+    fn stuck_said(&self) -> &'static str {
+        let caught = self.actors.iter().all(|actor| match actor.state {
+            Doing::Ended | Doing::Waiting(Wait::Room(_) | Wait::Task(_), false) => true,
+            Doing::Waiting(Wait::Message(number), false) => {
+                !self.listeners.contains_key(&number)
+                    && self.channels.get(&number).is_some_and(|chan| !chan.every)
+            }
+            _ => false,
+        });
+        if caught { DEADLOCK } else { HANGS }
+    }
+
     /// After a send on the channel to every listener numbered `number`: a listener that hasn't
     /// read yet, whose start this send is beside, neither before nor after it, could have started
     /// after it on another run, and not heard it, nor anything it hasn't read before it. Each way
@@ -787,13 +814,14 @@ impl Interp {
         }
         if !state.hand_on(me) {
             // Every thread that's waiting says this, whichever found it, so it's noted first.
+            let said = state.stuck_said();
             if let Ok(mut refused) = self.shared.refused.lock() {
-                refused.get_or_insert_with(|| HANGS.to_owned());
+                refused.get_or_insert_with(|| said.to_owned());
             }
             state.given_up = true;
             drop(state);
             self.shared.sched.turn.notify_all();
-            return unsupported(HANGS);
+            return self.given_up_why();
         }
         self.shared.sched.turn.notify_all();
         while state.running != me && !state.given_up {
@@ -1607,8 +1635,9 @@ fn rest_thread(shared: &Arc<super::Shared>, slot: usize, rest: Rest) {
     }
     if !state.hand_on(slot) {
         state.given_up = true;
+        let said = state.stuck_said();
         if let Ok(mut refused) = shared.refused.lock() {
-            refused.get_or_insert_with(|| HANGS.to_owned());
+            refused.get_or_insert_with(|| said.to_owned());
         }
     }
     drop(state);
@@ -1693,8 +1722,9 @@ fn task_thread(
     }
     if !state.hand_on(number) {
         state.given_up = true;
+        let said = state.stuck_said();
         if let Ok(mut refused) = shared.refused.lock() {
-            refused.get_or_insert_with(|| HANGS.to_owned());
+            refused.get_or_insert_with(|| said.to_owned());
         }
     }
     drop(state);

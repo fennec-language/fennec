@@ -40,6 +40,9 @@ pub(crate) enum What {
     WaitingClosures,
     /// Whether any generator the program has closes something when it's let go partway.
     Abandons,
+    /// A type's layout, by its name: its size and its fields' kinds and places, read through
+    /// `Layouts::get` (see `Layouts::note_reads`).
+    Layout,
 }
 
 /// One read: of what, and by which name. A name that isn't there is a read too, of nothing.
@@ -259,6 +262,7 @@ impl Reads<'_, '_> {
             }
             What::WaitingClosures => Some(key_of("waiting closures", &self.waiting_closures)),
             What::Abandons => Some(key_of("abandons", &whole.abandons)),
+            What::Layout => layouts.layout_fingerprint(name).map(|text| key_of("layout", &text)),
         }
     }
 }

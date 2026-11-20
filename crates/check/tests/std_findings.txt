@@ -1,10 +1,6 @@
 # What the checker finds in the standard library that a program would be told, by file and
 # message, held by crates/check/tests/typed.rs: fix one and it leaves this list, which only
 # shrinks. Written with FENNEC_PIN_OUTPUTS=1.
-collections.fen: this changes `self._nodes[...].keys`, which the call it's passed to changes too
-collections.fen: this changes `self._nodes[...].values`, which the call it's passed to changes too
-collections.fen: this gives back a K, and nothing uses it
-collections.fen: this gives back a V, and nothing uses it
 concurrent.fen: `_back` is private to `Borrowed`
 concurrent.fen: `_channel` is private to `Channel`
 concurrent.fen: `_channel` is private to `Channel`

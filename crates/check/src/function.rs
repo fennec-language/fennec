@@ -350,6 +350,7 @@ impl<'c> FnCx<'c> {
         }
         let effects = effects::of_body(&def.body);
         (cx.generator, cx.fallible) = (effects.yields, effects.fails || def.fails.is_some());
+        cx.no_ref_parameters(def, effects.yields);
         for binding in captured {
             cx.capture(binding);
         }
@@ -626,6 +627,15 @@ impl<'c> FnCx<'c> {
                 .map(str::to_owned)
                 .into_iter()
                 .collect();
+        }
+    }
+
+    /// Refuses a generator's `ref` parameters, when `def` is one. A generator runs a little at a
+    /// time, after its call has given it back, so a `ref` it took would be held across every
+    /// `yield` while its caller changes the place by its own name.
+    fn no_ref_parameters(&mut self, def: &FnDef, generator: bool) {
+        for written in def.params.iter().filter(|written| generator && written.is_mut) {
+            self.error(ref_in_a_generator(written));
         }
     }
 
@@ -1408,6 +1418,20 @@ fn failing_generator_reached(name: &str, ty: &Type, span: Span, param: bool) -> 
 
 /// Python's `name: str = None`: a `None` default for a parameter of a plain type, which can't be
 /// `None`. The `?` that lets it be is a fix to make by hand, since every use of it changes.
+/// A generator function's `ref` parameter, which would outlive the call that gave it.
+fn ref_in_a_generator(param: &fennec_syntax::Param) -> Diagnostic {
+    let name = &param.name;
+    Diagnostic::new(
+        format!(
+            "a generator can't take `ref {name}`: it runs after its call has given it back, while what called it can change `{name}` too"
+        ),
+        param.span,
+    )
+    .with_help(format!(
+        "take `{name}` without `ref`, as a copy of its own, or give back a `list` of the items rather than yielding them"
+    ))
+}
+
 fn none_for_plain_type(name: &str, ty: &Type, written: Span, default: Span) -> Diagnostic {
     let shown = crate::types::a(ty);
     Diagnostic::new(format!("`{name}` is {shown}, which can't be `None`"), default).with_hint(

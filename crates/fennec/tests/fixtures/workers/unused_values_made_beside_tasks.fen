@@ -1,0 +1,63 @@
+# Functions that each make a value and never use it, in a program that launches a task and has a
+# `parallel` call, so it runs on the runtime's threads. Where other threads may run, a `shared`
+# value is made a table of its own, which can fail, so a function making one can fail even when
+# nothing else in it can (#2231). Each of the others is made as it is anywhere.
+
+from std.collections import Table
+
+struct Point:
+    across: int
+    down: int
+
+struct Bag:
+    items: list[int]
+    label: str
+
+def shared_int():
+    shared _count = 9
+    return
+
+def shared_point():
+    shared _spot = Point(across=1, down=2)
+    return
+
+def shared_bag():
+    shared _bag = Bag(items=[1, 2, 3], label="a label long enough for a block of its own")
+    return
+
+def plain_list():
+    _items = [4, 5, 6]
+    return
+
+def plain_dict():
+    _counts = {"a": 1, "b": 2}
+    return
+
+def plain_table():
+    _rows = Table[Point]()
+    return
+
+def plain_text():
+    _words = "a text long enough for a block of its own, made and let go"
+    return
+
+def plain_bag():
+    _bag = Bag(items=[7], label="a label long enough for a block of its own")
+    return
+
+def idle():
+    return
+
+def main(stdout: Stdout):
+    shared_int()
+    shared_point()
+    shared_bag()
+    plain_list()
+    plain_dict()
+    plain_table()
+    plain_text()
+    plain_bag()
+    with launch(() => idle()) as task:
+        pass
+    stdout.print(sum(number for number in parallel([1, 2, 3])))
+    return

@@ -3677,6 +3677,26 @@ fn a_crash_in_a_lock_of_two_values_puts_both_back_whatever_their_order() -> std:
     )
 }
 
+/// A function that makes a value and never uses it builds in a program that launches a task and
+/// has a `parallel` call, so runs on the runtime's threads. There a `shared` value is made a table
+/// of its own, which can fail, so a function making one can fail even when nothing else in it can:
+/// the analysis said it couldn't, and the build stopped with the backend's own error that it fails
+/// where it worked out it can't (#2231). A `shared` int, struct, and struct holding a list, and a
+/// list, dict, `Table`, text and struct, each made in a function of its own and let go of. It
+/// prints what the reference evaluator prints, built either way. CI's workers jobs run it at 1, 4
+/// and 8 threads.
+#[test]
+fn a_value_made_and_never_used_builds_beside_tasks() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "unused_values_made_beside_tasks",
+        include_str!("fixtures/workers/unused_values_made_beside_tasks.fen"),
+        include_str!("fixtures/workers/unused_values_made_beside_tasks.out"),
+    )
+}
+
 /// A value that's out of the list or dict holding it goes back when a crash leaves the function,
 /// before anything looks at what it came out of. Taken out by a method on it or by hand, in the
 /// function that made the list or dict, in one handed it by `ref`, in a struct through `ref self`,
@@ -8581,12 +8601,7 @@ def main(stdout: Stdout):
 ";
 
 /// Each way a `lock` can come to take one value twice, all after printing something.
-const TAKEN_TWICE: [(&str, &str); 5] = [
-    ("spelled", "    lock one, one as ref x, ref y:\n        x.total = y.total + 1\n"),
-    (
-        "reading",
-        "    mut seen = 0\n    lock one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
-    ),
+const TAKEN_TWICE: [(&str, &str); 3] = [
     ("named", "    other = one\n    lock one, other as ref x, y:\n        x.total = y.total + 1\n"),
     ("passed", "    both(one, b=one)\n"),
     ("held", "    lock Holder(box=one).box, one as ref x, y:\n        x.total = y.total + 1\n"),
@@ -8689,7 +8704,18 @@ fn two_values_in_a_lock_each_change_through_their_own_name() -> std::io::Result<
     same_as_expected_in_both_builds("two_cells", TWO_CELLS)
 }
 
-/// One value taken twice ends the program, after what it printed, however it came about.
+/// One value named twice in one `lock`, by the same name, which the checker sees, is refused before
+/// it's built (#2230).
+const SPELLED_TWICE: [(&str, &str); 2] = [
+    ("spelled", "    lock one, one as ref x, ref y:\n        x.total = y.total + 1\n"),
+    (
+        "reading",
+        "    mut seen = 0\n    lock one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
+    ),
+];
+
+/// One value taken twice ends the program, after what it printed, however it came about where the
+/// checker can't see it's one value; where it can, by the same name, it's refused before it's built.
 #[test]
 fn a_lock_taking_one_value_twice_ends_the_program() -> std::io::Result<()> {
     if !ready() {
@@ -8697,6 +8723,17 @@ fn a_lock_taking_one_value_twice_ends_the_program() -> std::io::Result<()> {
     }
     let dir = folder("taken-twice")?;
     let path = |file: &Path| file.display().to_string();
+    for (name, shape) in SPELLED_TWICE {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&dir.join(name))], &dir)?;
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{name}: built");
+        assert!(
+            said.contains("this `lock` takes `one` twice, but it's one `shared` value"),
+            "{name}: {said}"
+        );
+    }
     for (name, shape) in TAKEN_TWICE {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
@@ -9369,7 +9406,7 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
     Ok(())
 }
 
-/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
+/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4, 8 and 16
 /// threads, wanting what it prints, what it says and its exit code every time.
 fn deadlock_fixture_runs_as(name: &str, runs: usize, wanted: (&str, &str, i32)) -> std::io::Result<()> {
     deadlock_fixture_runs_with(name, runs, &[], wanted)
@@ -9392,7 +9429,7 @@ fn deadlock_fixture_runs_with(
     let (source, built_as) = (program.to_string_lossy(), executable.to_string_lossy());
     let built = fennec(&["build", "--llvm", &source, "-o", &built_as], &dir)?;
     assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-    for threads in ["1", "4", "16"] {
+    for threads in ["1", "4", "8", "16"] {
         for _ in 0..runs {
             let ran = Command::new(&executable)
                 .env("FENNEC_THREADS", threads)

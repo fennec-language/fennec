@@ -116,11 +116,10 @@ for kit in examples/projects/*/; do
 done
 
 step "a kit with a dependency, built and run on its own"
-mkdir -p kits/greeting/src kits/hello/src
-printf 'name = "greeting"\nversion = "0.1.0"\nfennec = "%s"\n' "$version" > kits/greeting/kit.toml
-printf 'export def greet(name: str) -> str:\n    return f"hello, {name}"\n\ntest "greets":\n    assert greet("Ann") == "hello, Ann"\n' > kits/greeting/src/lib.fen
-printf 'name = "hello"\nversion = "0.1.0"\nfennec = "%s"\n\n[dependencies]\ngreeting = { path = "../greeting" }\n' "$version" > kits/hello/kit.toml
-printf 'from greeting import greet\n\ndef main(stdout: Stdout):\n    stdout.print(greet("kit"))\n' > kits/hello/src/main.fen
+cp -R "$repo/.github/programs/kits" kits
+for kit in kits/greeting kits/hello; do
+  sed -i.bak "s/^fennec = .*/fennec = \"$version\"/" "$kit/kit.toml" && rm -f "$kit/kit.toml.bak"
+done
 printf 'hello, kit\n' > kits/hello.out
 check "fennec run in a kit with a dependency" kits/hello.out sh -c "cd kits/hello && fennec run"
 check "fennec test in a kit with a dependency" "" sh -c "cd kits/greeting && fennec test"
@@ -130,7 +129,7 @@ check "fennec build --release in a kit with a dependency" "" sh -c "cd kits/hell
 check "the kit's release program on its own" kits/hello.out "./built_release$exe"
 
 step "a program built on its own takes the arguments it's given"
-printf 'def main(stdout: Stdout, args: Args):\n    stdout.print(len(args), args[0], args[1])\n' > told.fen
+cp "$repo/.github/programs/told.fen" told.fen
 printf '2 one two\n' > told.out
 check "fennec build --release of a program taking arguments" "" fennec build --release told.fen -o "told$exe"
 check "a program built on its own, given arguments" told.out "./told$exe" one two

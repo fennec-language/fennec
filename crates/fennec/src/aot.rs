@@ -954,7 +954,7 @@ fn emitted_reusing(
     let (Some(cache), Some(named)) = (cache, named) else {
         return emitted_with(reached, &fennec_llvm::emit_for, false, checked);
     };
-    let key = fennec_blake3::hash(named.as_os_str().as_encoded_bytes()).to_hex();
+    let key = units_key(program, &named);
     let tools = fennec_llvm::Tools::find()?;
     // Every object the program held last time is marked used at once, by marking its list: the
     // units used again are found without marking each (`fennec_llvm::has_object`).
@@ -979,6 +979,25 @@ fn emitted_reusing(
         fennec_build::kept("keep the program's list of objects", held);
     }
     Ok(emitted)
+}
+
+/// What names a program's index of kept units, and its list of objects, in the cache. For a kit,
+/// its name and the entry's path inside its `src`, so every checkout and worktree of the kit,
+/// wherever it is, starts from the units the last build of any of them kept; for a single file,
+/// its absolute path. A kept unit is used again only when its function's IR and every read it made
+/// are as they were, so an index another checkout kept is only ever somewhere to start, never
+/// wrong: what differs between the two is written again.
+fn units_key(program: &fennec_kit::Program, entry: &Path) -> String {
+    let in_kit = program.manifest.as_ref().zip(program.kit_src.as_ref()).and_then(|(manifest, (src, _))| {
+        let src = std::fs::canonicalize(src).ok()?;
+        let inside = entry.strip_prefix(src).ok()?;
+        // By its parts, so it's the same wherever `/` isn't what parts a path.
+        let parts: Vec<String> =
+            inside.components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect();
+        Some(format!("kit {}\n{}", manifest.name, parts.join("/")))
+    });
+    let named = in_kit.unwrap_or_else(|| format!("file {}", entry.display()));
+    fennec_blake3::hash(named.as_bytes()).to_hex()
 }
 
 /// The store's kind for each program's index of kept units (see [`emitted_reusing`]).

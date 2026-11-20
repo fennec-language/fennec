@@ -1,0 +1,12 @@
+from std.collections import Table
+
+struct Unit:
+    hp: int
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    a = units.add(Unit(hp=30))
+    b = units.add(Unit(hp=40))
+    c = units.add(Unit(hp=50))
+    units[b].hp -= 15
+    stdout.print(units[a].hp, units[b].hp, units[c].hp)

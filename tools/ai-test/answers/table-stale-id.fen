@@ -1,0 +1,12 @@
+from std.collections import Table
+
+struct Unit:
+    name: str
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    old = units.add(Unit(name="Old"))
+    _ = units.remove(old)
+    _ = units.add(Unit(name="New"))
+    found = units.get(old) else Unit(name="gone")
+    stdout.print(found.name)

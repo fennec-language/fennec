@@ -1,0 +1,19 @@
+struct Log:
+    lines: list[str]
+
+    def add(ref self, line: str):
+        self.lines.append(line)
+
+    def size(self) -> int:
+        return len(self.lines)
+
+def note(log: shared Log, line: str):
+    lock log as ref current:
+        current.add(line)
+
+def main(stdout: Stdout):
+    shared log = Log(lines=[])
+    note(log, "one")
+    note(log, "two")
+    lock log as current:
+        stdout.print(current.size())

@@ -65,23 +65,7 @@ pid=
 # program's own thread, and a `main` with the same parameters and failures that runs them. Its
 # parameters are the lines between `def main(` and the line that closes it, a parameter a line, as
 # `fennec fmt` writes a long signature. A round's failure is said on the program's `stdout`.
-SOAK_IN=$where perl -e '
-  my ($text) = do { local $/; <STDIN> };
-  $text =~ s/^def main\((.*?)\)( fails [^:]+)?:\n/def soak_round($1)$2:\n/ms or die "no main\n";
-  my ($params, $fails) = ($1, $2 // "");
-  my @names = map { /^\s*(\w+)\s*:/ ? $1 : () } split /,/, $params;
-  die "its main takes no stdout to say a failed round on\n" unless grep { $_ eq "stdout" } @names;
-  my $args = join ", ", @names;
-  my $all = $fails =~ /\bCrashed\b/ ? $fails : ($fails ? "$fails | Crashed" : " fails Crashed");
-  print $text, "\n\n# Every round, one after another, until the soak stops it.\n",
-    "def soak_rounds($params):\n    while True:\n        soak_round($args) except why:\n",
-    "            stdout.print(f\"soak: a round failed: {why}\")\n            return\n\n";
-  if ($ENV{SOAK_IN} eq "task") {
-    print "def main($params)$all:\n    with launch(() => soak_rounds($args))?:\n        pass\n    return\n";
-  } else {
-    print "def main($params):\n    soak_rounds($args)\n    return\n";
-  }
-' < "$program" > "$work/$name.fen" || exit 1
+SOAK_IN=$where perl "$(dirname "$0")/soak-copy.pl" < "$program" > "$work/$name.fen" || exit 1
 if ! "$fennec" build --release "$work/$name.fen" -o "$work/$name" > "$work/built" 2>&1; then
   echo "::error::$name didn't build for the soak"
   cat "$work/built"

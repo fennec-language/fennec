@@ -1,5 +1,6 @@
 # The tasks the AI test gives a model. Each one asks for a whole program, says exactly what it
-# prints, and has a reference answer that `run.py --check-tasks` proves still passes.
+# prints, and has a reference answer, `answers/<id>.fen`, that `run.py --check-tasks` proves still
+# passes. A test of Fennec's checks each answer against the language as it is now.
 #
 # `lost_write` lists outputs that mean a change was made to a copy and never reached what it
 # was meant to change. Those count apart from other wrong answers.
@@ -13,19 +14,6 @@ and Bo with hp 70, keep the `Id` you get for Bo, and use it to print Bo's name a
 It prints exactly: `Bo 70`
 """
 expected = "Bo 70\n"
-reference = """
-from std.collections import Table
-
-struct Unit:
-    name: str
-    hp: int
-
-def main(stdout: Stdout):
-    mut units = Table[Unit]()
-    units.add(Unit(name="Ana", hp=50))
-    bo = units.add(Unit(name="Bo", hp=70))
-    stdout.print(units[bo].name, units[bo].hp)
-"""
 
 [[task]]
 id = "table-damage"
@@ -38,20 +26,6 @@ It prints exactly: `30 25 50`
 """
 expected = "30 25 50\n"
 lost_write = ["30 40 50\n"]
-reference = """
-from std.collections import Table
-
-struct Unit:
-    hp: int
-
-def main(stdout: Stdout):
-    mut units = Table[Unit]()
-    a = units.add(Unit(hp=30))
-    b = units.add(Unit(hp=40))
-    c = units.add(Unit(hp=50))
-    units[b].hp -= 15
-    stdout.print(units[a].hp, units[b].hp, units[c].hp)
-"""
 
 [[task]]
 id = "table-remove"
@@ -62,20 +36,6 @@ its `Id`. Print how many units are left, and whether B's `Id` still finds a unit
 It prints exactly: `2 False`
 """
 expected = "2 False\n"
-reference = """
-from std.collections import Table
-
-struct Unit:
-    name: str
-
-def main(stdout: Stdout):
-    mut units = Table[Unit]()
-    units.add(Unit(name="A"))
-    b = units.add(Unit(name="B"))
-    units.add(Unit(name="C"))
-    units.remove(b)
-    stdout.print(units.len(), units.get(b) is not None)
-"""
 
 [[task]]
 id = "table-stale-id"
@@ -87,20 +47,6 @@ if it doesn't.
 It prints exactly: `gone`
 """
 expected = "gone\n"
-reference = """
-from std.collections import Table
-
-struct Unit:
-    name: str
-
-def main(stdout: Stdout):
-    mut units = Table[Unit]()
-    old = units.add(Unit(name="Old"))
-    units.remove(old)
-    units.add(Unit(name="New"))
-    found = units.get(old) else Unit(name="gone")
-    stdout.print(found.name)
-"""
 
 [[task]]
 id = "table-total"
@@ -111,21 +57,6 @@ every unit's hp with a loop over the table and print the total.
 It prints exactly: `35`
 """
 expected = "35\n"
-reference = """
-from std.collections import Table
-
-struct Unit:
-    hp: int
-
-def main(stdout: Stdout):
-    mut units = Table[Unit]()
-    for hp in [5, 10, 20]:
-        units.add(Unit(hp=hp))
-    mut total = 0
-    for unit in units:
-        total += unit.hp
-    stdout.print(total)
-"""
 
 [[task]]
 id = "list-heal-one"
@@ -137,15 +68,6 @@ It prints exactly: `10 25 30`
 """
 expected = "10 25 30\n"
 lost_write = ["10 20 30\n"]
-reference = """
-struct Unit:
-    hp: int
-
-def main(stdout: Stdout):
-    mut units = [Unit(hp=10), Unit(hp=20), Unit(hp=30)]
-    units[1].hp += 5
-    stdout.print(units[0].hp, units[1].hp, units[2].hp)
-"""
 
 [[task]]
 id = "copy-with-change"
@@ -157,18 +79,6 @@ first.
 It prints exactly: `Ana 3 Bo 3`
 """
 expected = "Ana 3 Bo 3\n"
-reference = """
-struct Player:
-    name: str
-    score: int
-
-def main(stdout: Stdout):
-    ana = Player(name="Ana", score=3)
-    # `copy(ana, name="Bo")` is on the language page, but isn't built yet.
-    mut bo = copy(ana)
-    bo.name = "Bo"
-    stdout.print(ana.name, ana.score, bo.name, bo.score)
-"""
 
 [[task]]
 id = "list-is-a-value"
@@ -179,13 +89,6 @@ through the first name. Print the length of each, first name first.
 It prints exactly: `4 3`
 """
 expected = "4 3\n"
-reference = """
-def main(stdout: Stdout):
-    mut items = [1, 2, 3]
-    other = items
-    items.append(4)
-    stdout.print(items.len(), other.len())
-"""
 
 [[task]]
 id = "dict-lower"
@@ -197,12 +100,6 @@ It prints exactly: `9 9`
 """
 expected = "9 9\n"
 lost_write = ["12 9\n"]
-reference = """
-def main(stdout: Stdout):
-    mut hp = {"orc": 12, "elf": 9}
-    hp["orc"] -= 3
-    stdout.print(hp["orc"], hp["elf"])
-"""
 
 [[task]]
 id = "nested-field"
@@ -215,19 +112,6 @@ It prints exactly: `30 4`
 """
 expected = "30 4\n"
 lost_write = ["20 4\n"]
-reference = """
-struct Unit:
-    hp: int
-
-struct Team:
-    leader: Unit
-    size: int
-
-def main(stdout: Stdout):
-    mut team = Team(leader=Unit(hp=20), size=4)
-    team.leader.hp += 10
-    stdout.print(team.leader.hp, team.size)
-"""
 
 [[task]]
 id = "ref-heal-all"
@@ -240,19 +124,6 @@ It prints exactly: `11 12`
 """
 expected = "11 12\n"
 lost_write = ["1 2\n"]
-reference = """
-struct Unit:
-    hp: int
-
-def heal_all(ref units: list[Unit]):
-    for ref unit in units:
-        unit.hp += 10
-
-def main(stdout: Stdout):
-    mut units = [Unit(hp=1), Unit(hp=2)]
-    heal_all(ref units)
-    stdout.print(units[0].hp, units[1].hp)
-"""
 
 [[task]]
 id = "ref-double-loop"
@@ -264,13 +135,6 @@ It prints exactly: `[2, 4, 6]`
 """
 expected = "[2, 4, 6]\n"
 lost_write = ["[1, 2, 3]\n"]
-reference = """
-def main(stdout: Stdout):
-    mut items = [1, 2, 3]
-    for ref item in items:
-        item *= 2
-    stdout.print(items)
-"""
 
 [[task]]
 id = "ref-int"
@@ -282,15 +146,6 @@ It prints exactly: `12`
 """
 expected = "12\n"
 lost_write = ["5\n"]
-reference = """
-def add_to(ref total: int, amount: int):
-    total += amount
-
-def main(stdout: Stdout):
-    mut total = 5
-    add_to(ref total, 7)
-    stdout.print(total)
-"""
 
 [[task]]
 id = "ref-swap"
@@ -302,17 +157,6 @@ It prints exactly: `[3, 2, 1]`
 """
 expected = "[3, 2, 1]\n"
 lost_write = ["[1, 2, 3]\n"]
-reference = """
-def swap_ends(ref items: list[int]):
-    first = items[0]
-    items[0] = items[items.len() - 1]
-    items[items.len() - 1] = first
-
-def main(stdout: Stdout):
-    mut items = [1, 2, 3]
-    swap_ends(ref items)
-    stdout.print(items)
-"""
 
 [[task]]
 id = "ref-method"
@@ -324,20 +168,6 @@ It prints exactly: `3`
 """
 expected = "3\n"
 lost_write = ["0\n"]
-reference = """
-struct Counter:
-    count: int
-
-    def bump(ref self):
-        self.count += 1
-
-def main(stdout: Stdout):
-    mut counter = Counter(count=0)
-    counter.bump()
-    counter.bump()
-    counter.bump()
-    stdout.print(counter.count)
-"""
 
 [[task]]
 id = "else-default"
@@ -348,13 +178,6 @@ the dict's lookup with a default for words not seen yet. Print the counts for a,
 It prints exactly: `3 2 1 0`
 """
 expected = "3 2 1 0\n"
-reference = """
-def main(stdout: Stdout):
-    mut counts: dict[str, int] = {}
-    for word in "a b a c a b".split(" "):
-        counts[word] = (counts.get(word) else 0) + 1
-    stdout.print(counts["a"], counts["b"], counts["c"], counts.get("z") else 0)
-"""
 
 [[task]]
 id = "else-continue"
@@ -365,14 +188,6 @@ Print the total.
 It prints exactly: `7`
 """
 expected = "7\n"
-reference = """
-def main(stdout: Stdout):
-    mut total = 0
-    for text in ["3", "x", "4", ""]:
-        number = int(text) else continue
-        total += number
-    stdout.print(total)
-"""
 
 [[task]]
 id = "else-return"
@@ -383,16 +198,6 @@ there's none. Print its answer for `[3, 5, 8, 10]` and for `[1, 7]`.
 It prints exactly: `8 -1`
 """
 expected = "8 -1\n"
-reference = """
-def first_even(items: list[int]) -> int:
-    for item in items:
-        if item % 2 == 0:
-            return item
-    -1
-
-def main(stdout: Stdout):
-    stdout.print(first_even([3, 5, 8, 10]), first_even([1, 7]))
-"""
 
 [[task]]
 id = "optional-field"
@@ -405,15 +210,6 @@ It prints two lines, exactly:
 `Cy nobody`
 """
 expected = "Ana Bo\nCy nobody\n"
-reference = """
-struct Unit:
-    name: str
-    target: str?
-
-def main(stdout: Stdout):
-    for unit in [Unit(name="Ana", target="Bo"), Unit(name="Cy", target=None)]:
-        stdout.print(unit.name, unit.target else "nobody")
-"""
 
 [[task]]
 id = "optional-best"
@@ -424,19 +220,6 @@ empty list. Print its answer for `[4, 9, 2]`, and for an empty list print `none`
 It prints exactly: `9 none`
 """
 expected = "9 none\n"
-reference = """
-def strongest(items: list[int]) -> int?:
-    mut best: int? = None
-    for item in items:
-        if best is None or item > best:
-            best = item
-    best
-
-def main(stdout: Stdout):
-    empty: list[int] = []
-    shown = strongest(empty)
-    stdout.print(strongest([4, 9, 2]) else 0, "none" if shown is None else "some")
-"""
 
 [[task]]
 id = "error-cases"
@@ -453,25 +236,6 @@ It prints three lines, exactly:
 `missing fig`
 """
 expected = "0\nnone of pear\nmissing fig\n"
-reference = """
-error SellError:
-    NotFound(item: str)
-    OutOfStock(item: str)
-
-def sell(stock: dict[str, int], item: str) -> int fails SellError:
-    count = stock.get(item) else fail .NotFound(item)
-    if count == 0:
-        fail .OutOfStock(item)
-    count - 1
-
-def main(stdout: Stdout):
-    stock = {"apple": 1, "pear": 0}
-    for item in ["apple", "pear", "fig"]:
-        match sell(stock, item):
-            case Ok(left): stdout.print(left)
-            case Err(NotFound(name)): stdout.print("missing", name)
-            case Err(OutOfStock(name)): stdout.print("none of", name)
-"""
 
 [[task]]
 id = "error-pass-up"
@@ -486,22 +250,6 @@ It prints two lines, exactly:
 `bad old`
 """
 expected = "42\nbad old\n"
-reference = """
-error BadAge:
-    text: str
-
-def parse_age(text: str) -> int fails BadAge:
-    int(text) else fail BadAge(text=text)
-
-def next_age(text: str) -> int fails BadAge:
-    parse_age(text)? + 1
-
-def main(stdout: Stdout):
-    for text in ["41", "old"]:
-        match next_age(text):
-            case Ok(age): stdout.print(age)
-            case Err(error): stdout.print("bad", error.text)
-"""
 
 [[task]]
 id = "error-in-loop"
@@ -515,24 +263,6 @@ It prints two lines, exactly:
 `too big 500`
 """
 expected = "6\ntoo big 500\n"
-reference = """
-error TooBig:
-    value: int
-
-def total(items: list[int]) -> int fails TooBig:
-    mut sum = 0
-    for item in items:
-        if item > 100:
-            fail TooBig(value=item)
-        sum += item
-    sum
-
-def main(stdout: Stdout):
-    for items in [[1, 2, 3], [5, 500, 7]]:
-        match total(items):
-            case Ok(sum): stdout.print(sum)
-            case Err(error): stdout.print("too big", error.value)
-"""
 
 [[task]]
 id = "error-default"
@@ -543,100 +273,41 @@ number, and print the three results on one line.
 It prints exactly: `7 0 -2`
 """
 expected = "7 0 -2\n"
-reference = """
-def main(stdout: Stdout):
-    numbers = [int(text) else 0 for text in ["7", "seven", "-2"]]
-    stdout.print(numbers[0], numbers[1], numbers[2])
-"""
 
 [[task]]
 id = "shared-counter"
 topic = "shared"
 prompt = """
-Declare a `shared` type `Hits` with a `count` starting at 0 and a method that adds one. Make one,
+Declare `struct Hits` with a `count` starting at 0 and a method that adds one. Make one `shared`,
 give it a second name, add one through each name, and print the count through the first name.
 It prints exactly: `2`
 """
 expected = "2\n"
 lost_write = ["1\n"]
-reference = """
-shared Hits:
-    count = 0
-
-    def add(ref self):
-        self.count += 1
-
-    def total(self) -> int:
-        self.count
-
-def main(stdout: Stdout):
-    hits = Hits()
-    same = hits
-    hits.add()
-    same.add()
-    stdout.print(hits.total())
-"""
 
 [[task]]
 id = "shared-transfer"
 topic = "shared"
 prompt = """
-Declare a `shared` type `Account` with a `total`. Write a function `transfer` that moves an amount
-from one account to another, holding both at once so nothing else sees a half-done move. Move 30
+Declare `struct Account` with a `total`. Write a function `transfer` that moves an amount from one
+`shared` account to another, holding both at once so nothing else sees a half-done move. Move 30
 from an account holding 100 to one holding 0, and print both totals.
 It prints exactly: `70 30`
 """
 expected = "70 30\n"
 lost_write = ["100 0\n"]
-reference = """
-shared Account:
-    total = 0
-
-    def balance(self) -> int:
-        self.total
-
-def transfer(source: Account, target: Account, amount: int):
-    with source, target as ref giving, ref getting:
-        giving.total -= amount
-        getting.total += amount
-
-def main(stdout: Stdout):
-    savings = Account(total=100)
-    checking = Account()
-    transfer(savings, checking, 30)
-    stdout.print(savings.balance(), checking.balance())
-"""
 
 [[task]]
 id = "shared-log"
 topic = "shared"
 prompt = """
-Declare a `shared` type `Log` holding a list of lines, with a method to add a line and one that says
-how many there are. Write a function `note` that takes a `Log` and adds a line to it. Call `note`
-twice on one log, then print how many lines it has.
+Declare `struct Log` holding a list of lines, with a method to add a line and one that says how many
+there are. Write a function `note` that takes a `shared Log` and adds a line to it. Call `note`
+twice on one `shared` log, then print how many lines it has.
 It prints exactly: `2`
 """
 expected = "2\n"
 lost_write = ["0\n"]
-reference = """
-shared Log:
-    lines: list[str]
-
-    def add(ref self, line: str):
-        self.lines.append(line)
-
-    def size(self) -> int:
-        self.lines.len()
-
-def note(log: Log, line: str):
-    log.add(line)
-
-def main(stdout: Stdout):
-    log = Log(lines=[])
-    note(log, "one")
-    note(log, "two")
-    stdout.print(log.size())
-"""
 
 [[task]]
 id = "stdin-sum"
@@ -648,14 +319,6 @@ Its input is three lines, `1`, `2` and `3`, and it prints exactly: `3 6`
 """
 stdin = "1\n2\n3\n"
 expected = "3 6\n"
-reference = """
-def main(stdout: Stdout, stdin: Stdin):
-    lines = stdin.lines()
-    mut total = 0
-    for line in lines:
-        total += int(line) else 0
-    stdout.print(lines.len(), total)
-"""
 
 [[task]]
 id = "hello"
@@ -665,10 +328,6 @@ Print a greeting.
 It prints exactly: `hello, world`
 """
 expected = "hello, world\n"
-reference = """
-def main(stdout: Stdout):
-    stdout.print("hello, world")
-"""
 
 [[task]]
 id = "helper-prints"
@@ -681,11 +340,3 @@ It prints two lines, exactly:
 `Bo: 5`
 """
 expected = "Ana: 3\nBo: 5\n"
-reference = """
-def report(stdout: Stdout, name: str, score: int):
-    stdout.print(f"{name}: {score}")
-
-def main(stdout: Stdout):
-    report(stdout, "Ana", 3)
-    report(stdout, "Bo", 5)
-"""

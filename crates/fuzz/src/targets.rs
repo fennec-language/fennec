@@ -415,9 +415,10 @@ pub(crate) const RANDOM_PROGRAMS: Target = Target {
     stuck: Duration::from_secs(60),
 };
 
-/// Tasks and a server's rounds that print and make way, recorded on 1 and 4 threads and each
-/// recording replayed on 1, 4 and 16, which runs only when named, since it builds every input once
-/// and runs it 8 times: 2 recordings and 6 replays.
+/// Tasks and a server's rounds that print and make way, wait with timeouts, take jobs from one queue
+/// and run `parallel` calls cut short, recorded on 1 and 4 threads and each recording replayed on
+/// 1, 4 and 16, which runs only when named, since it builds every input once and runs it 8 times:
+/// 2 recordings and 6 replays.
 pub(crate) const REPLAY: Target = Target {
     name: "replay",
     corpus: &["crates/fuzz/seeds/replay"],

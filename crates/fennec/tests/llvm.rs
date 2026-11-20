@@ -5963,6 +5963,55 @@ def main(stdout: Stdout):
         stdout.print(unit.seen)
 ";
 
+/// A field of an optional struct the checker narrowed with `is not None` changes where the
+/// optional is held (#2255): a plain local, the item of a `for ref` over a list or an array of
+/// optionals, a field of a struct inside the optional, and an item of a narrowed optional list.
+/// What's around it stays as it was, and an item that's `None` is passed over.
+#[test]
+fn a_narrowed_optionals_field_changes_where_the_optional_is_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "narrowed_optional_field_changed",
+        NARROWED_OPTIONAL_FIELD_CHANGED,
+        "Cell(health=16)\n[Cell(health=11), None, Cell(health=13)]\n[None, Cell(health=24)]\n\
+         Holder(cell=Cell(health=35), name=\"den\")\n[50, 2]\n",
+    )
+}
+
+const NARROWED_OPTIONAL_FIELD_CHANGED: &str = r#"struct Cell:
+    health = 0
+
+struct Holder:
+    cell: Cell
+    name: str
+
+def main(stdout: Stdout):
+    mut slot: Cell? = Cell(health=6)
+    if slot is not None:
+        slot.health += 10
+    stdout.print(slot)
+    mut slots: list[Cell?] = [Cell(health=1), None, Cell(health=3)]
+    for ref held in slots:
+        if held is not None:
+            held.health += 10
+    stdout.print(slots)
+    mut pair: array[Cell?, 2] = [None, Cell(health=4)]
+    for ref held in pair:
+        if held is not None:
+            held.health = held.health + 20
+    stdout.print(pair)
+    mut holder: Holder? = Holder(cell=Cell(health=5), name="den")
+    if holder is not None:
+        holder.cell.health += 30
+    stdout.print(holder)
+    mut counts: list[int]? = [1, 2]
+    if counts is not None:
+        counts[0] = 50
+    stdout.print(counts)
+"#;
+
 /// A local `ref` inside `lock ... as ref held:` reads and writes the locked value, `slot = slot * 2`
 /// and `x = slot + 1` as well as `+=`, and a failure leaving the lock undoes what was changed
 /// through it, as it undoes a write made directly.

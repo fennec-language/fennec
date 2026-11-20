@@ -19,7 +19,10 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Net", "hosts") => reads(&[Type::list(Type::Str)], Type::named("Net")),
         // Upgrades a plain connection, for protocols that start without TLS.
         ("Connection", "start_tls") => reads(&[Type::Str], fails(Type::Unit)),
-        ("Connection", "read") => reads(&[Type::Int], fails(Type::Bytes)),
+        // `_body` is what a server reads a request's body with, once `_room_for_body` has taken
+        // room for that many bytes among every server's bodies, false when they already fill it.
+        ("Connection", "read" | "_body") => reads(&[Type::Int], fails(Type::Bytes)),
+        ("Connection", "_room_for_body") => reads(&[Type::Int], Type::Bool),
         ("Connection", "read_line") => reads(&[], fails(Type::optional(Type::Str))),
         // `bytes` or a `str`, which the call checks.
         ("Connection", "write") => reads(&[Type::Unknown], fails(Type::Unit)),

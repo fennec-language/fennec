@@ -2074,7 +2074,8 @@ impl Writer<'_> {
                 if ty == Ty::Node {
                     self.reshape(body, &first);
                 } else {
-                    let node = self.of(Ty::Node, 1);
+                    // In a loop, a node holding the list itself would double it every round.
+                    let node = self.node_for_list();
                     body.push(Stmt::NodesAppend(first.clone(), node));
                     self.read_back(body, &first);
                 }

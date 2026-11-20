@@ -394,6 +394,8 @@ impl Interp {
         vars: Vec<(String, Binding)>,
         shown: Option<String>,
     ) -> Run<Value> {
+        // The checker refuses a generator taking `ref` since #2273, so a program the oracle loads
+        // never has one: this holds the line if that ever changes.
         if vars.iter().any(|(_, binding)| matches!(binding, Binding::Ref(_))) {
             return unsupported("a generator with a `ref` parameter");
         }

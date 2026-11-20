@@ -21,7 +21,7 @@ test "items come out in order, each once":
     assert len(items) == 4
     items.add(4)
     items.discard(100)
-    items.remove(3)
+    items.discard(3)
     assert items.items() == [1, 4, 5, 9]
     assert 4 in items and 3 not in items
     assert [item for item in items] == [1, 4, 5, 9]

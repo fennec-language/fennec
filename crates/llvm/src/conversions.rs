@@ -150,7 +150,6 @@ impl Emit<'_, '_, '_> {
             ("list.contains", [list, item], [Some(Kind::List(_)), _]) => {
                 dest.and_then(|dest| self.list_contains(dest, list, item))
             }
-            ("list.remove", [Operand::Local(list), item], _) => self.list_remove(*list, item, span),
             ("int" | "float", [text], [Some(Kind::Str)]) => {
                 dest.and_then(|dest| self.number_of_text(dest, name, text))
             }
@@ -208,7 +207,6 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             ("set.discard", [Operand::Local(set), key], _) => self.set_remove(*set, key, false, span),
-            ("set.remove", [Operand::Local(set), key], _) => self.set_remove(*set, key, true, span),
             ("list.sort", [Operand::Local(list)], _) => self.sort_in_place(*list),
             ("list.sort.key", [Operand::Local(list), key], _) => self.sort_by_in_place(*list, key, span),
             ("list.clear", [Operand::Local(list)], _) => {
@@ -985,26 +983,7 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &bit)
     }
 
-    /// `list.remove(item)`: the runtime takes out the first that's equal, or fails, in a list
-    /// only this one owns.
-    fn list_remove(&mut self, list: LocalId, item: &Operand, span: Span) -> Result<(), String> {
-        let Kind::List(items) = self.kind_of(list)?.clone() else {
-            return Err("`remove` on something else".to_owned());
-        };
-        let held = self.item_kind(items)?;
-        let (word, passed) = self.item_word(item, &held)?;
-        let owned = self.unshared(list);
-        self.declare("declare void @fennec_list_remove(ptr, i64, i64, i64) nounwind");
-        let (from, to) = self.place_in_source(span);
-        self.line(&format!("call void @fennec_list_remove(ptr {owned}, i64 {word}, i64 {from}, i64 {to})"));
-        // What was made to pass the item goes before the failure is looked at: an item that isn't
-        // there leaves here, and the runtime only compared with it.
-        self.let_go_of_passed(passed);
-        self.leave_if_failed();
-        Ok(())
-    }
-
-    /// An item as the runtime's `in` and `remove` take it: its one word, the block of a string,
+    /// An item as the runtime's `in` takes it: its one word, the block of a string,
     /// or a new block of its shape for one in memory that takes more than a word or holds blocks.
     fn item_word(&mut self, item: &Operand, held: &Kind) -> Result<(String, Passed), String> {
         let (value, fresh) = self.value_for(item, held)?;

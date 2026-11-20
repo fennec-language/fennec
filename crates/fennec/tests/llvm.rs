@@ -7958,7 +7958,7 @@ def main(args: Args, stdout: Stdout):
     kept = ints
     ints.discard(2)
     ints.discard(9)
-    ints.remove(3)
+    _ = ints.remove(3)
     stdout.print(ints, kept)
     ints.clear()
     ints.add(7)
@@ -7966,12 +7966,12 @@ def main(args: Args, stdout: Stdout):
     mut words = {"a", "b", "a long string that is held in a block"}
     words.discard("a")
     words.discard("nope")
-    words.remove("a long string that is held in a block")
+    _ = words.remove("a long string that is held in a block")
     stdout.print(words)
     mut keys = {Key(x=1, y=2), Key(x=3, y=4)}
     keys.discard(Key(x=1, y=2))
     keys.discard(Key(x=9, y=9))
-    keys.remove(Key(x=3, y=4))
+    _ = keys.remove(Key(x=3, y=4))
     stdout.print(keys, len(keys))
 "#,
     )
@@ -8045,7 +8045,9 @@ fn removing_what_a_set_lacks_gives_none() -> std::io::Result<()> {
     stdout.print(held.remove({kept}), len(held))
 "
         );
-        let wanted = format!("None {set}\n{kept} {}\n", if set == "{1, 2}" { 1 } else { 0 });
+        // The item it gives back prints as itself, text without its quotes.
+        let given = kept.trim_matches('"');
+        let wanted = format!("None {set}\n{given} {}\n", if set == "{1, 2}" { 1 } else { 0 });
         assert_eq!(printed_by(name, &program)?, wanted, "{name}");
     }
     Ok(())
@@ -13357,30 +13359,31 @@ def main(stdout: Stdout):
     return
 "#;
 
-/// A `pop` of a key that isn't there and a `remove` of an item that isn't there fail and change
-/// nothing. Generated code stored the failed `pop`'s result, nothing, over the dict before it
-/// looked at whether the call had failed, and the runtime had already copied a dict or set with
-/// two owners and moved the caller's owner to the copy. So a task that crashed on one left the
-/// dict and what it held behind: 5 blocks here. Now the dict is written only once the call has
-/// worked, and a shared one without the key is left alone. Alone and with two owners, each fails
-/// in a task that crashes and then works on a key that's there, and the counts are pinned: nothing
-/// left, and no copy for a take that fails or a `discard` that finds nothing.
+/// A `pop` of a key that isn't there fails and changes nothing, and a set's `remove` of an item
+/// that isn't there gives `None` and changes nothing. Generated code stored the failed `pop`'s
+/// result, nothing, over the dict before it looked at whether the call had failed, and the runtime
+/// had already copied a dict with two owners and moved the caller's owner to the copy. So a task
+/// that crashed on one left the dict and what it held behind: 5 blocks here. Now the dict is
+/// written only once the call has worked, and a shared one without the key is left alone. Alone
+/// and with two owners, each `pop` fails in a task that crashes, each `remove` finds nothing, and
+/// then each works on a key that's there. The counts are pinned: nothing left, and no copy for a
+/// take that fails or a `remove` or `discard` that finds nothing.
 #[test]
-fn a_pop_or_remove_that_fails_changes_nothing_and_leaves_nothing() -> std::io::Result<()> {
+fn a_pop_that_fails_or_a_remove_of_nothing_changes_nothing_and_leaves_nothing() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
     prints_in_both_builds("failed_takes", FAILED_TAKES, FAILED_TAKES_PRINTS)?;
     assert_eq!(
         counts_of("failed_takes_counts", FAILED_TAKES)?,
-        "copies 20 copied_bytes 1104 largest_copy 80 allocations 87 allocated_bytes 10776 live 0"
+        "copies 20 copied_bytes 1104 largest_copy 80 allocations 82 allocated_bytes 10328 live 0"
     );
     Ok(())
 }
 
-const FAILED_TAKES: &str = r#"# A `pop` of a key that isn't there, and a `remove` of an item that isn't there, fail and change
-# nothing: the dict or set is as it was, alone or with another owner, and a task that crashes on
-# one leaves nothing behind. Each then works on a key that is there.
+const FAILED_TAKES: &str = r#"# A `pop` of a key that isn't there fails and changes nothing: the dict is as it was, alone or
+# with another owner, and a task that crashes on one leaves nothing behind. A `remove` of an item
+# that isn't there gives `None` and changes nothing. Each then works on a key that is there.
 
 from std.concurrent import Crashed
 
@@ -13393,7 +13396,7 @@ def popped(key: int, two_owners: bool) -> int:
 def removed(key: str, two_owners: bool) -> int:
     mut local = {"one, long enough for a block of its own", "two"}
     other = local if two_owners else {"nine"}
-    local.remove(key)
+    _ = local.remove(key)
     return len(local) * 10 + len(other)
 
 def discarded(key: str, two_owners: bool) -> int:
@@ -13437,12 +13440,10 @@ def main(stdout: Stdout):
 "#;
 
 const FAILED_TAKES_PRINTS: &str = r"pop(5) crashed, two owners: False
-remove(missing) crashed, two owners: False
 21 11
 pop(5) crashed, two owners: True
-remove(missing) crashed, two owners: True
 22 12
-[11, 11, 12, 12]
+[11, 21, 11, 12, 22, 12]
 ";
 
 /// A key a dict of blocks doesn't have fails as pinned.
@@ -31268,10 +31269,11 @@ fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Resul
     Ok(())
 }
 
-/// A key 20,000 deep that isn't there, in a launched task, whose own stack is small: the dict's
-/// lookup, a set's `remove` and a list's `remove` each say what's missing and crash only the task,
-/// as on the main thread. The key is read for the message with room for its depth, where it was
-/// read on the task's own stack, and stopped the whole program from about 8,000 deep.
+/// A key 20,000 deep that isn't there, in a launched task, whose own stack is small. The dict's
+/// lookup says what's missing and crashes only the task, as on the main thread: the key is read
+/// for the message with room for its depth, where it was read on the task's own stack, and stopped
+/// the whole program from about 8,000 deep. A set's `remove` and a list's `remove` compare it all
+/// the way down on that stack and give `None`.
 #[test]
 fn a_deep_key_missing_in_a_task_crashes_only_the_task_saying_what_is_missing() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -31290,19 +31292,12 @@ fn a_deep_key_missing_in_a_task_crashes_only_the_task_saying_what_is_missing() -
     let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
     let start: String = said.chars().take(300).collect();
     assert!(ran.status.success(), "{start}");
-    assert_eq!(printed, "dict: its task crashed\nset: its task crashed\nlist: its task crashed\nafter\n");
-    // Each failure names what's missing, all 20,000 levels of it.
+    // A set's and a list's `remove` compare the key all the way down and give `None`.
+    assert_eq!(printed, "dict: its task crashed\nTrue\nTrue\nafter\n");
+    // The dict's failure names what's missing, all 20,000 levels of it.
     let failures: Vec<&str> = said.lines().filter(|line| line.starts_with("error: ")).collect();
-    let [dict, set, list] = failures[..] else { panic!("{start}") };
+    let [dict] = failures[..] else { panic!("{start}") };
     assert!(dict.starts_with("error: the dict has no key Node(n=20000, kids=[Node(n=19999"), "{start}");
-    assert!(
-        set.starts_with("error: Node(n=20000, kids=[Node(n=19999") && set.ends_with("isn't in the set"),
-        "{start}"
-    );
-    assert!(
-        list.starts_with("error: Link(n=20000, next=Link(n=19999") && list.ends_with("isn't in the list"),
-        "{start}"
-    );
     assert!(dict.contains("Node(n=-1, kids=[])"), "the key's last level is named too");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -34915,16 +34910,16 @@ def main(stdout: Stdout):
     stdout.print((1, 2) in [(1, 2)], Spot(x=1, y=2) in [Spot(x=1, y=2)], Spot(x=2, y=2) in [Spot(x=1, y=2)], (1, "a") in [(1, "a")], [1] in [[1], [2]])
     mut numbers = [1, 2, 3, 2]
     shared = numbers
-    numbers.remove(2)
+    _ = numbers.remove(2)
     stdout.print(numbers, shared)
     mut words = ["a", "a string long enough to be a block of its own", "c"]
-    words.remove("a string long enough to be a block of its own")
+    _ = words.remove("a string long enough to be a block of its own")
     stdout.print(words)
     mut spots = [Spot(x=1, y=2), Spot(x=3, y=4)]
-    spots.remove(Spot(x=1, y=2))
+    _ = spots.remove(Spot(x=1, y=2))
     stdout.print(spots)
     mut pairs = [(1, "a"), (2, "b")]
-    pairs.remove((2, "b"))
+    _ = pairs.remove((2, "b"))
     stdout.print(pairs)
     stdout.print(sin(0.5), cos(0.5), sin(1), cos(0))
     stdout.print(int(5), float(2.5), str(True), str(False), str([1, 2]), str(Spot(x=1, y=2)), str((1, "a")))

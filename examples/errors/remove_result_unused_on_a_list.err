@@ -1,5 +1,7 @@
-error: "mud" isn't in the set
- --> examples/errors/remove_missing_from_set.fen:3:5
+error: this gives back a str?, and nothing uses it
+ --> examples/errors/remove_result_unused_on_a_list.fen:3:5
   |
 3 |     seen.remove("mud")
   |     ^^^^^^^^^^^^^^^^^^
+  |
+  = help: to only take it out, write `discard`, which gives nothing back: `fennec fix` makes this change

@@ -2013,7 +2013,11 @@ found:
                 "{changed} = call ptr @fennec_set_remove(ptr {held}, i64 {key_held}, i8 {must}, i64 {from}, i64 {to})"
             ));
         }
-        self.leave_if_failed();
+        // Only `remove` can fail: `discard` of a key that isn't there does nothing, so a function
+        // that can't fail may call it.
+        if must == 1 {
+            self.leave_if_failed();
+        }
         self.line(&format!("store ptr {changed}, ptr {place}"));
         Ok(())
     }

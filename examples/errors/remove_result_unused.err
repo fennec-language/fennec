@@ -1,5 +1,7 @@
-error: 3 isn't in the set
- --> examples/errors/set_remove_missing.fen:5:5
+error: this gives back an int?, and nothing uses it
+ --> examples/errors/remove_result_unused.fen:6:5
   |
-5 |     items.remove(3)
+6 |     items.remove(3)
   |     ^^^^^^^^^^^^^^^
+  |
+  = help: to only take it out, write `discard`, which gives nothing back: `fennec fix` makes this change

@@ -94,10 +94,10 @@ def sets(count: int) -> int:
         total += 1 if cell(at) in cells_seen else 0
         total += 1 if cell(at + count) not in cells_seen else 0
     for at in range(0, count, 2):
-        seen.remove(pair(at))
+        seen.discard(pair(at))
         seen.discard(pair(at))
         seen.discard(pair(at + count))
-        cells_seen.remove(cell(at))
+        cells_seen.discard(cell(at))
         cells_seen.discard(cell(at))
         cells_seen.discard(cell(at + count))
     mut others = set[(int, str)]()
@@ -114,7 +114,7 @@ def sets(count: int) -> int:
     # And a set something else holds too.
     also = seen
     seen.discard(pair(count + 9))
-    seen.remove(pair(1))
+    seen.discard(pair(1))
     total += len(also) - len(seen)
     return total + len(seen) + len(cells_seen)
 
@@ -134,7 +134,7 @@ def fails(which: int) -> int:
         by_pair[pair(2)] += 1
     if which == 2: return by_pair.pop(pair(2))
     if which == 3:
-        seen.remove(pair(2))
+        seen.discard(pair(2))
     if which == 4: return len(by_cell[cell(2)])
     if which == 5: return len(by_cell.pop(cell(2)))
     # The same of a dict and a set something else holds too, which the failure leaves as they were.
@@ -143,7 +143,7 @@ def fails(which: int) -> int:
         return by_pair.pop(pair(2)) + len(also)
     if which == 7:
         also = seen
-        seen.remove(pair(2))
+        seen.discard(pair(2))
         return len(also) + len(seen)
     return len(by_pair) + len(seen)
 

@@ -47,7 +47,7 @@ struct Spot:
 
 def takes_out() -> int:
     mut spots = [Spot(at=1, name="a name long enough for a block of its own")]
-    spots.remove(Spot(at=2, name="another name long enough for a block"))
+    spots.discard(Spot(at=2, name="another name long enough for a block"))
     return len(spots)
 
 def taking(out: Channel[int]):

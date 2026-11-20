@@ -1,0 +1,6 @@
+# The release dry run's kit that another depends on, by its path.
+export def greet(name: str) -> str:
+    return f"hello, {name}"
+
+test "greets":
+    assert greet("Ann") == "hello, Ann"

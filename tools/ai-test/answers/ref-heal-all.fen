@@ -1,0 +1,11 @@
+struct Unit:
+    hp: int
+
+def heal_all(ref units: list[Unit]):
+    for ref unit in units:
+        unit.hp += 10
+
+def main(stdout: Stdout):
+    mut units = [Unit(hp=1), Unit(hp=2)]
+    heal_all(ref units)
+    stdout.print(units[0].hp, units[1].hp)

@@ -1,0 +1,5 @@
+def main(stdout: Stdout):
+    mut items = [1, 2, 3]
+    other = items
+    items.append(4)
+    stdout.print(len(items), len(other))

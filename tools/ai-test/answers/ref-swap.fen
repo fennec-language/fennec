@@ -1,0 +1,9 @@
+def swap_ends(ref items: list[int]):
+    first = items[0]
+    items[0] = items[len(items) - 1]
+    items[len(items) - 1] = first
+
+def main(stdout: Stdout):
+    mut items = [1, 2, 3]
+    swap_ends(ref items)
+    stdout.print(items)

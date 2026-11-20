@@ -1,0 +1,16 @@
+error TooBig:
+    value: int
+
+def total(items: list[int]) -> int fails TooBig:
+    mut added = 0
+    for item in items:
+        if item > 100: fail TooBig(value=item)
+        added += item
+    return added
+
+def main(stdout: Stdout):
+    for items in [[1, 2, 3], [5, 500, 7]]:
+        answer = total(items) except error:
+            stdout.print("too big", error.value)
+            continue
+        stdout.print(answer)

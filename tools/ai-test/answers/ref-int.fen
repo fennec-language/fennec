@@ -1,0 +1,7 @@
+def add_to(ref total: int, amount: int):
+    total += amount
+
+def main(stdout: Stdout):
+    mut total = 5
+    add_to(ref total, 7)
+    stdout.print(total)

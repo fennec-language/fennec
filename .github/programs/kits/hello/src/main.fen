@@ -1,0 +1,5 @@
+# The release dry run's kit with a dependency, built and run on its own.
+from greeting import greet
+
+def main(stdout: Stdout):
+    stdout.print(greet("kit"))

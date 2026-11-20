@@ -5600,6 +5600,14 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
     }
     with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
+    // The daemon wrote its index once each build had answered, and before it went: a build without
+    // it uses the units the last one kept, compiling only the function edited since.
+    std::fs::write(kit.join("src/main.fen"), program(7)).unwrap();
+    let made = build(&home, false);
+    let said = text(&made.stdout);
+    let compiled =
+        said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next()?.parse::<usize>().ok());
+    assert!(compiled.is_some_and(|compiled| compiled <= 2), "{said}");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 

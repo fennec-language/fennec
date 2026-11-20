@@ -56,7 +56,10 @@ mod idmaps;
 mod index;
 mod json;
 mod kept;
-pub use kept::{KeptForNext, analyses_kept_and_checked, analyses_used_again, keep_analyses_between_builds};
+pub use kept::{
+    KeptForNext, analyses_kept_and_checked, analyses_used_again, keep_analyses_between_builds,
+    keeps_between_builds,
+};
 mod keys;
 mod kinds;
 mod lists;
@@ -83,8 +86,9 @@ use fennec_layout::{ListItem, Written, generator_definition};
 use fennec_rt::embed::dicts::Word;
 
 pub use build::{
-    Built, Object, STOPPED, Tools, USED_AGAIN_OBJECT_GONE, audited, compile, compile_again, compile_whole,
-    has_object, hold_objects, huge_functions, objects_known, output_switches, sanitize_flag,
+    Built, Holding, Object, STOPPED, Tools, USED_AGAIN_OBJECT_GONE, audited, compile, compile_again,
+    compile_whole, has_object, hold_objects, holding, huge_functions, objects_known, output_switches,
+    sanitize_flag,
 };
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use copies_made::{CopyMade, Why as CopyWhy, changed_in_place, copies_made};

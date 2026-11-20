@@ -734,11 +734,41 @@ pub fn objects_known(units: &[Unit]) {
 /// # Errors
 /// When `llc` can't be run to ask its version, or the list can't be written.
 pub fn hold_objects(cache: &Cache, tools: &Tools, name: &str, units: &[Unit]) -> Result<(), String> {
-    let (version, pipeline) = (tools.version()?, pipeline());
-    let objects: Vec<String> = units.iter().map(|unit| object_key(&version, &pipeline, &unit.hash)).collect();
-    cache
-        .hold(name, KIND, &objects)
+    holding(tools, units)?
+        .hold(cache, name)
         .map_err(|err| format!("couldn't keep the program's list of objects: {err}"))
+}
+
+/// The list of the objects `units` compile to, to keep later, as the daemon does once a build has
+/// answered: what names each is worked out then too (see [`Holding::hold`]).
+///
+/// # Errors
+/// When `llc` can't be run to ask its version.
+pub fn holding(tools: &Tools, units: &[Unit]) -> Result<Holding, String> {
+    Ok(Holding {
+        version: tools.version()?,
+        pipeline: pipeline(),
+        texts: units.iter().map(|unit| unit.hash).collect(),
+    })
+}
+
+/// The objects a program holds, as [`holding`] took them, to keep as its list.
+pub struct Holding {
+    version: String,
+    pipeline: String,
+    texts: Vec<fennec_blake3::Hash>,
+}
+
+impl Holding {
+    /// Keeps the list as what the program `name` holds (see [`hold_objects`]).
+    ///
+    /// # Errors
+    /// When the list can't be written.
+    pub fn hold(self, cache: &Cache, name: &str) -> std::io::Result<()> {
+        let objects: Vec<String> =
+            self.texts.iter().map(|text| object_key(&self.version, &self.pipeline, text)).collect();
+        cache.hold(name, KIND, &objects)
+    }
 }
 
 /// What names a function's compiled object in the cache: the hash of its module's text, with the

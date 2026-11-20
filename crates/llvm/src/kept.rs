@@ -73,7 +73,8 @@ pub fn keep_analyses_between_builds() {
 
 /// Whether this process keeps what a build works out for the next (see
 /// [`keep_analyses_between_builds`]).
-pub(crate) fn keeps_between_builds() -> bool {
+#[must_use]
+pub fn keeps_between_builds() -> bool {
     KEEPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 

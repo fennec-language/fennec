@@ -800,7 +800,10 @@ mod unix {
             stopping: false,
             noted: noted.clone(),
         }));
-        if listen(&listener, home, &state, &replaced) == Ended::Replaced {
+        let ended = listen(&listener, home, &state, &replaced);
+        // What builds left to write is written before it goes.
+        crate::aot::later::finish(Duration::from_secs(60));
+        if ended == Ended::Replaced {
             gone(&noted);
             return ExitCode::SUCCESS;
         }

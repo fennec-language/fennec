@@ -587,7 +587,8 @@ mod unix {
         };
         let mut ticks: u32 = 0;
         // Each build keeps what it loaded for the next.
-        *crate::aot::KEPT_LOAD.lock().unwrap_or_else(PoisonError::into_inner) = Some(fennec_kit::KeptLoad::default());
+        *crate::aot::KEPT_LOAD.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(fennec_kit::KeptLoad::default());
         let state = Arc::new(Mutex::new(State {
             home: home.to_path_buf(),
             snapshots: HashMap::new(),

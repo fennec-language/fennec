@@ -1367,3 +1367,47 @@ extend Table[T: Deserializable]:
             _ = table.add(item)
         src.saw_table(kind, len(items))
         return table
+
+## `Table`'s methods the engines provide. Each is declared here for its signature and its doc, and a
+## test holds it to the checker's own.
+extend Table[T]:
+    ## How many items it holds.
+    @intrinsic
+    def len(self) -> int
+
+    ## Adds `item` and gives back its `Id`, which stays its own while it's there.
+    @intrinsic
+    def add(ref self, item: T) -> Id[T]
+
+    ## Takes out the item `id` names and gives it back, or `None` when it's gone already.
+    @intrinsic
+    def remove(ref self, id: Id[T]) -> T?
+
+    ## The item `id` names, or `None` when it's been removed.
+    @intrinsic
+    def get(self, id: Id[T]) -> T?
+
+    ## Changes the item `id` names where it is, through `change`, and gives back whether it was
+    ## there to change.
+    @intrinsic
+    def modify(ref self, id: Id[T], change: (T) -> None) -> bool
+
+    ## Takes out every item `test` is true of.
+    @intrinsic
+    def remove_where(ref self, test: (T) -> bool)
+
+    ## The items, in the order of their slots.
+    @intrinsic
+    def values(self) -> list[T]
+
+    ## The `Id` of each item, in the same order.
+    @intrinsic
+    def ids(self) -> list[Id[T]]
+
+    ## Each item's `Id` and the item, in the same order.
+    @intrinsic
+    def items(self) -> list[(Id[T], T)]
+
+    ## Takes out every item.
+    @intrinsic
+    def clear(ref self)

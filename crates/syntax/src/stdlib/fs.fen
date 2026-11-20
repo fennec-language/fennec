@@ -15,7 +15,8 @@ export struct Metadata:
 ## methods written in Rust are `read_text(path)`, `write_text(path, text)`, `read_bytes`,
 ## `write_bytes`, `exists`, `list_dir`, `walk`, `make_dir`, `remove` and `metadata`. Each takes a
 ## `Path` or a `str` and fails with an `IoError`. Only `main` and tests are given one: it can't be
-## made.
+## made. `write_text` and `write_bytes` put the whole file in the path's place at once, on the
+## disk, as `create` does; `durable=False` skips the wait for the disk.
 ##
 ## ```fennec
 ## fs.make_dir("saves")?

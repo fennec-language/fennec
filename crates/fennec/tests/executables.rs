@@ -370,6 +370,14 @@ pub(crate) fn fennec_command() -> Command {
     command
 }
 
+/// Where a test's build daemons for Fennec's folder `home` note themselves (`FENNEC_DAEMONS`):
+/// apart from the user's, so they count against the cap only among the test's own, and may start
+/// though `home` is in the temp folder. A test that starts one stops it, and finds the folder
+/// empty after (`stops` in cli.rs).
+pub(crate) fn daemons_of(home: &Path) -> PathBuf {
+    home.join("noted-daemons")
+}
+
 /// Cargo, to build a runtime library from inside a test as it's built outside one. `cargo test`
 /// gives a test the variables it gives the package it builds, `CARGO_MANIFEST_DIR` among them, and
 /// a crate whose code reads one is built again whenever its value changes. Inherited, it had

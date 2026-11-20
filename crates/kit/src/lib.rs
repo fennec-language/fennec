@@ -11,7 +11,9 @@
 
 mod embed;
 mod init;
+mod kept;
 mod load;
+mod names;
 
 pub use load::PACK_LOCK;
 mod scope;
@@ -24,6 +26,7 @@ use fennec_syntax::{Blob, Diagnostic, Module, Sources};
 
 pub use fennec_deps::{Dependency, Manifest, Source, valid_name};
 pub use init::{GUIDANCE, Guidance, Initialized, init};
+pub use kept::{Compare, KeptLoad, Used, load_keeping};
 pub use starter::create;
 
 /// A program ready to check and run: every file merged into one module.
@@ -216,11 +219,12 @@ pub type Overlay = HashMap<PathBuf, String>;
 /// Like `load`, reading the files in `overlay` from it rather than from disk, and giving
 /// back what went wrong as diagnostics rather than rendered.
 pub fn load_with(path: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -> Result<Program, Problems> {
-    if path.is_dir() {
-        load::kit(path, shown_as, entry, overlay)
+    let loaded = if path.is_dir() {
+        load::kit(path, shown_as, entry, overlay, load::Keeping::default())
     } else {
-        load::file(path, shown_as, entry, overlay)
-    }
+        load::file(path, shown_as, entry, overlay, load::Keeping::default())
+    };
+    loaded.map(|(program, _)| program)
 }
 
 /// Whether `program`, loaded from `path` as `shown_as` with `Entry::Main`, holds every file of its

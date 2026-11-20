@@ -75,6 +75,20 @@ thread_local! {
     static LETTING_GO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// What came of the generators let go of then, for the interpreter to act on.
     static LET_GO: std::cell::RefCell<Option<LetGo>> = const { std::cell::RefCell::new(None) };
+    /// Which of `zip`'s two sides failed last, 0 or 1, for a loop to wrap the failure as that
+    /// side's `? from` says.
+    static FAILED_SIDE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Which of `zip`'s two sides failed since this was last asked, taking it.
+pub(crate) fn failed_side() -> Option<usize> {
+    FAILED_SIDE.with(std::cell::Cell::take)
+}
+
+/// Marks a failure as `zip`'s side `side`.
+fn failed_on(side: usize, flow: Flow) -> Flow {
+    FAILED_SIDE.with(|failed| failed.set(Some(side)));
+    flow
 }
 
 /// What came of letting go of a generator partway, where it ran its cleanup.
@@ -258,8 +272,12 @@ impl Source {
                 None => Ok(None),
             },
             Source::Paired(left, right) => {
-                let Some(first) = left.next(shared)? else { return Ok(None) };
-                let Some(second) = right.next(shared)? else { return Ok(None) };
+                let Some(first) = left.next(shared).map_err(|flow| failed_on(0, flow))? else {
+                    return Ok(None);
+                };
+                let Some(second) = right.next(shared).map_err(|flow| failed_on(1, flow))? else {
+                    return Ok(None);
+                };
                 Ok(Some(Value::Tuple(Held::new(vec![first, second]))))
             }
             Source::Of(stream) => {

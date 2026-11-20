@@ -374,6 +374,8 @@ mod tests {
     /// Kits built as the build daemon builds them, which only unix has.
     #[cfg(unix)]
     mod daemon {
+        use std::path::Path;
+
         use super::super::*;
 
         /// A kit of `files` in a folder of its own, named `name`.

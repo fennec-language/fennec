@@ -427,6 +427,34 @@ fn hovers_show_signatures_docs_and_what_names_hold() {
     assert_eq!(shown(&size), "```fennec\nSIZE = 10\n```\n\nThe arena's size.");
 }
 
+/// A method the engines give a built-in type, or one of std's types written in Rust, has no
+/// declaration, so a hover shows the signature the checker knows, with what can fail said as a
+/// signature says it, and a `Table`'s method is its own, not every type's of the same name.
+#[test]
+fn hovers_on_methods_written_in_rust_show_their_signatures() {
+    let mut editor = Editor::new("hovers-built-in").unwrap();
+    let text = "from std.collections import Table\n\nstruct Spot:\n    x = 0\n\nstruct Counter:\n    count = 0\n\n    def add(ref self, more: int):\n        self.count += more\n\ndef main(stdout: Stdout, fs: Fs):\n    parts = \"a,b\".split(\",\")\n    mut spots = Table[Spot]()\n    _ = spots.add(Spot())\n    saved = fs.read_text(\"notes.txt\") except why:\n        stdout.print(f\"couldn't read it: {why}\")\n        return\n    stdout.print(parts, saved)\n";
+    editor.open("src/main.fen", text);
+    let shown = |editor: &mut Editor, needle: &str| {
+        let hover = editor.at("textDocument/hover", "src/main.fen", text, needle, 1);
+        hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("nothing").to_owned()
+    };
+    assert_eq!(
+        shown(&mut editor, "split"),
+        "```fennec\ndef split(self, [str]) -> list[str]\n```\n\nbuilt into `str`"
+    );
+    assert_eq!(
+        shown(&mut editor, "read_text"),
+        "```fennec\ndef read_text(self, str) -> str fails IoError\n```\n\nbuilt into `Fs`"
+    );
+    assert_eq!(
+        shown(&mut editor, "print(parts"),
+        "```fennec\ndef print(self, ...)\n```\n\nbuilt into `Stdout`"
+    );
+    let add = shown(&mut editor, "add(Spot");
+    assert_eq!(add, "```fennec\ndef add(ref self, Spot) -> Id[Spot]\n```\n\nbuilt into `Table[Spot]`");
+}
+
 #[test]
 fn formatting_rewrites_the_whole_document() {
     let mut editor = Editor::new("formatting").unwrap();
@@ -719,10 +747,42 @@ fn completion_after_a_dot_offers_what_the_objects_type_has() {
     let typing = MAIN.replace("    damage = hit", "    shown = fighter.name.st\n    damage = hit");
     editor.change("src/main.fen", &typing);
     let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "name.st", 7));
-    for method in ["startswith", "upper", "split", "len"] {
+    for method in ["startswith", "upper", "split", "lower"] {
         assert!(offered.contains(&method.to_owned()), "text has {method}: {offered:?}");
     }
     assert!(!offered.contains(&"health".to_owned()), "{offered:?}");
+}
+
+/// Completion after a dot finds the object's type however the line it's on is written: at the
+/// start of a statement, inside code already written, in an `if` with no `:` yet, inside a call's
+/// open brackets, and after a module's name. `len` isn't a method, since `x.len()` is refused.
+#[test]
+fn completion_after_a_dot_works_however_the_line_is_written() {
+    let mut editor = Editor::new("complete-lines").unwrap();
+    let typed = |line: &str| {
+        MAIN.replace("    damage = hit(fighter, 3)", &format!("{line}\n    damage = hit(fighter, 3)"))
+    };
+    let fighter = ["name", "health", "describe"];
+    for (line, cursor) in [
+        ("    fighter.", "fighter.\n"),
+        ("    if fighter.", "fighter.\n"),
+        ("    stdout.print(fighter.", "fighter.\n"),
+        ("    shown = fighter.describe()", "fighter.describe()"),
+    ] {
+        let text = typed(line);
+        editor.change("src/main.fen", &text);
+        let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &text, cursor, 8));
+        assert_eq!(offered, fighter, "{line}");
+    }
+    let text = format!("from std import json\n\n{}", typed("    shown = json."));
+    editor.change("src/main.fen", &text);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &text, "json.\n", 5));
+    assert!(offered.contains(&"dumps".to_owned()) && offered.contains(&"loads".to_owned()), "{offered:?}");
+    let text = typed("    shown = fighter.name.");
+    editor.change("src/main.fen", &text);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &text, "name.\n", 5));
+    assert!(offered.contains(&"split".to_owned()), "{offered:?}");
+    assert!(!offered.contains(&"len".to_owned()), "`x.len()` is refused: {offered:?}");
 }
 
 #[test]

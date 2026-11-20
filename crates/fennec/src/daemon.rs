@@ -9,8 +9,9 @@
 //! to a daemon built from other source, even of the same version, which would answer with what an
 //! older compiler does.
 //!
-//! The daemon owns the cache in `~/.fennec/cache`: it keeps it under its cap (1 GiB, or
-//! `FENNEC_CACHE_CAP` bytes) when it starts and every five minutes after, while it's idle.
+//! The daemon owns the cache in `~/.fennec/cache`: it keeps it under its cap (20 GiB, or a tenth of
+//! the space free on its disk if that's less, or `FENNEC_CACHE_CAP` bytes) when it starts and
+//! every five minutes after, while it's idle.
 //!
 //! `fennec lsp` sends `lsp` and then keeps the connection open: the daemon serves the
 //! language server's session over it until the editor is done.

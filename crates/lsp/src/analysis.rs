@@ -31,6 +31,10 @@ pub(crate) struct Analysis {
     pub(crate) findings: Vec<Located>,
     /// What may copy or allocate, as the IR finds it, when the program checks.
     pub(crate) costs: Vec<fennec_ir::Finding>,
+    /// Whether `findings` and `costs` are still to be worked out, by `finish`, for a program with
+    /// no mistakes. They take longer than checking it, so a session the server runs publishes the
+    /// checker's diagnostics first and these after.
+    pub(crate) pending: bool,
     /// Whether this looked at only part of the program. See `edited_bodies`.
     pub(crate) partial: bool,
     /// Whether `checked` has been worked out for a partial analysis, which waits until a request
@@ -61,7 +65,11 @@ pub(crate) struct Clean {
 impl Clean {
     /// What an analysis says about a program, if it had no mistakes.
     pub(crate) fn of(program: &Path, analysis: &Analysis) -> Option<Clean> {
-        if analysis.partial || analysis.checked.is_none() || !analysis.diagnostics.is_empty() {
+        if analysis.partial
+            || analysis.pending
+            || analysis.checked.is_none()
+            || !analysis.diagnostics.is_empty()
+        {
             return None;
         }
         let module = analysis.module.as_ref()?;
@@ -149,12 +157,14 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
         checked: None,
         findings,
         costs: Vec::new(),
+        pending: false,
         partial: true,
         typed: false,
     })
 }
 
-/// Loads and checks a program, reading the files in `overlay` from it.
+/// Loads and checks a program, reading the files in `overlay` from it. What the linter finds and
+/// what may copy wait for `finish`.
 pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
     let shown = text::shown(program);
     match fennec_kit::load_with(program, &shown, Entry::Everything, overlay) {
@@ -166,6 +176,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             checked: None,
             findings: Vec::new(),
             costs: Vec::new(),
+            pending: false,
             partial: false,
             typed: true,
         },
@@ -178,21 +189,16 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
                     (diagnostics, None)
                 }
             };
-            let costs =
-                checked.as_ref().map(|checked| findings::costs(&loaded.module, checked)).unwrap_or_default();
-            let findings = if diagnostics.is_empty() {
-                findings::of_clean(&loaded.module, &loaded.sources, &costs, program.is_dir())
-            } else {
-                Vec::new()
-            };
+            let pending = checked.is_some() && diagnostics.is_empty();
             Analysis {
                 sources: loaded.sources,
                 diagnostics,
                 unplaced: Vec::new(),
                 module: Some(loaded.module),
                 checked,
-                findings,
-                costs,
+                findings: Vec::new(),
+                costs: Vec::new(),
+                pending,
                 partial: false,
                 typed: true,
             }
@@ -201,6 +207,19 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
 }
 
 impl Analysis {
+    /// Works out what the linter finds and what may copy or allocate, for a program with no
+    /// mistakes, as `fennec lint` shows them: the second half of `analyze`. A `kit` is held to
+    /// the kit lints too.
+    pub(crate) fn finish(&mut self, kit: bool) {
+        if !self.pending {
+            return;
+        }
+        self.pending = false;
+        let (Some(module), Some(checked)) = (&self.module, &self.checked) else { return };
+        self.costs = findings::costs(module, checked);
+        self.findings = findings::of_clean(module, &self.sources, &self.costs, kit);
+    }
+
     /// Works out the types of a partial analysis's files, the first time a request needs them.
     pub(crate) fn typed(&mut self) {
         if self.typed {

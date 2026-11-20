@@ -54,12 +54,65 @@ fn a_session_served_over_bytes_shuts_down_cleanly() {
         write(&mut input, &Json::parse(message).unwrap()).unwrap();
     }
     let mut output = Vec::new();
-    assert!(serve(&mut Cursor::new(input), &mut output).unwrap());
+    assert!(serve(Cursor::new(input), &mut output).unwrap());
     let mut answers = Cursor::new(output);
     let initialized = read(&mut answers).unwrap().unwrap();
     assert_eq!(initialized.at(&["result", "capabilities", "hoverProvider"]), Some(&Json::Bool(true)));
     assert_eq!(read(&mut answers).unwrap().unwrap().get("result"), Some(&Json::Null));
     assert_eq!(read(&mut answers).unwrap(), None);
+}
+
+/// Served, a session publishes a program's mistakes first, then again with what the linter finds
+/// and what may copy, and `fennec/settled` is answered only once that's published.
+#[test]
+fn a_served_session_publishes_lints_after_mistakes_and_before_it_says_it_has_settled() {
+    let dir =
+        fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-lsp-served-{}", std::process::id())));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = std::fs::canonicalize(&*dir).unwrap().join("main.fen");
+    let text = "def main(stdout: Stdout):\n    pass\n    stdout.print(1)\n";
+    std::fs::write(&path, text).unwrap();
+    let document = Json::object([
+        ("uri", Json::string(uri_of(&path))),
+        ("languageId", Json::string("fennec")),
+        ("version", Json::number(1)),
+        ("text", Json::string(text)),
+    ]);
+    let mut input = Vec::new();
+    for message in [
+        Json::object([
+            ("id", Json::number(1)),
+            ("method", Json::string("initialize")),
+            ("params", Json::object([])),
+        ]),
+        Json::object([
+            ("method", Json::string("textDocument/didOpen")),
+            ("params", Json::object([("textDocument", document)])),
+        ]),
+        Json::object([("id", Json::number(2)), ("method", Json::string("fennec/settled"))]),
+        Json::object([("id", Json::number(3)), ("method", Json::string("shutdown"))]),
+        Json::object([("method", Json::string("exit"))]),
+    ] {
+        write(&mut input, &message).unwrap();
+    }
+    let mut output = Vec::new();
+    assert!(serve(Cursor::new(input), &mut output).unwrap());
+    let mut answers = Cursor::new(output);
+    let mut said = Vec::new();
+    while let Some(answer) = read(&mut answers).unwrap() {
+        let codes: Vec<&str> = answer
+            .at(&["params", "diagnostics"])
+            .and_then(Json::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|diagnostic| diagnostic.get("code")?.as_str())
+            .collect();
+        said.push(match answer.get("id").and_then(Json::as_usize) {
+            Some(id) => format!("answer {id}"),
+            None => format!("published {codes:?}"),
+        });
+    }
+    assert_eq!(said, ["answer 1", "published []", "published [\"needless-pass\"]", "answer 2", "answer 3"]);
 }
 
 #[test]

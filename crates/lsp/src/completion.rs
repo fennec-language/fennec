@@ -144,6 +144,27 @@ enum Completing {
     Name,
 }
 
+/// The serialization hooks, `Serializable.serialize` and `Deserializable.deserialize`, which code
+/// the compiler writes calls by name and a program hardly ever does, so they'd only crowd what's
+/// offered after a dot, as on every `str`. They're offered once three letters or more of one are
+/// typed.
+const HOOKS: [&str; 2] = ["serialize", "deserialize"];
+
+/// What's offered at byte `offset` of `text`, without the serialization hooks after a dot until
+/// three letters or more of one are typed, and whether the editor should ask again as more is
+/// typed: only while what's typed could still become a hook's first three letters, so typing
+/// anything else doesn't ask again for each letter.
+pub(crate) fn without_hooks(items: Vec<Json>, text: &str, offset: usize) -> (Vec<Json>, bool) {
+    let Some((start, _, Completing::Member { .. })) = completing(text, offset) else { return (items, false) };
+    let typed = text.get(start..offset).unwrap_or("");
+    let shown = |label: &str| !HOOKS.contains(&label) || (typed.len() >= 3 && label.starts_with(typed));
+    let before = items.len();
+    let kept: Vec<Json> =
+        items.into_iter().filter(|item| item.get("label").and_then(Json::as_str).is_none_or(shown)).collect();
+    let more = kept.len() < before && HOOKS.iter().any(|hook| hook.starts_with(typed));
+    (kept, more)
+}
+
 /// The word being typed at `offset`, as where it starts and ends, and what it is. None in a
 /// comment.
 fn completing(text: &str, offset: usize) -> Option<(usize, usize, Completing)> {

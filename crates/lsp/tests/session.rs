@@ -78,17 +78,7 @@ impl Editor {
             ("method", Json::string(method)),
             ("params", params),
         ]);
-        self.session
-            .handle(&message)
-            .iter()
-            .map(|published| {
-                let uri = published.at(&["params", "uri"]).and_then(Json::as_str).unwrap_or("");
-                let name = uri.rsplit('/').next().unwrap_or(uri).to_owned();
-                let diagnostics =
-                    published.at(&["params", "diagnostics"]).and_then(Json::as_array).unwrap_or(&[]);
-                (name, diagnostics.to_vec())
-            })
-            .collect()
+        by_file(&self.session.handle(&message))
     }
 
     fn open(&mut self, file: &str, text: &str) -> Vec<(String, Vec<Json>)> {
@@ -118,6 +108,21 @@ impl Editor {
         ]);
         self.request(method, params)
     }
+}
+
+/// The diagnostics in what a session published, by file name.
+fn by_file(published: &[Json]) -> Vec<(String, Vec<Json>)> {
+    published
+        .iter()
+        .filter(|published| published.get("method") == Some(&Json::string("textDocument/publishDiagnostics")))
+        .map(|published| {
+            let uri = published.at(&["params", "uri"]).and_then(Json::as_str).unwrap_or("");
+            let name = uri.rsplit('/').next().unwrap_or(uri).to_owned();
+            let diagnostics =
+                published.at(&["params", "diagnostics"]).and_then(Json::as_array).unwrap_or(&[]);
+            (name, diagnostics.to_vec())
+        })
+        .collect()
 }
 
 impl Drop for Editor {
@@ -319,6 +324,46 @@ fn lints_and_copies_show_with_their_rules_and_fixes() {
     let edits =
         action.at(&["edit", "changes"]).and_then(|changes| changes.get(&editor.uri("src/main.fen"))).unwrap();
     assert_eq!(edits.as_array().unwrap()[0].get("newText"), Some(&Json::string("")));
+}
+
+/// The server's session publishes a program's mistakes as soon as the checker has found them, and
+/// what the linter finds and what may copy, which take longer, once it's done: a program with a
+/// mistake has nothing more to show. A code action, which may be a lint's fix, waits for them.
+#[test]
+fn a_staged_session_publishes_mistakes_first_then_lints_and_copies() {
+    let mut editor = Editor::new("staged").unwrap();
+    editor.session = Session::staged();
+    let text = "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
+                held = items\n    items.append(2)\n    stdout.print(len(held), len(items), one())\n";
+    let published = editor.open("src/main.fen", text);
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]), "no mistakes, and the rest to come");
+    assert!(editor.session.pending());
+    let finished = by_file(&editor.session.finish());
+    assert_eq!(codes(for_file(&finished, "main.fen").unwrap()), ["needless-pass", "copies"]);
+    assert!(!editor.session.pending());
+    assert!(editor.session.finish().is_empty(), "nothing is left to do");
+
+    let broken = text.replace("return 1", "return \"one\"");
+    let published = editor.change("src/main.fen", &broken);
+    assert_eq!(for_file(&published, "main.fen").map(<[Json]>::len), Some(1), "{published:?}");
+    assert!(!editor.session.pending(), "a program with a mistake has no lints to show");
+
+    editor.change("src/main.fen", text);
+    let saved = Json::object([("uri", Json::string(editor.uri("src/main.fen")))]);
+    editor.notify("textDocument/didSave", Json::object([("textDocument", saved)]));
+    assert!(editor.session.pending(), "a save checks all of the program again");
+    let params = Json::object([
+        ("textDocument", Json::object([("uri", Json::string(editor.uri("src/main.fen")))])),
+        ("range", Json::object([("start", position(text, "pass", 0)), ("end", position(text, "pass", 4))])),
+        ("context", Json::object([("diagnostics", Json::Array(Vec::new()))])),
+    ]);
+    let actions = editor.request("textDocument/codeAction", params);
+    let fix = actions.as_array().and_then(|actions| actions.first());
+    let edits =
+        fix.and_then(|fix| fix.at(&["edit", "changes"])?.get(&editor.uri("src/main.fen"))?.as_array());
+    let removed = edits.and_then(|edits| edits.first()?.get("newText"));
+    assert_eq!(removed, Some(&Json::string("")), "the lint's fix, which takes the `pass` out: {actions:?}");
+    assert!(!editor.session.pending());
 }
 
 #[test]
@@ -783,6 +828,35 @@ fn completion_after_a_dot_works_however_the_line_is_written() {
     let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &text, "name.\n", 5));
     assert!(offered.contains(&"split".to_owned()), "{offered:?}");
     assert!(!offered.contains(&"len".to_owned()), "`x.len()` is refused: {offered:?}");
+}
+
+/// `serialize` and `deserialize` are hooks the compiler's own code calls, so after a dot they wait
+/// until three letters of one are typed, and the editor is told to ask again until then.
+#[test]
+fn the_serialization_hooks_are_offered_once_three_letters_are_typed() {
+    let mut editor = Editor::new("complete-hooks").unwrap();
+    for (typed, hooks, more) in [
+        ("", false, true),
+        ("se", false, true),
+        ("ser", true, false),
+        ("de", false, true),
+        ("st", false, false),
+    ] {
+        let line = format!("    shown = fighter.name.{typed}");
+        let text =
+            MAIN.replace("    damage = hit(fighter, 3)", &format!("{line}\n    damage = hit(fighter, 3)"));
+        editor.change("src/main.fen", &text);
+        let cursor = format!("name.{typed}\n");
+        let completion =
+            editor.at("textDocument/completion", "src/main.fen", &text, &cursor, 5 + typed.len());
+        let offered = labels(&completion);
+        assert_eq!(offered.contains(&"serialize".to_owned()), hooks, "after `{typed}`: {offered:?}");
+        assert_eq!(completion.get("isIncomplete"), Some(&Json::Bool(more)), "after `{typed}`");
+        if typed.is_empty() {
+            assert!(offered.contains(&"split".to_owned()), "{offered:?}");
+            assert!(!offered.contains(&"deserialize".to_owned()), "{offered:?}");
+        }
+    }
 }
 
 #[test]

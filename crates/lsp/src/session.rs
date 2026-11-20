@@ -435,7 +435,8 @@ impl Session {
         });
         let items =
             quick.unwrap_or_else(|| completion::complete(&program, &file, &text, offset, self.overlay()));
-        Json::object([("isIncomplete", Json::Bool(false)), ("items", Json::Array(items))])
+        let (items, more) = completion::without_hooks(items, &text, offset);
+        Json::object([("isIncomplete", Json::Bool(more)), ("items", Json::Array(items))])
     }
 
     /// The signature of the call a position is in.

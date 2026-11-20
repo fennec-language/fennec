@@ -830,6 +830,35 @@ fn completion_after_a_dot_works_however_the_line_is_written() {
     assert!(!offered.contains(&"len".to_owned()), "`x.len()` is refused: {offered:?}");
 }
 
+/// `serialize` and `deserialize` are hooks the compiler's own code calls, so after a dot they wait
+/// until three letters of one are typed, and the editor is told to ask again until then.
+#[test]
+fn the_serialization_hooks_are_offered_once_three_letters_are_typed() {
+    let mut editor = Editor::new("complete-hooks").unwrap();
+    for (typed, hooks, more) in [
+        ("", false, true),
+        ("se", false, true),
+        ("ser", true, false),
+        ("de", false, true),
+        ("st", false, false),
+    ] {
+        let line = format!("    shown = fighter.name.{typed}");
+        let text =
+            MAIN.replace("    damage = hit(fighter, 3)", &format!("{line}\n    damage = hit(fighter, 3)"));
+        editor.change("src/main.fen", &text);
+        let cursor = format!("name.{typed}\n");
+        let completion =
+            editor.at("textDocument/completion", "src/main.fen", &text, &cursor, 5 + typed.len());
+        let offered = labels(&completion);
+        assert_eq!(offered.contains(&"serialize".to_owned()), hooks, "after `{typed}`: {offered:?}");
+        assert_eq!(completion.get("isIncomplete"), Some(&Json::Bool(more)), "after `{typed}`");
+        if typed.is_empty() {
+            assert!(offered.contains(&"split".to_owned()), "{offered:?}");
+            assert!(!offered.contains(&"deserialize".to_owned()), "{offered:?}");
+        }
+    }
+}
+
 #[test]
 fn completion_of_a_name_offers_whats_in_scope_first() {
     let mut editor = Editor::new("complete-names").unwrap();

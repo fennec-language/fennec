@@ -52,6 +52,12 @@ check "the slice says each count, a timeout apart from caught" yes "$(said "10 m
 check "it lists what was missed by file" yes "$(said "- \`crates/ir/src/lower.rs\`: 2")"
 check "it doesn't say most timed out" no "$(said "Most of those that built timed out")"
 
+# A slice of 15, of which the time allowed 10.
+echo '[{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]' > "$work/mixed/mutants.json"
+ranked mixed
+check "a slice says how many of its mutants were tried" yes "$(said "10 of 15 mutants tried: 3 caught, 2 missed, 1 timed out, 4 didn't build.")"
+check "and how many its time didn't reach" yes "$(said "5 weren't tried before the slice's time ran out.")"
+
 lists hung caught=1 missed=1 timeout=3 unviable=5
 check "a run where most that built timed out fails" 1 "$(verdict hung)"
 check "it says why" yes "$(said "3 of the 5 mutants that built timed out")"

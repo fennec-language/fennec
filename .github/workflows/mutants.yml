@@ -3,8 +3,8 @@ name: Mutation tests
 # cargo-mutants changes the code in small ways (flipping a comparison, returning a default,
 # deleting a statement) and checks that some test fails each time. A change no test notices
 # is a gap in the tests. Pull requests check only the code they change. Every night, and on demand,
-# a sixtieth of each of the checker, the IR, the LLVM backend and the runtime is mutated, a
-# different sixtieth each night, so all of them are in two months: what no test caught is ranked
+# a slice of each of the checker, the IR, the LLVM backend and the runtime is mutated, a different
+# slice each night, so each crate is all done in 100 to 220 nights: what no test caught is ranked
 # by file on the run's summary page and in the morning's nightly report. Survivors are reported,
 # never failed on. A mutant runs its own crate's tests and a small set that runs programs end to end
 # (`.github/scripts/mutants-tests.sh`), under nextest, which stops at the first failure.
@@ -60,15 +60,20 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: git diff "$BASE" -- crates > changes.diff
+      - name: Run the tests a mutant runs, unmutated, for its limit
+        id: baseline
+        run: echo "limit=$(.github/scripts/mutants-baseline.sh --diff changes.diff)" >> "$GITHUB_OUTPUT"
       - name: Mutate
+        env:
+          LIMIT: ${{ steps.baseline.outputs.limit }}
         run: |
-          # The changed packages' own tests and the end-to-end set. A mutant's limit is five times
-          # what the baseline's tests take. The run is held to 12 GB, as the nightly's is, so a
+          # The changed packages' own tests and the end-to-end set, each mutant's limited to five
+          # times what they took unmutated. The run is held to 12 GB, as the nightly's is, so a
           # mutant's runaway can't take the runner down.
           { read -r packages; read -r filter; } < <(.github/scripts/mutants-tests.sh --diff changes.diff)
           status=0
           .github/scripts/memory-held.sh 12G \
-            cargo mutants --in-diff changes.diff --no-shuffle --jobs 2 \
+            cargo mutants --in-diff changes.diff --no-shuffle --jobs 2 --baseline=skip --timeout "$LIMIT" \
             --test-package "$packages" --cargo-test-arg=-E --cargo-test-arg="$filter" || status=$?
           # A timeout is neither caught nor missed, and a run where most timed out checked next to
           # nothing, so it fails.
@@ -92,14 +97,22 @@ jobs:
     name: Mutate tonight's slice of ${{ matrix.crate }}
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    # Three hours of mutating, then the report.
+    # The tests unmutated, under three hours of mutating, then the report.
     timeout-minutes: 210
     strategy:
       fail-fast: false
       # One runner a crate, at night, when few pull requests wait for one.
       max-parallel: 4
+      # Each crate in as many slices as finish in about two and a half hours a night. On
+      # 2026-11-20 a runner tried, an hour, 15 of fennec-check's mutants, 9 of fennec-ir's and 28
+      # of fennec-llvm's. fennec-rt's were cut short that night by a limit that was too short, so
+      # it's sliced as fennec-check is, until a night says otherwise.
       matrix:
-        crate: [fennec-check, fennec-ir, fennec-llvm, fennec-rt]
+        include:
+          - { crate: fennec-check, slices: 200 }
+          - { crate: fennec-ir, slices: 220 }
+          - { crate: fennec-llvm, slices: 100 }
+          - { crate: fennec-rt, slices: 200 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,20 +121,30 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.151
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # Each crate has thousands of mutants, and each builds and runs its tests in a few minutes,
-      # so a night takes a sixtieth of each: the day's number since 1970, modulo 60.
+      # Each crate has thousands of mutants, and each takes minutes to build and test, so a night
+      # takes one slice of each: the day's number since 1970, modulo the crate's slices.
       - name: Pick tonight's slice
         id: slice
-        run: echo "index=$(( $(date -u +%s) / 86400 % 60 ))" >> "$GITHUB_OUTPUT"
+        env:
+          SLICES: ${{ matrix.slices }}
+        run: echo "index=$(( $(date -u +%s) / 86400 % SLICES ))" >> "$GITHUB_OUTPUT"
+      - name: Run the tests a mutant runs, unmutated, for its limit
+        id: baseline
+        env:
+          CRATE: ${{ matrix.crate }}
+        run: echo "limit=$(.github/scripts/mutants-baseline.sh "$CRATE")" >> "$GITHUB_OUTPUT"
       - name: Mutate it, for three hours at most
         env:
           CRATE: ${{ matrix.crate }}
           INDEX: ${{ steps.slice.outputs.index }}
+          SLICES: ${{ matrix.slices }}
+          LIMIT: ${{ steps.baseline.outputs.limit }}
         run: |
-          # A slice still going at three hours is stopped as Ctrl-C stops it, keeping what it found:
-          # cargo-mutants writes each outcome as it comes. What the tests missed is reported, not
-          # failed on. A mutant runs the crate's own tests and the end-to-end set, and its limit is
-          # five times what the baseline's take. A timeout is neither caught nor missed.
+          # A slice still going at 165 minutes is told to stop, as Ctrl-C does, and has 15 more to
+          # finish the mutants it's testing: cargo-mutants writes each outcome as it comes, so what
+          # it found is kept either way. What the tests missed is reported, not failed on. A mutant
+          # runs the crate's own tests and the end-to-end set, limited to five times what they took
+          # unmutated. A timeout is neither caught nor missed.
           #
           # A mutant can make a program a test runs allocate without end. Watched on 2026-11-20,
           # one grew to 14 GB, all a runner has, in 9 to 26 seconds, six times in one slice of
@@ -130,19 +153,21 @@ jobs:
           # kernel stops the runaway, which fails its test as a mutant should, and the runner lives.
           { read -r packages; read -r filter; } < <(.github/scripts/mutants-tests.sh "$CRATE")
           status=0
-          .github/scripts/memory-held.sh 12G timeout --signal=INT --kill-after=120 10800 \
-            cargo mutants --package "$CRATE" --shard "$INDEX/60" --jobs 2 \
+          .github/scripts/memory-held.sh 12G timeout --signal=INT --kill-after=900 9900 \
+            cargo mutants --package "$CRATE" --shard "$INDEX/$SLICES" --jobs 2 --baseline=skip --timeout "$LIMIT" \
             --test-package "$packages" --cargo-test-arg=-E --cargo-test-arg="$filter" || status=$?
-          # 0: every mutant caught. 2: some missed. 3: some timed out. 124: three hours ran out.
-          # Anything else, as 4 for a baseline that failed, means the slice wasn't tested.
-          case "$status" in 0 | 2 | 3 | 124) ;; *) echo "error: cargo-mutants exited $status" >&2; exit "$status" ;; esac
+          # 0: every mutant caught. 2: some missed. 3: some timed out. 124: it was told to stop at
+          # 165 minutes, and 137: it was stopped 15 minutes after. Anything else means the slice
+          # wasn't tested.
+          case "$status" in 0 | 2 | 3 | 124 | 137) ;; *) echo "error: cargo-mutants exited $status" >&2; exit "$status" ;; esac
       - name: Rank what no test caught
         if: always()
         env:
           CRATE: ${{ matrix.crate }}
           INDEX: ${{ steps.slice.outputs.index }}
+          SLICES: ${{ matrix.slices }}
         run: |
-          .github/scripts/mutants-ranked.sh mutants.out "$CRATE" "$INDEX/60" > ranked.md
+          .github/scripts/mutants-ranked.sh mutants.out "$CRATE" "$INDEX/$SLICES" > ranked.md
           cat ranked.md >> "$GITHUB_STEP_SUMMARY"
       # A slice where most mutants that built timed out checked next to nothing, so the night fails.
       - name: Fail if most timed out

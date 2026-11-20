@@ -25,7 +25,16 @@ timeout=$(count timeout)
 unviable=$(count unviable)
 echo "## $crate, slice $slice"
 echo
-echo "$((missed + caught + timeout + unviable)) mutants tried: $caught caught, $missed missed, $timeout timed out, $unviable didn't build."
+tried=$((missed + caught + timeout + unviable))
+# How many the slice has, which cargo-mutants lists before it starts.
+found=$(jq length "$out/mutants.json" 2> /dev/null) || found=""
+said=$tried
+[ -z "$found" ] || said="$tried of $found"
+echo "$said mutants tried: $caught caught, $missed missed, $timeout timed out, $unviable didn't build."
+if [ -n "$found" ] && [ "$tried" -lt "$found" ]; then
+  echo
+  echo "**$((found - tried)) weren't tried before the slice's time ran out.**"
+fi
 # A timeout is neither: the tests ran past the limit before saying either way.
 if [ $((2 * timeout)) -gt $((caught + missed + timeout)) ]; then
   echo

@@ -68,7 +68,7 @@ impl Interp {
         self.parts_read += 1;
         let name = format!("\0part{}", self.parts_read);
         self.bind(&name, part)?;
-        let held = Place { frame: self.cur, name, path: Vec::new() };
+        let held = Place { frame: self.cur, name, path: Vec::new(), lent: 0 };
         self.write_backs.push(WriteBack { owner: place, ty, key: at, part: held.clone() });
         Ok(Some(held))
     }

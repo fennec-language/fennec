@@ -22,6 +22,7 @@ use super::ast::{InOrder, OrderStep};
 use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{RuleStep, RuleWay, Ruling};
 use super::ast::{Sticking, StuckWay};
 
 /// What every program starts with, for its body to use.
@@ -2638,6 +2639,111 @@ fn locked_together_written(locking: &LockingTogether) -> String {
     out
 }
 
+/// The struct and functions a `Ruled` statement uses, `{N}` standing for its id.
+const RULE_TYPES: &str = "struct Gauge{N}:
+    level: int where level >= 0
+    tags = list[str]() where len(tags) <= 3
+    name = \"g\" where len(name) > 0
+    counts = [1, 2] where sum(counts) < 20
+
+    def drained(ref self, by: int):
+        self.level -= by
+
+def picked{N}(n: int) -> int:
+    return n
+
+def lowered{N}(ref level: int, by: int):
+    level -= by
+
+def dipped{N}(ref level: int, by: int):
+    level -= by
+    level += by
+
+def shrunk{N}(ref gauge: Gauge{N}, by: int):
+    gauge.level -= by
+
+def tagged{N}(ref tags: list[str], tag: str):
+    tags.append(tag)
+
+def flooded{N}(ref tags: list[str], stdout: Stdout):
+    tags.extend([\"a\", \"b\", \"c\", \"d\"])
+    stdout.print(\"flooded\", len(tags))
+
+def made{N}(n: int, stdout: Stdout):
+    got = Gauge{N}(level=picked{N}(n)) except why:
+        stdout.print(\"refused\", why)
+        return
+    stdout.print(\"made\", got)
+
+";
+
+/// `ruled{id}`, the function a `Ruled` calls, after its struct and functions: a gauge, two in a
+/// list and one in a dict, then a line for each step, then what each holds.
+fn ruled_written(ruling: &Ruling) -> String {
+    let id = ruling.id;
+    let mut out = RULE_TYPES.replace("{N}", &id.to_string());
+    let _ = write!(
+        out,
+        "def ruled{id}(stdout: Stdout):\n    mut gauge = Gauge{id}(level=5)\n    mut gauges = [Gauge{id}(level=3), \
+         Gauge{id}(level=8)]\n    mut by_name = {{\"k\": Gauge{id}(level=4)}}\n"
+    );
+    for (n, step) in ruling.steps.iter().enumerate() {
+        let RuleStep { way, value: v, breaks } = *step;
+        let at = v % 2;
+        // What's taken from a level: no more than it holds, or one more when it breaks.
+        let amount = |level: &str| {
+            if breaks {
+                format!("amount{n} = {level} + {}", v + 1)
+            } else {
+                format!("amount{n} = min({level}, {v})")
+            }
+        };
+        let picked = if breaks { -(v + 1) } else { v };
+        let line = match way {
+            RuleWay::Set => format!("gauge.level = picked{id}({picked})"),
+            RuleWay::Raised => format!("gauge.level += {v}"),
+            RuleWay::Taken => format!("{}\n    gauge.level -= amount{n}", amount("gauge.level")),
+            RuleWay::Lowered => format!("{}\n    lowered{id}(ref gauge.level, by=amount{n})", amount("gauge.level")),
+            RuleWay::Dipped => {
+                format!("amount{n} = gauge.level + {}\n    dipped{id}(ref gauge.level, by=amount{n})", v + 1)
+            }
+            RuleWay::Drained => format!("{}\n    gauge.drained(amount{n})", amount("gauge.level")),
+            RuleWay::Shrunk => format!("{}\n    shrunk{id}(ref gauge, by=amount{n})", amount("gauge.level")),
+            RuleWay::InList => {
+                format!("{}\n    gauges[{at}].level -= amount{n}", amount(&format!("gauges[{at}].level")))
+            }
+            RuleWay::ForRef if breaks => {
+                format!("for ref each in gauges:\n        each.level -= each.level + {}", v + 1)
+            }
+            RuleWay::ForRef => format!("for ref each in gauges:\n        each.level += {v}"),
+            RuleWay::Counted if breaks => {
+                "for ref each in gauge.counts:\n        each += 20\n        stdout.print(\"counted\", each)".to_owned()
+            }
+            RuleWay::Counted => {
+                "for ref each in gauge.counts:\n        each += 50\n        each -= 50\n        stdout.print(\"counted\", \
+                 each)"
+                    .to_owned()
+            }
+            RuleWay::Tagged if breaks => "gauge.tags.extend([\"a\", \"b\", \"c\", \"d\"])".to_owned(),
+            RuleWay::Tagged => format!("if len(gauge.tags) < 3:\n        gauge.tags.append(\"t{v}\")"),
+            RuleWay::TaggedByRef if breaks => format!("flooded{id}(ref gauge.tags, stdout)"),
+            RuleWay::TaggedByRef => {
+                format!("if len(gauge.tags) < 3:\n        tagged{id}(ref gauge.tags, tag=\"r{v}\")")
+            }
+            RuleWay::Named if breaks => "gauge.name = gauge.name[0:0]".to_owned(),
+            RuleWay::Named => format!("gauge.name = \"n{v}\""),
+            RuleWay::Copied => format!("stdout.print(copy(gauge, level=picked{id}({picked})))"),
+            RuleWay::Made => format!("made{id}({picked}, stdout)"),
+            RuleWay::InDict => {
+                format!("{}\n    by_name[\"k\"].level -= amount{n}", amount("by_name[\"k\"].level"))
+            }
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push_str("    stdout.print(gauge)\n    stdout.print(gauges)\n    stdout.print(by_name)\n\n");
+    out
+}
+
 /// The types and functions an `Arrayed` statement uses, `{N}` standing for its id.
 const ARRAY_TYPES: &str = "struct Cell{N}:
     health = 0
@@ -3627,6 +3733,10 @@ impl Writer {
             Stmt::Generated(generating) => {
                 let _ = write!(self.helpers, "{}", generated_written(generating));
                 self.line(indent, &format!("generated{}(stdout)", generating.id));
+            }
+            Stmt::Ruled(ruling) => {
+                let _ = write!(self.helpers, "{}", ruled_written(ruling));
+                self.line(indent, &format!("ruled{}(stdout)", ruling.id));
             }
             Stmt::Ordered(in_order) => {
                 let _ = write!(self.helpers, "{}", ordered_written(in_order));

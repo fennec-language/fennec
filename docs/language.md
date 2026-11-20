@@ -118,6 +118,26 @@ uppercased = [copy(person, name=person.name.upper()) for person in people]
 
 `copy(x, field=...)` makes a changed copy and re-runs `where` rules. Built: `replace` was its old name, and `fennec fix` moves it to `copy`. A plain `=` covers everything else, and the compiler skips the real copy when nobody can tell. A plain parameter can't change, so passing something huge costs nothing.
 
+## Where rules
+
+```fennec
+struct Stats:
+    level: int where level >= 1
+
+def lowered(ref level: int, by: int):
+    # A plain int here: Stats's rule runs when it's given back.
+    level -= by
+
+def drained(ref stats: Stats, by: int):
+    # A Stats: its rule runs on this write.
+    stats.level -= by
+
+# Stops here, as the call ends, if `level` is left below 1.
+lowered(ref stats.level, by=5)
+```
+
+A `where` rule belongs to its struct, and runs on every write to its field through the struct: setting the field, `+=`, a method that changes it, `copy`, and making a value. A field lent alone by `ref`, to a call or to a `for ref` loop's turn, is a plain value to whoever has it, so the rule runs when it comes back, at the end of the call or of the turn. A value that breaks the rule in between and is put right before then is fine, and one left broken stops the program there. A whole struct lent by `ref` is still a struct, and its rules run on each write, as anywhere. Built.
+
 ## Sized numbers
 
 Built: all ten run natively, apart from the few gaps the list below names.

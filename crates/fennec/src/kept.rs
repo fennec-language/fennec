@@ -19,7 +19,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 use fennec_check::{Edit, KeptCheck, Signatures};
-use fennec_syntax::{Diagnostic, Module, Sources, Span};
+use fennec_syntax::{Diagnostic, Module, Sources};
 
 /// How much the kept checks of every kit may come to, by estimate. Past it, the kit built longest ago
 /// goes first: its next build checks all of it.
@@ -29,9 +29,6 @@ const BUDGET: usize = 4 << 30;
 /// 7.4 MB of source at 200,000 lines and 72 MB for 0.8 MB at 20,000, with the parsed standard
 /// library held in both, so this is on the high side.
 const BYTES_PER_SOURCE_BYTE: usize = 100;
-
-/// How far apart files start while there's room for slots (`Sources::add`).
-const SLOT: u32 = 1 << 18;
 
 /// The checks kept, once the daemon keeps them.
 static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
@@ -54,7 +51,8 @@ struct Kept {
 /// One kit's kept check.
 struct Kit {
     check: KeptCheck,
-    files: Vec<File>,
+    /// The files the check was found in, as it parsed them.
+    sources: Sources,
     /// What it's estimated to hold, in bytes.
     size: usize,
     built: Instant,
@@ -77,14 +75,6 @@ struct Kit {
         expect(dead_code, reason = "only the build daemon, which is unix's alone, reads it")
     )]
     stored_as: Option<String>,
-}
-
-/// A file a kept check was found in: its path, the span its text covers, and its text.
-#[derive(Clone, Debug, PartialEq)]
-struct File {
-    path: String,
-    span: Span,
-    text: String,
 }
 
 /// From now on this process keeps each kit's check for its build after an edit: the build daemon.
@@ -143,7 +133,6 @@ fn checked_keeping(
     let Some(kit) = keeping.then(|| kit_of(sources)).flatten() else {
         return fennec_check::check_to_build_saying(module);
     };
-    let files = files_of(sources);
     let (before, notice) = KEPT
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -153,39 +142,44 @@ fn checked_keeping(
     if let Some(notice) = notice {
         eprintln!("{notice}");
     }
-    let mut edited = Vec::new();
-    let found = match before {
-        Some(Kit { check, files: was, .. }) if same_layout(&was, &files) => {
-            edited = was
-                .iter()
-                .zip(&files)
-                .filter(|(was, is)| was.text != is.text)
-                .map(|(_, is)| is.path.clone())
-                .collect();
-            let edit = Edit { dirty: dirty(&was, &files), files: slots(&was, &files) };
-            fennec_check::check_to_build_keeping(module, (Some(check), Some(&edit)), compare)
+    // The files the kit's last check was found in, against these: what the edit changed, when
+    // they're the same files, each where it was.
+    let carried = before.and_then(|Kit { check, sources: was, .. }| {
+        let edit = Edit::between(&was, sources)?;
+        let edited: Vec<String> = was
+            .files()
+            .zip(sources.files())
+            .filter(|((_, was), (_, is))| was != is)
+            .map(|(_, (path, _))| path.to_owned())
+            .collect();
+        Some((check, edit, edited))
+    });
+    let (found, edited) = match carried {
+        Some((check, edit, edited)) => {
+            (fennec_check::check_to_build_keeping(module, (Some(check), Some(&edit)), compare), edited)
         }
-        _ => fennec_check::check_to_build_keeping(module, (None, None), compare),
+        None => (fennec_check::check_to_build_keeping(module, (None, None), compare), Vec::new()),
     };
     let (signatures, as_left, check) = found?;
-    keep(kit, check, files, edited);
+    keep(kit, check, sources.clone(), edited);
     Ok((signatures, as_left))
 }
 
-/// Keeps `check` for `kit`, found in `files` after an edit to `edited`, letting go of the kits built
-/// longest ago while the kept checks come to more than the budget: this one too, if it's past it by
-/// itself. One that carried anything over is checked all again later (`verify_pending`).
-fn keep(kit: PathBuf, mut check: KeptCheck, files: Vec<File>, edited: Vec<String>) {
+/// Keeps `check` for `kit`, found in `sources` after an edit to `edited`, letting go of the kits
+/// built longest ago while the kept checks come to more than the budget: this one too, if it's past
+/// it by itself. One that carried anything over is checked all again later (`verify_pending`).
+fn keep(kit: PathBuf, mut check: KeptCheck, sources: Sources, edited: Vec<String>) {
     let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
     let Some(kept) = kept.as_mut() else { return };
     kept.last_carried = Some(check.carried_over());
     kept.generations += 1;
-    let size = files.iter().map(|file| file.text.len()).sum::<usize>().saturating_mul(BYTES_PER_SOURCE_BYTE);
+    let bytes: usize = sources.files().map(|(_, text)| text.len()).sum();
+    let size = bytes.saturating_mul(BYTES_PER_SOURCE_BYTE);
     let pending = check.take_module().map(|module| (module, edited));
     let generation = kept.generations;
     let stored_as = STORED_AS.lock().unwrap_or_else(PoisonError::into_inner).take();
     let built = Instant::now();
-    kept.kits.insert(kit, Kit { check, files, size, built, generation, pending, stored_as });
+    kept.kits.insert(kit, Kit { check, sources, size, built, generation, pending, stored_as });
     within_budget(&mut kept.kits, BUDGET);
 }
 
@@ -305,15 +299,6 @@ fn kit_of(sources: &Sources) -> Option<PathBuf> {
     std::fs::canonicalize(here.join(first)).ok()
 }
 
-/// Each file of a program, as a kept check keeps it: the texts the check parsed.
-fn files_of(sources: &Sources) -> Vec<File> {
-    sources
-        .files()
-        .zip(sources.spans())
-        .map(|((path, text), span)| File { path: path.to_owned(), span, text: text.to_owned() })
-        .collect()
-}
-
 /// A hash of every file's text, which picks the dev builds that compare.
 fn inputs_hash(sources: &Sources) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
@@ -325,93 +310,9 @@ fn inputs_hash(sources: &Sources) -> u64 {
     hasher.finish()
 }
 
-/// Whether a program has the files a kept check was found in, by path, in the same order, each
-/// starting where it did: then an edit to one moved no other's spans.
-fn same_layout(before: &[File], now: &[File]) -> bool {
-    before.len() == now.len()
-        && before.iter().zip(now).all(|(was, is)| was.path == is.path && was.span.start == is.span.start)
-}
-
-/// The span each file's slots cover, the same before an edit and after: to where the next file
-/// starts, or for the last, past the longer of its texts to the slot's end.
-fn slots(before: &[File], now: &[File]) -> Vec<Span> {
-    before
-        .iter()
-        .zip(now)
-        .enumerate()
-        .map(|(at, (was, is))| {
-            let end = before.get(at + 1).map_or_else(
-                || {
-                    was.span
-                        .end
-                        .max(is.span.end)
-                        .saturating_add(1)
-                        .checked_next_multiple_of(SLOT)
-                        .unwrap_or(u32::MAX)
-                },
-                |next| next.span.start,
-            );
-            Span { start: was.span.start, end }
-        })
-        .collect()
-}
-
-/// The text of the files a kept check was found in that an edit changed or moved, in their spans:
-/// in each changed file, from the first byte that differs to the last, when its length is the same,
-/// or else to the end of its slots.
-fn dirty(before: &[File], now: &[File]) -> Vec<Span> {
-    let slots = slots(before, now);
-    before
-        .iter()
-        .zip(now)
-        .zip(slots)
-        .filter(|((was, is), _)| was.text != is.text)
-        .map(|((was, is), slot)| {
-            let (was_text, is_text) = (was.text.as_bytes(), is.text.as_bytes());
-            let prefix = was_text.iter().zip(is_text).take_while(|(a, b)| a == b).count();
-            let room = was_text.len().min(is_text.len()) - prefix;
-            let suffix =
-                was_text.iter().rev().zip(is_text.iter().rev()).take_while(|(a, b)| a == b).count().min(room);
-            let offset = |at: usize| was.span.start.saturating_add(u32::try_from(at).unwrap_or(u32::MAX));
-            let end =
-                if was_text.len() == is_text.len() { offset(was_text.len() - suffix) } else { slot.end };
-            Span { start: offset(prefix), end }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn file(path: &str, start: u32, text: &str) -> File {
-        let end = start + u32::try_from(text.len()).unwrap_or(u32::MAX);
-        File { path: path.to_owned(), span: Span { start, end }, text: text.to_owned() }
-    }
-
-    /// An edit of the same length is its changed bytes alone; one that changes the length runs to
-    /// the end of the file's slots: where the next file starts. An unchanged file has none.
-    #[test]
-    fn an_edits_text_is_its_changed_bytes_or_to_the_end_of_its_slots() {
-        let before = [file("a.fen", 0, "def f():\n    pass\n"), file("b.fen", SLOT, "x = 1\n")];
-        let same_length = [file("a.fen", 0, "def g():\n    pass\n"), file("b.fen", SLOT, "x = 1\n")];
-        assert_eq!(dirty(&before, &same_length), [Span { start: 4, end: 5 }]);
-        let longer = [file("a.fen", 0, "def f():\n    return\n"), file("b.fen", SLOT, "x = 1\n")];
-        assert_eq!(dirty(&before, &longer), [Span { start: 13, end: SLOT }]);
-        assert_eq!(dirty(&before, &before), Vec::<Span>::new());
-        let last_longer = [file("a.fen", 0, "def f():\n    pass\n"), file("b.fen", SLOT, "x = 12\n")];
-        assert_eq!(dirty(&before, &last_longer), [Span { start: SLOT + 5, end: 2 * SLOT }]);
-    }
-
-    /// Files moved, added or taken away mean nothing kept is used.
-    #[test]
-    fn a_program_with_other_files_or_moved_ones_has_another_layout() {
-        let before = [file("a.fen", 0, "x = 1\n"), file("b.fen", SLOT, "y = 2\n")];
-        assert!(same_layout(&before, &before));
-        assert!(!same_layout(&before, &before[..1]));
-        assert!(!same_layout(&before, &[file("a.fen", 0, "x = 1\n"), file("b.fen", 2 * SLOT, "y = 2\n")]));
-        assert!(!same_layout(&before, &[file("a.fen", 0, "x = 1\n"), file("c.fen", SLOT, "y = 2\n")]));
-    }
 
     /// Kits built as the build daemon builds them, which only unix has.
     #[cfg(unix)]

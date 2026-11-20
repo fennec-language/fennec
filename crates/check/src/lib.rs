@@ -744,6 +744,85 @@ pub struct Edit {
     pub files: Vec<Span>,
 }
 
+/// How far apart files start while there's room for slots, as `Sources::add` lays them out.
+const SLOT: u32 = 1 << 18;
+
+impl Edit {
+    /// What changed from `before` to `now`, two loads of one program, one after the other. None
+    /// when they aren't the same files, by path, in the same order, each starting where it did:
+    /// then an edit moved one file's spans by changing another's length, and nothing kept is
+    /// carried over.
+    #[must_use]
+    pub fn between(before: &fennec_syntax::Sources, now: &fennec_syntax::Sources) -> Option<Edit> {
+        let (before, now) = (laid_out(before), laid_out(now));
+        let same = before.len() == now.len()
+            && before
+                .iter()
+                .zip(&now)
+                .all(|(was, is)| was.path == is.path && was.span.start == is.span.start);
+        same.then(|| Edit { dirty: dirty(&before, &now), files: slots(&before, &now) })
+    }
+}
+
+/// A file of a program: its path, the span its text covers, and its text.
+struct LaidOut<'s> {
+    path: &'s str,
+    span: Span,
+    text: &'s str,
+}
+
+fn laid_out(sources: &fennec_syntax::Sources) -> Vec<LaidOut<'_>> {
+    sources.files().zip(sources.spans()).map(|((path, text), span)| LaidOut { path, span, text }).collect()
+}
+
+/// The span each file's slots cover, the same before an edit and after: to where the next file
+/// starts, or for the last, past the longer of its texts to the slot's end.
+fn slots(before: &[LaidOut<'_>], now: &[LaidOut<'_>]) -> Vec<Span> {
+    before
+        .iter()
+        .zip(now)
+        .enumerate()
+        .map(|(at, (was, is))| {
+            let end = before.get(at + 1).map_or_else(
+                || {
+                    was.span
+                        .end
+                        .max(is.span.end)
+                        .saturating_add(1)
+                        .checked_next_multiple_of(SLOT)
+                        .unwrap_or(u32::MAX)
+                },
+                |next| next.span.start,
+            );
+            Span { start: was.span.start, end }
+        })
+        .collect()
+}
+
+/// The text of the first program's files that an edit changed or moved, in their spans: in each
+/// changed file, from the first byte that differs to the last, when its length is the same, or
+/// else to the end of its slots.
+fn dirty(before: &[LaidOut<'_>], now: &[LaidOut<'_>]) -> Vec<Span> {
+    let slots = slots(before, now);
+    before
+        .iter()
+        .zip(now)
+        .zip(slots)
+        .filter(|((was, is), _)| was.text != is.text)
+        .map(|((was, is), slot)| {
+            let (was_text, is_text) = (was.text.as_bytes(), is.text.as_bytes());
+            let prefix = was_text.iter().zip(is_text).take_while(|(a, b)| a == b).count();
+            let room = was_text.len().min(is_text.len()) - prefix;
+            let suffix =
+                was_text.iter().rev().zip(is_text.iter().rev()).take_while(|(a, b)| a == b).count().min(room);
+            let offset = |at: usize| was.span.start.saturating_add(u32::try_from(at).unwrap_or(u32::MAX));
+            let end =
+                if was_text.len() == is_text.len() { offset(was_text.len() - suffix) } else { slot.end };
+            Span { start: offset(prefix), end }
+        })
+        .collect()
+}
+
 /// `check_to_build_saying`, keeping what the first check finds for a build after an edit, and
 /// carrying over from `kept`, what the build before it kept, what was found for each function the
 /// edit left as it was: its text the same, where it was, and nothing found for it from text `edit`
@@ -818,7 +897,16 @@ pub fn compares_kept_check(inputs: u64) -> bool {
 /// catches it. Only `bounds` is named: a callee whose type parameters' bounds changed has its
 /// callers checked again. A release compiler leaves out none.
 pub(crate) fn kept_rule_off(rule: &str) -> bool {
-    cfg!(debug_assertions) && std::env::var("FENNEC_KEPT_RULE_OFF").is_ok_and(|off| off == rule)
+    leaves_out_a_kept_rule() && std::env::var("FENNEC_KEPT_RULE_OFF").is_ok_and(|off| off == rule)
+}
+
+/// Whether a dev compiler was asked to leave out a rule for carrying a check over
+/// (`kept_rule_off`). Its own check of what a build hands on again, which a release compiler
+/// doesn't make, is then left out too, so a wrong carried check gets as far as it would in a
+/// release compiler, and only what a release compiler has can catch it.
+#[must_use]
+pub fn leaves_out_a_kept_rule() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("FENNEC_KEPT_RULE_OFF").is_some()
 }
 
 /// Like `check_to_run`, with every standard library type's fields typed too, so the module can

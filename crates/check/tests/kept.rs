@@ -434,6 +434,44 @@ fn every_program_built_again_after_an_edit_finds_what_a_whole_check_finds() {
     assert!(moves >= 50, "only {moves} programs had a line put in");
 }
 
+/// Files as a load lays them out, each in a slot of its own.
+fn sources_of(files: &[(&str, &str)]) -> fennec_syntax::Sources {
+    let mut sources = fennec_syntax::Sources::default();
+    for (path, text) in files {
+        sources.add(*path, *text);
+    }
+    sources
+}
+
+/// An edit of the same length is its changed bytes alone; one that changes the length runs to the
+/// end of the file's slots: where the next file starts. An unchanged file has none.
+#[test]
+fn an_edits_text_is_its_changed_bytes_or_to_the_end_of_its_slots() {
+    const SLOT: u32 = 1 << 18;
+    let before = sources_of(&[("a.fen", "def f():\n    pass\n"), ("b.fen", "x = 1\n")]);
+    let dirty = |after: &[(&str, &str)]| Edit::between(&before, &sources_of(after)).map(|edit| edit.dirty);
+    let same_length = dirty(&[("a.fen", "def g():\n    pass\n"), ("b.fen", "x = 1\n")]);
+    assert_eq!(same_length, Some(vec![Span { start: 4, end: 5 }]));
+    let longer = dirty(&[("a.fen", "def f():\n    return\n"), ("b.fen", "x = 1\n")]);
+    assert_eq!(longer, Some(vec![Span { start: 13, end: SLOT }]));
+    assert_eq!(dirty(&[("a.fen", "def f():\n    pass\n"), ("b.fen", "x = 1\n")]), Some(Vec::new()));
+    let last_longer = dirty(&[("a.fen", "def f():\n    pass\n"), ("b.fen", "x = 12\n")]);
+    assert_eq!(last_longer, Some(vec![Span { start: SLOT + 5, end: 2 * SLOT }]));
+    let files = Edit::between(&before, &before).map(|edit| edit.files);
+    assert_eq!(files, Some(vec![Span { start: 0, end: SLOT }, Span { start: SLOT, end: 2 * SLOT }]));
+}
+
+/// Files moved, added or taken away, or one grown past its slot so the next starts elsewhere,
+/// give no edit: nothing kept is carried over.
+#[test]
+fn a_program_with_other_files_or_moved_ones_gives_no_edit() {
+    let before = sources_of(&[("a.fen", "x = 1\n"), ("b.fen", "y = 2\n")]);
+    assert!(Edit::between(&before, &sources_of(&[("a.fen", "x = 1\n")])).is_none());
+    assert!(Edit::between(&before, &sources_of(&[("a.fen", "x = 1\n"), ("c.fen", "y = 2\n")])).is_none());
+    let grown = format!("x = 1\n{}", "#".repeat(1 << 18));
+    assert!(Edit::between(&before, &sources_of(&[("a.fen", &grown), ("b.fen", "y = 2\n")])).is_none());
+}
+
 /// One dev build in 8 compares, picked by what it's built from; a release compiler compares only
 /// when asked to.
 #[test]

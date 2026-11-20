@@ -373,7 +373,10 @@ impl Kit {
             .env("FENNEC_HOME", self.dir.join("home"))
             .env_remove("CI")
             .env_remove("FENNEC_NO_CACHE")
-            .env_remove("FENNEC_NO_DAEMON");
+            .env_remove("FENNEC_NO_DAEMON")
+            // A daemon of its own, which may start though its Fennec folder is in the temp folder,
+            // and is stopped when the budgets are measured.
+            .env("FENNEC_DAEMONS", self.dir.join("noted-daemons"));
     }
 
     /// How long a command takes, and what it prints. It has to succeed.

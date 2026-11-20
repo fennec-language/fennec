@@ -161,7 +161,19 @@ impl Interp {
     ) -> Run<Value> {
         let mark = self.write_backs.len();
         match self.prepare(expr, callee, args) {
-            Ok((target, given)) => self.invoke_settled(mark, target, given, expr),
+            Ok((target, given)) => {
+                let lent = lent_here(args, &given);
+                let called = self.invoke_settled(mark, target, given, expr);
+                // What a `ref` lent out of a struct here comes back when the call ends, however it
+                // ends but by a crash, and that struct's `where` rules run on it then: a broken one
+                // stops the program before a failure passes up.
+                if matches!(called, Ok(_) | Err(Flow::Fail(..))) {
+                    for place in &lent {
+                        self.rules_along(place, expr.span)?;
+                    }
+                }
+                called
+            }
             Err(failed) => self.settled(mark, Err(failed), expr.span),
         }
     }
@@ -748,7 +760,7 @@ impl Interp {
             captured.into_iter().map(|(name, value)| (name, Binding::Value(value))).collect();
         for (param, arg) in params.iter().zip(given) {
             let binding = match arg {
-                ArgVal::Ref(_, place) => Binding::Ref(place),
+                ArgVal::Ref(_, place) => Binding::Ref(place.lent_alone()),
                 other => Binding::Value(self.arg_as_value(other)?),
             };
             vars.push((param.clone(), binding));
@@ -818,7 +830,7 @@ impl Interp {
                 return unsupported("an argument no parameter takes");
             };
             *slot = Some(match arg {
-                ArgVal::Ref(_, place) => Binding::Ref(place),
+                ArgVal::Ref(_, place) => Binding::Ref(place.lent_alone()),
                 other => Binding::Value(self.arg_as_value(other)?),
             });
         }
@@ -1092,4 +1104,19 @@ impl Interp {
             },
         })
     }
+}
+
+/// The places this call's `ref` arguments lend out of something written here, as `ref stats.level`
+/// does, rather than handing on a name that's lent already, whose lender is further out.
+fn lent_here(args: &[Arg], given: &[ArgVal]) -> Vec<Place> {
+    let lent = given.iter().filter_map(|arg| match arg {
+        ArgVal::Ref(_, place) => Some(place),
+        _ => None,
+    });
+    args.iter()
+        .filter(|arg| arg.is_mut)
+        .zip(lent)
+        .filter(|(arg, _)| !matches!(arg.value.kind, ExprKind::Name(_)))
+        .map(|(_, place)| place.clone())
+        .collect()
 }

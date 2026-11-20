@@ -145,7 +145,7 @@ impl Interp {
             vec![("_parts".to_owned(), Value::List(Held::new(Vec::new())))],
         );
         let previous = self.push_frame(vec![("out".to_owned(), Binding::Value(writer))], None)?;
-        let place = Place { frame: self.cur, name: "out".to_owned(), path: Vec::new() };
+        let place = Place { frame: self.cur, name: "out".to_owned(), path: Vec::new(), lent: 0 };
         let receiver = Receiver::Value(Value::Instance(Held::new(instance.clone())));
         let called =
             self.call_def(def, None, Some(receiver), vec![ArgVal::Ref(None, place.clone())], def.span);

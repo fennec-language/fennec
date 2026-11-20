@@ -14,6 +14,7 @@
 )]
 
 use super::ast::{ARRAY_WAYS, ArrayStep, ArrayWay, Arraying};
+use super::ast::{RULE_WAYS, RuleStep, RuleWay, Ruling};
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
@@ -94,6 +95,14 @@ const ARRAYS: bool = true;
 /// Whether an `Arrayed` statement changes a field of an optional struct in an array once
 /// `is not None` narrows it, in a `for ref` over the array. On since #2266 lowered it (#2255).
 pub(super) const NARROWED_FIELD_WRITES: bool = true;
+
+/// Whether random programs write fields with `where` rules every way (`Ruled`): set, added to,
+/// taken from, through a `ref self` method, lent alone by `ref` to a call and to a `for ref`
+/// loop's turn, and dipped below and put back before it comes back, which is fine (#2270); the
+/// whole struct lent by `ref`; in a list and a dict; `copy`; and a value made from a number worked
+/// out as it runs, which is refused when it breaks one. A risky program breaks one, which stops
+/// it. Map row 9: nothing wrote a `where` rule before.
+const WHERE_RULES: bool = true;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
@@ -768,6 +777,7 @@ impl Writer<'_> {
             27 if INTERFACES && self.choice(4) == 0 => self.interfaces(body),
             27 if LOCKED_TOGETHER && self.choice(4) == 0 => self.locked_together(body),
             27 if ARRAYS && self.choice(4) == 0 => self.arrays(body),
+            27 if WHERE_RULES && self.choice(4) == 0 => self.where_rules(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1570,6 +1580,21 @@ impl Writer<'_> {
             steps.push(LockStep { way, pair, amount, backward, against });
         }
         body.push(Stmt::LockedTogether(LockingTogether { id, base, steps }));
+    }
+
+    /// A `Ruled` statement: 3 to 10 steps, each with a value from 0 to 9. Only a risky program
+    /// breaks a rule, and then a step in four does.
+    fn where_rules(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let way = RULE_WAYS.get(self.choice(RULE_WAYS.len())).copied().unwrap_or(RuleWay::Raised);
+            let value = i64::from(self.byte() % 10);
+            let breaks = self.risky && self.choice(4) == 0;
+            steps.push(RuleStep { way, value, breaks });
+        }
+        body.push(Stmt::Ruled(Ruling { id, steps }));
     }
 
     /// An `Arrayed` statement: 3 to 10 steps, each with a place from 0 to 3 and a value from -9 to

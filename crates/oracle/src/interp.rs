@@ -227,6 +227,10 @@ pub(crate) struct Place {
     pub(crate) frame: usize,
     pub(crate) name: String,
     pub(crate) path: Vec<Step>,
+    /// How many of the path's steps a `ref` lent it through, a field or an item handed to a
+    /// call or a `for ref` loop's turn on its own. The structs those steps pass through don't see
+    /// a write here: their `where` rules run when what was lent comes back.
+    pub(crate) lent: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -240,7 +244,14 @@ impl Place {
     pub(crate) fn then(&self, step: Step) -> Place {
         let mut path = self.path.clone();
         path.push(step);
-        Place { frame: self.frame, name: self.name.clone(), path }
+        Place { frame: self.frame, name: self.name.clone(), path, lent: self.lent }
+    }
+
+    /// The place a name whose `ref` lends it stands for: every struct along the way is the
+    /// lender's, so a write through the name checks none of their rules.
+    pub(crate) fn lent_alone(mut self) -> Place {
+        self.lent = self.path.len();
+        self
     }
 }
 
@@ -574,7 +585,7 @@ impl Interp {
             ExprKind::Name(name) => Ok(match self.binding_of(name) {
                 Some((_, Binding::Ref(place))) => Some(place.clone()),
                 Some((frame, Binding::Value(_))) => {
-                    Some(Place { frame, name: name.clone(), path: Vec::new() })
+                    Some(Place { frame, name: name.clone(), path: Vec::new(), lent: 0 })
                 }
                 None => None,
             }),
@@ -654,19 +665,24 @@ impl Interp {
         })
     }
 
-    /// Checks the `where` rules of every struct along a place just written.
-    fn rules_along(&mut self, place: &Place, span: Span) -> Run<()> {
+    /// Checks the `where` rules of every struct along a place just written, but those of the
+    /// structs it was lent out of: a field or an item lent alone by `ref` is a plain value to
+    /// whoever borrowed it, and its struct's rules run when it comes back.
+    pub(crate) fn rules_along(&mut self, place: &Place, span: Span) -> Run<()> {
         if !self.program.has_rules {
             return Ok(());
         }
         let mut ruled = Vec::new();
         let mut value = self.root(place)?;
-        for step in std::iter::once(None).chain(place.path.iter().map(Some)) {
+        for (depth, step) in std::iter::once(None).chain(place.path.iter().map(Some)).enumerate() {
             if let Some(step) = step {
                 match step_into(value, step, span)? {
                     Reached::Inside(inner) => value = inner,
                     Reached::Made(_) => break,
                 }
+            }
+            if depth < place.lent {
+                continue;
             }
             if let Value::Instance(instance) = value
                 && self.program.types.get(instance.ty.as_str()).is_some_and(|declared| declared.ruled)
@@ -1155,6 +1171,19 @@ impl Interp {
             (other, _) => return unsupported(format!("`for ref` over a {}", other.kind())),
         };
         let item_name = names.last().map_or("_", String::as_str);
+        // An item lent out of something written here, not a name lent already, comes back at the
+        // end of each turn, and the `where` rules of the structs it's in run on it then.
+        let lent_here = !matches!(
+            match (&iter.kind, numbered, keyed) {
+                (ExprKind::Call { args, .. }, true, _) => args.first().map(|arg| &arg.value.kind),
+                (ExprKind::Call { callee, .. }, _, true) => match &callee.kind {
+                    ExprKind::Attr { object, .. } => Some(&object.kind),
+                    _ => None,
+                },
+                (kind, ..) => Some(kind),
+            },
+            Some(ExprKind::Name(_))
+        );
         for (count, position) in positions.into_iter().enumerate() {
             let mark = self.mark();
             if numbered {
@@ -1176,10 +1205,17 @@ impl Interp {
                     };
                     self.bind_ref(item_name, item)?;
                 }
-                None => self.bind_ref(item_name, place.then(Step::At(position)))?,
+                None => self.bind_ref(item_name, place.then(Step::At(position.clone())).lent_alone())?,
             }
             let ran = self.stmts(body);
             self.restore(mark);
+            // However the turn ends but by a crash: a `return`, a `break` or a failure passing up
+            // brings the item back too.
+            let came_back =
+                matches!(ran, Ok(()) | Err(Flow::Continue | Flow::Break | Flow::Return(_) | Flow::Fail(..)));
+            if own.is_none() && lent_here && came_back {
+                self.rules_along(&place.then(Step::At(position)), span)?;
+            }
             match ran {
                 Ok(()) | Err(Flow::Continue) => {}
                 Err(Flow::Break) => break,

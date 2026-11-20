@@ -1,0 +1,11 @@
+# One `lock` can't take one `shared` value twice: name it once, and use that name.
+struct Account:
+    total = 0
+
+def main(stdout: Stdout):
+    shared account = Account()
+    lock account, account as ref paying, ref paid:
+        paying.total -= 5
+        paid.total += 5
+    lock account as held:
+        stdout.print(held.total)

@@ -5048,7 +5048,9 @@ fn analyzed<'p>(
         inputs ^ u64::from_le_bytes(word)
     });
     let mut differ = Vec::new();
-    if found.iter().any(|(.., used_again)| *used_again) && crate::kept::compares(inputs) {
+    if found.iter().any(|(.., used_again)| *used_again)
+        && (keeping.checks_all() || crate::kept::compares(inputs))
+    {
         let by_name: HashMap<&str, &Function> =
             all.iter().map(|function| (function.name.as_str(), *function)).collect();
         for (name, kept, _, used_again) in &found {

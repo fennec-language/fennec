@@ -62,6 +62,9 @@ pub(crate) struct Keeping {
     found: Option<KeptAnalyses>,
     kept_now: Mutex<KeptAnalyses>,
     used_again: std::sync::atomic::AtomicUsize,
+    /// Whether every analysis used again is checked against analyzing it again, whatever
+    /// `compares` picks: as the edit fuzzer asks (`analyses_kept_and_checked`).
+    checks_all: bool,
 }
 
 /// What was asked of the program for one analysis, as it's worked out.
@@ -108,7 +111,13 @@ impl Keeping {
             found,
             kept_now: Mutex::new(HashMap::new()),
             used_again: std::sync::atomic::AtomicUsize::new(0),
+            checks_all: false,
         }
+    }
+
+    /// Whether every analysis used again is to be checked against analyzing it again.
+    pub(crate) fn checks_all(&self) -> bool {
+        self.checks_all
     }
 
     /// How many analyses were used again.
@@ -185,6 +194,29 @@ impl Asking {
     pub(crate) fn into_asked(self) -> Vec<Asked> {
         self.asked.into_inner()
     }
+}
+
+/// What one call of [`analyses_kept_and_checked`] keeps for the next: each function's analysis,
+/// as the daemon keeps them from one build to the next.
+#[derive(Default)]
+pub struct KeptForNext(Option<KeptAnalyses>);
+
+/// Every function's analysis of `program`, worked out as an edit build through the daemon works
+/// them out: using again what `kept` holds from the call before, and leaving in it what's worked
+/// out now. Every analysis used again is checked against analyzing it again, as
+/// `FENNEC_CHECK_WHOLE=1` has a build do. Gives back the functions whose analysis used again isn't
+/// what analyzing it again gives, sorted, and how many were used again. It's for the edit fuzzer,
+/// which runs it on each version of a program in turn.
+#[must_use]
+pub fn analyses_kept_and_checked(
+    program: &fennec_ir::Program,
+    kept: &mut KeptForNext,
+) -> (Vec<String>, usize) {
+    let keeping = Keeping { checks_all: true, ..Keeping::from(kept.0.take()) };
+    let (_, differ) = crate::analysis::whole_keeping(program, &keeping);
+    let used_again = keeping.used_again();
+    kept.0 = Some(keeping.into_kept());
+    (differ, used_again)
 }
 
 /// How many analyses the last build in this process used again, of how many, for

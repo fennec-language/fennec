@@ -44,6 +44,8 @@ pub enum Also {
     FirstUse,
     /// Where a name read too early is given its value.
     GivenValue,
+    /// Where a field path checked for `None` might have changed since.
+    Changed,
 }
 
 /// One change to a source: the text at `span` becomes `text`. An empty span inserts.
@@ -137,6 +139,7 @@ impl Diagnostic {
             Also::Loop => "the loop",
             Also::FirstUse => "its first use",
             Also::GivenValue => "the line that gives it its value",
+            Also::Changed => "where it might have changed",
         }
     }
 

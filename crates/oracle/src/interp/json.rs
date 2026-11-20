@@ -139,7 +139,7 @@ impl Interp {
         self.parts_read += 1;
         let name = format!("\0held{}", self.parts_read);
         self.bind(&name, value)?;
-        Ok(Place { frame: self.cur, name, path: Vec::new() })
+        Ok(Place { frame: self.cur, name, path: Vec::new(), lent: 0 })
     }
 
     /// Lets go of a local `hidden_local` made.

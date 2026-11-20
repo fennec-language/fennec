@@ -893,6 +893,127 @@ def main(stdout: Stdout):
         stdout.print("right ran", got)
 "#;
 
+/// A field lent alone by `ref`, to a call or a `for ref` loop's turn, is a plain value to whoever
+/// has it, and its struct's `where` rule runs when it comes back: at the end of the call, however
+/// it ends but by a crash, and of each turn, however that ends. A value put right before then is
+/// fine. A whole struct lent by `ref` is checked at each write. What each prints is what the
+/// compiled program printed (#2270).
+#[test]
+fn a_field_lent_by_ref_is_checked_when_it_comes_back() {
+    let broken = |field: &str| format!("this breaks the `where` rule on `Stats.{field}`");
+    for (program, printed, field) in [
+        (WHERE_LENT_TO_A_CALL, "Stats(level=3)\nlowered to -2\n", "level"),
+        (WHERE_LENT_TO_TURNS, "dipped 1\ndipped 2\nStats(counts=[1, 2])\nraised 5\nraised 6\n", "counts"),
+        (WHERE_LENT_TO_A_FIRST_TURN, "turn 1 21\n", "counts"),
+        (WHERE_LENT_TO_A_BROKEN_TURN, "breaking 21\n", "counts"),
+        (WHERE_LENT_TO_A_FAILING_CALL, "", "level"),
+        (WHERE_LENT_TO_A_RETURNING_TURN, "", "counts"),
+    ] {
+        let (got, ended) = ran(program);
+        assert_eq!(got, printed, "{program}");
+        assert!(matches!(&ended, Ended::Stopped(said) if said.contains(&broken(field))), "{ended:?}");
+    }
+}
+
+const WHERE_LENT_TO_A_CALL: &str = r#"struct Stats:
+    level: int where level >= 1
+
+def lowered(ref level: int, by: int, stdout: Stdout):
+    level -= by
+    stdout.print("lowered to", level)
+
+def dipped(ref level: int, by: int):
+    level -= by
+    level += by
+
+def main(stdout: Stdout):
+    mut stats = Stats(level=3)
+    dipped(ref stats.level, by=5)
+    stdout.print(stats)
+    lowered(ref stats.level, by=5, stdout=stdout)
+    stdout.print(stats)
+"#;
+
+const WHERE_LENT_TO_TURNS: &str = r#"struct Stats:
+    counts = [1, 2] where sum(counts) < 10
+
+def main(stdout: Stdout):
+    mut stats = Stats()
+    for ref each in stats.counts:
+        each += 20
+        each -= 20
+        stdout.print("dipped", each)
+    stdout.print(stats)
+    for ref each in stats.counts:
+        each += 4
+        stdout.print("raised", each)
+    stdout.print(stats)
+"#;
+
+const WHERE_LENT_TO_A_FIRST_TURN: &str = r#"struct Stats:
+    counts = [1, 2] where sum(counts) < 10
+
+def main(stdout: Stdout):
+    mut stats = Stats()
+    mut turn = 0
+    for ref each in stats.counts:
+        if turn == 0:
+            each += 20
+        else:
+            each -= 20
+        turn += 1
+        stdout.print("turn", turn, each)
+    stdout.print(stats)
+"#;
+
+const WHERE_LENT_TO_A_BROKEN_TURN: &str = r#"struct Stats:
+    counts = [1, 2] where sum(counts) < 10
+
+def main(stdout: Stdout):
+    mut stats = Stats()
+    for ref each in stats.counts:
+        each += 20
+        stdout.print("breaking", each)
+        break
+    stdout.print("after", stats)
+"#;
+
+const WHERE_LENT_TO_A_FAILING_CALL: &str = r#"error Nope:
+    code: int
+
+struct Stats:
+    level: int where level >= 1
+
+def lowered(ref level: int, by: int) fails Nope:
+    level -= by
+    if level < 0:
+        fail Nope(code=level)
+
+def tried(ref stats: Stats, stdout: Stdout) fails Nope:
+    lowered(ref stats.level, by=5)?
+
+def main(stdout: Stdout):
+    mut stats = Stats(level=3)
+    tried(ref stats, stdout=stdout) except why:
+        stdout.print("failed", why)
+    stdout.print("after", stats)
+"#;
+
+const WHERE_LENT_TO_A_RETURNING_TURN: &str = r#"struct Stats:
+    counts = [1, 2] where sum(counts) < 10
+
+def first_big(ref stats: Stats, stdout: Stdout) -> int:
+    for ref each in stats.counts:
+        each += 20
+        return each
+    return 0
+
+def main(stdout: Stdout):
+    mut stats = Stats()
+    stdout.print("got", first_big(ref stats, stdout=stdout))
+    stdout.print("after", stats)
+"#;
+
 /// A generator that can fail, given a name and let go of partway, leaves at its `yield` where
 /// compiled code frees it: as its function ends, or as its name is given another. Each `with` it's
 /// in runs its cleanup there, and a cleanup that fails stops the program, with compiled code's

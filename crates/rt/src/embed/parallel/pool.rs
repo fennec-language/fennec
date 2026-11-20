@@ -608,6 +608,8 @@ pub(in crate::embed) struct Latch {
 pub(in crate::embed) struct Joined {
     done: AtomicBool,
     failed: Mutex<Option<(usize, Option<String>)>>,
+    /// The call's name in a recording or a replay.
+    replay: Option<Arc<str>>,
 }
 
 impl crate::embed::deadlock::Awaited for Joined {
@@ -628,6 +630,10 @@ impl crate::embed::deadlock::Awaited for Joined {
             Some((from, None)) => format!("for the ranges of its `parallel` call, whose range {from} failed"),
             None => "for the ranges of its `parallel` call".to_owned(),
         }
+    }
+
+    fn replay_place(&self) -> Option<Arc<str>> {
+        self.replay.clone()
     }
 }
 
@@ -709,11 +715,12 @@ impl Latch {
         }
     }
 
-    /// Says whether waiting for it is a stuck wait: a waiting call's join.
-    pub(super) fn counts_joins(&self, counted: bool) {
+    /// Says whether waiting for it is a stuck wait: a waiting call's join, named `replay` in a
+    /// recording or a replay.
+    pub(super) fn counts_joins(&self, counted: bool, replay: Option<Arc<str>>) {
         self.counted.store(counted, Ordering::Relaxed);
         if counted {
-            let _ = self.joined.get_or_init(Arc::default);
+            let _ = self.joined.get_or_init(|| Arc::new(Joined { replay, ..Joined::default() }));
         }
     }
 

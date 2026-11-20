@@ -244,6 +244,8 @@ thread_local! {
     static PROGRAM_COPIES: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((WRITTEN_FROM - 1, 0)) };
     /// Whether a copy among the program's text found no room this round.
     static PROGRAM_COPIES_RAN_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether a copy of the standard library's text found no room this round.
+    static STD_COPIES_RAN_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A span a copy moved, as its start and end, and where to.
@@ -264,6 +266,7 @@ pub(crate) fn copies_from(module: &mut Module) {
     let floor = text_end.saturating_add(1 << 20);
     PROGRAM_COPIES.with(|next| next.set((top.saturating_sub(1), floor)));
     PROGRAM_COPIES_RAN_OUT.with(|ran_out| ran_out.set(false));
+    STD_COPIES_RAN_OUT.with(|ran_out| ran_out.set(false));
     COPIED.with(|held| *held.borrow_mut() = copied);
     MOVED.with(|moved| moved.borrow_mut().clear());
 }
@@ -321,6 +324,25 @@ fn reserved_in(region: Region, length: u32) -> Option<u32> {
 /// written in then can't be told apart where it must be, so the round refuses the program.
 pub(crate) fn program_copies_ran_out() -> bool {
     PROGRAM_COPIES_RAN_OUT.with(std::cell::Cell::get)
+}
+
+/// Whether a copy of the standard library's text found no room this round, below the copies made
+/// so far and above where the library's own text ends. The round refuses the program then too.
+pub(crate) fn std_copies_ran_out() -> bool {
+    STD_COPIES_RAN_OUT.with(std::cell::Cell::get)
+}
+
+/// Reserves `length` spans in a row for a copy of the standard library's text, below every copy
+/// made so far, giving the lowest. Nothing, when they've run out.
+fn std_copies_reserved(length: u32) -> Option<u32> {
+    COPIES.with(|copies| {
+        let Some(base) = copies.get().checked_sub(length).filter(|base| *base >= COPIES_FROM) else {
+            STD_COPIES_RAN_OUT.with(|ran_out| ran_out.set(true));
+            return None;
+        };
+        copies.set(base);
+        Some(base)
+    })
 }
 
 /// Gives `module` the copies written in so far, in order of where each went.
@@ -556,11 +578,7 @@ fn moved_apart(written: &mut [Stmt], body: &mut [Stmt]) {
     if low > high {
         return;
     }
-    let base = COPIES.with(|copies| {
-        let base = copies.get().saturating_sub(high - low + 1);
-        copies.set(base);
-        base
-    });
+    let Some(base) = std_copies_reserved(high - low + 1) else { return };
     for part in [written, body] {
         fennec_syntax::visit::in_stmts(part, &mut |expr| {
             if expr.span.in_prelude() && expr.span.start < COPIES_FROM {
@@ -2116,14 +2134,56 @@ fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
 
 /// A `lend`'s `else:` written in once more, as before each way the block fails, on spans of its
 /// own, so what's found by span in one copy, which may be checked where another isn't, as in a
-/// crash's function, is never another's (#2056). As it is only when spans have run out, which
-/// refuses the program at the end of the round (`program_copies_ran_out`).
+/// crash's function, is never another's (#2056, #2208): the program's text in it, and the
+/// standard library's, a source's own copied in already among it. As it is only when spans have
+/// run out, which refuses the program at the end of the round (`program_copies_ran_out`,
+/// `std_copies_ran_out`).
 fn cleanup_copy(cleanup: &[Stmt]) -> Vec<Stmt> {
     let mut copy = cleanup.to_vec();
-    match copied_apart(Region::Program, &mut [&mut copy]) {
+    match copied_apart(Region::Program, &mut [&mut copy]).and_then(|()| std_copied_apart(&mut copy)) {
         Some(()) => copy,
         None => cleanup.to_vec(),
     }
+}
+
+/// Moves all of the standard library's text in a copy to spans of its own below every copy made so
+/// far: the library's own text, and copies of it written in already. Each stretch of it keeps where
+/// its parts are against each other, and the stretches stay in their order. Nothing, when spans
+/// have run out.
+fn std_copied_apart(copy: &mut [Stmt]) -> Option<()> {
+    let mut spans = Vec::new();
+    fennec_syntax::visit::in_stmts(copy, &mut |expr| {
+        if expr.span.in_prelude() {
+            spans.push((expr.span.start, expr.span.end.max(expr.span.start)));
+        }
+    });
+    let stretches = stretched(spans);
+    let needed: u64 = stretches.iter().map(|(start, end)| u64::from(end - start) + 1).sum();
+    let Ok(needed) = u32::try_from(needed) else {
+        STD_COPIES_RAN_OUT.with(|ran_out| ran_out.set(true));
+        return None;
+    };
+    if needed == 0 {
+        return Some(());
+    }
+    let mut next = std_copies_reserved(needed)?;
+    let mut laid = Vec::with_capacity(stretches.len());
+    for (start, end) in stretches {
+        laid.push((start, end, next));
+        next += end - start + 1;
+    }
+    fennec_syntax::visit::in_stmts(copy, &mut |expr| {
+        if !expr.span.in_prelude() {
+            return;
+        }
+        let after = laid.partition_point(|(start, ..)| *start <= expr.span.start);
+        if let Some((start, _, to)) = after.checked_sub(1).and_then(|at| laid.get(at)) {
+            let moved = |at: u32| at - start + to;
+            expr.span =
+                Span { start: moved(expr.span.start), end: moved(expr.span.end.max(expr.span.start)) };
+        }
+    });
+    Some(())
 }
 
 /// `if failed is not None:` the `lend`'s `else:`, then failing with what's held, which a block's
@@ -2847,5 +2907,41 @@ mod tests {
         let mut passed = Vec::new();
         super::outer_cases(outer, &mut |cases| passed.push(cases.len()));
         assert_eq!(passed, [1, 1], "each of the outer match's two cases once, and none of the inner's");
+    }
+
+    /// A copy of the standard library's text is moved below every copy made so far, each stretch
+    /// keeping where its parts are against each other, and two copies of the same text never share
+    /// a span. One that finds no room left says so, for the round to refuse the program, rather
+    /// than going below where copies may go.
+    #[test]
+    fn a_copy_of_std_text_gets_spans_of_its_own_or_says_there_is_no_room() {
+        use fennec_syntax::{Expr, ExprKind, Span, Stmt, StmtKind};
+        let at = |start: u32, end: u32| Span { start: Span::PRELUDE + start, end: Span::PRELUDE + end };
+        let call = || Stmt {
+            kind: StmtKind::Expr(Expr {
+                kind: ExprKind::Call {
+                    callee: Box::new(Expr { kind: ExprKind::Name("close".to_owned()), span: at(10, 15) }),
+                    args: Vec::new(),
+                },
+                span: at(10, 17),
+            }),
+            span: at(10, 17),
+        };
+        let spans = |stmts: &mut [Stmt]| {
+            let mut found = Vec::new();
+            fennec_syntax::visit::in_stmts(stmts, &mut |expr| found.push(expr.span));
+            found
+        };
+        super::COPIES.with(|copies| copies.set(u32::MAX));
+        let (mut one, mut two) = ([call()], [call()]);
+        assert_eq!(super::std_copied_apart(&mut one), Some(()));
+        assert_eq!(super::std_copied_apart(&mut two), Some(()));
+        let (one, two) = (spans(&mut one), spans(&mut two));
+        assert!(one.iter().all(|span| span.start >= super::COPIES_FROM), "{one:?}");
+        assert!(one.iter().all(|span| !two.contains(span)), "{one:?} {two:?}");
+        assert_eq!(one[0].end - one[0].start, 7, "the call keeps its length");
+        super::COPIES.with(|copies| copies.set(super::COPIES_FROM + 3));
+        assert_eq!(super::std_copied_apart(&mut [call()]), None);
+        assert!(super::std_copies_ran_out());
     }
 }

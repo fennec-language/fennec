@@ -389,10 +389,10 @@ impl Type {
     }
 
     /// The name of the struct, enum, error or capability this is a value of.
-    /// The name a type's methods are kept under: a struct's or enum's own name, or `str`'s,
-    /// for the methods the standard library gives it. More built-in types join as the
-    /// standard library gives them methods.
-    pub(crate) fn method_owner(&self) -> Option<&str> {
+    /// The name a type's methods are kept under: a struct's or enum's own name, or a built-in
+    /// type's, as `float` for the methods the standard library and the engines give it.
+    #[must_use]
+    pub fn method_owner(&self) -> Option<&str> {
         match self {
             Type::Int => Some("int"),
             Type::Float => Some("float"),

@@ -3,9 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use fennec_syntax::{Diagnostic, Import, Item, Module, Sources, Span};
 
+use crate::kept::{FileKey, KeptFile, KeptLoad, Used};
 use crate::{Embedded, Entry, Manifest, Overlay, Problems, Program, embed, scope};
 
 /// A parsed file of a program.
@@ -14,12 +16,45 @@ pub(crate) struct File {
     pub(crate) name: String,
     /// Its path as messages show it.
     pub(crate) shown: String,
-    pub(crate) module: Module,
+    /// Shared with what a load keeps for the next, so a rewriting copies it before changing it.
+    pub(crate) module: Arc<Module>,
     /// What starts the names its kit defines in the merged program: its name and the
     /// `fennec_syntax::KIT_MARK` for a dependency, and nothing for the program's own kit.
     pub(crate) prefix: String,
     /// The names it marks `export`, which other kits can use. Only a dependency's are read.
     pub(crate) exports: HashSet<String>,
+    /// What's kept of it for the next load, in a load that keeps.
+    keep: Option<Keep>,
+}
+
+/// What a load keeps of a file for the next: what it's kept by, its imports as written, and its
+/// module before names across files were rewritten. A file that embeds another's bytes isn't
+/// kept, since what it holds can change while it doesn't.
+struct Keep {
+    key: FileKey,
+    written: Arc<[Import]>,
+    parsed: Arc<Module>,
+}
+
+/// What a load uses again from the load before, and whether it keeps what it finds for the next.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Keeping<'a> {
+    pub(crate) before: Option<&'a KeptLoad>,
+    pub(crate) keep: bool,
+}
+
+/// A file's module: parsed, or found as the load before kept it.
+enum Parsed {
+    Fresh(Module),
+    /// Its module with its imports by their whole names, and its imports as written.
+    Kept(Arc<Module>, Arc<[Import]>),
+}
+
+/// A file read and parsed, or found kept, with what it's kept by in a load that keeps or uses
+/// what's kept.
+struct Loaded {
+    key: Option<FileKey>,
+    parsed: Result<Parsed, Diagnostic>,
 }
 
 /// A kit whose files are being loaded: the program's own, or one it depends on.
@@ -63,6 +98,14 @@ impl Place {
     fn is_dependency(&self) -> bool {
         !self.name.is_empty()
     }
+
+    /// What a file's parse depends on of its kit, past its own text: its name, and the kits it
+    /// names, which together say how its imports are written by their whole names.
+    fn kept_as(&self) -> String {
+        let mut uses: Vec<&str> = self.uses.iter().map(String::as_str).collect();
+        uses.sort_unstable();
+        format!("{}\0{}", self.name, uses.join("\0"))
+    }
 }
 
 /// A module to load, wherever it is.
@@ -97,10 +140,12 @@ pub(crate) fn file(
     shown_as: &str,
     entry: Entry,
     overlay: &Overlay,
-) -> Result<Program, Problems> {
+    keeping: Keeping<'_>,
+) -> Result<(Program, Option<KeptLoad>), Problems> {
     let src = path.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let mut loader =
         Loader::new(src, folder_prefix(Path::new(shown_as).parent()), None, overlay, Dependencies::default());
+    loader.keeping = keeping;
     loader.doc_examples = entry == Entry::Tests;
     let name = path.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     loader.visit_own(&name, path, shown_as.to_owned(), None);
@@ -108,7 +153,13 @@ pub(crate) fn file(
 }
 
 /// Loads a kit from its folder or any folder inside it.
-pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -> Result<Program, Problems> {
+pub(crate) fn kit(
+    dir: &Path,
+    shown_as: &str,
+    entry: Entry,
+    overlay: &Overlay,
+    keeping: Keeping<'_>,
+) -> Result<(Program, Option<KeptLoad>), Problems> {
     let Some((root, shown_root)) = find_root(dir, shown_as).map_err(|why| refused(&why))? else {
         return Err(Problems::unplaced(format!(
             "error: there's no kit.toml in {shown_as} or any folder above it\n  = help: `fennec new <name>` starts a kit, and `fennec run <file.fen>` runs a single file\n"
@@ -120,6 +171,7 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     let mut loader =
         Loader::new(src.clone(), format!("{shown_root}src/"), Some(&root), overlay, dependencies);
     loader.doc_examples = entry == Entry::Tests;
+    loader.keeping = keeping;
     let main = src.join("main.fen");
     if main.is_file() || overlay.contains_key(&main) {
         loader.visit_own("main", &main, format!("{shown_root}src/main.fen"), None);
@@ -143,9 +195,9 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
             loader.visit_own(&module.join("."), &real, shown, None);
         }
     }
-    let mut program = loader.finish(Some(manifest))?;
+    let (mut program, kept) = loader.finish(Some(manifest))?;
     with_pack_lock(&mut program, &root);
-    Ok(program)
+    Ok((program, kept))
 }
 
 /// What a kit with no `.fen` file in `src/` says: where its files go, and which `.fen` files are
@@ -305,7 +357,7 @@ fn some_of_a_kit(
         let (real, shown) = loader.own.path(&module);
         loader.visit_own(&module.join("."), &real, shown, None);
     }
-    loader.finish(Some(manifest))
+    loader.finish(Some(manifest)).map(|(program, _)| program)
 }
 
 /// Why a `kit.toml` that's there isn't taken, as the command's error.
@@ -432,16 +484,32 @@ fn name_tests_apart(files: &mut [File], sources: &Sources) {
         }
     }
     for file in files.iter_mut().filter(|file| file.prefix.is_empty()) {
-        for item in &mut file.module.items {
-            let Item::Test(test) = item else { continue };
-            let Some(found) = places.get(&test.name).filter(|found| found.len() > 1) else { continue };
-            let place = if found.iter().filter(|module| **module == file.name).count() > 1 {
-                let line = sources.locate(test.span).map_or(0, |(_, line, ..)| line);
-                format!("in {}, line {line}", file.name)
-            } else {
-                format!("in {}", file.name)
-            };
-            test.name = format!("{} ({place})", test.name);
+        let renamed: Vec<(usize, String)> = file
+            .module
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(at, item)| {
+                let Item::Test(test) = item else { return None };
+                let found = places.get(&test.name).filter(|found| found.len() > 1)?;
+                let place = if found.iter().filter(|module| **module == file.name).count() > 1 {
+                    let line = sources.locate(test.span).map_or(0, |(_, line, ..)| line);
+                    format!("in {}, line {line}", file.name)
+                } else {
+                    format!("in {}", file.name)
+                };
+                Some((at, format!("{} ({place})", test.name)))
+            })
+            .collect();
+        if renamed.is_empty() {
+            continue;
+        }
+        // A module kept for the next load is copied, since tests are named apart in each load.
+        let module = Arc::make_mut(&mut file.module);
+        for (at, name) in renamed {
+            if let Some(Item::Test(test)) = module.items.get_mut(at) {
+                test.name = name;
+            }
         }
     }
 }
@@ -555,6 +623,11 @@ fn by_its_whole_name(place: &Place, import: &mut Import) {
 struct Loader<'a> {
     /// Text read in place of files on disk.
     overlay: &'a Overlay,
+    /// What the load before kept, used again for each file that's as it was, and whether this
+    /// load keeps what it finds for the next.
+    keeping: Keeping<'a>,
+    /// How many files' parses were found kept.
+    parses_kept: usize,
     /// The kit being loaded.
     own: Rc<Place>,
     /// The kits it depends on, and those they depend on, by name.
@@ -570,7 +643,7 @@ struct Loader<'a> {
     /// The modules being loaded, outermost first, to find imports that go in a circle.
     stack: Vec<String>,
     /// Modules parsed ahead of being visited, by name.
-    parsed: HashMap<String, Result<Module, Diagnostic>>,
+    parsed: HashMap<String, Loaded>,
     errors: Vec<Diagnostic>,
     /// Problems with no place in a file to point at.
     unplaced: Vec<String>,
@@ -587,6 +660,8 @@ impl<'a> Loader<'a> {
         let root = root.map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()));
         Loader {
             overlay,
+            keeping: Keeping::default(),
+            parses_kept: 0,
             own: Rc::new(Place { name: String::new(), src, shown_src, root, uses: dependencies.uses }),
             kits: dependencies.kits,
             holds: dependencies.holds,
@@ -648,13 +723,19 @@ impl<'a> Loader<'a> {
         if !self.seen.insert(name.to_owned()) {
             return;
         }
-        let parsed = if let Some(parsed) = self.parsed.remove(name) {
-            parsed
+        let loaded = if let Some(loaded) = self.parsed.remove(name) {
+            loaded
         } else {
             match self.read(real) {
                 Ok(text) => {
                     let base = self.sources.add(shown.clone(), text);
-                    parse_file(&self.sources, base, &shown, self.doc_examples && !place.is_dependency())
+                    let doc_examples = self.doc_examples && !place.is_dependency();
+                    let key = self.key(place, base, &shown, doc_examples);
+                    let parsed = match self.found_kept(name, key.as_ref()) {
+                        Some(found) => Ok(found),
+                        None => parse_file(&self.sources, base, &shown, doc_examples).map(Parsed::Fresh),
+                    };
+                    Loaded { key, parsed }
                 }
                 Err(err) => {
                     match from {
@@ -670,26 +751,17 @@ impl<'a> Loader<'a> {
                 }
             }
         };
-        let mut module = match parsed {
-            Ok(module) => module,
+        let Loaded { key, parsed } = loaded;
+        let parsed = match parsed {
+            Ok(parsed) => parsed,
             Err(diagnostic) => {
                 self.errors.push(diagnostic);
                 return;
             }
         };
-        let at =
-            embed::Place { file: real, shown: &shown, root: place.root.as_deref(), overlay: self.overlay };
-        embed::read_files(&mut module, &at, &mut self.embedded, &mut self.errors);
-        let mut imports = Vec::new();
-        for item in &mut module.items {
-            let Item::Import(import) = item else { continue };
-            if !is_std(import) {
-                imports.extend(self.imported_modules(place, import));
-                by_its_whole_name(place, import);
-            }
-        }
+        let (module, keep, imports) = self.taken(place, parsed, key, real, &shown);
         let prefix = place.prefix();
-        self.files.push(File { name: name.to_owned(), shown, module, prefix, exports: HashSet::new() });
+        self.files.push(File { name: name.to_owned(), shown, module, prefix, exports: HashSet::new(), keep });
         self.parse_ahead(imports.iter().map(|(wanted, _)| wanted.clone()).collect());
         self.stack.push(name.to_owned());
         for (wanted, span) in imports {
@@ -697,6 +769,58 @@ impl<'a> Loader<'a> {
             self.visit(&wanted.place, &wanted.name, &real, shown, Some(span));
         }
         self.stack.pop();
+    }
+
+    /// A file's module as the program takes it, with what's kept of it for the next load and the
+    /// modules it imports. A parse has the files it embeds read in, and its imports written by
+    /// their whole names. A kept module has had both: only its imports are followed again, since
+    /// what they find can change.
+    fn taken(
+        &mut self,
+        place: &Rc<Place>,
+        parsed: Parsed,
+        key: Option<FileKey>,
+        real: &Path,
+        shown: &str,
+    ) -> (Arc<Module>, Option<Keep>, Vec<(Wanted, Span)>) {
+        let mut imports = Vec::new();
+        match parsed {
+            Parsed::Fresh(mut module) => {
+                let at =
+                    embed::Place { file: real, shown, root: place.root.as_deref(), overlay: self.overlay };
+                let embeds = embed::read_files(&mut module, &at, &mut self.embedded, &mut self.errors);
+                let mut written = Vec::new();
+                for item in &mut module.items {
+                    let Item::Import(import) = item else { continue };
+                    if !is_std(import) {
+                        if self.keeping.keep {
+                            written.push(import.clone());
+                        }
+                        imports.extend(self.imported_modules(place, import));
+                        by_its_whole_name(place, import);
+                    }
+                }
+                let module = Arc::new(module);
+                let keep = key.filter(|_| self.keeping.keep && !embeds).map(|key| Keep {
+                    key,
+                    written: written.into(),
+                    parsed: Arc::clone(&module),
+                });
+                (module, keep, imports)
+            }
+            Parsed::Kept(module, written) => {
+                self.parses_kept += 1;
+                for import in written.iter() {
+                    imports.extend(self.imported_modules(place, import));
+                }
+                let keep = key.filter(|_| self.keeping.keep).map(|key| Keep {
+                    key,
+                    written,
+                    parsed: Arc::clone(&module),
+                });
+                (module, keep, imports)
+            }
+        }
     }
 
     /// Parses the modules that are about to be visited, side by side. One that can't be read
@@ -709,22 +833,100 @@ impl<'a> Loader<'a> {
     }
 
     fn parse_these(&mut self, modules: Vec<Wanted>, doc_examples: bool) {
-        let mut names = Vec::new();
+        let mut names: Vec<(String, Option<FileKey>)> = Vec::new();
         let mut texts = Vec::new();
         for wanted in modules {
             let name = wanted.name;
-            if self.seen.contains(&name) || self.parsed.contains_key(&name) || names.contains(&name) {
+            if self.seen.contains(&name)
+                || self.parsed.contains_key(&name)
+                || names.iter().any(|(listed, _)| *listed == name)
+            {
                 continue;
             }
             let (real, shown) = wanted.place.path(&wanted.module);
             if let Ok(text) = self.read(&real) {
                 let base = self.sources.add(shown.clone(), text);
-                names.push(name);
+                let key = self.key(&wanted.place, base, &shown, doc_examples);
+                if let Some(found) = self.found_kept(&name, key.as_ref()) {
+                    self.parsed.insert(name, Loaded { key, parsed: Ok(found) });
+                    continue;
+                }
+                names.push((name, key));
                 texts.push((base, shown));
             }
         }
         let parsed = parse_all(&self.sources, &texts, doc_examples);
-        self.parsed.extend(names.into_iter().zip(parsed));
+        for ((name, key), parsed) in names.into_iter().zip(parsed) {
+            self.parsed.insert(name, Loaded { key, parsed: parsed.map(Parsed::Fresh) });
+        }
+    }
+
+    /// What the file added to `sources` at `base` is kept by, in a load that keeps or uses what's
+    /// kept: what it is, where, and what its parse depends on of its kit.
+    fn key(&self, place: &Place, base: u32, shown: &str, doc_examples: bool) -> Option<FileKey> {
+        if self.keeping.before.is_none() && !self.keeping.keep {
+            return None;
+        }
+        let (_, text) = self.sources.hashed_text_at(base)?;
+        Some(FileKey { shown: shown.to_owned(), base, text, doc_examples, place: place.kept_as() })
+    }
+
+    /// The module `name` as the load before kept it, when it was kept by the same key.
+    fn found_kept(&self, name: &str, key: Option<&FileKey>) -> Option<Parsed> {
+        let kept = self.keeping.before?.files.get(name)?;
+        (Some(&kept.key) == key).then(|| Parsed::Kept(Arc::clone(&kept.parsed), Arc::clone(&kept.written)))
+    }
+
+    /// The rewriting the load before kept for each file whose module is the one it kept, when the
+    /// load has the same files in the same order: a file's place in it is what the rewriting read
+    /// of the others by.
+    fn rewritings_before(&self) -> Vec<Option<scope::Before>> {
+        let Some(before) = self.keeping.before else { return Vec::new() };
+        let same_files = before.order.len() == self.files.len()
+            && before
+                .order
+                .iter()
+                .zip(&self.files)
+                .all(|((name, prefix), file)| *name == file.name && *prefix == file.prefix);
+        if !same_files {
+            return Vec::new();
+        }
+        self.files
+            .iter()
+            .map(|file| {
+                let kept = before.files.get(&file.name)?;
+                Arc::ptr_eq(&kept.parsed, &file.module).then(|| scope::Before {
+                    module: Arc::clone(&kept.resolved),
+                    reads: Arc::clone(&kept.reads),
+                })
+            })
+            .collect()
+    }
+
+    /// What this load keeps for the next: each file kept, with its rewriting, and the files in
+    /// order. Taken after names across files are rewritten, before tests are named apart.
+    fn kept_for_next(&self, resolved: scope::Resolved) -> KeptLoad {
+        let files = self
+            .files
+            .iter()
+            .zip(resolved.reads)
+            .filter_map(|(file, reads)| {
+                let keep = file.keep.as_ref()?;
+                let kept = KeptFile {
+                    key: keep.key.clone(),
+                    written: Arc::clone(&keep.written),
+                    parsed: Arc::clone(&keep.parsed),
+                    resolved: Arc::clone(&file.module),
+                    reads: reads?,
+                };
+                Some((file.name.clone(), kept))
+            })
+            .collect();
+        KeptLoad {
+            files,
+            order: self.files.iter().map(|file| (file.name.clone(), file.prefix.clone())).collect(),
+            used: Used { files: self.files.len(), parses: self.parses_kept, rewritings: resolved.kept },
+        }
     }
 
     /// The modules an import loads. `from game import physics` loads `game/physics.fen` when
@@ -768,8 +970,9 @@ impl<'a> Loader<'a> {
         self.overlay.contains_key(path) || path.is_file()
     }
 
-    /// Checks names across the kits' files and merges them into one module.
-    fn finish(mut self, manifest: Option<Manifest>) -> Result<Program, Problems> {
+    /// Checks names across the kits' files and merges them into one module, with what it keeps
+    /// for the next load in a load that keeps.
+    fn finish(mut self, manifest: Option<Manifest>) -> Result<(Program, Option<KeptLoad>), Problems> {
         // Past this, a program's own text would be read as what the compiler writes in.
         if self.sources.too_long() {
             let message = "the program and its kits are more source than Fennec builds: past 6,144 files of up to 256 KiB, the rest have 256 MiB together";
@@ -783,17 +986,20 @@ impl<'a> Loader<'a> {
                 unplaced: self.unplaced,
             });
         }
+        let mut resolved = None;
         if self.errors.is_empty() {
             let texts: HashMap<&str, &str> = self.sources.files().collect();
             for file in self.files.iter_mut().filter(|file| !file.prefix.is_empty()) {
                 file.exports = texts.get(file.shown.as_str()).map(|text| exported(text)).unwrap_or_default();
             }
-            scope::resolve(&mut self.files, &mut self.errors);
+            let before = self.rewritings_before();
+            resolved = Some(scope::resolve(&mut self.files, &mut self.errors, before, self.keeping.keep));
         }
         if !self.errors.is_empty() {
             self.errors.sort_by_key(|diagnostic| diagnostic.span.start);
             return Err(Problems { sources: self.sources, diagnostics: self.errors, unplaced: Vec::new() });
         }
+        let kept = resolved.filter(|_| self.keeping.keep).map(|resolved| self.kept_for_next(resolved));
         let dependency_files =
             self.files.iter().filter(|file| !file.prefix.is_empty()).map(|file| file.shown.clone()).collect();
         name_tests_apart(&mut self.files, &self.sources);
@@ -803,18 +1009,23 @@ impl<'a> Loader<'a> {
             .into_iter()
             .flat_map(|file| {
                 let own = file.prefix.is_empty();
-                file.module.items.into_iter().filter(move |item| own || !matches!(item, Item::Test(_)))
+                // Copied when it's kept for the next load.
+                Arc::unwrap_or_clone(file.module)
+                    .items
+                    .into_iter()
+                    .filter(move |item| own || !matches!(item, Item::Test(_)))
             })
             .filter(|item| !matches!(item, Item::Import(import) if !is_std(import)))
             .collect();
         let kit_src = manifest.as_ref().map(|_| (self.own.src.clone(), self.own.shown_src.clone()));
-        Ok(Program {
+        let program = Program {
             module: Module { items, holds: self.holds, files: self.sources.spans(), ..Default::default() },
             sources: self.sources,
             manifest,
             embedded: self.embedded,
             kit_src,
             dependency_files,
-        })
+        };
+        Ok((program, kept))
     }
 }

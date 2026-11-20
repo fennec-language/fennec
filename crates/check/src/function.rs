@@ -101,8 +101,8 @@ pub(crate) struct FnCx<'c> {
     /// The function's own name, for messages.
     pub(crate) name: String,
     scopes: Vec<Scope>,
-    /// Whether to report problems: not for the standard library, or for a field default
-    /// looked at only for its type.
+    /// Whether to report problems: not for the standard library but in `Scope::Library`'s check,
+    /// and not for a field default looked at only for its type.
     pub(crate) report: bool,
     /// The return type written in the signature, if any.
     pub(crate) declared: Option<Type>,
@@ -350,6 +350,7 @@ impl<'c> FnCx<'c> {
         }
         let effects = effects::of_body(&def.body);
         (cx.generator, cx.fallible) = (effects.yields, effects.fails || def.fails.is_some());
+        cx.no_ref_parameters(def, effects.yields);
         for binding in captured {
             cx.capture(binding);
         }
@@ -629,6 +630,15 @@ impl<'c> FnCx<'c> {
         }
     }
 
+    /// Refuses a generator's `ref` parameters, when `def` is one. A generator runs a little at a
+    /// time, after its call has given it back, so a `ref` it took would be held across every
+    /// `yield` while its caller changes the place by its own name.
+    fn no_ref_parameters(&mut self, def: &FnDef, generator: bool) {
+        for written in def.params.iter().filter(|written| generator && written.is_mut) {
+            self.error(ref_in_a_generator(written));
+        }
+    }
+
     /// Refuses a parameter of a program's `main` that isn't a capability, as `args: list[str]`: a
     /// program is started with its capabilities, and with nothing else to hand `main`.
     fn main_is_given_capabilities(&mut self, params: &[ParamType], def: &FnDef) {
@@ -698,7 +708,7 @@ impl<'c> FnCx<'c> {
     pub(crate) fn check_fields(checker: &'c mut Checker, type_name: &str) {
         let Some(info) = checker.program.type_info(type_name) else { return };
         let def = info.def.clone();
-        let report = !info.prelude;
+        let report = checker.reports(info.prelude);
         let mut cx = FnCx::new(checker, &format!("fields of {type_name}"), type_name, report);
         cx.generics.clone_from(&def.generics);
         for field in &def.fields {
@@ -1408,6 +1418,20 @@ fn failing_generator_reached(name: &str, ty: &Type, span: Span, param: bool) -> 
 
 /// Python's `name: str = None`: a `None` default for a parameter of a plain type, which can't be
 /// `None`. The `?` that lets it be is a fix to make by hand, since every use of it changes.
+/// A generator function's `ref` parameter, which would outlive the call that gave it.
+fn ref_in_a_generator(param: &fennec_syntax::Param) -> Diagnostic {
+    let name = &param.name;
+    Diagnostic::new(
+        format!(
+            "a generator can't take `ref {name}`: it runs after its call has given it back, while what called it can change `{name}` too"
+        ),
+        param.span,
+    )
+    .with_help(format!(
+        "take `{name}` without `ref`, as a copy of its own, or give back a `list` of the items rather than yielding them"
+    ))
+}
+
 fn none_for_plain_type(name: &str, ty: &Type, written: Span, default: Span) -> Diagnostic {
     let shown = crate::types::a(ty);
     Diagnostic::new(format!("`{name}` is {shown}, which can't be `None`"), default).with_hint(

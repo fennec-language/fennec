@@ -1180,3 +1180,128 @@ fn the_file_put_beside_each_tests_parses_and_has_lints_of_its_own() {
         .unwrap_or_default();
     assert!(rules.contains(&"unused-name"), "{rules:?}");
 }
+
+/// What the linter finds in the standard library that std truly needs, each with why, matched by
+/// its file and the start of its message.
+fn std_exceptions() -> Vec<(&'static str, String, &'static str)> {
+    let sent = "the checker sends calls here, as for `blake3(chunks)`, so nothing written names it";
+    let mut exceptions = vec![
+        (
+            "math.fen",
+            "nothing uses the function `fixed_sum`".to_owned(),
+            "the checker sends a sum of floats here",
+        ),
+        ("fs.fen", "`Fs` is too short".to_owned(), "the capability's public name"),
+        ("uuid.fen", "`v4` is too short".to_owned(), "the UUID version's own name, and public"),
+        ("uuid.fen", "`v7` is too short".to_owned(), "the UUID version's own name, and public"),
+    ];
+    for hash in ["blake3", "sha256"] {
+        for form in ["", "_digest"] {
+            for chunk in ["str", "bytes"] {
+                for given in ["chunks", "list"] {
+                    let message = format!("nothing uses the function `{hash}{form}_of_{chunk}_{given}`");
+                    exceptions.push(("crypto.fen", message, sent));
+                }
+            }
+        }
+    }
+    // A workaround, not a need: a std module is one file, so a long one can't be split yet (#2241).
+    for file in ["collections.fen", "json.fen", "net.fen", "pack.fen", "postgres.fen", "toml.fen"] {
+        exceptions.push((
+            file,
+            "this file is ".to_owned(),
+            "a std module is one file, so it can't be split yet",
+        ));
+    }
+    exceptions
+}
+
+/// What the linter finds in std that's left to fix, by file and message: the list only shrinks.
+const STD_FINDINGS: &str = "tests/std_findings.txt";
+
+/// The standard library, linted as a kit of its own is: each of its files, but the intrinsics a
+/// program can't write, as a file of the kit. What it truly needs is excepted with why, and
+/// what's left to fix is in `std_findings.txt`, which only shrinks: with `FENNEC_PIN_OUTPUTS` set,
+/// it's written as it is now, which its diff then has to show only shrinking.
+#[test]
+fn the_standard_library_is_linted_as_a_kit_is() {
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../syntax/src/stdlib");
+    let mut paths: Vec<_> = std::fs::read_dir(&folder)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "fen"))
+        .filter(|path| path.file_stem().is_some_and(|stem| stem != "intrinsics"))
+        .collect();
+    paths.sort();
+    let mut sources = Sources::new();
+    let mut module = Module::default();
+    for path in &paths {
+        let text = std::fs::read_to_string(path).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let base = sources.add(name.clone(), text.clone());
+        let parsed = parse_at(&text, base).unwrap_or_else(|problem| panic!("{name}: {}", problem.message));
+        module.items.extend(parsed.items);
+    }
+    module.files = sources.spans();
+    let mut lints = lint(&module, &sources);
+    lints.extend(fennec_lint::needless_conversions(&module, &sources));
+    lints.extend(fennec_lint::stale_copies(&module, &sources));
+    lints.extend(fennec_lint::double_lookups(&module, &sources));
+    lints.extend(fennec_lint::self_compares(&module, &sources));
+    let exceptions = std_exceptions();
+    let mut excepted = vec![0; exceptions.len()];
+    let mut found: Vec<String> = Vec::new();
+    for found_lint in &lints {
+        let file = sources.locate(found_lint.diagnostic.span).map_or("?", |(path, ..)| path);
+        // A lint's message starts with its rule's name, which the list says once, in brackets.
+        let message = &found_lint.diagnostic.message;
+        let message = message.strip_prefix(&format!("{}: ", found_lint.rule)).unwrap_or(message);
+        match exceptions
+            .iter()
+            .position(|(in_file, starts, _)| file == *in_file && message.starts_with(starts.as_str()))
+        {
+            Some(at) => excepted[at] += 1,
+            None => found.push(format!("{file}: [{}] {message}", found_lint.rule)),
+        }
+    }
+    let unused: Vec<&str> = exceptions
+        .iter()
+        .zip(&excepted)
+        .filter(|(_, count)| **count == 0)
+        .map(|((_, starts, _), _)| starts.as_str())
+        .collect();
+    assert!(unused.is_empty(), "these exceptions match nothing now, so take them out: {unused:?}");
+    found.sort();
+    let list = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(STD_FINDINGS);
+    if std::env::var_os("FENNEC_PIN_OUTPUTS").is_some() {
+        let mut text = String::from(
+            "# What the linter finds in the standard library, linted as a kit is, by file and message,\n\
+             # held by crates/lint/tests/lints.rs: fix one and it leaves this list, which only shrinks.\n\
+             # Written with FENNEC_PIN_OUTPUTS=1.\n",
+        );
+        for line in &found {
+            text.push_str(line);
+            text.push('\n');
+        }
+        std::fs::write(&list, text).unwrap();
+    }
+    let text = std::fs::read_to_string(&list).unwrap();
+    // How many more times each is found than listed: more is new, fewer was fixed.
+    let mut more: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
+    for line in &found {
+        *more.entry(line.as_str()).or_default() += 1;
+    }
+    for line in text.lines().filter(|line| !line.is_empty() && !line.starts_with('#')) {
+        *more.entry(line).or_default() -= 1;
+    }
+    let new: Vec<&str> = more.iter().filter(|(_, more)| **more > 0).map(|(line, _)| *line).collect();
+    let fixed: Vec<&str> = more.iter().filter(|(_, more)| **more < 0).map(|(line, _)| *line).collect();
+    assert!(
+        new.is_empty(),
+        "{} new in std, which a kit's lint would find: fix each\n{}",
+        new.len(),
+        new.join("\n")
+    );
+    assert!(fixed.is_empty(), "{} fixed, so take them off {STD_FINDINGS}\n{}", fixed.len(), fixed.join("\n"));
+}

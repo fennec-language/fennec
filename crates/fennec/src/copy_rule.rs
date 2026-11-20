@@ -207,7 +207,7 @@ pub(crate) fn check_rules_to_build(
     module: &mut Module,
     sources: &Sources,
 ) -> Result<Option<fennec_check::Signatures>, Vec<Diagnostic>> {
-    let (signatures, as_left) = fennec_check::check_to_build_saying(module)?;
+    let (signatures, as_left) = crate::kept::check_to_build(module, sources)?;
     let copies = implicit_copies(module, &signatures, sources);
     if copies.is_empty() { Ok(as_left.then_some(signatures)) } else { Err(copies) }
 }

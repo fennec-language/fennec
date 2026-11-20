@@ -85,7 +85,11 @@ pub(crate) fn build_here(path: &str, output: Option<&str>, release: bool) -> Exi
     // A kit's files as they are before it's read.
     let before =
         if Path::new(path).is_dir() { crate::verdict::kit_files(path, state.as_ref()) } else { None };
-    match crate::aot::build_kept(path, output, release) {
+    // The check the build daemon keeps of it knows what to take back, if it's found wrong later.
+    crate::kept::building_as(Some(name.clone()));
+    let built = crate::aot::build_kept(path, output, release);
+    crate::kept::building_as(None);
+    match built {
         Err(code) => code,
         Ok((program, built)) => {
             let files = before.or_else(|| {
@@ -102,6 +106,16 @@ pub(crate) fn build_here(path: &str, output: Option<&str>, release: bool) -> Exi
             }
             ExitCode::SUCCESS
         }
+    }
+}
+
+/// Takes back what a build noted, as `name`, it was made from, so the next build of those files
+/// builds again rather than putting out what that build made. The build daemon does this when
+/// checking a kit all again disagrees with what its last build carried over (`kept`).
+#[cfg(unix)]
+pub(crate) fn forget(name: &str) {
+    if let Some(cache) = crate::run::cache() {
+        cache.clear_kit_state(name, BUILD);
     }
 }
 

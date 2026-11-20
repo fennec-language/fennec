@@ -325,9 +325,25 @@ impl Emit<'_, '_, '_> {
         }
         if self.module.threads {
             self.sort_by_address(&mut held);
-        }
-        for (word, cell, write, plain) in &held {
-            self.take_and_enter((word, cell), write, plain, span);
+            // While the run is recorded or replayed, each value's turn comes before any is taken: a
+            // task holding one and waiting for its turn at the next can't make way on its worker,
+            // and that turn may be a task's behind it there, so a replay hung where its recording
+            // ran.
+            let replaying = self.replaying();
+            for (_, cell, write, _) in &held {
+                self.if_replaying(&replaying, "fennec_replay_lock", cell, write);
+            }
+            for (word, cell, write, plain) in &held {
+                self.take_word(word, write, span);
+                self.entered(cell, write, plain);
+            }
+            for (_, cell, write, _) in &held {
+                self.if_replaying(&replaying, "fennec_replay_locked", cell, write);
+            }
+        } else {
+            for (word, cell, write, plain) in &held {
+                self.take_and_enter((word, cell), write, plain, span);
+            }
         }
         for (handle, _) in handles {
             if self.saves_changes(handle) {
@@ -664,6 +680,40 @@ mod tests {
         let text =
             units.into_iter().find(|unit| unit.function == "main").map(|unit| unit.text).ok_or("no main")?;
         Ok((text, shared.literals.into_values().collect()))
+    }
+
+    /// `main`'s text for `source`, lowered as a build lowers it.
+    fn main_text(source: &str) -> Result<String, String> {
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let options =
+            fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true, serve_in_order: false };
+        let program = fennec_ir::lower_with(&module, &checked, options);
+        let (units, ..) = crate::emit::emit(&program)?;
+        units
+            .into_iter()
+            .find(|unit| unit.function == "main")
+            .map(|unit| unit.text)
+            .ok_or_else(|| "no main".to_owned())
+    }
+
+    /// While a run is recorded or replayed, a `lock` of two values asks for its turn at each before
+    /// it takes either. Taking one, then waiting for the turn at the next, it held a lock while it
+    /// waited, so it couldn't make way on its worker for the task whose turn that was, and a
+    /// replay hung where its recording ran.
+    #[test]
+    fn a_lock_of_two_values_asks_for_both_turns_before_taking_either() -> Result<(), String> {
+        let program = "struct Box:\n    total = 1\n\ndef main(stdout: Stdout):\n    shared one = Box()\n    shared two = Box()\n    lock one, two as ref first, ref second:\n        first.total += second.total\n    stdout.print(sum(n for n in parallel([1, 2])))\n";
+        let text = main_text(program)?;
+        let asked: Vec<usize> =
+            text.match_indices("call void @fennec_replay_lock(").map(|(at, _)| at).collect();
+        let taken: Vec<usize> = text.match_indices("cmpxchg ptr").map(|(at, _)| at).collect();
+        let told: Vec<usize> =
+            text.match_indices("call void @fennec_replay_locked(").map(|(at, _)| at).collect();
+        assert_eq!((asked.len(), taken.len(), told.len()), (2, 2, 2), "{text}");
+        assert!(asked.iter().all(|at| taken.iter().all(|take| at < take)), "{text}");
+        assert!(told.iter().all(|at| taken.iter().all(|take| at > take)), "{text}");
+        Ok(())
     }
 
     /// A lock this thread holds, taken again, ends the program, as it would wait forever. The

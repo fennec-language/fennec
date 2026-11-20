@@ -451,12 +451,23 @@ fn as_checked(found: Result<(fennec_check::Signatures, bool), Vec<fennec_syntax:
 /// The program's module, loaded from its files in `folder` as `fennec build` loads them, or what
 /// stops it loading.
 fn loaded(files: &Files, folder: &Path) -> Result<fennec_syntax::Module, Vec<String>> {
+    loaded_with_sources(files, folder).map(|(module, _)| module)
+}
+
+/// `loaded`, with the files' texts as the load laid them out.
+fn loaded_with_sources(
+    files: &Files,
+    folder: &Path,
+) -> Result<(fennec_syntax::Module, fennec_syntax::Sources), Vec<String>> {
     write_files(folder, files).map_err(|err| vec![err])?;
     let overlay = fennec_kit::Overlay::new();
     fennec_kit::load_with(&folder.join(PROGRAM), PROGRAM, fennec_kit::Entry::Main, &overlay)
-        .map(|program| program.module)
+        .map(|program| (program.module, program.sources))
         .map_err(|problems| problems.diagnostics.iter().map(|problem| format!("load: {problem:?}")).collect())
 }
+
+/// What a check kept, with the files it was found in.
+type Kept = (KeptCheck, fennec_syntax::Sources);
 
 /// The files loaded using what the load before kept, with the loader's own comparison with loading
 /// it all again on, against loading them all again here: they load the same, or fail the same.
@@ -480,15 +491,22 @@ fn loads_agree(files: &Files, folder: &Path, kept: &mut fennec_kit::KeptLoad) ->
     Ok(used)
 }
 
-/// A check of the files that keeps what it finds, carrying over from `kept`, with the checker's
+/// A check of the files that keeps what it finds, carrying over from `kept` what the edit since
+/// left as it was, as the build daemon does (`fennec_check::Edit::between`), with the checker's
 /// own comparison on.
-fn kept_check(files: &Files, folder: &Path, kept: Option<KeptCheck>) -> (Checked, Option<KeptCheck>) {
-    let mut module = match loaded(files, folder) {
-        Ok(module) => module,
+fn kept_check(files: &Files, folder: &Path, kept: Option<Kept>) -> (Checked, Option<Kept>) {
+    let (mut module, sources) = match loaded_with_sources(files, folder) {
+        Ok(loaded) => loaded,
         Err(problems) => return (Err(problems), None),
     };
-    match check_to_build_keeping(&mut module, kept, true) {
-        Ok((signatures, as_left, kept)) => (as_checked(Ok((signatures, as_left))), Some(kept)),
+    let carried =
+        kept.and_then(|(kept, before)| Some((kept, fennec_check::Edit::between(&before, &sources)?)));
+    let found = match carried {
+        Some((kept, edit)) => check_to_build_keeping(&mut module, (Some(kept), Some(&edit)), true),
+        None => check_to_build_keeping(&mut module, (None, None), true),
+    };
+    match found {
+        Ok((signatures, as_left, kept)) => (as_checked(Ok((signatures, as_left))), Some((kept, sources))),
         Err(problems) => (as_checked(Err(problems)), None),
     }
 }
@@ -531,7 +549,7 @@ fn checks_agree_in(versions: &[Version], folder: &Path) -> Result<Carried, Strin
             .map_err(|why| format!("after edit {at}, {why}\nin:\n{}", shown_files(version)))?;
         carried.loads += usize::from(used);
         let (found, next) = kept_check(&version.files, folder, kept);
-        if next.as_ref().is_some_and(|next| next.carried_over() > 0) {
+        if next.as_ref().is_some_and(|(next, _)| next.carried_over() > 0) {
             carried.checks += 1;
         }
         let whole = whole_check(&version.files, folder);

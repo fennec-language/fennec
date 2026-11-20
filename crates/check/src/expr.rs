@@ -950,6 +950,13 @@ impl FnCx<'_> {
         }
         let ty = self.failing_step(ty, object.span, span);
         let optional = optional || self.chained_step(&ty, span);
+        if !optional
+            && self.checker.settled(&ty).maybe_none()
+            && let Some(problem) = self.changed_since_checked(object, span)
+        {
+            self.error(problem);
+            return Type::Unknown;
+        }
         self.field_of(&ty, name, optional, span)
     }
 

@@ -420,7 +420,7 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, way: Way) -> Result<V
             .arg(&output),
         "llc",
     )?;
-    std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
+    std::fs::read(&output).map_err(|err| unreadable(&output, &err))
 }
 
 /// How hard `llc` works on a module compiled `way`. A huge function is compiled at `-O0`, but
@@ -627,7 +627,27 @@ fn whole_object(
             .arg(&output),
         "llc",
     )?;
-    std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
+    std::fs::read(&output).map_err(|err| unreadable(&output, &err))
+}
+
+/// What a tool's output that can't be read is said as: with whether the folder it was written in
+/// is still there, and what that holds, so a folder that went is told from a file that did.
+fn unreadable(output: &Path, err: &std::io::Error) -> String {
+    let shown = output.display();
+    let Some(listing) = output.parent().and_then(|folder| std::fs::read_dir(folder).ok()) else {
+        return format!("couldn't read {shown}: {err}, and the folder it was written in is gone too");
+    };
+    let mut names: Vec<String> =
+        listing.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    let held = match names.len() {
+        0 => "nothing".to_owned(),
+        count if count > 12 => {
+            format!("{count} files, starting {}", names.get(..12).unwrap_or_default().join(", "))
+        }
+        _ => names.join(", "),
+    };
+    format!("couldn't read {shown}: {err}; the folder it was written in is there, holding {held}")
 }
 
 /// What compiling says when a unit used again without writing it has lost its object from the

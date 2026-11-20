@@ -127,6 +127,24 @@ pub(crate) trait Awaited: Send + Sync {
     fn number_of(&self, _who: &Who) -> Option<i64> {
         None
     }
+
+    /// Its name in a recording or a replay, for a stuck wait's line there: a launched task's, or a
+    /// `parallel` call's. `None` in a normal run.
+    fn replay_place(&self) -> Option<Arc<str>> {
+        None
+    }
+}
+
+impl Kind {
+    /// The word for it in a stuck wait's line in a recording.
+    fn word(self) -> &'static str {
+        match self {
+            Kind::Receive => "receive",
+            Kind::Send => "send",
+            Kind::BlockEnd => "end",
+            Kind::Join => "join",
+        }
+    }
 }
 
 /// Who's in a stuck wait.
@@ -203,6 +221,9 @@ pub(crate) struct Note {
     on: On,
     kind: Kind,
     range: Option<RangeName>,
+    /// In a recording or a replay, its line there, `task kind place`, made by the task that waits,
+    /// where its name is at hand: a report holds a replay's lines to the recording's.
+    replay: Option<Arc<str>>,
 }
 
 /// A range of a waiting `parallel` call, as a report names it: "range 3 of main's `parallel` call",
@@ -262,14 +283,17 @@ fn range_here() -> Option<RangeName> {
 impl Note {
     /// The note of a parked wait of `kind` on the channel numbered `channel`, whose worker says who
     /// it is as the task parks (`parked_by`): nothing's looked up or shared on the way to a park.
-    pub(crate) fn on_channel(channel: i64, kind: Kind) -> Note {
-        Note { who: Who::Other, on: On::Channel(channel), kind, range: range_here() }
+    /// `place` is the channel's name in a recording or a replay.
+    pub(crate) fn on_channel(channel: i64, kind: Kind, place: Option<&str>) -> Note {
+        let replay = place.map(|place| crate::replay::line(kind.word(), place));
+        Note { who: Who::Other, on: On::Channel(channel), kind, range: range_here(), replay }
     }
 
     /// The note of a parked wait of `kind` on `on`, as `on_channel`'s.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
     pub(crate) fn parked(on: Arc<dyn Awaited>, kind: Kind) -> Note {
-        Note { who: Who::Other, on: On::Awaited(on), kind, range: range_here() }
+        let replay = on.replay_place().map(|place| crate::replay::line(kind.word(), &place));
+        Note { who: Who::Other, on: On::Awaited(on), kind, range: range_here(), replay }
     }
 
     /// The same note, of a wait that blocks this thread, by whoever's running here.
@@ -472,6 +496,17 @@ pub(crate) fn woke_idle(stuck: u64) {
 /// call and where they start.
 type Order = (u8, i64, (u8, i64, String), i64);
 
+/// Each stuck wait's line in a recording or a replay, in order: the same deadlock gives the same
+/// lines however its run went. A wait whose line isn't known, as one begun before the run was
+/// recorded, is `?`, which no recording's deadlock has.
+#[cfg_attr(test, expect(dead_code, reason = "only a report, which tests don't make, says them"))]
+fn replay_lines(notes: &[Note]) -> Vec<String> {
+    let mut lines: Vec<String> =
+        notes.iter().map(|note| note.replay.as_deref().unwrap_or("?").to_owned()).collect();
+    lines.sort();
+    lines
+}
+
 /// What a deadlock says: one line, then one for each stuck wait, in the order of who waits.
 fn said(notes: &[Note]) -> String {
     let mut lines: Vec<(Order, String)> = notes.iter().map(|note| note.said(notes)).collect();
@@ -490,7 +525,7 @@ fn said(notes: &[Note]) -> String {
 /// worker's slot. Stops the program if it's proven; otherwise does nothing.
 pub(crate) fn look() {
     let before = counts();
-    if !before.all_stuck() || crate::replay::active() {
+    if !before.all_stuck() {
         return;
     }
     let Some(notes) = proven(before) else { return };
@@ -603,7 +638,15 @@ fn report(notes: &[Note]) {
     }
     super::write_kept_output();
     let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().write_all(said(notes).as_bytes());
+    // A recording logs the deadlock, and a replay holds its own to the recording's: one that isn't
+    // the same has diverged, and says that instead.
+    let words = said(notes);
+    let said = match crate::replay::deadlocked(&replay_lines(notes), &words) {
+        // A replay that came to its recording's deadlock says it as the recording did.
+        Ok(recorded) => recorded.unwrap_or(words),
+        Err(why) => format!("error: {why}\n"),
+    };
+    let _ = std::io::stderr().write_all(said.as_bytes());
     super::aot::stop_now(1);
 }
 

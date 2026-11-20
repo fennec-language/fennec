@@ -446,6 +446,83 @@ fn checked_fields_are_forgotten_when_their_value_changes() {
     );
 }
 
+/// A field path checked for `None` stays checked until something could change it (#2267). A
+/// change inside it, or to a field beside it, leaves it checked, nested or a `for ref` item's. An
+/// assignment to it or to what holds it, a `ref` call given what holds it, and a method taking
+/// `ref self` on what holds it each forget it, and reading it as checked after says where it
+/// might have changed.
+#[test]
+fn a_checked_field_path_stays_checked_until_something_could_change_it() {
+    let program = "
+        struct Holder:
+            weapon: Weapon?
+            name: str
+
+            def disarm(ref self):
+                self.weapon = None
+
+        struct Camp:
+            holder: Holder
+
+        def disarmed(ref holder: Holder):
+            holder.weapon = None
+
+        def kept(name: str) -> int:
+            mut holder = Holder(weapon=Weapon(damage=1), name=name)
+            mut total = 0
+            if holder.weapon is not None:
+                holder.weapon.damage += 1
+                holder.name = 'renamed'
+                total += holder.weapon.damage
+            mut camp = Camp(holder=holder)
+            if camp.holder.weapon is not None:
+                camp.holder.weapon.damage += 2
+                camp.holder.name = 'camp'
+                total += camp.holder.weapon.damage
+            mut holders = [holder]
+            for ref each in holders:
+                if each.weapon is not None:
+                    each.weapon.damage += 3
+                    total += each.weapon.damage
+            return total
+
+        def forgotten(name: str) -> int:
+            mut holder = Holder(weapon=Weapon(damage=1), name=name)
+            mut total = 0
+            if holder.weapon is not None:
+                disarmed(ref holder)
+                total += holder.weapon.damage
+            if holder.weapon is not None:
+                holder.disarm()
+                total += holder.weapon.damage
+            if holder.weapon is not None:
+                holder.weapon = None
+                total += holder.weapon.damage
+            mut camp = Camp(holder=holder)
+            if camp.holder.weapon is not None:
+                camp.holder = Holder(weapon=None, name='new')
+                total += camp.holder.weapon.damage
+            return total
+    ";
+    let program = format!("{FIND}\n{}", crate::dedent(program));
+    assert_eq!(
+        problems(&program),
+        [
+            "this might be None @ holder.weapon.damage",
+            "this might be None @ holder.weapon.damage",
+            "this might be None @ holder.weapon.damage",
+            "this might be None @ camp.holder.weapon.damage",
+        ]
+    );
+    let said = helps(&program);
+    assert_eq!(said.len(), 4, "{said:?}");
+    assert!(
+        said.iter().all(|help| help
+            .contains("was checked for `None`, but the line the note points at might have changed it")),
+        "{said:?}"
+    );
+}
+
 #[test]
 fn match_cases_bind_typed_values() {
     let program = "

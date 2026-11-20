@@ -6012,6 +6012,50 @@ def main(stdout: Stdout):
     stdout.print(counts)
 "#;
 
+/// A field path checked for `None` stays checked while what changes leaves it as it was (#2267): a
+/// change inside it, and one to a field beside it, nested a struct down, and in a `for ref` item,
+/// where `None` is passed over. The oracle runs it the same.
+#[test]
+fn a_checked_field_path_is_changed_inside_where_it_is_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "checked_field_path_changed",
+        CHECKED_FIELD_PATH_CHANGED,
+        "35\nHolder(cell=Cell(health=35), name=\"lair\")\nCamp(holder=Holder(cell=Cell(health=70), name=\"lair\"))\n\
+         [Holder(cell=Cell(health=34), name=\"lair\"), Holder(cell=None, name=\"empty\")]\n",
+    )
+}
+
+const CHECKED_FIELD_PATH_CHANGED: &str = r#"struct Cell:
+    health = 0
+
+struct Holder:
+    cell: Cell?
+    name: str
+
+struct Camp:
+    holder: Holder
+
+def main(stdout: Stdout):
+    mut holder = Holder(cell=Cell(health=5), name="den")
+    if holder.cell is not None:
+        holder.cell.health += 30
+        holder.name = "lair"
+        stdout.print(holder.cell.health)
+    stdout.print(holder)
+    mut camp = Camp(holder=holder)
+    if camp.holder.cell is not None:
+        camp.holder.cell.health *= 2
+    stdout.print(camp)
+    mut holders = [holder, Holder(cell=None, name="empty")]
+    for ref each in holders:
+        if each.cell is not None:
+            each.cell.health -= 1
+    stdout.print(holders)
+"#;
+
 /// A local `ref` inside `lock ... as ref held:` reads and writes the locked value, `slot = slot * 2`
 /// and `x = slot + 1` as well as `+=`, and a failure leaving the lock undoes what was changed
 /// through it, as it undoes a write made directly.

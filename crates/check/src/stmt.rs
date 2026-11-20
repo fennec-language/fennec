@@ -749,6 +749,17 @@ pub(crate) fn members(cond: &Expr, when: bool) -> Vec<Member> {
     }
 }
 
+/// The field path an assignment to `expr` changes: the path itself, or for an item, the path of
+/// what holds it, as `holder.items` for `holder.items[0].x`. None when it isn't a place.
+pub(crate) fn changed_path(expr: &Expr) -> Option<String> {
+    path(expr).or_else(|| match &expr.kind {
+        ExprKind::Attr { object, optional: false, .. } | ExprKind::Index { object, .. } => {
+            changed_path(object)
+        }
+        _ => None,
+    })
+}
+
 /// A name, or a path of fields from one: `player.weapon`.
 pub(crate) fn path(expr: &Expr) -> Option<String> {
     match &expr.kind {

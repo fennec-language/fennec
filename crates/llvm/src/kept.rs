@@ -8,8 +8,9 @@
 //! than every function of the program.
 //!
 //! Only the last build's analyses are kept. A build of another program finds little of its own
-//! there, and keeps its own in their place. A process that builds once, as a command without the
-//! daemon does, keeps them for nothing, at no more cost than holding on to what it made.
+//! there, and keeps its own in their place. Only the daemon keeps them
+//! (`keep_analyses_between_builds`): a command that builds once does none of this work, so a
+//! build without the daemon, as under CI, costs what it did.
 //!
 //! What's used again is checked, as the checker's kept check is (`fennec_check::compares_kept_check`):
 //! a dev compiler analyzes every function again on one build in eight, picked by the program, and
@@ -54,6 +55,15 @@ pub(crate) struct Kept {
 /// The last build's analyses, by function.
 static KEPT: Mutex<Option<KeptAnalyses>> = Mutex::new(None);
 
+/// Whether this process keeps analyses from one build to the next.
+static KEEPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Has this process keep each build's analyses for the next, as the daemon does: it builds one
+/// program after another. A process that builds once doesn't, and pays nothing for it.
+pub fn keep_analyses_between_builds() {
+    KEEPS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The analyses one build keeps for the next, by function.
 pub(crate) type KeptAnalyses = HashMap<String, Kept>;
 
@@ -62,6 +72,8 @@ pub(crate) struct Keeping {
     found: Option<KeptAnalyses>,
     kept_now: Mutex<KeptAnalyses>,
     used_again: std::sync::atomic::AtomicUsize,
+    /// Whether anything is kept at all: not in a process that builds once.
+    keeps: bool,
     /// Whether every analysis used again is checked against analyzing it again, whatever
     /// `compares` picks: as the edit fuzzer asks (`analyses_kept_and_checked`).
     checks_all: bool,
@@ -102,7 +114,15 @@ impl Keeping {
     /// What the last build in this process kept, taken for this one: a build beside it, as tests
     /// run them, finds none and works all its analyses out.
     pub(crate) fn start() -> Self {
+        if !KEEPS.load(std::sync::atomic::Ordering::Relaxed) {
+            return Keeping { keeps: false, ..Keeping::from(None) };
+        }
         Keeping::from(KEPT.lock().ok().and_then(|mut kept| kept.take()))
+    }
+
+    /// Whether this build keeps its analyses for the next.
+    pub(crate) fn keeps(&self) -> bool {
+        self.keeps
     }
 
     /// Starting from `found`, as a test does, or from nothing.
@@ -111,6 +131,7 @@ impl Keeping {
             found,
             kept_now: Mutex::new(HashMap::new()),
             used_again: std::sync::atomic::AtomicUsize::new(0),
+            keeps: true,
             checks_all: false,
         }
     }
@@ -178,6 +199,9 @@ impl Keeping {
 
     /// Hands what this build kept to the next in this process.
     pub(crate) fn finish(self) {
+        if !self.keeps {
+            return;
+        }
         let kept_now = self.into_kept();
         if let Ok(mut kept) = KEPT.lock() {
             *kept = Some(kept_now);

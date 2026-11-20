@@ -430,7 +430,13 @@ pub(crate) fn emit_keeping(
         if fennec_build::cancelled() {
             return Err(crate::STOPPED.to_owned());
         }
-        let ir = using.as_ref().map(|_| crate::keys::ir_key(function));
+        let ir = using.as_ref().map(|_| {
+            everything
+                .ir_keys
+                .get(function.name.as_str())
+                .copied()
+                .unwrap_or_else(|| crate::keys::ir_key(function))
+        });
         if let (Some(using), Some(ir)) = (&mut using, ir)
             && let Some(record) = using.usable(&function.name, &ir)
         {

@@ -268,6 +268,9 @@ impl Analysis {
 pub(crate) struct Whole<'p> {
     pub(crate) functions: HashMap<&'p str, &'p Function>,
     pub(crate) analyses: HashMap<&'p str, std::sync::Arc<Analysis>>,
+    /// Each function's IR key, where this build worked them out to keep its analyses (see
+    /// `kept`), so that its units use them rather than working each out again. Empty otherwise.
+    pub(crate) ir_keys: HashMap<&'p str, Key>,
     pub(crate) can_fail: HashSet<&'p str>,
     /// Each generator, by its name and by the names of its functions.
     pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
@@ -4848,7 +4851,8 @@ pub(crate) fn whole_keeping<'p>(
                 .find(|(ty, _)| *ty == dict)
                 .map_or_else(fennec_layout::dict_values_in_place, |(_, held)| *held)
         };
-        let (analyses, differ) = analyzed(program, (&changes, &keeps), &params, &in_entries, keeping);
+        let (analyses, ir_keys, differ) =
+            analyzed(program, (&changes, &keeps), &params, &in_entries, keeping);
         let mut generators = HashMap::new();
         for def in &program.generators {
             generators.insert(def.name.as_str(), def);
@@ -4891,6 +4895,7 @@ pub(crate) fn whole_keeping<'p>(
             // Put in below, once no thread borrows them.
             functions: HashMap::new(),
             analyses,
+            ir_keys,
             can_fail,
             generators,
             settles,
@@ -4912,6 +4917,11 @@ pub(crate) fn whole_keeping<'p>(
     let (made, differ) = whole;
     (Whole { functions, ..made }, differ)
 }
+
+/// What [`analyzed`] gives: each function's analysis, each function's IR key where the build
+/// keeps its analyses, and the functions whose analysis used again isn't what analyzing it again
+/// gives.
+type Analyzed<'p> = (HashMap<&'p str, std::sync::Arc<Analysis>>, HashMap<&'p str, Key>, Vec<String>);
 
 /// What a thread of [`whole`]'s gave, or its panic, carried on in this thread.
 fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
@@ -4988,12 +4998,12 @@ fn analyzed<'p>(
     params: &HashMap<&str, Vec<Range>>,
     in_entries: &(dyn Fn(&Type) -> bool + Sync),
     keeping: &crate::kept::Keeping,
-) -> (HashMap<&'p str, std::sync::Arc<Analysis>>, Vec<String>) {
+) -> Analyzed<'p> {
     use std::sync::Arc;
     let all: Vec<&Function> = program.functions.iter().chain(&program.constants).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = crate::build::workers().min(all.len()).max(1);
-    let found: Vec<(&'p str, Arc<Analysis>, Key, bool)> = std::thread::scope(|scope| {
+    let found: Vec<(&'p str, Arc<Analysis>, Option<Key>, bool)> = std::thread::scope(|scope| {
         let parts: Vec<_> = (0..threads)
             .map(|_| {
                 scope.spawn(|| {
@@ -5002,11 +5012,17 @@ fn analyzed<'p>(
                         let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(function) = all.get(at) else { break };
                         let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
+                        // A build that keeps nothing analyzes each function as it always did.
+                        if !keeping.keeps() {
+                            let analysis = Arc::new(analyze(function, changes, keeps, given, in_entries));
+                            mine.push((function.name.as_str(), analysis, None, false));
+                            continue;
+                        }
                         let ir = crate::keys::ir_key(function);
                         let told: crate::kept::Told<'_> = (changes, keeps, in_entries);
                         if let Some(analysis) = keeping.usable(function, (&ir, given), told) {
                             keeping.keep_again(function);
-                            mine.push((function.name.as_str(), analysis, ir, true));
+                            mine.push((function.name.as_str(), analysis, Some(ir), true));
                             continue;
                         }
                         let asking = crate::kept::Asking::new();
@@ -5033,7 +5049,7 @@ fn analyzed<'p>(
                             &noted_in_entries,
                         ));
                         keeping.keep(function, (ir, given), asking.into_asked(), &analysis);
-                        mine.push((function.name.as_str(), analysis, ir, false));
+                        mine.push((function.name.as_str(), analysis, Some(ir), false));
                     }
                     mine
                 })
@@ -5043,6 +5059,7 @@ fn analyzed<'p>(
     });
     // Whether this build checks what it used again: picked by the program's functions as they are.
     let inputs = found.iter().fold(0_u64, |inputs, (_, _, ir, _)| {
+        let Some(ir) = ir else { return inputs };
         let mut word = [0_u8; 8];
         word.copy_from_slice(ir.get(..8).unwrap_or(&[0; 8]));
         inputs ^ u64::from_le_bytes(word)
@@ -5063,7 +5080,8 @@ fn analyzed<'p>(
         }
         differ.sort();
     }
-    (found.into_iter().map(|(name, analysis, ..)| (name, analysis)).collect(), differ)
+    let ir_keys = found.iter().filter_map(|(name, _, ir, _)| ir.map(|ir| (*name, ir))).collect();
+    (found.into_iter().map(|(name, analysis, ..)| (name, analysis)).collect(), ir_keys, differ)
 }
 
 /// An analysis's key, as a read of it is compared (`Reads::value_of`).

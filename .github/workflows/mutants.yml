@@ -65,8 +65,10 @@ jobs:
           # Each mutant runs the whole workspace's tests, which take about two and a half minutes
           # here with FENNEC_UNDER_MUTANTS set and two running at once. A timeout counts as caught,
           # so it has to mean a hang, not a slow run: the limit is well past what a run takes, and
-          # the same limit lets the baseline finish. Lower it only with those times in hand.
-          cargo mutants --in-diff changes.diff --no-shuffle --timeout 420 --jobs 2 || status=$?
+          # the same limit lets the baseline finish. Lower it only with those times in hand. The run
+          # is held to 12 GB, as the nightly's is, so a mutant's runaway can't take the runner down.
+          .github/scripts/memory-held.sh 12G \
+            cargo mutants --in-diff changes.diff --no-shuffle --timeout 420 --jobs 2 || status=$?
           # 3 means some mutations made the tests hang, which still counts as noticing them.
           # It wins over 2 (missed), so check for misses separately.
           if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then status=0; fi
@@ -111,7 +113,13 @@ jobs:
           # A slice still going at three hours is stopped as Ctrl-C stops it, keeping what it found:
           # cargo-mutants writes each outcome as it comes. What the tests missed is reported, not
           # failed on, and a hang counts as caught.
-          timeout --signal=INT --kill-after=120 10800 \
+          #
+          # A mutant can make a program a test runs allocate without end. Watched on 2026-11-20,
+          # one grew to 14 GB, all a runner has, in 9 to 26 seconds, six times in one slice of
+          # fennec-ir and once in one of fennec-llvm. On the nights before, nothing stopped it,
+          # so the runner went and the job was lost with no logs. The run is held to 12 GB, so the
+          # kernel stops the runaway, which fails its test as a mutant should, and the runner lives.
+          .github/scripts/memory-held.sh 12G timeout --signal=INT --kill-after=120 10800 \
             cargo mutants --package "$CRATE" --shard "$INDEX/60" --baseline=skip --timeout 420 --jobs 2 || true
       - name: Rank what no test caught
         if: always()

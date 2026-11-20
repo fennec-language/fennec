@@ -825,6 +825,74 @@ fn a_loop_wraps_its_generator_s_failure_and_owns_one_inside_enumerate_or_zip() {
     );
 }
 
+/// Two failing generators zipped, each with a `? from` of its own or one with none: the loop's
+/// failure is the one of the side that failed, wrapped as that side says, the first side asked
+/// first. The oracle refused these before, not knowing which side failed. What each prints is what
+/// the compiled program printed.
+#[test]
+fn zip_wraps_a_failure_as_the_side_that_failed_says() {
+    prints(
+        GENERATORS_ZIPPED_WRAPPED_APART,
+        "failing at 2\nboth LostLeft(step=2)\nfailing at 2\nboth LostRight(step=2)\nfailing at 3\nboth \
+         LostLeft(step=3)\nboth ran 110\nfailing at 0\nboth LostLeft(step=0)\nfailing at 0\nboth \
+         LostRight(step=0)\nfailing at 2\nleft LostLeft(step=2)\nfailing at 2\nleft Shut(code=2)\nfailing at \
+         3\nleft LostLeft(step=3)\nleft ran 110\nfailing at 2\nright Shut(code=2)\nfailing at 2\nright \
+         LostRight(step=2)\nfailing at 3\nright Shut(code=3)\nright ran 110\n",
+    );
+}
+
+const GENERATORS_ZIPPED_WRAPPED_APART: &str = r#"error Shut:
+    code: int
+
+error LostLeft:
+    step: int
+
+error LostRight:
+    step: int
+
+def failing(limit: int, at: int, stdout: Stdout) -> Iterator[int] fails Shut:
+    for each in range(limit):
+        if each == at:
+            stdout.print("failing at", each)
+            fail Shut(code=each)
+        yield each
+
+def both_wrapped(left_at: int, right_at: int, stdout: Stdout) -> int fails LostLeft | LostRight:
+    mut total = 0
+    for one, other in zip(failing(5, at=left_at, stdout=stdout)? from LostLeft(step=left_at), failing(5, at=right_at, stdout=stdout)? from LostRight(step=right_at)):
+        total += one * 10 + other
+    return total
+
+def left_wrapped(left_at: int, right_at: int, stdout: Stdout) -> int fails LostLeft | Shut:
+    mut total = 0
+    for one, other in zip(failing(5, at=left_at, stdout=stdout)? from LostLeft(step=left_at), failing(5, at=right_at, stdout=stdout)?):
+        total += one * 10 + other
+    return total
+
+def right_wrapped(left_at: int, right_at: int, stdout: Stdout) -> int fails Shut | LostRight:
+    mut total = 0
+    for one, other in zip(failing(5, at=left_at, stdout=stdout)?, failing(5, at=right_at, stdout=stdout)? from LostRight(step=right_at)):
+        total += one * 10 + other
+    return total
+
+def main(stdout: Stdout):
+    for left_at, right_at in [(2, 4), (4, 2), (3, 3), (9, 9), (0, 9), (9, 0)]:
+        got = both_wrapped(left_at, right_at=right_at, stdout=stdout) except why:
+            stdout.print("both", why)
+            continue
+        stdout.print("both ran", got)
+    for left_at, right_at in [(2, 4), (4, 2), (3, 3), (9, 9)]:
+        got = left_wrapped(left_at, right_at=right_at, stdout=stdout) except why:
+            stdout.print("left", why)
+            continue
+        stdout.print("left ran", got)
+    for left_at, right_at in [(2, 4), (4, 2), (3, 3), (9, 9)]:
+        got = right_wrapped(left_at, right_at=right_at, stdout=stdout) except why:
+            stdout.print("right", why)
+            continue
+        stdout.print("right ran", got)
+"#;
+
 /// A field lent alone by `ref`, to a call or a `for ref` loop's turn, is a plain value to whoever
 /// has it, and its struct's `where` rule runs when it comes back: at the end of the call, however
 /// it ends but by a crash, and of each turn, however that ends. A value put right before then is

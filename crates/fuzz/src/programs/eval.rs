@@ -24,6 +24,7 @@ use super::ast::{
     SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
 use super::ast::{FILE_PIECES, FileWay, Filing};
+use super::ast::{GenStep, GenWay, Generating};
 use super::ast::{GenericStep, Genericking};
 use super::ast::{IfaceStep, Interfacing};
 use super::ast::{InOrder, OrderStep};
@@ -2032,6 +2033,7 @@ impl Machine {
             Stmt::Interfaced(interfacing) => self.interfaced(interfacing)?,
             Stmt::LockedTogether(locking) => self.locked_together(locking)?,
             Stmt::Arrayed(arraying) => self.arrayed(arraying)?,
+            Stmt::Generated(generating) => self.generated(generating),
             Stmt::Ruled(ruling) => self.ruled(ruling)?,
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
@@ -3606,6 +3608,124 @@ impl Machine {
         let _ = writeln!(self.out, "{{\"k\": {}}}", grid_shown(&by_name));
         let _ = writeln!(self.out, "{}", ints(&loose));
         Ok(())
+    }
+
+    /// What `generated{id}` prints: each step's items as its generators yield them, read lazily,
+    /// `zip` asking its first side before its second, then `end` or the failure that ended it,
+    /// wrapped as the `? from` of the generator that failed says.
+    fn generated(&mut self, generating: &Generating) {
+        let id = generating.id;
+        // What `failing(limit, fail_at)` yields, and whether it fails after them.
+        let failing = |limit: i64, fail_at: i64| -> (Vec<i64>, bool) {
+            if fail_at < limit { ((0..fail_at).collect(), true) } else { ((0..limit).collect(), false) }
+        };
+        for (n, step) in generating.steps.iter().enumerate() {
+            let GenStep { way, limit, fail_at, other_at } = *step;
+            let (first, first_fails) = failing(limit, fail_at);
+            let (second, second_fails) = failing(limit + 1, other_at);
+            let shut = |code: i64| format!("Shut{id}(code={code})");
+            let lost = format!("Lost{id}(step={n})");
+            let mut lines: Vec<String> = Vec::new();
+            let each = |name: &str, items: &[i64], lines: &mut Vec<String>| {
+                lines.extend(items.iter().map(|item| format!("{name} {item}")));
+            };
+            let failed = match way {
+                GenWay::ForFrom => {
+                    each("for", &first, &mut lines);
+                    first_fails.then(|| lost.clone())
+                }
+                GenWay::EnumerateFrom => {
+                    lines.extend(
+                        first.iter().enumerate().map(|(place, item)| format!("enumerate {place} {item}")),
+                    );
+                    first_fails.then(|| lost.clone())
+                }
+                GenWay::ZipBothFrom | GenWay::ZipLeftFrom | GenWay::ZipRightFrom | GenWay::ZipListFrom => {
+                    let words = [10, 20, 30];
+                    let (left, left_fails, left_why) = match way {
+                        GenWay::ZipListFrom => (words.to_vec(), false, String::new()),
+                        GenWay::ZipRightFrom => (first.clone(), first_fails, shut(fail_at)),
+                        _ => (first.clone(), first_fails, format!("Left{id}(step={n})")),
+                    };
+                    let (right, right_fails, right_why) = match way {
+                        GenWay::ZipListFrom => (first.clone(), first_fails, format!("Right{id}(step={n})")),
+                        GenWay::ZipLeftFrom => (second.clone(), second_fails, shut(other_at)),
+                        _ => (second.clone(), second_fails, format!("Right{id}(step={n})")),
+                    };
+                    let mut failed = None;
+                    for at in 0.. {
+                        let Some(one) = left.get(at) else {
+                            failed = left_fails.then_some(left_why);
+                            break;
+                        };
+                        let Some(other) = right.get(at) else {
+                            failed = right_fails.then_some(right_why);
+                            break;
+                        };
+                        lines.push(format!("zip {one} {other}"));
+                    }
+                    failed
+                }
+                GenWay::Broken => {
+                    let mut failed = first_fails.then(|| lost.clone());
+                    for item in &first {
+                        lines.push(format!("broken {item}"));
+                        if *item == other_at {
+                            failed = None;
+                            break;
+                        }
+                    }
+                    failed
+                }
+                GenWay::Named => {
+                    lines.push("named".to_owned());
+                    each("named", &first, &mut lines);
+                    first_fails.then(|| shut(fail_at))
+                }
+                GenWay::KeptOver => {
+                    let mut failed = None;
+                    for size in 0..limit {
+                        let (items, fails) = failing(size + 1, fail_at);
+                        each("kept", &items, &mut lines);
+                        if fails {
+                            failed = Some(shut(fail_at));
+                            break;
+                        }
+                    }
+                    failed
+                }
+                GenWay::InTuple | GenWay::InList => {
+                    let (one, two) =
+                        if way == GenWay::InTuple { ("first", "second") } else { ("listed", "listed") };
+                    each(one, &first, &mut lines);
+                    if first_fails {
+                        Some(shut(fail_at))
+                    } else {
+                        each(two, &second, &mut lines);
+                        second_fails.then(|| shut(other_at))
+                    }
+                }
+                GenWay::TupleIndexed => {
+                    lines.extend(first.iter().map(|item| format!("indexed {item} {n}")));
+                    first_fails.then(|| shut(fail_at))
+                }
+                GenWay::InBox => {
+                    each("boxed", &first, &mut lines);
+                    first_fails.then(|| shut(fail_at))
+                }
+            };
+            for line in lines {
+                let _ = writeln!(self.out, "{line}");
+            }
+            match failed {
+                Some(why) => {
+                    let _ = writeln!(self.out, "failed {why}");
+                }
+                None => {
+                    let _ = writeln!(self.out, "end {n}");
+                }
+            }
+        }
     }
 
     /// What `ordered{id}` prints: each line read left to right, as `ordered_written` writes it,

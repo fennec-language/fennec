@@ -26,6 +26,7 @@ use super::ast::{
     Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
 use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, FileWay, Filing};
+use super::ast::{GEN_WAYS, GenStep, GenWay, Generating};
 use super::ast::{GENERIC_STEPS, GENERIC_TYS, GenericStep, GenericTy, Genericking};
 use super::ast::{IFACE_STEPS, IfaceStep, Interfacing};
 use super::ast::{InOrder, ORDER_STEPS, OrderStep};
@@ -103,6 +104,12 @@ pub(super) const NARROWED_FIELD_WRITES: bool = true;
 /// out as it runs, which is refused when it breaks one. A risky program breaks one, which stops
 /// it. Map row 9: nothing wrote a `where` rule before.
 const WHERE_RULES: bool = true;
+
+/// Whether random programs loop over generators that fail partway (`Generated`): wrapped with
+/// `? from` in a `for`, in `enumerate` and in `zip` on either side or both, and held in a name, a
+/// generator kept for later, a tuple, a list and a generic struct, each looped over where it's
+/// made. Map row 7: nothing wrote `? from` before, and the oracle runs `zip` wrapped two ways now.
+const FAILING_GENERATORS: bool = true;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
@@ -777,6 +784,7 @@ impl Writer<'_> {
             27 if INTERFACES && self.choice(4) == 0 => self.interfaces(body),
             27 if LOCKED_TOGETHER && self.choice(4) == 0 => self.locked_together(body),
             27 if ARRAYS && self.choice(4) == 0 => self.arrays(body),
+            27 if FAILING_GENERATORS && self.choice(4) == 0 => self.failing_generators(body),
             27 if WHERE_RULES && self.choice(4) == 0 => self.where_rules(body),
             27 => self.change_buffer(body),
             29 => {
@@ -1615,6 +1623,21 @@ impl Writer<'_> {
             steps.push(ArrayStep { way, at, value, past });
         }
         body.push(Stmt::Arrayed(Arraying { id, steps }));
+    }
+
+    /// A `Generated` statement: 3 to 10 steps, each yielding 1 to 5 items, failing at 0 to 6.
+    fn failing_generators(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let way = GEN_WAYS.get(self.choice(GEN_WAYS.len())).copied().unwrap_or(GenWay::ForFrom);
+            let limit = i64::from(self.byte() % 5) + 1;
+            let fail_at = i64::from(self.byte() % 7);
+            let other_at = i64::from(self.byte() % 7);
+            steps.push(GenStep { way, limit, fail_at, other_at });
+        }
+        body.push(Stmt::Generated(Generating { id, steps }));
     }
 
     /// An `Ordered` statement: 3 to 10 steps, each with what its call adds, from 0 to 9.

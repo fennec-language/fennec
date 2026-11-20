@@ -1037,20 +1037,21 @@ impl Interp {
         // A generator made for the loop is the loop's, as one `iter` makes is, and one made right
         // inside `enumerate` or `zip` is too, and is let go when the loop is.
         let made = !Interp::is_stream(&over) || made_for_loop(iter);
-        if wraps_unknown(iter) {
-            return unsupported("a loop over generators wrapping their failures in more than one way");
-        }
-        let wrap = loop_wrap(iter);
+        let wraps = arg_wraps(iter);
         let mut items = self.items_of(over, iter.span)?;
         let _ = span;
         let mut left = Ok(());
         loop {
+            let _ = stream::failed_side();
             let item = match self.next_item(&mut items) {
                 Ok(Some(item)) => item,
                 Ok(None) => break,
-                // One the loop owns failing partway through fails the loop, wrapped as its
-                // `? from Wrap(...)` says, and the others it owns are let go on its way out.
+                // One the loop owns failing partway through fails the loop, wrapped as its own
+                // `? from Wrap(...)` says, where it has one, and the others it owns are let go on
+                // its way out. In `zip`, that's the `? from` of the side that failed.
                 Err(Flow::Fail(error, failed_at)) if made && Interp::is_stream_items(&items) => {
+                    let side = stream::failed_side().unwrap_or(0);
+                    let wrap = wraps.get(side).copied().flatten();
                     left = match wrap {
                         Some(_) => self.wrapped(wrap, iter.span),
                         None => Err(Flow::Fail(error, failed_at)),
@@ -1401,26 +1402,7 @@ fn made_for_loop(iter: &Expr) -> bool {
     matches!(made.kind, ExprKind::Call { .. })
 }
 
-/// What a loop's generator fails through partway through the loop: the wrapper of its own
-/// `? from Wrap(...)`, or of the one `?` made right inside `enumerate` or `zip`.
-fn loop_wrap(iter: &'static Expr) -> Option<&'static Expr> {
-    arg_wraps(iter).into_iter().flatten().next()
-}
-
-/// Whether which of a loop's generators failed partway through decides how it's wrapped, and isn't
-/// known: two `?`s made inside `zip`, one wrapping.
-fn wraps_unknown(iter: &'static Expr) -> bool {
-    let wrapping = arg_wraps(iter).into_iter().flatten().count();
-    let tries = match &iter.kind {
-        ExprKind::Call { args, .. } => {
-            args.iter().filter(|arg| matches!(arg.value.kind, ExprKind::Try { .. })).count()
-        }
-        _ => 1,
-    };
-    wrapping > 1 || (wrapping == 1 && tries > 1)
-}
-
-/// The wrapper each generator a loop owns fails through when it's let go: its own
+/// The wrapper each generator a loop owns fails through, partway or when it's let go: its own
 /// `? from Wrap(...)`'s, or for `enumerate` and `zip`, each argument's, in order.
 fn arg_wraps(iter: &'static Expr) -> Vec<Option<&'static Expr>> {
     let context = |value: &'static Expr| match &value.kind {

@@ -48,7 +48,10 @@ pub extern "C" fn crash_resume(number: i64) {
     let crash = held(|held| held.remove(&number)).unwrap_or_default();
     threads::cleaning(false);
     let again = with(|state| state.failure.take());
-    if let Some(again) = again.filter(|again| again.message != super::STOPPED_FAILURE) {
+    // A replay that couldn't follow its recording says where, as it ends: a cleanup after that
+    // doesn't follow either, and saying so here named the cleanup's call, not the cause.
+    let followed = crate::replay::divergence().is_none();
+    if let Some(again) = again.filter(|again| again.message != super::STOPPED_FAILURE && followed) {
         super::write_kept_output();
         let _ = writeln!(std::io::stderr(), "error: {} (while cleaning up after a crash)", again.message);
     }

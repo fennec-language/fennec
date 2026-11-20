@@ -205,7 +205,9 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(not(feature = "sanitize"))]
 unsafe extern "C" {
     /// mimalloc's: sets the function it calls on an error, as just before it gives back null for an
-    /// allocation it couldn't make, with the error's code and `argument`.
+    /// allocation it couldn't make, with the error's code and `argument`. Declared by hand from
+    /// mimalloc.h's `mi_register_error(mi_error_fun* fun, void* arg)`, so nothing checks it against
+    /// the header: read the header again whenever the `mimalloc` pin moves.
     fn mi_register_error(
         handler: Option<extern "C" fn(std::ffi::c_int, *mut std::ffi::c_void)>,
         argument: *mut std::ffi::c_void,

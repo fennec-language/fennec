@@ -543,9 +543,10 @@ fn report(output: &[u8], failure: &str) -> i32 {
 ///
 /// The first thread here stops the program. Another that runs out meanwhile waits for it to end
 /// the program, up to 5 seconds, so the words come once and after all that's written, however slow
-/// the reader. An allocation refused on this thread's own way to the stop comes back here: the
-/// first time only the words are said, and past that it ends at once, so it never goes round
-/// without end.
+/// the reader; if the first is stuck that long, as behind a reader that isn't reading, this one
+/// says them and ends it. An allocation refused on this thread's own way to the stop comes back
+/// here: while the output is written, only the words are said, and once they have been, it ends at
+/// once, so it never goes round without end and the words come once.
 pub fn out_of_memory() -> ! {
     use std::sync::atomic::{AtomicBool, Ordering};
     /// Whether a thread is stopping the program for running out of memory.
@@ -567,7 +568,6 @@ pub fn out_of_memory() -> ! {
             while waiting.elapsed() < OTHER_STOP {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            end_at_once(1)
         }
         0 => {
             super::write_kept_output_if_free();
@@ -576,6 +576,8 @@ pub fn out_of_memory() -> ! {
         1 => {}
         _ => end_at_once(1),
     }
+    // From here on, an allocation refused as the program ends comes back past 1, and ends it.
+    let _ = DEPTH.try_with(|depth| depth.set(2));
     let _ = std::io::stderr().write_all(b"error: out of memory\n");
     end_at_once(1)
 }

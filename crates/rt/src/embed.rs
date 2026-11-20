@@ -524,7 +524,8 @@ struct Flags {
     lock_held: Cell<u64>,
     /// 1 while this run is recorded or replayed, at 16 bytes in, and 0 otherwise: native code
     /// taking a `shared` value's lock reads it, and calls `fennec_replay_lock` and
-    /// `fennec_replay_locked` only when it's 1, so a normal run pays one load.
+    /// `fennec_replay_locked` only when it's 1, and giving it back `fennec_replay_unlocked`, so a
+    /// normal run pays one load.
     replaying: Cell<u64>,
 }
 
@@ -775,7 +776,10 @@ fn clear_failure() {
 fn report_failure() {
     let failure = with(|state| state.failure.take());
     set_failed(0);
-    if let Some(failure) = failure {
+    // A replay that couldn't follow its recording says where it first couldn't, once, as it ends:
+    // a task's failure after that comes of it, as another task's patience running out with its own.
+    let followed = crate::replay::divergence().is_none();
+    if let Some(failure) = failure.filter(|_| followed) {
         write_kept_output();
         let _ = writeln!(std::io::stderr(), "error: {}", failure.message);
     }

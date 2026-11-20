@@ -1,0 +1,12 @@
+# A generator can't take a `ref`: it runs after its call has given it back, while the caller
+# changes the same list by its own name.
+def drained(ref items: list[int]) -> Iterator[int]:
+    while len(items) > 0:
+        taken = items.pop() else break
+        yield taken
+
+def main(stdout: Stdout):
+    mut items = [1, 2, 3]
+    for each in drained(ref items):
+        items.append(each)
+        stdout.print(each, len(items))

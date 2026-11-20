@@ -14,7 +14,7 @@
 //! checks all of it.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
@@ -55,9 +55,17 @@ struct Kit {
     size: usize,
     built: Instant,
     /// Which check of the kit this is: the kept checks counted when it was kept.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "only the build daemon, which is unix's alone, reads it")
+    )]
     generation: u64,
     /// The module as the check saw it, with the files the edit changed, until all of it is checked
     /// again and compared.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "only the build daemon, which is unix's alone, reads it")
+    )]
     pending: Option<(Module, Vec<String>)>,
 }
 
@@ -70,12 +78,14 @@ struct File {
 }
 
 /// From now on this process keeps each kit's check for its build after an edit: the build daemon.
+#[cfg(unix)]
 pub(crate) fn keep_checks() {
     let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
     kept.get_or_insert_with(Kept::default);
 }
 
 /// What `daemon status` says of the checks kept, once this process keeps one.
+#[cfg(unix)]
 pub(crate) fn status() -> Option<String> {
     let kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
     let kept = kept.as_ref().filter(|kept| !kept.kits.is_empty() || kept.last_carried.is_some())?;
@@ -159,6 +169,7 @@ fn keep(kit: PathBuf, mut check: KeptCheck, files: Vec<File>, edited: Vec<String
 }
 
 /// Whether a kit's kept check carried anything over and hasn't been checked all again yet.
+#[cfg(unix)]
 pub(crate) fn pending() -> bool {
     KEPT.lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -171,7 +182,8 @@ pub(crate) fn pending() -> bool {
 /// difference is the compiler's mistake: the kit's kept check goes, a report is written in `home`'s
 /// daemon folder naming the edit and where they disagree, and the kit's next build says so and
 /// checks all of it. Gives back the reports written.
-pub(crate) fn verify_pending(home: &Path) -> Vec<PathBuf> {
+#[cfg(unix)]
+pub(crate) fn verify_pending(home: &std::path::Path) -> Vec<PathBuf> {
     let mut reports = Vec::new();
     loop {
         let taken = {
@@ -359,197 +371,208 @@ mod tests {
         assert!(!same_layout(&before, &[file("a.fen", 0, "x = 1\n"), file("c.fen", SLOT, "y = 2\n")]));
     }
 
-    /// A kit of `files` in a folder of its own, named `name`.
-    fn kit(name: &str, files: &[(&str, &str)]) -> fennec_temp::Temp {
-        let root = fennec_temp::Temp::folder(&format!("kept-{name}")).unwrap();
-        let manifest =
-            format!("name = \"probe\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
-        std::fs::write(root.join("kit.toml"), manifest).unwrap();
-        write(&root, files);
-        root
-    }
+    /// Kits built as the build daemon builds them, which only unix has.
+    #[cfg(unix)]
+    mod daemon {
+        use super::super::*;
 
-    fn write(root: &Path, files: &[(&str, &str)]) {
-        for (path, text) in files {
-            let at = root.join(path);
-            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-            std::fs::write(at, text).unwrap();
+        /// A kit of `files` in a folder of its own, named `name`.
+        fn kit(name: &str, files: &[(&str, &str)]) -> fennec_temp::Temp {
+            let root = fennec_temp::Temp::folder(&format!("kept-{name}")).unwrap();
+            let manifest = format!(
+                "name = \"probe\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n",
+                env!("CARGO_PKG_VERSION")
+            );
+            std::fs::write(root.join("kit.toml"), manifest).unwrap();
+            write(&root, files);
+            root
         }
-    }
 
-    /// What a build of the kit at `root` finds: that it passes, or the messages of what's wrong.
-    fn built(found: Result<(Signatures, bool), Vec<Diagnostic>>) -> Result<(), Vec<String>> {
-        found.map(|_| ()).map_err(|problems| problems.iter().map(|problem| problem.message.clone()).collect())
-    }
+        fn write(root: &Path, files: &[(&str, &str)]) {
+            for (path, text) in files {
+                let at = root.join(path);
+                std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+                std::fs::write(at, text).unwrap();
+            }
+        }
 
-    fn load(root: &Path) -> fennec_kit::Program {
-        fennec_kit::load(root, &root.display().to_string(), fennec_kit::Entry::Main).unwrap()
-    }
+        /// What a build of the kit at `root` finds: that it passes, or the messages of what's wrong.
+        fn built(found: Result<(Signatures, bool), Vec<Diagnostic>>) -> Result<(), Vec<String>> {
+            found
+                .map(|_| ())
+                .map_err(|problems| problems.iter().map(|problem| problem.message.clone()).collect())
+        }
 
-    /// A build of the kit at `root` as the daemon makes it, keeping its check and comparing.
-    fn kept_build(root: &Path) -> Result<(), Vec<String>> {
-        keep_checks();
-        let mut program = load(root);
-        built(checked_keeping(&mut program.module, &program.sources, true))
-    }
+        fn load(root: &Path) -> fennec_kit::Program {
+            fennec_kit::load(root, &root.display().to_string(), fennec_kit::Entry::Main).unwrap()
+        }
 
-    /// A build that keeps nothing.
-    fn cold_build(root: &Path) -> Result<(), Vec<String>> {
-        let mut program = load(root);
-        built(fennec_check::check_to_build_saying(&mut program.module))
-    }
-
-    /// How many functions the kit at `root`'s kept check carried over.
-    fn carried(root: &Path) -> Option<usize> {
-        let kit = std::fs::canonicalize(root.join("src/main.fen")).ok()?;
-        KEPT.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()?
-            .kits
-            .get(&kit)
-            .map(|kit| kit.check.carried_over())
-    }
-
-    /// Builds the kit as `before`, keeping its check, then as `after`, carrying over: what it finds
-    /// is what a build that keeps nothing finds.
-    fn edited(
-        name: &str,
-        before: &[(&str, &str)],
-        after: &[(&str, &str)],
-    ) -> (fennec_temp::Temp, Result<(), Vec<String>>) {
-        let root = kit(name, before);
-        assert_eq!(kept_build(&root), Ok(()));
-        write(&root, after);
-        let found = kept_build(&root);
-        assert_eq!(found, cold_build(&root));
-        (root, found)
-    }
-
-    /// An import's `as` name standing for another type, a leading-dot case whose one enum is
-    /// another, and an import moved to the next file each change what a declaration written as it
-    /// was means: each is refused as a whole check refuses it.
-    #[test]
-    fn what_a_files_imports_mean_is_never_carried_over_stale() {
-        let main = "from squad import make\nfrom stats import lead_hp\n\ndef main(stdout: Stdout):\n    stdout.print(lead_hp(make()))\n";
-        let squad = "from units import Grunt as Unit\n\nstruct Squad:\n    lead: Unit\n\ndef make() -> Squad:\n    return Squad(Unit())\n";
-        let units = "struct Grunt:\n    hp = 10\n\nstruct Brute:\n    hp = 2.5\n";
-        let stats =
-            "from squad import Squad\n\ndef lead_hp(squad: Squad) -> int:\n    return squad.lead.hp\n";
-        let files = [
-            ("src/main.fen", main),
-            ("src/squad.fen", squad),
-            ("src/units.fen", units),
-            ("src/stats.fen", stats),
-        ];
-        let brute = squad.replace("import Grunt as Unit", "import Brute as Unit");
-        let (_, found) = edited("as-name", &files, &[("src/squad.fen", &brute)]);
-        assert!(found.is_err(), "{found:?}");
-
-        let main = "import colors\nimport moods\nfrom theme import START\nfrom uses import is_start\n\ndef main(stdout: Stdout):\n    stdout.print(is_start(START))\n";
-        let theme = "from colors import Color\n\nSTART = .red\n";
-        let files = [
-            ("src/main.fen", main),
-            ("src/colors.fen", "enum Color:\n    red\n    green\n"),
-            ("src/moods.fen", "enum Mood:\n    red\n    calm\n"),
-            ("src/theme.fen", theme),
-            (
-                "src/uses.fen",
-                "from colors import Color\n\ndef is_start(color: Color) -> bool:\n    return color == .red\n",
-            ),
-        ];
-        let moods = theme.replace("from colors import Color", "from moods import Mood");
-        let (_, found) = edited("dot-case", &files, &[("src/theme.fen", &moods)]);
-        assert!(found.is_err(), "{found:?}");
-
-        let main = "from first import one\nfrom second import two\n\ndef main(stdout: Stdout):\n    stdout.print(len(one()), two())\n";
-        let files = [
-            ("src/main.fen", main),
-            (
-                "src/first.fen",
-                "def one() -> Deque[int]:\n    return Deque[int]()\n\nfrom std.collections import Deque\n",
-            ),
-            ("src/second.fen", "def two() -> int:\n    return 2\n"),
-        ];
-        let moved = [
-            ("src/first.fen", "def one() -> Deque[int]:\n    return Deque[int]()\n"),
-            ("src/second.fen", "from std.collections import Deque\n\ndef two() -> int:\n    return 2\n"),
-        ];
-        let (_, found) = edited("import-moves", &files, &moved);
-        assert!(found.is_err(), "{found:?}");
-    }
-
-    /// A function in one file grows, which moves a type and a function after it: what's before it,
-    /// and every other file, is carried over, and the moved type is still the same type.
-    #[test]
-    fn an_edit_that_moves_the_rest_of_its_file_carries_over_the_rest() {
-        let main = "from shapes import area\n\ndef main(stdout: Stdout):\n    stdout.print(area(2), first(1))\n\n\
-                    def first(n: int) -> int:\n    return n + 1\n";
-        let shapes = "def grown(n: int) -> int:\n    return n * 2\n\nstruct Square:\n    side = 1\n\n\
-                      def area(n: int) -> int:\n    return Square().side * n + grown(n)\n";
-        let longer = shapes.replace("    return n * 2\n", "    total = n * 2\n    return total\n");
-        let (root, found) = edited(
-            "moves",
-            &[("src/main.fen", main), ("src/shapes.fen", shapes)],
-            &[("src/shapes.fen", &longer)],
-        );
-        assert_eq!(found, Ok(()));
-        assert!(carried(&root).is_some_and(|carried| carried > 0), "{:?}", carried(&root));
-    }
-
-    /// After a build that carried anything over, all of the kit is checked again: when it agrees,
-    /// the kept check stays; when it doesn't, the kept check goes, a report is written, and the
-    /// kit's next build says so.
-    #[test]
-    fn a_kept_check_is_checked_all_again_later() {
-        let main = "def main(stdout: Stdout):\n    stdout.print(first(1) + second(2))\n\n\
-                    def first(n: int) -> int:\n    return n + 1\n\n\
-                    def second(n: int) -> int:\n    return n * 2\n";
-        let root = kit("verify", &[("src/main.fen", main)]);
-        let home = fennec_temp::Temp::folder("kept-verify-home").unwrap();
-        keep_checks();
-        let build = |root: &Path| {
+        /// A build of the kit at `root` as the daemon makes it, keeping its check and comparing.
+        fn kept_build(root: &Path) -> Result<(), Vec<String>> {
+            keep_checks();
             let mut program = load(root);
-            built(checked_keeping(&mut program.module, &program.sources, false))
-        };
-        assert_eq!(build(&root), Ok(()));
-        write(&root, &[("src/main.fen", &main.replace("n * 2", "n * 3"))]);
-        assert_eq!(build(&root), Ok(()));
-        let kit_key = std::fs::canonicalize(root.join("src/main.fen")).unwrap();
-        let pending = |kit: &Path| {
+            built(checked_keeping(&mut program.module, &program.sources, true))
+        }
+
+        /// A build that keeps nothing.
+        fn cold_build(root: &Path) -> Result<(), Vec<String>> {
+            let mut program = load(root);
+            built(fennec_check::check_to_build_saying(&mut program.module))
+        }
+
+        /// How many functions the kit at `root`'s kept check carried over.
+        fn carried(root: &Path) -> Option<usize> {
+            let kit = std::fs::canonicalize(root.join("src/main.fen")).ok()?;
             KEPT.lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-                .and_then(|kept| kept.kits.get(kit))
-                .map(|kit| kit.pending.is_some())
-        };
-        assert_eq!(pending(&kit_key), Some(true));
-        // Other kits' checks may be pending too, from tests running beside this one.
-        verify_pending(&home);
-        assert_eq!(pending(&kit_key), Some(false));
-        // A module that isn't what the kept check saw stands in for a check that went wrong.
-        write(&root, &[("src/main.fen", &main.replace("n * 2", "n * 4"))]);
-        assert_eq!(build(&root), Ok(()));
-        let other = fennec_syntax::parse("def main(stdout: Stdout):\n    stdout.print(\"other\")\n").unwrap();
-        if let Some(kit) = KEPT
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_mut()
-            .and_then(|kept| kept.kits.get_mut(&kit_key))
-        {
-            let edited = kit.pending.take().map(|(_, edited)| edited).unwrap_or_default();
-            kit.pending = Some((other, edited));
+                .as_ref()?
+                .kits
+                .get(&kit)
+                .map(|kit| kit.check.carried_over())
         }
-        let reports = verify_pending(&home);
-        assert!(
-            reports
-                .iter()
-                .any(|report| std::fs::read_to_string(report).is_ok_and(|text| text.contains("main.fen"))),
-            "{reports:?}"
-        );
-        let kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
-        let kept = kept.as_ref().unwrap();
-        assert!(!kept.kits.contains_key(&kit_key));
-        assert!(kept.notices.get(&kit_key).is_some_and(|notice| notice.contains("disagreed")));
+
+        /// Builds the kit as `before`, keeping its check, then as `after`, carrying over: what it finds
+        /// is what a build that keeps nothing finds.
+        fn edited(
+            name: &str,
+            before: &[(&str, &str)],
+            after: &[(&str, &str)],
+        ) -> (fennec_temp::Temp, Result<(), Vec<String>>) {
+            let root = kit(name, before);
+            assert_eq!(kept_build(&root), Ok(()));
+            write(&root, after);
+            let found = kept_build(&root);
+            assert_eq!(found, cold_build(&root));
+            (root, found)
+        }
+
+        /// An import's `as` name standing for another type, a leading-dot case whose one enum is
+        /// another, and an import moved to the next file each change what a declaration written as it
+        /// was means: each is refused as a whole check refuses it.
+        #[test]
+        fn what_a_files_imports_mean_is_never_carried_over_stale() {
+            let main = "from squad import make\nfrom stats import lead_hp\n\ndef main(stdout: Stdout):\n    stdout.print(lead_hp(make()))\n";
+            let squad = "from units import Grunt as Unit\n\nstruct Squad:\n    lead: Unit\n\ndef make() -> Squad:\n    return Squad(Unit())\n";
+            let units = "struct Grunt:\n    hp = 10\n\nstruct Brute:\n    hp = 2.5\n";
+            let stats =
+                "from squad import Squad\n\ndef lead_hp(squad: Squad) -> int:\n    return squad.lead.hp\n";
+            let files = [
+                ("src/main.fen", main),
+                ("src/squad.fen", squad),
+                ("src/units.fen", units),
+                ("src/stats.fen", stats),
+            ];
+            let brute = squad.replace("import Grunt as Unit", "import Brute as Unit");
+            let (_, found) = edited("as-name", &files, &[("src/squad.fen", &brute)]);
+            assert!(found.is_err(), "{found:?}");
+
+            let main = "import colors\nimport moods\nfrom theme import START\nfrom uses import is_start\n\ndef main(stdout: Stdout):\n    stdout.print(is_start(START))\n";
+            let theme = "from colors import Color\n\nSTART = .red\n";
+            let files = [
+                ("src/main.fen", main),
+                ("src/colors.fen", "enum Color:\n    red\n    green\n"),
+                ("src/moods.fen", "enum Mood:\n    red\n    calm\n"),
+                ("src/theme.fen", theme),
+                (
+                    "src/uses.fen",
+                    "from colors import Color\n\ndef is_start(color: Color) -> bool:\n    return color == .red\n",
+                ),
+            ];
+            let moods = theme.replace("from colors import Color", "from moods import Mood");
+            let (_, found) = edited("dot-case", &files, &[("src/theme.fen", &moods)]);
+            assert!(found.is_err(), "{found:?}");
+
+            let main = "from first import one\nfrom second import two\n\ndef main(stdout: Stdout):\n    stdout.print(len(one()), two())\n";
+            let files = [
+                ("src/main.fen", main),
+                (
+                    "src/first.fen",
+                    "def one() -> Deque[int]:\n    return Deque[int]()\n\nfrom std.collections import Deque\n",
+                ),
+                ("src/second.fen", "def two() -> int:\n    return 2\n"),
+            ];
+            let moved = [
+                ("src/first.fen", "def one() -> Deque[int]:\n    return Deque[int]()\n"),
+                ("src/second.fen", "from std.collections import Deque\n\ndef two() -> int:\n    return 2\n"),
+            ];
+            let (_, found) = edited("import-moves", &files, &moved);
+            assert!(found.is_err(), "{found:?}");
+        }
+
+        /// A function in one file grows, which moves a type and a function after it: what's before it,
+        /// and every other file, is carried over, and the moved type is still the same type.
+        #[test]
+        fn an_edit_that_moves_the_rest_of_its_file_carries_over_the_rest() {
+            let main = "from shapes import area\n\ndef main(stdout: Stdout):\n    stdout.print(area(2), first(1))\n\n\
+                        def first(n: int) -> int:\n    return n + 1\n";
+            let shapes = "def grown(n: int) -> int:\n    return n * 2\n\nstruct Square:\n    side = 1\n\n\
+                          def area(n: int) -> int:\n    return Square().side * n + grown(n)\n";
+            let longer = shapes.replace("    return n * 2\n", "    total = n * 2\n    return total\n");
+            let (root, found) = edited(
+                "moves",
+                &[("src/main.fen", main), ("src/shapes.fen", shapes)],
+                &[("src/shapes.fen", &longer)],
+            );
+            assert_eq!(found, Ok(()));
+            assert!(carried(&root).is_some_and(|carried| carried > 0), "{:?}", carried(&root));
+        }
+
+        /// After a build that carried anything over, all of the kit is checked again: when it agrees,
+        /// the kept check stays; when it doesn't, the kept check goes, a report is written, and the
+        /// kit's next build says so.
+        #[test]
+        fn a_kept_check_is_checked_all_again_later() {
+            let main = "def main(stdout: Stdout):\n    stdout.print(first(1) + second(2))\n\n\
+                        def first(n: int) -> int:\n    return n + 1\n\n\
+                        def second(n: int) -> int:\n    return n * 2\n";
+            let root = kit("verify", &[("src/main.fen", main)]);
+            let home = fennec_temp::Temp::folder("kept-verify-home").unwrap();
+            keep_checks();
+            let build = |root: &Path| {
+                let mut program = load(root);
+                built(checked_keeping(&mut program.module, &program.sources, false))
+            };
+            assert_eq!(build(&root), Ok(()));
+            write(&root, &[("src/main.fen", &main.replace("n * 2", "n * 3"))]);
+            assert_eq!(build(&root), Ok(()));
+            let kit_key = std::fs::canonicalize(root.join("src/main.fen")).unwrap();
+            let pending = |kit: &Path| {
+                KEPT.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .as_ref()
+                    .and_then(|kept| kept.kits.get(kit))
+                    .map(|kit| kit.pending.is_some())
+            };
+            assert_eq!(pending(&kit_key), Some(true));
+            // Other kits' checks may be pending too, from tests running beside this one.
+            verify_pending(&home);
+            assert_eq!(pending(&kit_key), Some(false));
+            // A module that isn't what the kept check saw stands in for a check that went wrong.
+            write(&root, &[("src/main.fen", &main.replace("n * 2", "n * 4"))]);
+            assert_eq!(build(&root), Ok(()));
+            let other =
+                fennec_syntax::parse("def main(stdout: Stdout):\n    stdout.print(\"other\")\n").unwrap();
+            if let Some(kit) = KEPT
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_mut()
+                .and_then(|kept| kept.kits.get_mut(&kit_key))
+            {
+                let edited = kit.pending.take().map(|(_, edited)| edited).unwrap_or_default();
+                kit.pending = Some((other, edited));
+            }
+            let reports = verify_pending(&home);
+            assert!(
+                reports
+                    .iter()
+                    .any(|report| std::fs::read_to_string(report).is_ok_and(|text| text.contains("main.fen"))),
+                "{reports:?}"
+            );
+            let kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+            let kept = kept.as_ref().unwrap();
+            assert!(!kept.kits.contains_key(&kit_key));
+            assert!(kept.notices.get(&kit_key).is_some_and(|notice| notice.contains("disagreed")));
+        }
     }
 
     struct Fake(usize, Instant);

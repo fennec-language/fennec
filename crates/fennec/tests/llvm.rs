@@ -5963,6 +5963,55 @@ def main(stdout: Stdout):
         stdout.print(unit.seen)
 ";
 
+/// A field of an optional struct the checker narrowed with `is not None` changes where the
+/// optional is held (#2255): a plain local, the item of a `for ref` over a list or an array of
+/// optionals, a field of a struct inside the optional, and an item of a narrowed optional list.
+/// What's around it stays as it was, and an item that's `None` is passed over.
+#[test]
+fn a_narrowed_optionals_field_changes_where_the_optional_is_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "narrowed_optional_field_changed",
+        NARROWED_OPTIONAL_FIELD_CHANGED,
+        "Cell(health=16)\n[Cell(health=11), None, Cell(health=13)]\n[None, Cell(health=24)]\n\
+         Holder(cell=Cell(health=35), name=\"den\")\n[50, 2]\n",
+    )
+}
+
+const NARROWED_OPTIONAL_FIELD_CHANGED: &str = r#"struct Cell:
+    health = 0
+
+struct Holder:
+    cell: Cell
+    name: str
+
+def main(stdout: Stdout):
+    mut slot: Cell? = Cell(health=6)
+    if slot is not None:
+        slot.health += 10
+    stdout.print(slot)
+    mut slots: list[Cell?] = [Cell(health=1), None, Cell(health=3)]
+    for ref held in slots:
+        if held is not None:
+            held.health += 10
+    stdout.print(slots)
+    mut pair: array[Cell?, 2] = [None, Cell(health=4)]
+    for ref held in pair:
+        if held is not None:
+            held.health = held.health + 20
+    stdout.print(pair)
+    mut holder: Holder? = Holder(cell=Cell(health=5), name="den")
+    if holder is not None:
+        holder.cell.health += 30
+    stdout.print(holder)
+    mut counts: list[int]? = [1, 2]
+    if counts is not None:
+        counts[0] = 50
+    stdout.print(counts)
+"#;
+
 /// A local `ref` inside `lock ... as ref held:` reads and writes the locked value, `slot = slot * 2`
 /// and `x = slot + 1` as well as `+=`, and a failure leaving the lock undoes what was changed
 /// through it, as it undoes a write made directly.
@@ -19186,6 +19235,82 @@ fn a_task_writing_a_file_lets_the_others_answer() -> std::io::Result<()> {
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
+    Ok(())
+}
+
+/// Two tasks write a file each into each of 300 folders at once, so in each folder one of them
+/// clears what gone runs left while the other may be making the file it writes beside its own:
+/// that one is held by the run, whichever thread it's on, and is never taken for one left.
+const TWO_TASKS_IN_ONE_FOLDER: &str = "\
+from std.concurrent import Crashed
+
+## Writes one file into each of `folders` folders, as `side`, whole, not waiting for the disk.
+def fill(fs: Fs, side: str, folders: int) fails IoError:
+    for at in range(folders):
+        fs.write_text(f\"shared/f{at}/{side}.txt\", f\"{side}{at}\", durable=False)?
+    return
+
+def main(fs: Fs, stdout: Stdout) fails IoError | Crashed:
+    folders = 300
+    with launch(() => fill(fs, \"first\", folders)?)?:
+        with launch(() => fill(fs, \"second\", folders)?)?:
+            pass
+    mut whole = 0
+    mut left = 0
+    for at in range(folders):
+        for name in fs.list_dir(f\"shared/f{at}\")?:
+            if str(name).endswith(\".fennec-partial\"):
+                left += 1
+        from_first = fs.read_text(f\"shared/f{at}/first.txt\")?
+        from_second = fs.read_text(f\"shared/f{at}/second.txt\")?
+        if from_first == f\"first{at}\" and from_second == f\"second{at}\":
+            whole += 1
+    stdout.print(whole, left)
+";
+
+#[test]
+fn two_tasks_writing_into_one_folder_never_clear_each_others_files() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("two-tasks-one-folder")?;
+    let program = dir.join("two.fen");
+    std::fs::write(&program, TWO_TASKS_IN_ONE_FOLDER)?;
+    let executable = dir.join("two");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // A process that's ended, whose number nothing has yet: what it left in the first folders is
+    // cleared as the tasks write there.
+    let mut ended =
+        Command::new(std::env::current_exe()?).arg("--list").stdout(std::process::Stdio::null()).spawn()?;
+    let gone = ended.id();
+    ended.wait()?;
+    for threads in ["1", "4", "8"] {
+        let shared = dir.join("shared");
+        if shared.exists() {
+            std::fs::remove_dir_all(&shared)?;
+        }
+        for at in 0..300 {
+            std::fs::create_dir_all(shared.join(format!("f{at}")))?;
+        }
+        for at in 0..10 {
+            std::fs::write(shared.join(format!("f{at}/.first.txt.{gone}.1.fennec-partial")), "half")?;
+        }
+        let ran =
+            Command::new(&executable).current_dir(&dir).env("FENNEC_THREADS", threads).output_within()?;
+        let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
+            ("300 0\n", "", Some(0)),
+            "{threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 

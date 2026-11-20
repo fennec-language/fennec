@@ -1115,6 +1115,47 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 
+    /// Every way of a `LockedTogether` step, on each pair and each way round, with the `lock`
+    /// naming its values in the order they were made and against it, checks, and the evaluator
+    /// prints what the oracle prints: a `fail` or a crash under one `lock` puts both values back,
+    /// and a step that ends keeps both changes.
+    #[test]
+    fn the_locked_together_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{LOCK_WAYS, LockStep, LockingTogether, Program, Stmt};
+        let body = (0..3_i64)
+            .map(|round| {
+                let mut steps = Vec::new();
+                for (at, way) in LOCK_WAYS.iter().chain(LOCK_WAYS.iter()).chain(LOCK_WAYS.iter()).enumerate()
+                {
+                    let pairs = [(0, 1), (0, 2), (1, 2)];
+                    let pair =
+                        pairs.get((at + usize::try_from(round).unwrap_or(0)) % 3).copied().unwrap_or((0, 1));
+                    let amount = (i64::try_from(at).unwrap_or(0) * 3 + round) % 10;
+                    let against = (at + usize::try_from(round).unwrap_or(0)) % 3 == 2;
+                    steps.push(LockStep { way: *way, pair, amount, backward: at % 2 == 1, against });
+                }
+                Stmt::LockedTogether(LockingTogether {
+                    id: usize::try_from(round).unwrap_or(0) + 1,
+                    base: round * 2,
+                    steps,
+                })
+            })
+            .collect();
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("crashed\n") && printed.contains("failed Short"), "{printed}");
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
     /// Every step of an `Ordered` statement checks, and the evaluator prints what the oracle
     /// prints, each line read left to right: a receiver, a field's receiver, a list's and a dict's
     /// method, an index's base, arguments, operators, a list, a text, and writes, each changed by

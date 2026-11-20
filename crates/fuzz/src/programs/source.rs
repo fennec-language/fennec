@@ -17,6 +17,7 @@ use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{GenericStep, GenericTy, Genericking};
 use super::ast::{IfaceStep, Interfacing};
 use super::ast::{InOrder, OrderStep};
+use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
 use super::ast::{Sticking, StuckWay};
@@ -2552,6 +2553,89 @@ fn interfaced_written(interfacing: &Interfacing) -> String {
     out
 }
 
+/// The accounts and functions a `LockedTogether` statement calls, `{N}` standing for its id. Each
+/// that locks two has a twin, `..._against`, naming them the other way round.
+fn locked_together_types(id: usize) -> String {
+    let mut out = format!(
+        "error Short{id}:\n    left: int\n\nstruct Account{id}:\n    total: int\n    moves: list[int]\n\ndef \
+         shown{id}(account: shared Account{id}) -> str:\n    lock account as held:\n        return \
+         f\"{{held.total}}{{held.moves}}\"\n\n"
+    );
+    for (suffix, lock) in
+        [("", "first, second as ref one, ref two"), ("_against", "second, first as ref two, ref one")]
+    {
+        let read_lock =
+            if suffix.is_empty() { "first, second as one, two" } else { "second, first as two, one" };
+        let half_lock =
+            if suffix.is_empty() { "first, second as ref one, two" } else { "second, first as two, ref one" };
+        let _ = write!(
+            out,
+            "def moved{id}{suffix}(first: shared Account{id}, second: shared Account{id}, amount: int, backward: bool) \
+             fails Short{id}:\n    lock {lock}:\n        if backward:\n            two.total -= amount\n            \
+             two.moves.append(-amount)\n            one.total += amount\n            one.moves.append(amount)\n            \
+             if two.total < 0:\n                fail Short{id}(left=two.total)\n        else:\n            one.total \
+             -= amount\n            one.moves.append(-amount)\n            two.total += amount\n            \
+             two.moves.append(amount)\n            if one.total < 0:\n                fail Short{id}(left=one.total)\n\n\
+             def crashed{id}{suffix}(first: shared Account{id}, second: shared Account{id}, amount: int):\n    lock \
+             {lock}:\n        one.total += amount\n        two.moves.append(amount)\n        _ = one.moves[amount + \
+             99]\n\ndef summed{id}{suffix}(first: shared Account{id}, second: shared Account{id}) -> int:\n    lock \
+             {read_lock}:\n        return one.total + two.total + len(one.moves) + len(two.moves)\n\ndef \
+             half_ref{id}{suffix}(first: shared Account{id}, second: shared Account{id}, amount: int):\n    lock \
+             {half_lock}:\n        one.total += two.total % 7 + amount\n        one.moves.append(len(two.moves))\n\n"
+        );
+    }
+    out
+}
+
+/// `locked_together{id}`, the function a `LockedTogether` calls, after its accounts and functions:
+/// the accounts, a line for each step and what all three hold after it.
+fn locked_together_written(locking: &LockingTogether) -> String {
+    let LockingTogether { id, base, steps } = locking;
+    let mut out = locked_together_types(*id);
+    let threads = steps.iter().any(|step| step.way == LockWay::Crashed);
+    if threads {
+        for suffix in ["", "_against"] {
+            let _ = write!(
+                out,
+                "def tasked{id}{suffix}(first: shared Account{id}, second: shared Account{id}, amount: int) fails \
+                 Crashed:\n    with launch(() => crashed{id}{suffix}(first=first, second=second, amount=amount)) as \
+                 task:\n        pass\n\n"
+            );
+        }
+    }
+    let _ = write!(
+        out,
+        "def locked_together{id}(stdout: Stdout):\n    shared a = Account{id}(total={base}, moves=[])\n    shared b = \
+         Account{id}(total={}, moves=[1])\n    shared c = Account{id}(total={}, moves=[2, 3])\n",
+        base + 1,
+        base + 2
+    );
+    let names = ["a", "b", "c"];
+    for step in steps {
+        let name = |at: usize| names.get(at % 3).copied().unwrap_or("a");
+        let (first, second) = (name(step.pair.0), name(step.pair.1));
+        let suffix = if step.against { "_against" } else { "" };
+        let (amount, backward) = (step.amount, if step.backward { "True" } else { "False" });
+        let line = match step.way {
+            LockWay::Moved => format!(
+                "moved{id}{suffix}(first={first}, second={second}, amount={amount}, backward={backward}) except \
+                 why:\n        stdout.print(\"failed\", why)"
+            ),
+            LockWay::Crashed => format!(
+                "tasked{id}{suffix}(first={first}, second={second}, amount={amount}) except Crashed():\n        \
+                 stdout.print(\"crashed\")"
+            ),
+            LockWay::Summed => format!("stdout.print(summed{id}{suffix}(first={first}, second={second}))"),
+            LockWay::HalfRef => {
+                format!("half_ref{id}{suffix}(first={first}, second={second}, amount={amount})")
+            }
+        };
+        let _ = writeln!(out, "    {line}\n    stdout.print(shown{id}(a), shown{id}(b), shown{id}(c))");
+    }
+    out.push('\n');
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -3315,6 +3399,10 @@ impl Writer {
             Stmt::Interfaced(interfacing) => {
                 let _ = write!(self.helpers, "{}", interfaced_written(interfacing));
                 self.line(indent, &format!("interfaced{}(stdout)", interfacing.id));
+            }
+            Stmt::LockedTogether(locking) => {
+                let _ = write!(self.helpers, "{}", locked_together_written(locking));
+                self.line(indent, &format!("locked_together{}(stdout)", locking.id));
             }
             Stmt::Ordered(in_order) => {
                 let _ = write!(self.helpers, "{}", ordered_written(in_order));

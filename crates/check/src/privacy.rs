@@ -37,7 +37,20 @@ pub(crate) fn top_level_underscores(module: &Module) -> Vec<Diagnostic> {
 /// Reports each `struct` or `shared` nothing can build: one with a `_` field that has no
 /// default, which its automatic constructor can't set from outside it, and no named constructor,
 /// a method without `self` that gives one back, to set it.
-pub(crate) fn unbuildable(module: &Module) -> Vec<Diagnostic> {
+fn unbuildable(module: &Module) -> Vec<Diagnostic> {
+    unbuildable_in(module, false)
+}
+
+/// What a program's module is told about `_` when it's added: `top_level_underscores` and
+/// `unbuildable`.
+pub(crate) fn in_module(module: &Module) -> Vec<Diagnostic> {
+    let mut found = top_level_underscores(module);
+    found.extend(unbuildable(module));
+    found
+}
+
+/// `unbuildable`, for the library's own types too when `library`.
+pub(crate) fn unbuildable_in(module: &Module, library: bool) -> Vec<Diagnostic> {
     let mut found = Vec::new();
     for item in &module.items {
         let Item::Struct(def) = item else { continue };
@@ -46,7 +59,7 @@ pub(crate) fn unbuildable(module: &Module) -> Vec<Diagnostic> {
         else {
             continue;
         };
-        if def.span.in_prelude() || !named_constructors(def).is_empty() {
+        if (def.span.in_prelude() && !library) || !named_constructors(def).is_empty() {
             continue;
         }
         let (name, field) = (&def.name, &hidden.name);
@@ -173,7 +186,7 @@ impl FnCx<'_> {
     /// standard library's own text is a std type's method's, as when a `with` source like
     /// `channel[T]` is written in where it's used: what reaches the name is still its own code.
     pub(crate) fn private_member(&mut self, owner: &str, member: &str, span: Span) {
-        if !member.starts_with('_') || span.in_prelude() || self.inside(owner) {
+        if !member.starts_with('_') || self.checker.lets_off(span) || self.inside(owner) {
             return;
         }
         let what = if self.checker.program.method(owner, member).is_some() { "call" } else { "reach" };

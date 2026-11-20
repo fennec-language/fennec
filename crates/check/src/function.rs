@@ -101,8 +101,8 @@ pub(crate) struct FnCx<'c> {
     /// The function's own name, for messages.
     pub(crate) name: String,
     scopes: Vec<Scope>,
-    /// Whether to report problems: not for the standard library, or for a field default
-    /// looked at only for its type.
+    /// Whether to report problems: not for the standard library but in `Scope::Library`'s check,
+    /// and not for a field default looked at only for its type.
     pub(crate) report: bool,
     /// The return type written in the signature, if any.
     pub(crate) declared: Option<Type>,
@@ -698,7 +698,7 @@ impl<'c> FnCx<'c> {
     pub(crate) fn check_fields(checker: &'c mut Checker, type_name: &str) {
         let Some(info) = checker.program.type_info(type_name) else { return };
         let def = info.def.clone();
-        let report = !info.prelude;
+        let report = checker.reports(info.prelude);
         let mut cx = FnCx::new(checker, &format!("fields of {type_name}"), type_name, report);
         cx.generics.clone_from(&def.generics);
         for field in &def.fields {

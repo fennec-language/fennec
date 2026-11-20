@@ -20,7 +20,9 @@
 //! the daemon builds: one build at a time, in the command's folder, with what it prints sent back.
 //! The environment is part of the socket's name, so the build runs in the command's own, as
 //! `cc` and the linker see it. A command that goes before the answer, as with Ctrl-C, stops the
-//! build. Under CI it's built in the command's own process, as a first build is.
+//! build. Under CI it's built in the command's own process, as a first build is. Each build keeps
+//! what it loaded for the next (`aot::KEPT_LOAD`): each file's parse, and its rewriting of names
+//! across files, so an edit build parses and rewrites only the files the edit reaches.
 //!
 //! `fennec daemon status` and `fennec daemon stop` manage every daemon of this build the user has
 //! running, one for each environment commands ran in. Each exits by itself after thirty

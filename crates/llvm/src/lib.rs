@@ -376,14 +376,66 @@ pub fn wrap_main(program: &mut Program, span: fennec_syntax::Span) {
     let (returns, params) = (main.returns.clone(), main.params);
     let mut locals: Vec<fennec_ir::Local> = main.locals.iter().take(params).cloned().collect();
     let result = fennec_ir::LocalId(params);
-    locals.push(fennec_ir::Local { name: None, ty: returns, copied: false });
+    locals.push(fennec_ir::Local { name: None, ty: returns.clone(), copied: false });
     let args = (0..params).map(|at| fennec_ir::Operand::Local(fennec_ir::LocalId(at))).collect();
     let call = fennec_ir::InstKind::Call { dest: Some(result), function: "main.given_back".to_owned(), args };
-    let check = fennec_ir::InstKind::Builtin {
+    let inst = |kind| fennec_ir::Inst { kind, span };
+    let checked = |args| fennec_ir::InstKind::Builtin {
         dest: None,
         name: "main.result".to_owned(),
-        args: vec![fennec_ir::Operand::Local(result)],
+        args,
         changes: false,
+    };
+    let given = vec![fennec_ir::Operand::Local(result)];
+    let shown = program.functions.iter().any(|function| function.name == fennec_ir::MAIN_SHOWN);
+    let blocks = match returns {
+        // A failure is shown with its words, which `main.shown` gives, before it crosses to the
+        // runtime.
+        fennec_check::Type::Result(_, error) if shown => {
+            let (failed, cause, text) = (
+                fennec_ir::LocalId(params + 1),
+                fennec_ir::LocalId(params + 2),
+                fennec_ir::LocalId(params + 3),
+            );
+            for ty in [fennec_check::Type::Bool, *error, fennec_check::Type::Str] {
+                locals.push(fennec_ir::Local { name: None, ty, copied: false });
+            }
+            let value = fennec_ir::Operand::Local(result);
+            let is_err = fennec_ir::InstKind::IsErr { dest: failed, value: value.clone() };
+            let cond = fennec_ir::Operand::Local(failed);
+            let words = fennec_ir::InstKind::Call {
+                dest: Some(text),
+                function: fennec_ir::MAIN_SHOWN.to_owned(),
+                args: vec![fennec_ir::Operand::Local(cause)],
+            };
+            let with_words = vec![value.clone(), fennec_ir::Operand::Local(text)];
+            vec![
+                fennec_ir::Block {
+                    insts: vec![inst(call), inst(is_err)],
+                    end: fennec_ir::Terminator::Branch {
+                        cond,
+                        then: fennec_ir::BlockId(1),
+                        otherwise: fennec_ir::BlockId(2),
+                    },
+                },
+                fennec_ir::Block {
+                    insts: vec![
+                        inst(fennec_ir::InstKind::GetErr { dest: cause, value }),
+                        inst(words),
+                        inst(checked(with_words)),
+                    ],
+                    end: fennec_ir::Terminator::Return(None),
+                },
+                fennec_ir::Block {
+                    insts: vec![inst(checked(given))],
+                    end: fennec_ir::Terminator::Return(None),
+                },
+            ]
+        }
+        _ => vec![fennec_ir::Block {
+            insts: vec![inst(call), inst(checked(given))],
+            end: fennec_ir::Terminator::Return(None),
+        }],
     };
     program.functions.push(fennec_ir::Function {
         name: "main".to_owned(),
@@ -391,10 +443,7 @@ pub fn wrap_main(program: &mut Program, span: fennec_syntax::Span) {
         mut_params: Vec::new(),
         returns: fennec_check::Type::Unit,
         locals,
-        blocks: vec![fennec_ir::Block {
-            insts: vec![fennec_ir::Inst { kind: call, span }, fennec_ir::Inst { kind: check, span }],
-            end: fennec_ir::Terminator::Return(None),
-        }],
+        blocks,
         counts: Vec::new(),
         places: Vec::new(),
     });

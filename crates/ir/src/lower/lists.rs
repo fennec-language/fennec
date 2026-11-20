@@ -338,6 +338,11 @@ impl Lowering<'_> {
     /// show as it always has.
     pub(super) fn shown(&mut self, expr: &Expr) -> Lowered<Operand> {
         let Some(held) = self.type_at(expr.span) else { return self.expr(expr) };
+        // A failure shows its words. Inside another value it shows as it is.
+        if self.is_failure(&held) {
+            let error = self.expr(expr)?;
+            return self.words_of(error, expr.span);
+        }
         let writer = Type::Named("StrWriter".to_owned());
         let Some(function) = self.own_str(&held) else {
             self.own_texts_within(&held, &mut Vec::new(), expr.span)?;

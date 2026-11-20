@@ -13,7 +13,7 @@ use crate::{ParamType, Signature};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 30] = [
+const BUILTINS: [(&str, usize, usize); 31] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("all", 1, 1),
@@ -37,6 +37,7 @@ const BUILTINS: [(&str, usize, usize); 30] = [
     ("parallel", 1, 1),
     ("range", 1, 3),
     ("replace", 1, usize::MAX),
+    ("repr", 1, 1),
     ("reversed", 1, 1),
     ("round", 1, 2),
     ("set", 0, 1),
@@ -781,7 +782,9 @@ impl FnCx<'_> {
                 }
                 Type::list(Type::Int)
             }
-            "str" => Type::Str,
+            // The value as it shows inside another, a failure as what it holds rather than its
+            // words, and text in quotes.
+            "str" | "repr" => Type::Str,
             "bytes" => {
                 if let Some((items, at)) = plain.first()
                     && !self.checker.fits(&Type::list(Type::Int), items)

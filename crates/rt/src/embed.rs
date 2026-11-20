@@ -1024,9 +1024,20 @@ pub mod temps {
     /// gives back otherwise as the exit code. The result is the last temporary, so it's
     /// dropped, leaving none behind.
     pub extern "C" fn main_result(value: i64, start: i64, end: i64) {
+        main_result_shown(value, 0, start, end);
+    }
+
+    /// `main_result`, with how its failure is shown, when that's given: `shown`, the block of a
+    /// string the runtime takes over, holds its words with the failure as it is on the next line.
+    pub extern "C" fn main_result_shown(value: i64, shown: i64, start: i64, end: i64) {
         // The failure's call chain, which native code keeps among the error's notes.
         let mut chain = Vec::new();
         attempt(|state: &mut State| {
+            let shown = u64::try_from(shown).ok().filter(|address| *address != 0).and_then(|address| {
+                let text = super::heap::read_block(state, address);
+                super::heap::release(state, address);
+                if let Value::Str(text) = text { Some(text.to_string()) } else { None }
+            });
             let result = state.take(value);
             if let Ok(at) = usize::try_from(value) {
                 state.temps.truncate(at);
@@ -1039,7 +1050,7 @@ pub mod temps {
                         chain = super::notes::chain_in(notes);
                     }
                     Err(Diagnostic::new(
-                        format!("`main` failed: {}", crate::format::failure(&error)),
+                        format!("`main` failed: {}", crate::format::failure(&error, shown)),
                         span(start, end),
                     ))
                 }

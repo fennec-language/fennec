@@ -13,13 +13,58 @@ use crate::value::{Cell, Func, Held, Instance, Value};
 pub(crate) const ROOM_UNPROMISED: &str = "a Buffer's exact room, which `docs/language.md` promises only to be at least what it holds, and n more right after `reserve(n)`";
 
 impl Interp {
-    /// What `stdout.print` and `str()` show: a string as it is, and anything else as it shows
-    /// inside a collection.
+    /// What `stdout.print` and `str()` show: a string as it is, a failure's words, and anything
+    /// else as it shows inside a collection.
     pub(crate) fn display(&mut self, value: &Value) -> Run<String> {
         match value {
             Value::Str(text) => Ok(text.as_str().to_owned()),
+            Value::Instance(instance) if self.is_error(&instance.ty) => self.words(instance),
             other => self.repr(other),
         }
+    }
+
+    /// An error's words: its own `def message(self) -> str`, or else the error as it shows.
+    pub(crate) fn words(&mut self, instance: &Instance) -> Run<String> {
+        let Some(def) = self.program.method(&instance.ty, "message") else {
+            let mut out = String::new();
+            self.instance_repr_into(instance, &mut out)?;
+            return Ok(out);
+        };
+        let receiver = Receiver::Value(Value::Instance(Held::new(instance.clone())));
+        match self.call_def(def, None, Some(receiver), Vec::new(), def.span)? {
+            Value::Str(text) => Ok(text.as_str().to_owned()),
+            other => unsupported(format!("a `def message` that gave back a {}", other.kind())),
+        }
+    }
+
+    /// How a failure that ends the program is shown after "`main` failed: ": its own words with
+    /// it as it is on the next line, or just it, when it has none.
+    pub(crate) fn shown_ending_main(&mut self, error: &Value) -> Run<String> {
+        let shown = self.repr(error)?;
+        match error {
+            Value::Instance(instance) if self.program.method(&instance.ty, "message").is_some() => {
+                Ok(format!("{}\n  {shown}", self.words(instance)?))
+            }
+            _ => Ok(shown),
+        }
+    }
+
+    /// A new failure raised inside `except why:` carries `why`'s words as a note. One that's `why`
+    /// itself, or made from it, as `why.with_note(...)` is, is the same failure. A `fail` in a
+    /// function the block calls isn't in the block.
+    pub(crate) fn with_cause_noted(&mut self, raised: &fennec_syntax::Expr, error: Value) -> Run<Value> {
+        let Some((frame, name, why)) = self.excepts.last().cloned() else { return Ok(error) };
+        if frame != self.cur || made_from(raised, name) {
+            return Ok(error);
+        }
+        let Value::Instance(instance) = error else { return Ok(error) };
+        if !self.is_error(&instance.ty) {
+            return Ok(Value::Instance(instance));
+        }
+        let words = self.display(&why)?;
+        let mut noted = (*instance).clone();
+        noted.notes.push(words);
+        Ok(Value::Instance(Held::new(noted)))
     }
 
     /// A value as it shows inside a collection, strings in quotes.
@@ -417,4 +462,15 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
         }
         _ => false,
     })
+}
+
+/// Whether an expression is the name `name`, or a field, item or method's result read from it.
+fn made_from(expr: &fennec_syntax::Expr, name: &str) -> bool {
+    use fennec_syntax::ExprKind;
+    match &expr.kind {
+        ExprKind::Name(named) => named == name,
+        ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => made_from(object, name),
+        ExprKind::Call { callee, .. } => made_from(callee, name),
+        _ => false,
+    }
 }

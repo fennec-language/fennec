@@ -957,6 +957,14 @@ impl FnCx<'_> {
             self.error(problem);
             return Type::Unknown;
         }
+        if name == "message" && self.words_are_a_method(&ty) {
+            self.error(
+                Diagnostic::new(format!("{} has no field `message`: its words are a method", a(&ty)), span)
+                    .with_help("call it, as `.message()`")
+                    .with_fix(Span { start: span.end, end: span.end }, "()"),
+            );
+            return Type::Str;
+        }
         self.field_of(&ty, name, optional, span)
     }
 
@@ -1057,6 +1065,25 @@ impl FnCx<'_> {
                 }
             }
             _ => self.no_field(ty, name, span),
+        }
+    }
+
+    /// Whether a value of this type is a failure with no field `message`, whose words come from
+    /// the method every error has, `message()`.
+    fn words_are_a_method(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Errors(_) => true,
+            ty if self.checker.is_error_type(ty) => ty.type_name().is_none_or(|owner| {
+                !self.checker.program.type_info(owner).is_some_and(|info| {
+                    info.def.fields.iter().any(|field| field.name == "message")
+                        || info
+                            .def
+                            .cases
+                            .iter()
+                            .any(|case| case.fields.iter().any(|field| field.name == "message"))
+                })
+            }),
+            _ => false,
         }
     }
 

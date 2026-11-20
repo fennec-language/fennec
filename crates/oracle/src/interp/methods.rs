@@ -1092,6 +1092,12 @@ impl Interp {
             return None;
         }
         match (name, args) {
+            ("message", []) => Some(self.words(instance).map(|words| Value::Str(Text::from(words.as_str())))),
+            ("with_note", [Value::Str(note)]) => {
+                let mut noted = instance.clone();
+                noted.notes.push(note.as_str().to_owned());
+                Some(Ok(Value::Instance(Held::new(noted))))
+            }
             ("notes", []) => {
                 let notes = instance.notes.iter().map(|note| Value::Str(Text::from(note.as_str())));
                 Some(Ok(Value::List(notes.collect())))

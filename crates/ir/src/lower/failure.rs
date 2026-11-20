@@ -393,8 +393,12 @@ impl Lowering<'_> {
             };
             let held = self.declare(failure, *error);
             self.emit(InstKind::GetErr { dest: held, value: value.clone() }, span);
+            self.excepts.push((failure.to_owned(), held));
         }
         let lowered = self.stmts(block, tail);
+        if failure.is_some() {
+            self.excepts.pop();
+        }
         self.scopes.pop();
         lowered
     }
@@ -594,8 +598,9 @@ impl Lowering<'_> {
     }
 
     /// `fail error`.
-    pub(super) fn fail(&mut self, error: &Expr, span: Span) -> Lowered<()> {
-        let error = self.expr(error)?;
+    pub(super) fn fail(&mut self, raised: &Expr, span: Span) -> Lowered<()> {
+        let error = self.expr(raised)?;
+        let error = self.with_cause_noted(raised, error, span)?;
         let error = self.traced(error, "error.raised", span)?;
         self.leave_with_error(error, span)
     }
@@ -803,15 +808,19 @@ pub(super) fn stop_on_failed_main(program: &mut Program, defs: &[(String, &FnDef
         name == "main"
             || name.strip_prefix("test:").is_some_and(|number| number.chars().all(|c| c.is_ascii_digit()))
     };
+    // `main`'s failure is shown with its words, when it has them.
+    let shown = program.functions.iter().any(|function| function.name == super::words::MAIN_SHOWN);
     for (key, def) in defs.iter().filter(|(key, _)| stops(key)) {
+        let shown = (shown && key == "main").then_some(super::words::MAIN_SHOWN);
         if let Some(function) = program.functions.iter_mut().find(|function| function.name == *key) {
-            stop_on_failure(function, def.span);
+            stop_on_failure(function, def.span, shown);
         }
     }
 }
 
-/// Makes `function`, which gives back a result with nothing in its `Ok`, stop when it fails.
-fn stop_on_failure(function: &mut Function, span: Span) {
+/// Makes `function`, which gives back a result with nothing in its `Ok`, stop when it fails: shown
+/// by the function `shown` names, when there's one.
+fn stop_on_failure(function: &mut Function, span: Span, shown: Option<&str>) {
     let Type::Result(ok, error) = function.returns.clone() else { return };
     if *ok != Type::Unit {
         return;
@@ -828,14 +837,20 @@ fn stop_on_failure(function: &mut Function, span: Span) {
         let (then, otherwise) = (BlockId(first + added.len()), BlockId(first + added.len() + 1));
         block.insts.push(inst(InstKind::IsErr { dest: failed, value: value.clone() }));
         block.end = Terminator::Branch { cond: Operand::Local(failed), then, otherwise };
-        let says = InstKind::Builtin {
-            dest: None,
-            name: "main.failed".to_owned(),
-            args: vec![Operand::Local(cause)],
-            changes: false,
-        };
+        let mut insts = vec![inst(InstKind::GetErr { dest: cause, value })];
+        let mut args = vec![Operand::Local(cause)];
+        if let Some(shown) = shown {
+            let text = LocalId(function.locals.len());
+            function.locals.push(Local { name: None, ty: Type::Str, copied: false });
+            let args_of_shown = vec![Operand::Local(cause)];
+            let function = shown.to_owned();
+            insts.push(inst(InstKind::Call { dest: Some(text), function, args: args_of_shown }));
+            args.push(Operand::Local(text));
+        }
+        let says = InstKind::Builtin { dest: None, name: "main.failed".to_owned(), args, changes: false };
+        insts.push(inst(says));
         added.push(Block {
-            insts: vec![inst(InstKind::GetErr { dest: cause, value }), inst(says)],
+            insts,
             // The text above is what stops it, and what a backend's checks see as stopping.
             end: Terminator::Stop { message: "`main` failed".to_owned(), span },
         });

@@ -160,6 +160,14 @@ impl Lowering<'_> {
                 _ if matches!(name.as_str(), "Stdout.print" | "Stdout.write" | "str") => {
                     self.shown(&arg.value)?
                 }
+                // The value as it shows inside another: what it holds through its own `def str`
+                // too, and a failure as it is rather than its words.
+                _ if name == "repr" => {
+                    if let Some(held) = self.type_at(arg.value.span) {
+                        self.own_texts_within(&held, &mut Vec::new(), arg.value.span)?;
+                    }
+                    self.expr(&arg.value)?
+                }
                 _ => self.expr(&arg.value)?,
             };
             let value = match unions.get(position) {
@@ -318,6 +326,9 @@ impl Lowering<'_> {
     ) -> Option<Lowered<Option<LocalId>>> {
         if let Some(ty) = self.closure_callee(callee) {
             return Some(self.call_closure(callee, &ty, args, keep.cloned(), span));
+        }
+        if let Some(lowered) = self.errors_own_call(callee, args, keep, span) {
+            return Some(lowered);
         }
         if let ExprKind::Attr { object, name, optional: true } = &callee.kind {
             return Some(self.optional_method((object, name), args, keep.cloned(), span));

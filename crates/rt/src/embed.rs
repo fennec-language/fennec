@@ -265,6 +265,8 @@ const OUTPUT_AGE: std::time::Duration = std::time::Duration::from_millis(100);
 thread_local! {
     /// When this thread last wrote its output, if it has.
     static WRITTEN_AT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+    /// How many pieces ending a line this thread has kept since it last wrote its output.
+    static LINES_KEPT: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Whether standard output is a terminal, where a person waits on each line.
@@ -281,11 +283,21 @@ const fn to_terminal() -> bool {
     false
 }
 
-/// Whether a live run writes the lines it has kept, now that a piece ending one has come: at once
-/// to a terminal, and to a pipe or a file once `LIVE_OUTPUT` bytes are kept or `OUTPUT_AGE` has
-/// gone since the last write, which is only read when the others haven't said yes.
-fn due(kept: usize, terminal: bool, since_written: impl FnOnce() -> Option<std::time::Duration>) -> bool {
-    terminal || kept >= LIVE_OUTPUT || since_written().is_none_or(|since| since >= OUTPUT_AGE)
+/// Whether a live run writes the lines it has kept, now that a piece ending one has come, the
+/// `lines`th since the last write: at once to a terminal, and to a pipe or a file once
+/// `LIVE_OUTPUT` bytes are kept or `OUTPUT_AGE` has gone since the last write. The clock is read
+/// only when the others haven't said yes, and only at the 1st, 2nd, 4th, 8th and so on line since
+/// the last write: read at every line, it cost a program printing a million short lines a fifth
+/// more instructions on macOS, and this way one printing fast reads it about ten times in 8 KB.
+fn due(
+    kept: usize,
+    terminal: bool,
+    lines: u32,
+    since_written: impl FnOnce() -> Option<std::time::Duration>,
+) -> bool {
+    terminal
+        || kept >= LIVE_OUTPUT
+        || (lines.is_power_of_two() && since_written().is_none_or(|since| since >= OUTPUT_AGE))
 }
 
 impl Output {
@@ -296,6 +308,7 @@ impl Output {
         write_whole(kept.get(..length).unwrap_or_default())?;
         kept.drain(..length);
         WRITTEN_AT.set(Some(std::time::Instant::now()));
+        LINES_KEPT.set(0);
         Ok(())
     }
 
@@ -307,8 +320,13 @@ impl Output {
         if crate::replay::active() {
             return self.1 && kept >= LIVE_OUTPUT;
         }
+        if !self.1 && !TASK_WRITES.get() {
+            return false;
+        }
+        let lines = LINES_KEPT.get().saturating_add(1);
+        LINES_KEPT.set(lines);
         let since_written = || WRITTEN_AT.get().map(|written| written.elapsed());
-        (self.1 || TASK_WRITES.get()) && due(kept, to_terminal(), since_written)
+        due(kept, to_terminal(), lines, since_written)
     }
 }
 

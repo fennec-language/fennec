@@ -411,8 +411,8 @@ pub(crate) struct Checker {
     /// The functions that name a `with` source's own function, constant or module where it's
     /// written in, with something in sight there named the same (`sight::outer`).
     pub(crate) names_outer: BTreeSet<String>,
-    /// The calls a standard library function written in Fennec makes instead, by the call's
-    /// span, like `crypto.blake3(chunks)` of many chunks.
+    /// The calls sent to another function, by the call's span: a standard library function written
+    /// in Fennec, like `crypto.blake3(chunks)` of many chunks, or a builtin's, as `i64(x)` is `int(x)`.
     pub(crate) std_calls: BTreeMap<(u32, u32), String>,
     /// The field each value given by position goes to, by the value's span, where that isn't
     /// the field at its position: from outside a type, the `_` fields are skipped.

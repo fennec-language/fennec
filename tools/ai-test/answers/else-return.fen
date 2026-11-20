@@ -1,7 +1,6 @@
 def first_even(items: list[int]) -> int:
     for item in items:
-        if item % 2 == 0:
-            return item
+        if item % 2 == 0: return item
     return -1
 
 def main(stdout: Stdout):

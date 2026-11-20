@@ -4,8 +4,7 @@ error TooBig:
 def total(items: list[int]) -> int fails TooBig:
     mut added = 0
     for item in items:
-        if item > 100:
-            fail TooBig(value=item)
+        if item > 100: fail TooBig(value=item)
         added += item
     return added
 

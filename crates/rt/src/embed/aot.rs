@@ -63,6 +63,9 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
         let _ = std::io::stderr().write_all(format!("{why}\n").as_bytes());
         return 2;
     }
+    // Standard output's buffer is made on its first use: made now, running out of memory later
+    // writes what was printed without allocating (`out_of_memory`).
+    let _ = std::io::stdout();
     let bytes = program_handed_over(length, stop);
     // On macOS `fennec build` links every executable with a main thread of `MAIN_STACK_BYTES`, so
     // the program runs there, with no thread to start. Elsewhere the main thread's stack is the
@@ -511,8 +514,10 @@ fn report(output: &[u8], failure: &str) -> i32 {
 /// The program has run out of memory: an allocation of `size` bytes failed, which the runtime's
 /// allocator says here rather than in Rust's words with a core dump (runtime exhaustion audit,
 /// 2026-11-20). What this thread printed and kept goes out first, as for a crash, then the stop is
-/// said, and the program ends with 1. Nothing here allocates but writing the kept output, which
-/// may: an allocation failing there comes back here, and then only the words are said.
+/// said, and the program ends with 1. Nothing here allocates: the kept output is written through
+/// standard output's buffer, made as the run starts, and the words are put together on the
+/// stack. Were an allocation to fail on the way anyway, it would come back here, and only the words
+/// would be said.
 pub fn out_of_memory(size: usize) -> ! {
     static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !ONCE.swap(true, std::sync::atomic::Ordering::SeqCst) {

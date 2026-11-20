@@ -112,6 +112,9 @@ pub(crate) enum Kind {
     /// The join of a `parallel` call whose body may wait, for its ranges.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only the pool runs ranges"))]
     Join,
+    /// A replay's wait for its turn at a place, where the recording has another's next: when every
+    /// context is stuck, no other can come to it, and the replay can't follow its recording.
+    Turn,
 }
 
 /// What a stuck wait waits on: a channel, or a launched task.
@@ -143,6 +146,7 @@ impl Kind {
             Kind::Send => "send",
             Kind::BlockEnd => "end",
             Kind::Join => "join",
+            Kind::Turn => "turn",
         }
     }
 }
@@ -209,7 +213,6 @@ enum On {
     /// shares nothing with the threads sending and receiving on it.
     Channel(i64),
     /// A launched task, at a block's end.
-    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
     Awaited(Arc<dyn Awaited>),
 }
 
@@ -281,6 +284,16 @@ fn range_here() -> Option<RangeName> {
 }
 
 impl Note {
+    /// What a replay's wait for its turn says, when every context is stuck: the turn it waits for
+    /// that nothing left running can come to. `None` for any other wait.
+    #[cfg_attr(test, expect(dead_code, reason = "only a report, which tests don't make, says it"))]
+    fn turn_never_comes(&self) -> Option<String> {
+        match (&self.on, self.kind) {
+            (On::Awaited(on), Kind::Turn) => Some(on.said(Kind::Turn)),
+            _ => None,
+        }
+    }
+
     /// The note of a parked wait of `kind` on the channel numbered `channel`, whose worker says who
     /// it is as the task parks (`parked_by`): nothing's looked up or shared on the way to a park.
     /// `place` is the channel's name in a recording or a replay.
@@ -290,7 +303,6 @@ impl Note {
     }
 
     /// The note of a parked wait of `kind` on `on`, as `on_channel`'s.
-    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
     pub(crate) fn parked(on: Arc<dyn Awaited>, kind: Kind) -> Note {
         let replay = on.replay_place().map(|place| crate::replay::line(kind.word(), &place));
         Note { who: Who::Other, on: On::Awaited(on), kind, range: range_here(), replay }
@@ -338,7 +350,7 @@ impl Note {
         let what = match &self.on {
             On::Channel(_) => match self.kind {
                 Kind::Send => "to send on a channel that's full".to_owned(),
-                Kind::Receive | Kind::BlockEnd | Kind::Join => {
+                Kind::Receive | Kind::BlockEnd | Kind::Join | Kind::Turn => {
                     "to receive on a channel that's empty".to_owned()
                 }
             },
@@ -638,6 +650,14 @@ fn report(notes: &[Note]) {
     }
     super::write_kept_output();
     let _ = std::io::stdout().flush();
+    // A replay's task waiting for its turn, with every context stuck, waits for a turn no one left
+    // can come to: the replay can't follow its recording, and says so now, however long the work
+    // before a turn took, rather than after a turn's wait ran out (#2276).
+    if let Some(why) = notes.iter().find_map(Note::turn_never_comes) {
+        let said = format!("error: {}{}\n", super::aot::COULDNT_FOLLOW, crate::replay::diverged(why));
+        let _ = std::io::stderr().write_all(said.as_bytes());
+        super::aot::stop_now(1);
+    }
     // A recording logs the deadlock, and a replay holds its own to the recording's: one that isn't
     // the same has diverged, and says that instead.
     let words = said(notes);

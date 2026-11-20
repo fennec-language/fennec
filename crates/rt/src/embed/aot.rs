@@ -319,7 +319,7 @@ fn test_line(
 }
 
 /// What a replay that couldn't follow its recording says, before where it couldn't.
-const COULDNT_FOLLOW: &str = "the replay couldn't follow its recording: ";
+pub(crate) const COULDNT_FOLLOW: &str = "the replay couldn't follow its recording: ";
 
 /// Runs the program, on the current thread: what it printed, and its failure, rendered,
 /// or nothing.

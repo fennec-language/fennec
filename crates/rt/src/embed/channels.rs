@@ -191,7 +191,7 @@ pub(in crate::embed) fn still_waits_on(channel: i64, kind: Kind) -> bool {
     let side = match kind {
         Kind::Receive => Side::Receiving,
         Kind::Send => Side::Sending,
-        Kind::BlockEnd | Kind::Join => return false,
+        Kind::BlockEnd | Kind::Join | Kind::Turn => return false,
     };
     find(channel).is_some_and(|channel| channel.still_waits(&channel.queue(), side))
 }

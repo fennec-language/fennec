@@ -342,7 +342,7 @@ thread_local! {
     static OUTPUT: RefCell<Option<Output>> = const { RefCell::new(None) };
 }
 
-/// Lets others run for a moment, for a replay's task waiting its turn: a task makes way for the
+/// Lets others run for a moment, for a replay's task waiting for a lock's readers to give it back: a task makes way for the
 /// others on its thread, and a thread that isn't one sleeps briefly.
 pub(crate) fn make_way() {
     #[cfg(any(test, feature = "threads"))]

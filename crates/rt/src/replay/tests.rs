@@ -238,9 +238,19 @@ fn a_log_without_its_mark_isnt_a_recording() {
 static WAITED: AtomicBool = AtomicBool::new(false);
 
 /// Makes way for another task, as a task waiting for its turn does, noting that one has.
-fn wait_noted() {
+#[expect(clippy::unnecessary_wraps, reason = "it's a wait for `turn_in`, which may fail")]
+fn wait_noted(held: MutexGuard<'_, Player>, _: &str, _: &str) -> Result<(), String> {
+    drop(held);
     WAITED.store(true, Ordering::SeqCst);
     std::thread::yield_now();
+    Ok(())
+}
+
+/// What the deadlock check says of a turn that waits, as when nothing left running can come to it.
+fn never_coming(held: MutexGuard<'_, Player>, place: &str, asked: &str) -> Result<(), String> {
+    let front = held.streams.get(place).and_then(VecDeque::front).map(|(next, _)| next.clone());
+    drop(held);
+    Err(never_comes(asked, place, &front.unwrap_or_default()))
 }
 
 /// At a place where tasks meet, each task waits for its turn, so they go in the recorded order
@@ -258,7 +268,7 @@ fn tasks_take_their_turns_at_a_place_in_the_recorded_order() {
         std::thread::spawn(move || {
             TASK.with_borrow_mut(|running| *running = Some(Task::named(Arc::from(name))));
             for _ in 0..times {
-                let got = turn_in(&player, ("0:c0", what, true), Duration::from_secs(5), wait_noted).unwrap();
+                let got = turn_in(&player, ("0:c0", what, true), &mut wait_noted).unwrap();
                 order.lock().unwrap().push((name, got));
                 end_turn(&player, "0:c0", what);
             }
@@ -324,11 +334,11 @@ fn a_replay_writes_the_recorded_bursts_however_its_tasks_cut_their_output() {
 #[test]
 fn a_turn_the_recording_doesnt_have_is_a_divergence() {
     let player = player(&[("0:c0", "0 send", &0_i64.to_le_bytes())]);
-    let why = turn_in(&player, ("0:c0", "close", false), Duration::ZERO, std::thread::yield_now);
+    let why = turn_in(&player, ("0:c0", "close", false), &mut never_coming);
     assert!(why.is_err_and(|why| why.contains("`0 close`") && why.contains("`0 send`")));
-    assert_eq!(turn_in(&player, ("0:c0", "send", true), Duration::ZERO, std::thread::yield_now), Ok(0));
+    assert_eq!(turn_in(&player, ("0:c0", "send", true), &mut never_coming), Ok(0));
     end_turn(&player, "0:c0", "send");
-    let why = turn_in(&player, ("0:c0", "send", true), Duration::ZERO, std::thread::yield_now).unwrap_err();
+    let why = turn_in(&player, ("0:c0", "send", true), &mut never_coming).unwrap_err();
     assert!(why.contains("nothing more"), "{why}");
 }
 
@@ -359,9 +369,9 @@ fn a_replay_of_a_deadlock_waits_past_its_recordings_end() {
             "the deadlock isn't main's to ask for"
         );
     }
-    let past = turn_in(&player, ("0:c1", "receive", true), Duration::from_millis(50), wait_noted);
+    let past = turn_in(&player, ("0:c1", "receive", true), &mut wait_noted);
     assert_eq!(past, Ok(PAST_THE_END));
-    let why = turn_in(&player, ("0:c1", "close", false), Duration::from_millis(50), wait_noted).unwrap_err();
+    let why = turn_in(&player, ("0:c1", "close", false), &mut wait_noted).unwrap_err();
     assert!(why.contains("had nothing more"), "{why}");
     // Not yet at the deadlock: the recording has more of main's, and a task's send.
     let why = deadlocked_in(&player.lock().unwrap(), &lines()).unwrap_err();
@@ -370,7 +380,7 @@ fn a_replay_of_a_deadlock_waits_past_its_recordings_end() {
     let why = deadlocked_in(&player.lock().unwrap(), &lines()).unwrap_err();
     assert!(why.contains("asked for `0.0 send` next at 0:c0"), "{why}");
     TASK.with_borrow_mut(|running| *running = Some(Task::named(Arc::from("0.0"))));
-    assert_eq!(turn_in(&player, ("0:c0", "send", true), Duration::from_millis(50), wait_noted), Ok(0));
+    assert_eq!(turn_in(&player, ("0:c0", "send", true), &mut wait_noted), Ok(0));
     end_turn(&player, "0:c0", "send");
     TASK.with_borrow_mut(|running| *running = None);
     // The same deadlock is said as the recording said it, whatever this replay's own words.
@@ -404,7 +414,7 @@ fn a_replay_that_deadlocks_where_its_recording_didnt_has_diverged() {
         why.contains("came to a deadlock its recording didn't have, its tasks waiting at `0 receive 0:c1`"),
         "{why}"
     );
-    let why = turn_in(&player, ("0:c1", "receive", true), Duration::from_millis(50), wait_noted).unwrap_err();
+    let why = turn_in(&player, ("0:c1", "receive", true), &mut wait_noted).unwrap_err();
     assert!(why.contains("had nothing more"), "{why}");
 }
 
@@ -414,27 +424,29 @@ static MOVING: OnceLock<Mutex<Player>> = OnceLock::new();
 
 /// Ends the front turn at `MOVING`'s place every 30 ms, as a line of other tasks taking their
 /// turns there would.
-fn taking_turns() {
+#[expect(clippy::unnecessary_wraps, reason = "it's a wait for `turn_in`, which may fail")]
+fn taking_turns(held: MutexGuard<'_, Player>, _: &str, _: &str) -> Result<(), String> {
+    drop(held);
     std::thread::sleep(Duration::from_millis(30));
     if let Some(player) = MOVING.get() {
-        let mut player = player.lock().unwrap();
+        let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(stream) = player.streams.get_mut("0:c0")
             && stream.len() > 1
         {
             stream.pop_front();
         }
     }
+    Ok(())
 }
 
-/// A turn waits as long as its place's next entry keeps moving on, however long the line ahead of
-/// it takes: its patience starts again each time (Fable 5.2's review, finding 5). Here 6 turns of
-/// 30 ms each go ahead of it, past a patience of 100 ms.
+/// A turn waits however long the line ahead of it takes, with no clock to run out (#2276): here 6
+/// turns of 30 ms each go ahead of it.
 #[test]
 fn a_turn_waits_as_long_as_its_place_moves() {
     let mut entries: Vec<(&str, &str, &[u8])> = vec![("0:c0", "0.1 send", &[0; 8]); 6];
     entries.push(("0:c0", "0 receive", &[0; 8]));
     let player = MOVING.get_or_init(|| player(&entries));
-    assert_eq!(turn_in(player, ("0:c0", "receive", true), Duration::from_millis(100), taking_turns), Ok(0));
+    assert_eq!(turn_in(player, ("0:c0", "receive", true), &mut taking_turns), Ok(0));
 }
 
 /// A replay that printed more than its recording did, past its last burst, and comes to its

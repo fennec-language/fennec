@@ -658,13 +658,13 @@ mod tests {
     struct Page(#[expect(dead_code, reason = "only its size and alignment are asked for")] [u8; 4096]);
 
     /// What a child of `running_out_of_memory_is_said_however_mimalloc_comes_to_it` does, as
-    /// `FENNEC_OUT_OF_MEMORY` says, with mimalloc's error handler set: asks for a petabyte, more than
+    /// `RUNTIME_TEST_OUT_OF_MEMORY` says, with mimalloc's error handler set: asks for a petabyte, more than
     /// any machine's address space, as a new block, a zeroed one, a grown one or one aligned to a
     /// page, or says mimalloc refused a request as too large to ever give. Nothing, otherwise.
     #[test]
     #[cfg(not(feature = "sanitize"))]
     fn runs_out_of_memory_when_asked() {
-        let Ok(how) = std::env::var("FENNEC_OUT_OF_MEMORY") else { return };
+        let Ok(how) = std::env::var("RUNTIME_TEST_OUT_OF_MEMORY") else { return };
         super::say_when_out_of_memory();
         let petabyte = 1_usize << 50;
         let held = match how.as_str() {
@@ -695,7 +695,7 @@ mod tests {
         for how in ["new", "zeroed", "grown", "aligned", "too large"] {
             let ran = std::process::Command::new(std::env::current_exe()?)
                 .args(["--exact", "tests::runs_out_of_memory_when_asked", "--test-threads=1"])
-                .env("FENNEC_OUT_OF_MEMORY", how)
+                .env("RUNTIME_TEST_OUT_OF_MEMORY", how)
                 .output()?;
             let said = String::from_utf8_lossy(&ran.stderr);
             assert!(!ran.status.success(), "{how}: it went on");

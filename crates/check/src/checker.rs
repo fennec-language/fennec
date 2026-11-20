@@ -33,6 +33,9 @@ pub(crate) enum Scope {
     /// What a build checks: as `ReachedWithFields`, so lowering can have its signatures, and
     /// refusing all a check of what's written refuses, a lost change included.
     Building,
+    /// All of it, with the library held to a program's rules: what it would be told were it a
+    /// program's own code.
+    Library,
 }
 
 /// What one function's or test's check writes in the tables of what to write into the module,
@@ -491,6 +494,9 @@ pub(crate) struct Checker {
     /// Set when what's checked is a program as lowering rewrote it, checked again: the rules
     /// about how a program is written were held to it as written, the first time.
     pub(crate) again: bool,
+    /// What the check covers: for `Scope::Library`, the library's own code is reported as a
+    /// program's is.
+    scope: Scope,
     /// Each function that takes a lock itself, with how the first one's written.
     pub(crate) takes_locks: BTreeMap<String, String>,
     /// The calls made inside lock bodies, judged once every function's waits are known.
@@ -609,8 +615,7 @@ impl Checker {
             }
         }
         let mut diagnostics = std::mem::take(&mut program.problems);
-        diagnostics.extend(crate::privacy::top_level_underscores(module));
-        diagnostics.extend(crate::privacy::unbuildable(module));
+        diagnostics.extend(crate::privacy::in_module(module));
         Checker {
             program,
             states: BTreeMap::new(),
@@ -660,6 +665,7 @@ impl Checker {
             waits: BTreeMap::new(),
             unfollowed: BTreeSet::new(),
             again: false,
+            scope: Scope::Everything,
             takes_locks: BTreeMap::new(),
             lock_calls: Vec::new(),
             lock_verdicts: BTreeMap::new(),
@@ -842,12 +848,13 @@ impl Checker {
     /// constant's or a field's type differently (`types_moved`): then what was carried over can't
     /// be trusted, and it's checked again whole.
     pub(crate) fn run_saying(mut self, scope: Scope) -> (Result<Checked, Vec<Diagnostic>>, bool) {
+        self.start(scope);
         self.check_declarations();
         let keys: Vec<String> = self
             .program
             .functions
             .iter()
-            .filter(|(_, entry)| scope == Scope::Everything || !entry.prelude)
+            .filter(|(_, entry)| matches!(scope, Scope::Everything | Scope::Library) || !entry.prelude)
             .map(|(key, _)| key.clone())
             .collect();
         for key in &keys {
@@ -893,19 +900,20 @@ impl Checker {
         self.check_dels();
         crate::stdlib::formats::formats_at_calls(&mut self);
         self.settle_typed();
-        if self.diagnostics.is_empty() {
+        // The library's check goes on past what's found, so each rule's findings are listed.
+        if self.in_library() || self.diagnostics.is_empty() {
             self.unknowns_left();
         }
-        if self.diagnostics.is_empty() {
+        if self.in_library() || self.diagnostics.is_empty() {
             self.body_rules(scope);
         }
         // A generic that comes back to itself with a bigger type each time can't be built.
-        if self.diagnostics.is_empty() {
+        if self.in_library() || self.diagnostics.is_empty() {
             let growing = crate::copies::growing(&self);
             self.diagnostics.extend(growing);
         }
         // What a program as lowering rewrote it hands over is what it handed as written.
-        if self.diagnostics.is_empty() && !self.again {
+        if (self.in_library() || self.diagnostics.is_empty()) && !self.again {
             let refused = crate::holds::refused(&mut self);
             self.diagnostics.extend(refused);
         }
@@ -1206,7 +1214,7 @@ impl Checker {
     /// type parameters bound to something that isn't an interface.
     fn check_declarations(&mut self) {
         let mut problems = Vec::new();
-        for entry in self.program.functions.values().filter(|entry| !entry.prelude) {
+        for entry in self.program.functions.values().filter(|entry| self.reports(entry.prelude)) {
             let generics = self.program.generics_of(entry);
             let names: Vec<String> = generics.iter().map(|generic| generic.name.clone()).collect();
             let def = &entry.def;
@@ -1228,7 +1236,7 @@ impl Checker {
                 problems.extend(written.filter_map(|ty| self.program.resolve_in(ty, &own).err()));
             }
         }
-        for info in self.program.types.values().filter(|info| !info.prelude) {
+        for info in self.program.types.values().filter(|info| self.reports(info.prelude)) {
             problems.extend(self.bad_bounds(&info.def.generics));
         }
         self.diagnostics.extend(problems);
@@ -1350,12 +1358,12 @@ impl Checker {
             .program
             .functions
             .iter()
-            .filter(|(_, entry)| !entry.prelude)
+            .filter(|(_, entry)| self.reports(entry.prelude))
             .map(|(key, _)| key.clone())
             .collect();
         let mut settled = crate::loops::Settled::default();
         let mut live = Vec::new();
-        for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
+        for (key, entry) in self.program.functions.iter().filter(|(_, entry)| self.reports(entry.prelude)) {
             live.extend(crate::ref_lowering::live_loops(self, key, &entry.def));
             // What a call changes under a `ref` comes from the callee's body, however many calls
             // down, so a function carried over is held to these again.
@@ -1390,7 +1398,7 @@ impl Checker {
         // to be emitted has been checked as written and rewritten since: a `with` function's body
         // is written into its caller, where a change to a `ref` parameter is to a local, and a
         // failure leaves before anything reads it.
-        if problems.is_empty() && scope != Scope::ReachedWithFields && !self.again {
+        if (self.in_library() || problems.is_empty()) && scope != Scope::ReachedWithFields && !self.again {
             for key in keys {
                 let Some(def) = self.program.functions.get(&key).map(|entry| entry.def.clone()) else {
                     continue;
@@ -1500,6 +1508,7 @@ impl Checker {
         // the tables already is put back after.
         let around = self.keeping.then(|| (self.take_tables(), self.take_graph()));
         self.checking.push(key.to_owned());
+        let prelude = prelude && !self.in_library();
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
         self.checking.pop();
         if let Some((tables, followed)) = around {
@@ -1546,6 +1555,34 @@ impl Checker {
         self.states.insert(key.to_owned(), State::Done(signature));
     }
 
+    /// Whether what's found in code of the library (`prelude`) or a program's is reported: a
+    /// program's always is, and the library's only for `Scope::Library`.
+    pub(crate) fn reports(&self, prelude: bool) -> bool {
+        !prelude || self.in_library()
+    }
+
+    /// Whether this is `Scope::Library`'s check.
+    pub(crate) fn in_library(&self) -> bool {
+        self.scope == Scope::Library
+    }
+
+    /// Starts a check of `scope`. `Scope::Library`'s holds the library's own types to the rule a
+    /// program's module was held to when it was added: a type with a `_` field something builds.
+    fn start(&mut self, scope: Scope) {
+        self.scope = scope;
+        if self.in_library() {
+            for module in fennec_syntax::prelude_modules().unwrap_or_default() {
+                self.diagnostics.extend(crate::privacy::unbuildable_in(module, true));
+            }
+        }
+    }
+
+    /// Whether what's at `span` is let off a rule that holds a program: the library's own code
+    /// is, but in `Scope::Library`'s check.
+    pub(crate) fn lets_off(&self, span: Span) -> bool {
+        span.in_prelude() && !self.in_library()
+    }
+
     /// Reports each function that can fail without saying so, once every function's errors are
     /// known: a signature says how a function can fail, so a reader sees it there. `main` is the
     /// exception, since nothing calls it and a failure out of it is printed, and so is a `test`.
@@ -1560,7 +1597,7 @@ impl Checker {
             // What the compiler writes in, like a crash's cleanup run as a function of its own, has
             // no reader to see a signature: what it can fail with is what its body says.
             let written = crate::lend_lowering::not_written_by_hand(def.span);
-            if entry.prelude || def.fails.is_some() || def.name == "main" || test || written {
+            if !self.reports(entry.prelude) || def.fails.is_some() || def.name == "main" || test || written {
                 continue;
             }
             let Some(State::Done(signature)) = self.states.get(key) else { continue };
@@ -1800,7 +1837,7 @@ impl Checker {
             return Type::Unknown;
         };
         self.fields.insert(key.clone(), None);
-        let report = !info.prelude;
+        let report = self.reports(info.prelude);
         let ty = match (&found.ty, &found.default) {
             (Some(ty), _) => match self.program.resolve_in(ty, &self.program.type_params(owner)) {
                 Ok(ty) => ty,

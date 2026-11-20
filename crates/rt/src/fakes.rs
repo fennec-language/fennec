@@ -354,12 +354,16 @@ impl TestWorld {
             ("read_bytes", [Value::Str(path)]) => {
                 world.read(path).map(|data| Value::Bytes(Rc::from(data.to_vec())))
             }
-            ("write_text", [Value::Str(path), Value::Str(text)]) => {
-                world.write(path, text.as_bytes()).map(|()| Value::Unit)
-            }
-            ("write_bytes", [Value::Str(path), Value::Bytes(data)]) => {
-                world.write(path, data).map(|()| Value::Unit)
-            }
+            // `durable=` changes nothing in memory.
+            (
+                "write_text",
+                [Value::Str(path), Value::Str(text)] | [Value::Str(path), Value::Str(text), Value::Bool(_)],
+            ) => world.write(path, text.as_bytes()).map(|()| Value::Unit),
+            (
+                "write_bytes",
+                [Value::Str(path), Value::Bytes(data)]
+                | [Value::Str(path), Value::Bytes(data), Value::Bool(_)],
+            ) => world.write(path, data).map(|()| Value::Unit),
             ("make_dir", [Value::Str(path)]) => world.make_dir(path).map(|()| Value::Unit),
             ("remove", [Value::Str(path)]) => world.remove(path).map(|()| Value::Unit),
             ("list_dir", [Value::Str(path)]) => {

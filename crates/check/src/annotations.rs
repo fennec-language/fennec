@@ -46,7 +46,7 @@ impl Checker {
             .program
             .types
             .values()
-            .filter(|info| !info.prelude)
+            .filter(|info| self.reports(info.prelude))
             .map(|info| (info.def.name.clone(), info.def.span))
             .collect();
         for (name, span) in names {
@@ -67,8 +67,13 @@ impl Checker {
     }
 
     pub(crate) fn check_annotations(&mut self) {
-        let defs: Vec<_> =
-            self.program.types.values().filter(|info| !info.prelude).map(|info| info.def.clone()).collect();
+        let defs: Vec<_> = self
+            .program
+            .types
+            .values()
+            .filter(|info| self.reports(info.prelude))
+            .map(|info| info.def.clone())
+            .collect();
         for def in defs {
             for field in &def.fields {
                 if let (Some(written), Some(default)) = (&field.ty, &field.default) {

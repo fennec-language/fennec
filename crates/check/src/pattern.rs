@@ -382,7 +382,7 @@ impl FnCx<'_> {
             if written != shown && written != owner {
                 return;
             }
-            if span.in_prelude() {
+            if self.checker.lets_off(span) {
                 return;
             }
             let start = span.start + 5;
@@ -397,7 +397,7 @@ impl FnCx<'_> {
         }
         let info = self.checker.program.type_info(&owner);
         if info.is_some_and(|info| info.def.cases.iter().any(|case| case.name == *name)) {
-            if span.in_prelude() {
+            if self.checker.lets_off(span) {
                 return;
             }
             // The pattern starts after `case` and its one space, as `fennec fmt` writes it.

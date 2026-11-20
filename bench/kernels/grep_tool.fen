@@ -62,7 +62,9 @@ def make_tree(tree: Fs, seed: int) fails IoError:
             tree.make_dir(here)?
             for file in range(FILES):
                 state = next(state)
-                tree.write_text(f"{here}/file{file}.src", source(state))?
+                # Not waiting for the disk, as its twin's `std::fs::write` doesn't, so both do the
+                # same work: a file that must outlast a power cut leaves `durable` out.
+                tree.write_text(f"{here}/file{file}.src", source(state), durable=False)?
     return
 
 # What the patterns found in the whole tree.

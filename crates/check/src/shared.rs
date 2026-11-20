@@ -185,7 +185,7 @@ impl Checker {
             .program
             .types
             .values()
-            .filter(|info| !info.prelude)
+            .filter(|info| self.reports(info.prelude))
             .map(|info| info.def.name.clone())
             .collect();
         for name in own {
@@ -244,7 +244,7 @@ impl Checker {
             .program
             .types
             .values()
-            .filter(|info| info.def.shared && !info.prelude)
+            .filter(|info| info.def.shared && self.reports(info.prelude))
             .map(|info| info.def.clone())
             .collect();
         // Lowering writes in a `shared` declaration for each `shared T`, with no place in the
@@ -290,7 +290,7 @@ impl Checker {
             .program
             .types
             .values()
-            .filter(|info| !info.def.shared && !info.prelude)
+            .filter(|info| !info.def.shared && self.reports(info.prelude))
             .map(|info| info.def.clone())
             .collect();
         for def in defs {

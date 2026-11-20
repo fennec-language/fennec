@@ -393,6 +393,7 @@ dependencies = [
  "fennec-deps",
  "fennec-dist",
  "fennec-syntax",
+ "fennec-temp",
 ]
 
 [[package]]

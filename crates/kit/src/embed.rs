@@ -25,13 +25,15 @@ pub(crate) struct Place<'a> {
 }
 
 /// Replaces each `embed_file` call in a file with the bytes it names, unless the file has an `embed_file`
-/// of its own.
+/// of its own. Says whether it found any: such a file holds what another file held when it was read,
+/// which can change while the file itself doesn't.
 pub(crate) fn read_files(
     module: &mut Module,
     place: &Place<'_>,
     embedded: &mut Vec<Embedded>,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> bool {
+    let mut found = false;
     let (files, folders) = (!has_its_own(module, NAME), !has_its_own(module, FOLDER));
     let note = |read: Embedded, embedded: &mut Vec<Embedded>| {
         if !embedded.iter().any(|known| known.path == read.path) {
@@ -40,6 +42,7 @@ pub(crate) fn read_files(
     };
     visit::exprs_mut(module, &mut |expr| {
         if let Some(path) = called(expr, NAME).filter(|_| files) {
+            found = true;
             match path.and_then(|path| place.read(path, expr.span)) {
                 Ok(file) => {
                     expr.kind = ExprKind::Bytes(file.data.clone());
@@ -48,6 +51,7 @@ pub(crate) fn read_files(
                 Err(diagnostic) => errors.push(diagnostic),
             }
         } else if let Some(path) = called(expr, FOLDER).filter(|_| folders) {
+            found = true;
             match path.and_then(|path| place.read_folder(path, expr.span)) {
                 Ok(Found(held, read)) => {
                     expr.kind = ExprKind::Folder(held);
@@ -59,6 +63,7 @@ pub(crate) fn read_files(
             }
         }
     });
+    found
 }
 
 /// Whether a file defines or imports a function called `name`.

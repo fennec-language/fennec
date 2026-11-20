@@ -278,7 +278,40 @@ const TURN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 /// diverged, and says so.
 pub(crate) fn turn(place: Option<&str>, what: &str) -> Result<Option<i64>, String> {
     let (Some(place), Mode::Replay(player)) = (place, mode()) else { return Ok(None) };
-    turn_in(player, (place, what), TURN_PATIENCE, crate::embed::make_way).map(Some)
+    // Past where it couldn't follow, no turn is anyone's: each task waiting for one would wait out
+    // its patience, crash, and leave cleanups that don't follow either.
+    if let Some(first) = divergence() {
+        return Err(first.to_owned());
+    }
+    turn_in(player, (place, what), TURN_PATIENCE, crate::embed::make_way).map(Some).map_err(|why| {
+        // Another task's turn was next there: the replay can't follow its recording. A place with
+        // nothing more for it, as a round cancelled at its end asks for, is said as it was.
+        let others = player
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .streams
+            .get(place)
+            .is_some_and(|stream| !stream.is_empty());
+        if others { diverged(why) } else { why }
+    })
+}
+
+/// Where a replay first couldn't follow its recording at a place where tasks meet, once it's found
+/// it: a task waited out its patience for its turn while the recording had another's next. What
+/// goes wrong after, like a task's cleanup asking for other calls than its recording's, comes of
+/// it, and isn't what the replay says.
+static DIVERGED: OnceLock<String> = OnceLock::new();
+
+/// Notes `why` as where the replay couldn't follow its recording, if it's the first, and gives it
+/// back.
+fn diverged(why: String) -> String {
+    let _ = DIVERGED.set(why.clone());
+    why
+}
+
+/// Where the replay first couldn't follow its recording, if it's found one.
+pub fn divergence() -> Option<&'static str> {
+    DIVERGED.get().map(String::as_str)
 }
 
 /// Waits up to `patience` for the running task's turn to do `what` at `place` in `player`'s log,

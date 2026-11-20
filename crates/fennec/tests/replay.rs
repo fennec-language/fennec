@@ -696,6 +696,145 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
     Ok(())
 }
 
+/// Three tasks taking two `shared` values: `second` takes `a` first, then `main` takes both, then
+/// `first`. Each is taken in order of address, `b` before `a` here. A replay gave `first` its turn
+/// at `b` once `main` had taken it, not given it back, so `first` waited for `b` on the only worker,
+/// unable to make way, while `main` waited for `second`'s turn at `a`, and `second` was behind
+/// `first` on that worker: the replay hung, where its recording ran.
+const TURNS_AT_LOCKS: &str = "from std.concurrent import Closed, Crashed, Inbox
+from std.net import Connection, NetError, Server
+
+struct Account:
+    total: int
+
+def first(a: shared Account, b: shared Account, inbox: Inbox[int], stdout: Stdout):
+    got = inbox.receive() else -1
+    lock a, b as ref x, ref y:
+        x.total += got
+        y.total += 1
+    stdout.print(\"first done\")
+
+def second(a: shared Account, stdout: Stdout):
+    lock a as ref x:
+        x.total += 3
+    stdout.print(\"second done\")
+
+def answered(conn: Connection, stdout: Stdout):
+    line = conn.read_line() except why:
+        stdout.print(\"a read failed\", f\"{why}\")
+        return
+    said = line else \"nothing\"
+    conn.write(f\"{said} back\\n\") except why:
+        stdout.print(\"a write failed\", f\"{why}\")
+
+def answering(server: Server, stdout: Stdout):
+    for conn in parallel(server):
+        answered(conn, stdout=stdout)
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed | Closed:
+    shared a = Account(total=0)
+    shared b = Account(total=0)
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => answering(server, stdout=stdout), stop_after=100ms)?:
+            with launch((inbox) => first(a=a, b=b, inbox=inbox, stdout=stdout))? as to_first:
+                with launch(() => second(a=a, stdout=stdout))?:
+                    with net.connect(\"127.0.0.1\", port)? as asking:
+                        asking.write(\"hello\\n\")?
+                        to_first.send(5)?
+                        lock a, b as ref x, ref y:
+                            x.total += 2
+                            y.total += 2
+                        stdout.print(asking.read_line()? else \"nothing\")
+    lock a as x:
+        stdout.print(\"a\", x.total)
+    lock b as y:
+        stdout.print(\"b\", y.total)
+";
+
+/// A task takes a lock's turn in a replay once the task before it has given the lock back, so it
+/// never waits on the lock itself, which holds up its worker, while the task holding it waits for a
+/// turn that belongs to a task behind it on that worker.
+#[test]
+fn a_replay_hands_on_a_locks_turn_when_its_given_back() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("turns-at-locks")?;
+    let program = dir.join("accounts.fen");
+    std::fs::write(&program, TURNS_AT_LOCKS)?;
+    // The order the tasks take the values in is the recording's, and only some orders hung: most
+    // of three recordings had one that did.
+    for recording in 0..3 {
+        let log = dir.join(format!("accounts-{recording}.log"));
+        let recorded = fennec_command()
+            .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .env("FENNEC_THREADS", "1")
+            .current_dir(&dir)
+            .output_within()?;
+        let recorded = outcome(&recorded);
+        assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+        assert!(recorded.0.ends_with("a 10\nb 3\n"), "{}", recorded.0);
+        for threads in ["1", "4"] {
+            let replayed = fennec_command()
+                .env("FENNEC_THREADS", threads)
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .output_limited(DEADLINE, Duration::from_secs(60))?;
+            let replayed = outcome(&replayed);
+            let how = format!("recording {recording} replayed on {threads} threads: {}", replayed.1);
+            assert_eq!(replayed.0, recorded.0, "{how}");
+            assert_eq!(replayed.2, Some(0), "{how}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A replay that can't follow its recording at a lock says so, naming the lock, and ends. It waited
+/// out its patience, crashed, and then its connection's cleanup asked for a close where the
+/// recording read a line: the replay said only that, "while cleaning up after a crash", and hung.
+#[test]
+fn a_replay_that_cant_follow_its_recording_at_a_lock_says_where() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("unfollowed-lock")?;
+    let program = dir.join("accounts.fen");
+    std::fs::write(&program, TURNS_AT_LOCKS)?;
+    let log = dir.join("accounts.log");
+    let recorded = fennec_command()
+        .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+        .arg(&program)
+        .env("FENNEC_THREADS", "1")
+        .current_dir(&dir)
+        .output_within()?;
+    assert_eq!(recorded.status.code(), Some(0), "{}", String::from_utf8_lossy(&recorded.stderr));
+    // `main` takes `a` once more than it did.
+    std::fs::write(
+        &program,
+        TURNS_AT_LOCKS.replace(
+            "                        to_first.send(5)?\n",
+            "                        to_first.send(5)?\n                        lock a as ref x:\n                            x.total += 0\n",
+        ),
+    )?;
+    let replayed = fennec_command()
+        .env("FENNEC_THREADS", "1")
+        .args(["replay", &log.to_string_lossy()])
+        .current_dir(&dir)
+        .output_limited(DEADLINE, Duration::from_secs(60))?;
+    let (_, said, code) = outcome(&replayed);
+    assert_eq!(code, Some(1), "{said}");
+    assert!(said.contains("the replay couldn't follow its recording: "), "{said}");
+    // Which task found it depends on the order the tasks ran in, but it's a turn at a lock, said once.
+    assert!(said.contains(" write` at 0:s"), "{said}");
+    assert_eq!(said.matches("isn't the run that was recorded").count(), 1, "{said}");
+    assert!(!said.contains("while cleaning up after a crash"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A hub's writes to connections served on other workers are recorded as the hub's, and a replay
 /// at 4 threads or 1 gives what they gave, so it counts the same writes, with no network (#2065).
 #[test]

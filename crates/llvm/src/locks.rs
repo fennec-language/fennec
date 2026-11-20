@@ -87,8 +87,8 @@ impl Emit<'_, '_, '_> {
 
     /// Takes the lock at `word`, the word of `cell`, and enters the cell, to write if `write`, an
     /// `i1`, is true. While the run is recorded or replayed, the runtime is asked first whether
-    /// it's this task's turn, and told once it's taken, so a replay takes locks in the order the
-    /// recording did.
+    /// it's this task's turn, and told once it's taken, and again once it's given back, so a replay
+    /// takes locks in the order the recording did.
     fn take_and_enter(&mut self, (word, cell): (&str, &str), write: &str, plain: &str, span: Span) {
         let replaying = self.module.threads.then(|| self.replaying());
         if let Some(replaying) = &replaying {
@@ -303,6 +303,9 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         self.note_given_back(word);
+        // In a replay, the next task's turn at this lock starts once it's free.
+        let replaying = self.replaying();
+        self.if_replaying(&replaying, "fennec_replay_unlocked", cell, &writer);
     }
 
     /// Taking several `shared` values at once: the same one twice ends the program, and otherwise

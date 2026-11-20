@@ -28,6 +28,7 @@ extend bytes:
     @intrinsic
     def decode(self) -> str fails InvalidValue
 
-    ## Each byte as two lower-case hex digits, with `sep` between each two when it's given.
+    ## Each byte as two lower-case hex digits, with `sep` between each two, given by position, as
+    ## `data.hex(":")`. With none, as `data.hex()`, the digits run together.
     @intrinsic
-    def hex(self, sep: str? = None) -> str
+    def hex(self, sep: str) -> str

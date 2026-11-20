@@ -472,9 +472,10 @@ fn hovers_show_signatures_docs_and_what_names_hold() {
     assert_eq!(shown(&size), "```fennec\nSIZE = 10\n```\n\nThe arena's size.");
 }
 
-/// A method the engines give a built-in type, or one of std's types written in Rust, has no
-/// declaration, so a hover shows the signature the checker knows, with what can fail said as a
-/// signature says it, and a `Table`'s method is its own, not every type's of the same name.
+/// A method of std's written in Rust that std doesn't declare yet, as a capability's, shows the
+/// signature the checker knows, with what can fail said as a signature says it. One the engines
+/// give a built-in type shows its declaration in std, and a `Table`'s is its own, not every type's
+/// of the same name.
 #[test]
 fn hovers_on_methods_written_in_rust_show_their_signatures() {
     let mut editor = Editor::new("hovers-built-in").unwrap();
@@ -484,9 +485,11 @@ fn hovers_on_methods_written_in_rust_show_their_signatures() {
         let hover = editor.at("textDocument/hover", "src/main.fen", text, needle, 1);
         hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("nothing").to_owned()
     };
-    assert_eq!(
-        shown(&mut editor, "split"),
-        "```fennec\ndef split(self, [str]) -> list[str]\n```\n\nbuilt into `str`"
+    assert!(
+        shown(&mut editor, "split")
+            .starts_with("```fennec\ndef split(self, separator: str) -> list[str]\n```\n\nThe parts"),
+        "{}",
+        shown(&mut editor, "split")
     );
     assert_eq!(
         shown(&mut editor, "read_text"),
@@ -497,7 +500,10 @@ fn hovers_on_methods_written_in_rust_show_their_signatures() {
         "```fennec\ndef print(self, ...)\n```\n\nbuilt into `Stdout`"
     );
     let add = shown(&mut editor, "add(Spot");
-    assert_eq!(add, "```fennec\ndef add(ref self, Spot) -> Id[Spot]\n```\n\nbuilt into `Table[Spot]`");
+    assert_eq!(
+        add,
+        "```fennec\ndef add(ref self, item: T) -> Id[T]\n```\n\nAdds `item` and gives back its `Id`, which stays its own while it's there."
+    );
 }
 
 #[test]
@@ -690,7 +696,17 @@ fn an_engine_methods_declaration_is_shown_and_found() {
     assert!(uri.ends_with("/str.fen"), "{uri}");
     let copy = std::fs::read_to_string(fennec_lsp::path_of(uri).unwrap()).unwrap();
     let line = copy.lines().nth(line_of(found)).unwrap();
-    assert!(line.starts_with("    def split(self, separator: str? = None)"), "{line}");
+    assert!(line.starts_with("    def split(self, separator: str)"), "{line}");
+    // A built-in type's method is its own, not one of the same name on another type: a `Buffer`'s
+    // `pop`, which a list and a dict have too.
+    let buffer = "def main(stdout: Stdout):\n    mut squares = Buffer[int]()\n    squares.push(4)\n    stdout.print(squares.pop())\n";
+    editor.change("src/main.fen", buffer);
+    let hover = editor.at("textDocument/hover", "src/main.fen", buffer, "pop()", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert_eq!(
+        shown,
+        "```fennec\ndef pop(ref self) -> T\n```\n\nTakes out the last item and gives it back. An empty buffer stops the program."
+    );
     // An annotation between a declaration and its doc, as a program's `@hot` is, is passed over.
     let hot = "## Twice `n`.\n@hot\ndef twice(n: int) -> int:\n    return n * 2\n\ndef main(stdout: Stdout):\n    stdout.print(twice(2))\n";
     editor.change("src/main.fen", hot);

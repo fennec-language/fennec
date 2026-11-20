@@ -1088,11 +1088,24 @@ mod declared {
     use crate::types::Type;
 
     /// Declarations that say what a program can write where the table says more, each with why.
-    const AS_CALLED: [(&str, &str, &str); 2] = [
+    /// A declaration can't say an argument is given by position and can be left out: one with a
+    /// default is passed by name. So each such method declares one form, and its doc the other,
+    /// until the checker reads its signatures from the declarations (#2214).
+    const AS_CALLED: [(&str, &str, &str); 4] = [
         (
             "list",
             "pop",
             "`pop()` gives `T?` and `pop(at)` gives `T`, which the checker works out from the call: the declaration says the first, and its doc both",
+        ),
+        (
+            "str",
+            "split",
+            "`separator` is given by position and can be left out: the declaration says it's given, and its doc what's done without it",
+        ),
+        (
+            "bytes",
+            "hex",
+            "`sep` is given by position and can be left out: the declaration says it's given, and its doc what's done without it",
         ),
         (
             "dict",
@@ -1189,16 +1202,23 @@ mod declared {
             return Some(format!("it takes {plain} arguments before any named ones"));
         };
         for (param, wanted) in positional.iter().zip(&found.params) {
+            // One with a default is passed by name, which none of the table's plain arguments is.
+            if param.default.is_some() {
+                return Some(format!(
+                    "`{}` is given by position, so it's declared with no default",
+                    param.name
+                ));
+            }
             let shown = param.ty.as_ref().map(written).unwrap_or_default();
-            // `separator: str? = None` is a `str` that can be left out, as `split`'s can.
-            let left_out = param.default.is_some() && shown == format!("{wanted}?");
-            if shown != wanted.to_string() && !left_out {
+            if shown != wanted.to_string() {
                 return Some(format!("`{}` should be {wanted}, not {shown}", param.name));
             }
         }
-        let required = positional.iter().filter(|param| param.default.is_none()).count();
-        if required != found.arity.0 {
-            return Some(format!("{} of its arguments can be left out", plain - found.arity.0));
+        if found.arity.0 != plain {
+            return Some(format!(
+                "{} of its arguments can be left out by position, which a declaration can't say: list it in AS_CALLED",
+                plain - found.arity.0
+            ));
         }
         let mut declared_names: Vec<&str> = named.iter().map(|param| param.name.as_str()).collect();
         let mut wanted: Vec<&str> = named_arguments(ty, &def.name).to_vec();

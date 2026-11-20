@@ -330,9 +330,10 @@ extend str:
     def rstrip(self) -> str
 
     ## The parts of the text between each `separator`, as many as there are separators and one
-    ## more. Left out, it splits on runs of whitespace and drops what's empty, as Python does.
+    ## more: `"a,b".split(",")`. `separator` is given by position, and with none, as `s.split()`,
+    ## it splits on runs of whitespace and drops what's empty, as Python does.
     @intrinsic
-    def split(self, separator: str? = None) -> list[str]
+    def split(self, separator: str) -> list[str]
 
     ## The text with each `old` replaced by `new`.
     @intrinsic

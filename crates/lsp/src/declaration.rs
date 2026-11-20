@@ -109,21 +109,13 @@ impl Found<'_> {
     }
 }
 
-/// The struct, enum or error a type is, through `?`.
+/// The type a value's methods are found under, through `?`: a struct's, enum's or error's name, or
+/// a built-in type's, as the checker keeps their methods, so a `float`'s `abs` is `float`'s and not
+/// `int`'s. Each built-in type's methods are in an `extend` of it.
 fn type_name(ty: &Type) -> Option<String> {
     match ty {
-        Type::Named(name) | Type::Generic(name, _) => Some(name.clone()),
         Type::Optional(inner) => type_name(inner),
-        // The built-in types' methods written in Fennec are in an `extend` of each.
-        Type::List(_) => Some("list".to_owned()),
-        Type::Dict(..) => Some("dict".to_owned()),
-        Type::Set(_) => Some("set".to_owned()),
-        Type::Str => Some("str".to_owned()),
-        Type::Bytes => Some("bytes".to_owned()),
-        // A `Table`'s methods are the engines', with no declaration: naming its type keeps
-        // another type's method of the same name from being shown for it.
-        Type::Table(_) => Some("Table".to_owned()),
-        _ => None,
+        _ => ty.method_owner().map(str::to_owned),
     }
 }
 

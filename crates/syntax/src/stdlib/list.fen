@@ -153,11 +153,11 @@ extend list[T]:
     @intrinsic
     def sort[K](ref self, key: ((T) -> K)? = None)
 
-    ## Takes out the last item and gives it back, or `None` when there's none. `pop(at)` takes out
-    ## the item at `at` instead, and a position that isn't there stops the program, as `items[at]`
-    ## does.
+    ## Takes out the last item and gives it back, or `None` when there's none. `pop(at)`, with the
+    ## position given by position, takes out the item at `at` instead and gives it, a `T`, and a
+    ## position that isn't there stops the program, as `items[at]` does.
     @intrinsic
-    def pop(ref self, at: int? = None) -> T?
+    def pop(ref self) -> T?
 
 ## `Buffer`'s methods the engines provide: the growable, counted run of slots a `list` is built on.
 ## Each is declared here for its signature and its doc, and a test holds it to the checker's own.

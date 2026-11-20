@@ -46,24 +46,64 @@ def without_engine_declarations(module: Module) -> Module:
                 kept.append(item)
     return Module(items=kept)
 
+## The standard library as the checker reads it: under each module's name, a line for each
+## function, and for each method of a type or an `extend`, so a test can hold both front ends to
+## reading the same std.
+def dump_library(names: list[str], library: list[Module]) -> str:
+    mut out = ""
+    for name, module in zip(names, library):
+        out += f"-- {name}\n"
+        for item in module.items:
+            match item:
+                case .Function(function):
+                    out += f"{function.name}\n"
+                case .Extend(extension):
+                    for method in extension.methods:
+                        out += f"{extension.name}.{method.name}\n"
+                case .Struct(type_def):
+                    for method in type_def.methods:
+                        out += f"{type_def.name}.{method.name}\n"
+                case .Enum(type_def):
+                    for method in type_def.methods:
+                        out += f"{type_def.name}.{method.name}\n"
+                case .Error(type_def):
+                    for method in type_def.methods:
+                        out += f"{type_def.name}.{method.name}\n"
+                case _:
+                    pass
+    return out
+
 ## Reads its work from standard input: one `tokens <path>`, `tree <path>` or `check <path>`
-## line per file to dump. `std <path>` lines name the standard library's sources, which
-## `check` checks against.
+## line per file to dump. `std <module> <path>` lines name the standard library's sources, by
+## module, which `check` checks against, and a `library` line dumps them as the checker reads them.
 def main(stdout: Stdout, fs: Fs, stdin: Stdin):
     mut library = []
+    mut names = list[str]()
     for line in stdin.lines():
+        if line == "library":
+            stdout.print("== library")
+            stdout.write(dump_library(names, library))
+            continue
         space = line.find(" ")
         if space is None: continue
         mode = line[:space]
-        path = line[space + 1:]
+        mut path = line[space + 1:]
+        mut module_name = ""
+        if mode == "std":
+            gap = path.find(" ") else continue
+            module_name = path[:gap]
+            path = path[gap + 1:]
         source = fs.read_text(path)?
         if mode == "std":
             module = parse(source) except Diagnostic():
                 continue
-            if path.endswith("intrinsics.fen"):
+            # `std.intrinsics`' own functions are the machine operations std's code calls, so they
+            # stay. Every other module's engine declarations are left out, as Rust leaves them.
+            if module_name == "intrinsics":
                 library.append(module)
             else:
                 library.append(without_engine_declarations(module))
+            names.append(module_name)
             continue
         stdout.print(f"== {path}")
         if mode == "tokens":

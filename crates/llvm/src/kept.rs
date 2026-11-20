@@ -53,6 +53,8 @@ pub(crate) struct Kept {
     params: Vec<Range>,
     asked: Vec<Asked>,
     analysis: Arc<Analysis>,
+    /// The analysis's key (`analysis::analysis_key`), as a unit's read of it compares it.
+    key: Key,
     /// The build that last worked it out or used it, by its number.
     built: u64,
 }
@@ -159,14 +161,14 @@ impl Keeping {
         self.used_again.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The analysis kept for `function`, if its IR is `ir`, its parameters' ranges are `params`, and
-    /// everything it asked is told the same now.
+    /// The analysis kept for `function`, with its key, if its IR is `ir`, its parameters' ranges
+    /// are `params`, and everything it asked is told the same now.
     pub(crate) fn usable(
         &self,
         function: &Function,
         (ir, params): (&Key, &[Range]),
         told: Told<'_>,
-    ) -> Option<Arc<Analysis>> {
+    ) -> Option<(Arc<Analysis>, Key)> {
         let kept = self.found.as_ref()?.by_function.get(&function.name)?;
         let (changes, keeps, in_entries) = told;
         let same = kept.ir == *ir
@@ -179,19 +181,25 @@ impl Keeping {
         if same {
             self.used_again.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        same.then(|| Arc::clone(&kept.analysis))
+        same.then(|| (Arc::clone(&kept.analysis), kept.key))
     }
 
-    /// Keeps `analysis` of `function` for the next build, with what it asked.
+    /// Keeps `analysis` of `function`, with its key, for the next build, with what it asked.
     pub(crate) fn keep(
         &self,
         function: &Function,
         (ir, params): (Key, &[Range]),
         asked: Vec<Asked>,
-        analysis: &Arc<Analysis>,
+        (analysis, key): (&Arc<Analysis>, Key),
     ) {
-        let kept =
-            Kept { ir, params: params.to_vec(), asked, analysis: Arc::clone(analysis), built: self.build };
+        let kept = Kept {
+            ir,
+            params: params.to_vec(),
+            asked,
+            analysis: Arc::clone(analysis),
+            key,
+            built: self.build,
+        };
         if let Ok(mut kept_now) = self.kept_now.lock() {
             kept_now.insert(function.name.clone(), kept);
         }
@@ -207,6 +215,7 @@ impl Keeping {
             params: kept.params.clone(),
             asked: kept.asked.clone(),
             analysis: Arc::clone(&kept.analysis),
+            key: kept.key,
             built: self.build,
         };
         if let Ok(mut kept_now) = self.kept_now.lock() {

@@ -4526,10 +4526,20 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
         )
 }
 
-fn fails_itself(function: &Function, known: &Analysis) -> bool {
+/// Whether `function` can fail of itself, rather than by what it calls failing, in a program that
+/// uses the runtime's threads when `threads` says so.
+fn fails_itself(function: &Function, known: &Analysis, threads: bool) -> bool {
     // What's worked out for a local of a sized type is checked to fit it.
     let sized =
         |dest: &LocalId| matches!(function.locals.get(dest.0).map(|local| &local.ty), Some(Type::Sized(_)));
+    // Where other threads may run, a `shared` value is made a table of its own, with a copy of all
+    // it was given (`fennec_shared_new`), and that copy can fail, as any copy can.
+    let shared = |dest: &LocalId| {
+        matches!(
+            function.locals.get(dest.0).map(|local| &local.ty),
+            Some(Type::Named(name)) if name.starts_with(crate::rollback::LOCKED)
+        )
+    };
     let inst_fails = |inst: &InstKind| match inst {
         InstKind::Binary { dest, op, .. }
             if sized(dest) && !matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) =>
@@ -4537,6 +4547,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
             true
         }
         InstKind::Unary { dest, op: UnaryOp::Neg, .. } if sized(dest) => true,
+        InstKind::Make { dest, .. } if threads && shared(dest) => true,
         InstKind::Binary { dest, op, lhs, rhs } => match (function.type_of(lhs), op) {
             (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => !known.is_safe(*dest),
             (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod | BinOp::Div) => !matches!(rhs, Operand::Int(1..)),
@@ -4829,10 +4840,13 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
             }
         }
         // A generator's functions are called through its block, so all the same way: with the flag.
+        let threads = crate::parallel::uses_parallel(program);
         let mut can_fail: HashSet<&str> = every()
             .filter(|function| {
                 loud.contains(function.name.as_str())
-                    || analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
+                    || analyses
+                        .get(function.name.as_str())
+                        .is_none_or(|known| fails_itself(function, known, threads))
             })
             .map(|function| function.name.as_str())
             .collect();

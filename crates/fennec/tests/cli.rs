@@ -5472,7 +5472,7 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
         command.args(["build", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", home);
         command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_COMPARE_KEPT", "1").env_remove("CI");
         if daemon {
-            command.env_remove("FENNEC_NO_DAEMON");
+            command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
         }
         command.output().unwrap()
     };
@@ -5497,7 +5497,8 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
         .env("FENNEC_DAEMON_IDLE", "30")
         .env("FENNEC_COMPARE_KEPT", "1")
         .env_remove("CI")
-        .env_remove("FENNEC_NO_DAEMON");
+        .env_remove("FENNEC_NO_DAEMON")
+        .env("FENNEC_DAEMONS", home.join("noted-daemons"));
     let status = text(&command.output().unwrap().stdout);
     assert!(status.contains("checks kept: 1 kit"), "{status}");
     let carried = status.split("the last build carried over ").nth(1).and_then(|rest| rest.split(' ').next());
@@ -5511,7 +5512,8 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
         .env("FENNEC_DAEMON_IDLE", "30")
         .env("FENNEC_COMPARE_KEPT", "1")
         .env_remove("CI")
-        .env_remove("FENNEC_NO_DAEMON");
+        .env_remove("FENNEC_NO_DAEMON")
+        .env("FENNEC_DAEMONS", home.join("noted-daemons"));
     command.output().unwrap();
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
@@ -5543,7 +5545,7 @@ fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
         command.args(args).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", "30");
         command.env("FENNEC_COMPARE_KEPT", "0").env("FENNEC_KEPT_RULE_OFF", "bounds").env_remove("CI");
         if daemon {
-            command.env_remove("FENNEC_NO_DAEMON");
+            command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
         }
         command.output().unwrap()
     };

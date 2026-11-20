@@ -14,6 +14,17 @@ autotests = false
 name = "fennec"
 path = "tests/main.rs"
 
+# `fennec-std-tests`, the command a program can import std's private names through, to test them,
+# is built only with `std-private`, which only this package's own tests turn on, through the
+# dev-dependency on itself below. `fennec` can't import them in any build.
+[features]
+std-private = []
+
+[[bin]]
+name = "fennec-std-tests"
+path = "src/bin/fennec-std-tests.rs"
+required-features = ["std-private"]
+
 [dependencies]
 mimalloc.workspace = true
 fennec-blake3.workspace = true
@@ -42,6 +53,7 @@ ctrlc.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+fennec = { path = ".", features = ["std-private"] }
 fennec-loader.workspace = true
 fennec-temp.workspace = true
 socket2.workspace = true

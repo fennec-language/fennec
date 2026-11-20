@@ -251,6 +251,7 @@ name = "fennec"
 version = "0.0.1"
 dependencies = [
  "ctrlc",
+ "fennec",
  "fennec-blake3",
  "fennec-build",
  "fennec-check",

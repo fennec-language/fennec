@@ -23,5 +23,6 @@ mod reached_runs;
 mod replay;
 mod selfhost;
 mod std_docs;
+mod std_private;
 mod syntax_errors;
 mod unchanged_tests;

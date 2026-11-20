@@ -112,7 +112,7 @@ pub(crate) fn command(action: &str) -> ExitCode {
 /// Sends a request to the daemon, starting it first if it isn't running. None if it can't be
 /// reached, or takes the request and gives no answer in time, so the caller does the work itself.
 pub(crate) fn ask(home: &Path, request: &[&str]) -> Option<Outcome> {
-    if std::env::var_os("FENNEC_NO_DAEMON").is_some() {
+    if crate::no_daemon() {
         return None;
     }
     unix::ask_within(home, request, unix::REPLY_WAIT)
@@ -122,7 +122,7 @@ pub(crate) fn ask(home: &Path, request: &[&str]) -> Option<Outcome> {
 /// what it printed is printed here. None means it's to be built here: under CI, where what's
 /// measured is a build on its own, with `FENNEC_NO_DAEMON`, or when no daemon answers.
 pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> Option<ExitCode> {
-    if std::env::var_os("FENNEC_NO_DAEMON").is_some() || std::env::var_os("CI").is_some() {
+    if crate::no_daemon() || std::env::var_os("CI").is_some() {
         return None;
     }
     #[cfg(unix)]
@@ -141,7 +141,7 @@ pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> Option<E
 /// if it isn't running. None if it can't be reached, so the session runs in-process.
 #[cfg(unix)]
 pub(crate) fn language_server(home: &Path) -> Option<std::os::unix::net::UnixStream> {
-    if std::env::var_os("FENNEC_NO_DAEMON").is_some() {
+    if crate::no_daemon() {
         return None;
     }
     unix::open_session(home).or_else(|| {

@@ -250,7 +250,7 @@ impl Emit<'_, '_, '_> {
 
     /// Hands the runtime arguments as temporaries: where they start, and the blocks that carry
     /// them across, to let go of after.
-    fn cross_arguments(&mut self, args: &[Operand]) -> Result<(String, Vec<String>), String> {
+    fn cross_arguments(&mut self, args: &[Operand]) -> Result<(String, Vec<(String, Kind)>), String> {
         self.declare("declare i64 @fennec_mark() nounwind");
         self.declare("declare void @fennec_truncate(i64) nounwind");
         self.declare("declare void @fennec_input(i64) nounwind");
@@ -261,7 +261,7 @@ impl Emit<'_, '_, '_> {
             let (value, kind) = self.operand(arg)?;
             let (handle, block) = self.value_handle(&value, &kind)?;
             self.line(&format!("call void @fennec_input(i64 {handle})"));
-            crossed.extend(block);
+            crossed.extend(block.map(|block| (block, kind)));
         }
         Ok((mark, crossed))
     }
@@ -270,9 +270,9 @@ impl Emit<'_, '_, '_> {
     /// before its failure is looked at: one that fails leaves here, as a task stopped while it
     /// waited does, and a block let go of only after would be left for good. The runtime holds an
     /// owner of its own of each until the temporaries go, so what it gave back may still be one.
-    fn let_go_of_crossed(&mut self, crossed: Vec<String>) {
-        for block in crossed {
-            self.release(&block);
+    fn let_go_of_crossed(&mut self, crossed: Vec<(String, Kind)>) {
+        for (block, kind) in crossed {
+            self.release_block(&block, &kind);
         }
     }
 

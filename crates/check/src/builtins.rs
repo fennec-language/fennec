@@ -295,7 +295,7 @@ fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
         ("Net", "_connect")
-            | ("Connection", "read" | "read_line" | "start_tls" | "write")
+            | ("Connection", "read" | "_body" | "read_line" | "start_tls" | "write")
             | ("Server", "_accept")
             | ("UdpSocket", "receive")
     )

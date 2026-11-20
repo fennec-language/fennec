@@ -232,6 +232,9 @@ pub struct Conn {
     label: i64,
     /// When every read has to be done by, and how long that was, once `reads_within` is called.
     reads_by: Mutex<Option<(Instant, Duration)>>,
+    /// Its share of the room every server's request bodies have, for the body it's reading or
+    /// answering: given back as its next request starts, as it ends, or as it goes.
+    pub(super) body_held: crate::stdlib::net::BodyHeld,
 }
 
 /// One of a connection's parts, locked for one step. Nothing panics while one is held, so a
@@ -270,6 +273,7 @@ impl Conn {
             read_since_write: AtomicBool::new(false),
             label: 0,
             reads_by: Mutex::new(None),
+            body_held: crate::stdlib::net::BodyHeld::default(),
         }
     }
 
@@ -369,9 +373,26 @@ impl Conn {
         }
     }
 
-    /// Has every read from now on done within `after`, however long each is given.
+    /// Has every read from now on done within `after`, however long each is given: as a server
+    /// starts on a next request, when the last one's body is let go of too.
     pub fn reads_within(&self, after: Duration) {
         *locked(&self.reads_by) = Some((Instant::now() + after, after));
+        self.body_held.give_back();
+    }
+
+    /// `_body`: `size` bytes, a request's body, read into room made once at its size, its room
+    /// among every server's bodies already taken (`_room_for_body`). Fewer come back when the
+    /// client stopped sending before the end.
+    pub fn body(&self, size: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
+        let mut data = Vec::with_capacity(size);
+        while data.len() < size {
+            let more = self.read(size - data.len(), timeout)?;
+            if more.is_empty() {
+                break;
+            }
+            data.extend_from_slice(&more);
+        }
+        Ok(data)
     }
 
     /// How long a read given `timeout` waits: no longer than what's left before every read has to
@@ -487,6 +508,8 @@ impl Conn {
     /// other side still sends, for a while. Closing with what it sent unread would reset the
     /// connection, and the other side would lose what it hadn't read yet: the answer it was sent.
     pub fn linger(&self) {
+        // Closed by its round, so its body's let go of before it waits out what's still coming.
+        self.body_held.give_back();
         let _ = locked(&self.stream).shutdown(std::net::Shutdown::Write);
         let until = Until::after(Some(LINGER));
         let mut sink = [0_u8; READ_BYTES];
@@ -517,6 +540,7 @@ impl Conn {
     /// then reads the end, and its client is told nothing more is coming.
     pub fn end(&self) {
         let _ = locked(&self.stream).shutdown(std::net::Shutdown::Both);
+        self.body_held.give_back();
     }
 
     /// The other side's address.

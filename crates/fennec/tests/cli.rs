@@ -6586,7 +6586,10 @@ fn a_second_checkout_of_a_kit_uses_the_first_ones_units_again() -> std::io::Resu
     let dir = scratch("second-checkout")?;
     for checkout in ["first", "second"] {
         std::fs::create_dir_all(dir.join(checkout).join("src"))?;
-        std::fs::write(dir.join(checkout).join("kit.toml"), "name = \"twice\"\n")?;
+        std::fs::write(
+            dir.join(checkout).join("kit.toml"),
+            "name = \"twice\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n\n[dependencies]\n",
+        )?;
         std::fs::write(dir.join(checkout).join("src/main.fen"), EDITED_BASE)?;
     }
     let build = |checkout: &str| {

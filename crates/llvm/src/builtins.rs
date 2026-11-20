@@ -554,6 +554,12 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{last} = add i64 {length}, -1"));
         let length_at = self.offset(&list, 16);
         self.line(&format!("store i64 {last}, ptr {length_at}"));
+        if let Some(dest) = dest
+            && self.pops_an_optional(dest, &held)?
+        {
+            let place = self.item_address(&list, &held.memory(self.module.layouts), &last);
+            return self.popped_into(dest, &held, &place);
+        }
         let value = self.item_value(&list, &held, &last);
         // What's popped keeps the owners the list had for it.
         match dest {
@@ -586,10 +592,20 @@ impl Emit<'_, '_, '_> {
         let list = self.unshared(local);
         let (index, _) = self.operand(at)?;
         let position = self.position(&list, &index, span);
+        // An optional is taken out of the enum the list holds it as, before what's after it moves
+        // over it.
+        let optional = match dest {
+            Some(dest) => self.pops_an_optional(dest, &held)?,
+            None => false,
+        };
+        if let (Some(dest), true) = (dest, optional) {
+            let place = self.item_address(&list, &memory, &position);
+            self.popped_into(dest, &held, &place)?;
+        }
         let value = self.item_value(&list, &held, &position);
         // A struct in the list is copied out before what's after it moves over it, with the
         // owners the list had for it.
-        if held.in_memory() {
+        if held.in_memory() && !optional {
             match dest {
                 Some(dest) => self.assign_memory_owned(dest, &value)?,
                 None => self.release_inline(&held, &value),
@@ -609,7 +625,7 @@ impl Emit<'_, '_, '_> {
         let length_at = self.offset(&list, 16);
         self.line(&format!("store i64 {last}, ptr {length_at}"));
         match dest {
-            _ if held.in_memory() => Ok(()),
+            _ if held.in_memory() || optional => Ok(()),
             Some(dest) => self.assign(dest, &value),
             None if held.counted() => {
                 self.release_kind(&value, &held);
@@ -617,6 +633,49 @@ impl Emit<'_, '_, '_> {
             }
             None => Ok(()),
         }
+    }
+
+    /// Whether what's popped into `dest` is an optional a list holds as an enum, where the local
+    /// holds it as a header or one word (see [`Self::popped_into`]).
+    fn pops_an_optional(&self, dest: LocalId, held: &Kind) -> Result<bool, String> {
+        Ok(matches!(self.kind_of(dest)?, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(held))
+    }
+
+    /// An optional popped into `dest` from the item at `place`, which the list holds as the enum
+    /// `held`, with the owners the list had for it. A local holds an optional string as a header,
+    /// all zero for `None`, and another optional as one word, null for `None`, so what a `Some`
+    /// holds is taken out of the enum, as a read of an item does (`read_into`). Copied whole, the
+    /// enum's case number was taken for a string's first word, and letting it go crashed (#2282).
+    fn popped_into(&mut self, dest: LocalId, held: &Kind, place: &str) -> Result<(), String> {
+        let wanted = self.kind_of(dest)?.clone();
+        let (_, fields) = self.case_of(held, "Some")?;
+        let (_, offset, field) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+        let block = matches!(held, Kind::Boxed(_)).then(|| {
+            let block = self.temp();
+            self.line(&format!("{block} = load ptr, ptr {place}{ITEM_ACCESS}"));
+            block
+        });
+        let (base, access) = match &block {
+            Some(block) => (self.fields_at(block, held), ""),
+            None => (place.to_owned(), ITEM_ACCESS),
+        };
+        let at = self.offset(&base, offset);
+        // An owner of its own for what the `Some` holds, then the item's let go of, so the owner
+        // the list had moves to the local. `None` holds nothing to own.
+        let value = if field == Some(Kind::Str) && wanted == Kind::MaybeText {
+            let header = self.load_field(&Kind::Str, &at, access);
+            self.retain_text(&header);
+            header
+        } else {
+            let value = self.load_field(&wanted, &at, access);
+            self.retain_value(&value, &wanted);
+            value
+        };
+        match &block {
+            Some(block) => self.release_kind(block, held),
+            None => self.release_inline(held, place),
+        }
+        self.assign(dest, &value)
     }
 
     /// `list.remove_where(f)`: what's kept moves down, and what isn't is let go of.

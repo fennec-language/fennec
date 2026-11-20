@@ -79,12 +79,19 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<Option<LocalId>> {
         let list = self.expr(object)?;
+        let listed = crate::type_in(&self.locals, &list);
         let dest = keep.map(|ty| self.temporary(ty.clone()));
         let some = self.when_not_empty(list, dest, span);
         self.popping = true;
-        let item = match keep {
-            Some(Type::Optional(item)) => Some((**item).clone()),
-            other => other.cloned(),
+        // What's popped is the list's item as it is. An item that's an optional itself, as a
+        // `list[str?]`'s is, makes the pop's own optional (which flattens into it). Taking the
+        // item for what's inside that optional popped a `str?` as a `str` (#2282).
+        let item = match listed {
+            Some(Type::List(item)) => keep.map(|_| *item),
+            _ => match keep {
+                Some(Type::Optional(item)) => Some((**item).clone()),
+                other => other.cloned(),
+            },
         };
         let popped = self.call(callee, &[], item, span);
         self.popping = false;

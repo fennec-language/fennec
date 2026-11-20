@@ -63,6 +63,11 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
         let _ = std::io::stderr().write_all(format!("{why}\n").as_bytes());
         return 2;
     }
+    // Standard output's buffer is made on its first use, and on macOS each output's lock on its
+    // first taking: made now, running out of memory later writes what was printed and says so
+    // without allocating (`out_of_memory`).
+    drop(std::io::stdout().lock());
+    drop(std::io::stderr().lock());
     let bytes = program_handed_over(length, stop);
     // On macOS `fennec build` links every executable with a main thread of `MAIN_STACK_BYTES`, so
     // the program runs there, with no thread to start. Elsewhere the main thread's stack is the
@@ -533,6 +538,59 @@ fn report(output: &[u8], failure: &str) -> i32 {
     }
     code
 }
+
+/// The program has run out of memory: mimalloc couldn't make an allocation, and its error handler
+/// says so here, rather than Rust in its words with a core dump (runtime exhaustion audit,
+/// 2026-11-20). What this thread printed and kept goes out first, as for a crash, then the stop is
+/// said, and the program ends with 1. Outside a recording or a replay, nothing here allocates: the
+/// kept output is written through standard output's buffer, both outputs' locks are taken once as
+/// the run starts, as the first use of one allocates on macOS, and the words are fixed. A recording
+/// logs what's written, which allocates; an allocation refused there comes back, as below. mimalloc
+/// doesn't say how much was asked.
+///
+/// The first thread here stops the program. Another that runs out meanwhile waits for it to end
+/// the program, up to 5 seconds, so the words come once and after all that's written, however slow
+/// the reader; if the first is stuck that long, as behind a reader that isn't reading, this one
+/// says them and ends it. An allocation refused on this thread's own way to the stop comes back
+/// here: while the output is written, only the words are said, and once they have been, it ends at
+/// once, so it never goes round without end and the words come once.
+pub fn out_of_memory() -> ! {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    /// Whether a thread is stopping the program for running out of memory.
+    static STOPPING: AtomicBool = AtomicBool::new(false);
+    thread_local! {
+        /// How many times this thread has come here: more than once, it came back on its way.
+        static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    let depth = DEPTH
+        .try_with(|depth| {
+            let was = depth.get();
+            depth.set(was.saturating_add(1));
+            was
+        })
+        .unwrap_or(u32::MAX);
+    match depth {
+        0 if STOPPING.swap(true, Ordering::SeqCst) => {
+            let waiting = std::time::Instant::now();
+            while waiting.elapsed() < OTHER_STOP {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        0 => {
+            super::write_kept_output_if_free();
+            let _ = std::io::stdout().flush();
+        }
+        1 => {}
+        _ => end_at_once(1),
+    }
+    // From here on, an allocation refused as the program ends comes back past 1, and ends it.
+    let _ = DEPTH.try_with(|depth| depth.set(2));
+    let _ = std::io::stderr().write_all(b"error: out of memory\n");
+    end_at_once(1)
+}
+
+/// How long a thread that runs out of memory while another stops the program waits for it.
+const OTHER_STOP: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The exit code of a run whose heap audit found something wrong, or that was asked to audit and
 /// couldn't.

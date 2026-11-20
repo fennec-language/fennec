@@ -437,6 +437,17 @@ pub(crate) const KILLED_WRITES: Target = Target {
     stuck: Duration::from_secs(60),
 };
 
+/// A program writing files whole and through `with` blocks while the runtime's fault hook fails
+/// its work on the disk partway, which must leave what the model says, never a torn file. It runs
+/// only when named, and needs a runtime built with the `faults` feature (`FENNEC_FAULTED`).
+pub(crate) const FAULT_WRITES: Target = Target {
+    name: "fault-writes",
+    corpus: &["crates/fuzz/seeds/fault-writes"],
+    tokens: &ANYTHING,
+    run: crate::fault_writes::fault_writes,
+    stuck: Duration::from_secs(120),
+};
+
 /// A program edited a piece at a time, each version checked and built reusing what the one before
 /// it kept, which has to make what checking and building it from nothing makes.
 pub(crate) const EDITS: Target = Target {
@@ -450,7 +461,7 @@ pub(crate) const EDITS: Target = Target {
 pub(crate) fn find(name: &str) -> Option<&'static Target> {
     TARGETS
         .iter()
-        .chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY, &KILLED_WRITES, &EDITS])
+        .chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY, &KILLED_WRITES, &FAULT_WRITES, &EDITS])
         .find(|target| target.name == name)
 }
 

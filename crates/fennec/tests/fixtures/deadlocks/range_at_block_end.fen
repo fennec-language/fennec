@@ -1,0 +1,22 @@
+# Review of PR 2142. Each of a waiting call's two ranges launches a task that receives on a channel
+# nobody sends to, and waits for it at its block's end. A deadlock: ranges at their blocks' ends,
+# and the tasks they launched, which are tasks and not ranges.
+from std.concurrent import Channel, Crashed, channel
+
+def takes(never: Channel[int]) -> int:
+    got = never.receive() else -1
+    return got
+
+def part(at: int, never: Channel[int]) -> int fails Crashed:
+    with launch(() => takes(never))?:
+        pass
+    return at
+
+def all_parts(never: Channel[int]) -> int fails Crashed:
+    got = [part(at, never=never)? for at in parallel(range(2))]
+    return sum(got)
+
+def main(stdout: Stdout) fails Crashed:
+    with channel[int](size=1) as never:
+        total = all_parts(never)?
+        stdout.print(total)

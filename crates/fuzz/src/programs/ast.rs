@@ -1470,6 +1470,90 @@ pub(crate) enum LockWay {
 pub(crate) const LOCK_WAYS: [LockWay; 4] =
     [LockWay::Moved, LockWay::Crashed, LockWay::Summed, LockWay::HalfRef];
 
+/// A `Ruled` statement: `ruled{id}(stdout)`, a `Gauge{id}` whose four fields have `where` rules,
+/// one alone, two more in a list and one in a dict, then a step at a time, then what each holds.
+/// A rule runs on every write through its struct, on `copy` and on making a value. A field lent
+/// alone by `ref`, to a call or a `for ref` loop's turn, is checked when it comes back, so a value
+/// put right before then is fine (#2270). A broken rule stops the program, and one broken making a
+/// value from what's worked out as it runs is refused.
+#[derive(Clone, Debug)]
+pub(crate) struct Ruling {
+    pub(crate) id: usize,
+    pub(crate) steps: Vec<RuleStep>,
+}
+
+/// A step of a `Ruled` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RuleStep {
+    pub(crate) way: RuleWay,
+    /// What it adds, takes away or sets, from 0 to 9, and which of two gauges in a list, by its
+    /// evenness.
+    pub(crate) value: i64,
+    /// Whether it breaks its rule, which stops the program, or for `Made`, is refused.
+    pub(crate) breaks: bool,
+}
+
+/// How a `Ruled` step goes. `level` must stay at least 0, `tags` at most 3 long, `name` not empty
+/// and `counts` summing to below 20. What a step takes from `level` is worked out from what it
+/// holds, so the step breaks the rule only when it's meant to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RuleWay {
+    /// `gauge.level = picked(value)`, below 0 when it breaks.
+    Set,
+    /// `gauge.level += value`.
+    Raised,
+    /// `gauge.level -= amount`.
+    Taken,
+    /// `lowered(ref gauge.level, by=amount)`: the field lent alone, checked as the call ends.
+    Lowered,
+    /// `dipped(ref gauge.level, by=...)`: below 0 and back before the call ends, which is fine.
+    Dipped,
+    /// `gauge.drained(amount)`: a `ref self` method.
+    Drained,
+    /// `shrunk(ref gauge, by=amount)`: the whole struct lent, checked at the write.
+    Shrunk,
+    /// `gauges[at].level -= amount`.
+    InList,
+    /// `for ref each in gauges`, each one's `level` added to, or taken past 0 when it breaks.
+    ForRef,
+    /// `for ref each in gauge.counts`, each item past the sum and back within the turn, or left
+    /// past it when it breaks, which stops the program as that turn ends.
+    Counted,
+    /// `gauge.tags.append(...)` while there's room, or four more when it breaks.
+    Tagged,
+    /// `tagged(ref gauge.tags, ...)` while there's room, or `flooded(ref gauge.tags)` when it
+    /// breaks, which prints before the call ends and the rule runs.
+    TaggedByRef,
+    /// `gauge.name = ...`, emptied when it breaks.
+    Named,
+    /// `copy(gauge, level=picked(value))`, printed, below 0 when it breaks.
+    Copied,
+    /// `made(value)`: `Gauge(level=picked(value))`, printed, or refused below 0.
+    Made,
+    /// `by_name["k"].level -= amount`.
+    InDict,
+}
+
+/// Every `RuleWay`, for the generator to pick from.
+pub(crate) const RULE_WAYS: [RuleWay; 16] = [
+    RuleWay::Set,
+    RuleWay::Raised,
+    RuleWay::Taken,
+    RuleWay::Lowered,
+    RuleWay::Dipped,
+    RuleWay::Drained,
+    RuleWay::Shrunk,
+    RuleWay::InList,
+    RuleWay::ForRef,
+    RuleWay::Counted,
+    RuleWay::Tagged,
+    RuleWay::TaggedByRef,
+    RuleWay::Named,
+    RuleWay::Copied,
+    RuleWay::Made,
+    RuleWay::InDict,
+];
+
 /// An `Arrayed` statement: `arrayed{id}(stdout)`, a `Grid{id}` of fixed-size arrays, of ints, of
 /// structs holding a list, of optional structs, of texts and of arrays, held in a list, a Table and
 /// a dict too, beside a loose array, then a step at a time, then what each holds. An array is held
@@ -1960,6 +2044,8 @@ pub(crate) enum Stmt {
     /// `generated{id}(stdout)`: generators that fail partway, wrapped with `? from` and held in
     /// names, tuples, lists, generic structs and a generator kept for later.
     Generated(Generating),
+    /// `ruled{id}(stdout)`: fields with `where` rules, written every way, lent by `ref` and copied.
+    Ruled(Ruling),
     /// `interfaced{id}(stdout)`: two types with one interface, through generic functions bounded by it.
     Interfaced(Interfacing),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.

@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    mut hp = {"orc": 12, "elf": 9}
+    hp["orc"] -= 3
+    stdout.print(hp["orc"], hp["elf"])

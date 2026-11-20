@@ -1,0 +1,5 @@
+def main(stdout: Stdout):
+    mut items = [1, 2, 3]
+    for ref item in items:
+        item *= 2
+    stdout.print(items)

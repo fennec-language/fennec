@@ -694,8 +694,8 @@ impl Editor {
         }
     }
 
-    /// Sends a notification, then waits until the server has finished with it: it answers
-    /// messages in order, so that's when a request sent after it comes back.
+    /// Sends a notification, then waits until the server has finished with it: `fennec/settled`
+    /// is answered once everything it asked for is published, lints and costs too.
     fn settled(&mut self, method: &str, params: Json) -> Result<Duration, String> {
         let start = Instant::now();
         self.send(&Json::object([("method", Json::string(method)), ("params", params)]))?;

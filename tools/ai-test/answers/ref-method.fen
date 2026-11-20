@@ -1,0 +1,12 @@
+struct Counter:
+    count: int
+
+    def bump(ref self):
+        self.count += 1
+
+def main(stdout: Stdout):
+    mut counter = Counter(count=0)
+    counter.bump()
+    counter.bump()
+    counter.bump()
+    stdout.print(counter.count)

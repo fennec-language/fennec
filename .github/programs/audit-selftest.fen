@@ -1,0 +1,5 @@
+# `audit.sh` runs this under `FENNEC_AUDIT_SELFTEST`: the runtime leaves a block nothing holds just
+# before the heap audit, which has to name it, so the audit is seen to run before it's trusted.
+def main(stdout: Stdout):
+    stdout.print("ran")
+    return

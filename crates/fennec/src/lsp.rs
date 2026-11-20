@@ -13,7 +13,8 @@ pub(crate) fn lsp() -> ExitCode {
         return carry(connection);
     }
     crate::big_stack(|| {
-        let served = fennec_lsp::serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock());
+        let input = std::io::BufReader::new(std::io::stdin());
+        let served = fennec_lsp::serve(input, &mut std::io::stdout().lock());
         if served.unwrap_or(false) { ExitCode::SUCCESS } else { ExitCode::FAILURE }
     })
 }

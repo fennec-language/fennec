@@ -1649,6 +1649,197 @@ fn the_guides_samples_compile_and_its_kit_passes_its_tests() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Every Fennec program a script, a workflow or a tool runs is a file of its own, checked here
+/// against the language as it is now: `.github/programs`, with its kits checked as kits, and the AI
+/// test's reference answers in `tools/ai-test/answers`. Written inline, the release dry run's
+/// programs went stale unseen when the language changed, and so did 18 of the AI test's 30
+/// answers, kept in a TOML file. The test after this one keeps programs out of scripts.
+#[test]
+fn every_program_a_script_or_tool_runs_compiles() {
+    let mut refused = Vec::new();
+    let mut checked = 0;
+    for folder in [".github/programs", "tools/ai-test/answers"] {
+        let mut names: Vec<String> = std::fs::read_dir(repo().join(folder))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                Path::new(name).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("fen"))
+            })
+            .collect();
+        names.sort();
+        for name in names {
+            let shown = format!("{folder}/{name}");
+            let output = fennec(&["check", &shown], "").unwrap();
+            if !output.status.success() {
+                refused.push(format!("{shown}:\n{}", text(&output.stderr)));
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked >= 35, "found only {checked} programs");
+    // The release dry run's kits, together, as one depends on the other by its path.
+    let dir = scratch("script-kits").unwrap();
+    copy_folder(&repo().join(".github/programs/kits"), &dir).unwrap();
+    for kit in ["greeting", "hello"] {
+        let output = fennec_in(&dir.join(kit), &["check"], "").unwrap();
+        if !output.status.success() {
+            refused.push(format!(".github/programs/kits/{kit}:\n{}", text(&output.stderr)));
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(refused.is_empty(), "these programs don't compile:\n\n{}", refused.join("\n"));
+}
+
+/// No script, workflow or tool holds a Fennec program inline, where no test sees it: each goes in a
+/// file of its own in `.github/programs`, which the test before this one checks. A line is taken
+/// for Fennec when it starts a `def` with typed parameters, or none, where code starts, as at the
+/// start of a heredoc's line or a `printf`'s text, or when it has `stdout.print(` or `: Stdout`.
+/// The Python a workflow runs inline, with its untyped parameters, isn't taken for it. Soak's
+/// `soak-copy.pl` writes Fennec around a program, and the test after this one checks what it
+/// writes.
+#[test]
+fn no_script_workflow_or_tool_holds_a_fennec_program_inline() {
+    let mut files = Vec::new();
+    scripts_under(&repo(), &mut files).unwrap();
+    assert!(files.len() > 40, "found only {} scripts", files.len());
+    let mut inline = Vec::new();
+    for file in &files {
+        let shown = file.strip_prefix(repo()).unwrap_or(file).to_string_lossy().replace('\\', "/");
+        if shown == ".github/scripts/soak-copy.pl" {
+            continue;
+        }
+        let source = std::fs::read_to_string(file).unwrap();
+        let python = file.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("py"));
+        for (at, line) in source.lines().enumerate() {
+            if holds_fennec(line, python) {
+                inline.push(format!("{shown}:{}: {}", at + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        inline.is_empty(),
+        "these lines hold Fennec inline, which no test checks: put each program in a file of its own in \
+         .github/programs, which `every_program_a_script_or_tool_runs_compiles` checks, and have the \
+         script copy it\n{}",
+        inline.join("\n")
+    );
+}
+
+/// Soak's copy of a program is Fennec that `soak-copy.pl` writes around it, so it's checked as the
+/// soak writes it, for each program the nightly soaks and both ways the soak runs one, in a task
+/// and on the program's own thread.
+#[test]
+#[cfg(unix)]
+fn soaks_copy_of_each_program_it_soaks_compiles() {
+    let proofs = std::fs::read_to_string(repo().join(".github/workflows/proofs.yml")).unwrap();
+    let soak = proofs.split("\n  soak:\n").nth(1).expect("proofs.yml has its soak job");
+    let listed = soak
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("program: ["))
+        .expect("the soak job lists its programs, as `program: [...]`");
+    let programs: Vec<&str> = listed.trim_end_matches(']').split(',').map(str::trim).collect();
+    assert!(programs.len() >= 2, "found only {programs:?} in the soak job");
+    let dir = scratch("soak-copies").unwrap();
+    for program in &programs {
+        let source = std::fs::read(repo().join(format!("bench/realworld/{program}.fen"))).unwrap();
+        for way in ["task", "main"] {
+            let mut copying = std::process::Command::new("perl")
+                .arg(repo().join(".github/scripts/soak-copy.pl"))
+                .env("SOAK_IN", way)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            copying.stdin.take().unwrap().write_all(&source).unwrap();
+            let copied = copying.wait_with_output().unwrap();
+            assert!(copied.status.success(), "soak-copy.pl refused {program}: {}", text(&copied.stderr));
+            let name = format!("{program}_{way}.fen");
+            std::fs::write(dir.join(&name), &copied.stdout).unwrap();
+            let output = fennec_in(&dir, &["check", &name], "").unwrap();
+            assert!(
+                output.status.success(),
+                "soak's copy of {program}, run in {way}, doesn't compile:\n{}",
+                text(&output.stderr)
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Copies a folder and everything in it into `to`, which it makes.
+fn copy_folder(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let copy = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_folder(&entry.path(), &copy)?;
+        } else {
+            std::fs::copy(entry.path(), &copy)?;
+        }
+    }
+    Ok(())
+}
+
+/// Every script under `dir`, as `no_script_workflow_or_tool_holds_a_fennec_program_inline` reads
+/// them: shell, Perl, Python, workflows and TOML, and any file without an extension that starts
+/// with `#!`. What's built, std and the examples, which have tests of their own, are left out, and
+/// so is every hidden folder but `.github`.
+fn scripts_under(dir: &Path, found: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type()?.is_dir() {
+            let left_out = ["target", "node_modules", "std", "examples"].contains(&name.as_str())
+                || (name.starts_with('.') && name != ".github");
+            if !left_out {
+                scripts_under(&path, found)?;
+            }
+            continue;
+        }
+        let script = match path.extension() {
+            Some(extension) => ["sh", "bash", "pl", "py", "yml", "yaml", "toml"]
+                .iter()
+                .any(|kind| extension.eq_ignore_ascii_case(kind)),
+            None => std::fs::read(&path)?.starts_with(b"#!"),
+        };
+        if script {
+            found.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Whether a line of a script holds Fennec, as `no_script_workflow_or_tool_holds_a_fennec_program_inline`
+/// says. A comment never does.
+fn holds_fennec(line: &str, python: bool) -> bool {
+    if line.trim_start().starts_with('#') {
+        return false;
+    }
+    if line.contains("stdout.print(") || line.contains(": Stdout") {
+        return true;
+    }
+    if python {
+        return false;
+    }
+    line.match_indices("def ").any(|(at, _)| {
+        let before = line.get(..at).unwrap_or_default();
+        let starts_code =
+            before.is_empty() || before.ends_with([' ', '\t', '\'', '"']) || before.ends_with("\\n");
+        let rest = line.get(at + 4..).unwrap_or_default();
+        let name = rest
+            .find(|letter: char| !(letter.is_ascii_alphanumeric() || letter == '_'))
+            .unwrap_or(rest.len());
+        let Some(parameters) = rest.get(name..).and_then(|after| after.strip_prefix('(')) else {
+            return false;
+        };
+        let parameters = parameters.split(')').next().unwrap_or_default();
+        starts_code && name > 0 && (parameters.is_empty() || parameters.contains(": "))
+    })
+}
+
 #[test]
 fn run_no_test_with_no_path_runs_the_kit_here() {
     let dir = scratch("no_test_here").unwrap();
@@ -6575,6 +6766,47 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
     std::fs::write(dir.join("edited.fen"), EDITED_BASE.replace("LIMIT = 40", "LIMIT = 42"))?;
     let last = (edit_build(&dir, "last", true, false)?, edit_build(&dir, "last-whole", false, false)?);
     same("types in place again", "last", &last.0, &last.1);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A kit built in one folder and then in another with the same Fennec home, as a second checkout
+/// or a worktree of it is, uses the first build's units again on its first build there: the index
+/// of kept units is named by the kit and its entry, not by where the kit is. Each unit is used
+/// again only when its function and every read it made are as they were, so the second checkout's
+/// program is the first's, byte for byte. Before, its first build wrote every function again.
+#[test]
+fn a_second_checkout_of_a_kit_uses_the_first_ones_units_again() -> std::io::Result<()> {
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("second-checkout")?;
+    for checkout in ["first", "second"] {
+        std::fs::create_dir_all(dir.join(checkout).join("src"))?;
+        std::fs::write(
+            dir.join(checkout).join("kit.toml"),
+            "name = \"twice\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n\n[dependencies]\n",
+        )?;
+        std::fs::write(dir.join(checkout).join("src/main.fen"), EDITED_BASE)?;
+    }
+    let build = |checkout: &str| {
+        crate::executables::fennec_command()
+            .args(["build", ".", "-o", "program"])
+            .current_dir(dir.join(checkout))
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+    };
+    let first = build("first")?;
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let second = build("second")?;
+    assert!(second.status.success(), "{}", text(&second.stderr));
+    let written = written_of(&second);
+    assert!(written.is_some_and(|(written, total)| written < total), "{written:?}: {}", text(&second.stdout));
+    assert!(
+        std::fs::read(dir.join("first/program"))? == std::fs::read(dir.join("second/program"))?,
+        "the second checkout's program isn't the first's"
+    );
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

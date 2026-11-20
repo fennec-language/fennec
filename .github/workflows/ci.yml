@@ -307,9 +307,8 @@ jobs:
 
           # The limit has to work to be any use, on each platform, and stop what it started too:
           # `cat` only ends once nothing is left that could write to it.
-          printf 'def main():\n    while True:\n        pass\n' > "$RUNNER_TEMP/forever.fen"
           status=0
-          .github/scripts/within.sh 5 ./target/debug/fennec run "$RUNNER_TEMP/forever.fen" | cat || status=$?
+          .github/scripts/within.sh 5 ./target/debug/fennec run .github/programs/forever.fen | cat || status=$?
           [ "$status" = 124 ] || { echo "::error::the time limit gave $status for a program that never ends"; exit 1; }
 
           # Each example counts what it holds, and one that ends with a block nothing freed fails the

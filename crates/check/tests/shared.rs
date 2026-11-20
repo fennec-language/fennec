@@ -168,6 +168,32 @@ fn locking(rest: &str) -> Vec<String> {
     problems(&text)
 }
 
+/// One `lock` naming one `shared` value twice, by the same name or the same path, is refused where
+/// the second is written, with how to take it once (#2230). Two values the checker can't tell
+/// apart, as two items of one list, are taken together, and stop the program if they're the same.
+#[test]
+fn a_lock_naming_one_value_twice_is_refused() {
+    let twice = "def main(stdout: Stdout):\n    shared a = Account()\n    \
+                 lock a, a as ref x, ref y:\n        x.add(1)\n        y.add(1)\n";
+    assert_eq!(locking(twice), ["this `lock` takes `a` twice, but it's one `shared` value @ a"]);
+    let text = format!("{ACCOUNT}{twice}");
+    assert_eq!(helps(&text), ["take it once, as `lock a as ref x:`, and use `x` for both"]);
+    let path = "struct Pair:\n    left: shared Account\n    right: shared Account\n\n\
+                def touch(pair: Pair):\n    lock pair.left, pair.left as ref x, ref y:\n        x.add(1)\n";
+    assert_eq!(
+        locking(path),
+        ["this `lock` takes `pair.left` twice, but it's one `shared` value @ pair.left"]
+    );
+    let empty: [&str; 0] = [];
+    let apart = "struct Pair:\n    left: shared Account\n    right: shared Account\n\n\
+                 def touch(pair: Pair):\n    lock pair.left, pair.right as ref x, ref y:\n        x.add(1)\n        y.add(2)\n";
+    assert_eq!(locking(apart), empty);
+    let items = "def touch(accounts: list[shared Account], from_id: int, to_id: int):\n    \
+                 lock accounts[from_id], accounts[to_id] as ref source, ref target:\n        \
+                 source.add(-1)\n        target.add(1)\n";
+    assert_eq!(locking(items), empty);
+}
+
 #[test]
 fn a_lock_body_can_do_io_and_leave_early() {
     let empty: [&str; 0] = [];

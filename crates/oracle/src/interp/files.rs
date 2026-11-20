@@ -71,7 +71,11 @@ impl Interp {
         named: &[(String, Value)],
         span: Span,
     ) -> Run<Value> {
-        if !named.is_empty() {
+        // `durable=` on a whole write says whether it waits for the disk, which the model never
+        // does: nothing here can see the difference, short of a power cut.
+        let durable_only = matches!(name, "write_text" | "write_bytes")
+            && matches!(named, [(option, Value::Bool(_))] if option == "durable");
+        if !named.is_empty() && !durable_only {
             return unsupported(format!("the Fs method `{name}` with a named argument"));
         }
         match (name, args) {

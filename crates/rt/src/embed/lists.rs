@@ -1224,29 +1224,6 @@ fn place_of(state: &State, list: u64, word: u64) -> Option<usize> {
     Some(LIST_HEADER_WORDS + at)
 }
 
-/// `list.remove(word)` on a list only one owner holds, of items of a word each, or of items
-/// passed as blocks (see `passed_as_block`).
-pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
-    attempt(|state: &mut State| {
-        let (address, word) = (u64::try_from(list).unwrap_or(0), word.cast_unsigned());
-        if let Some(at) = place_of(state, address, word) {
-            close_up(state, address, at);
-            return Ok(());
-        }
-        let element = state.heap.block(address).and_then(|block| element_of(state, block));
-        // Read for the message, written and let go of with room for however deep it is.
-        let message = super::heap::with_room_to_read(|| {
-            let value = match element {
-                Some(element) if passed_as_block(&element) => read_block(state, word),
-                Some(element) => super::heap::read_word(state, &element, word),
-                None => Value::None,
-            };
-            format!("{} isn't in the list", crate::format::repr(&value))
-        });
-        Err(Diagnostic::new(message, span(start, end)))
-    });
-}
-
 /// `word in list`, on a list of items of a word each, or of items passed as blocks.
 pub extern "C" fn contains(list: i64, word: i64) -> i8 {
     with(|state| i8::from(place_of(state, u64::try_from(list).unwrap_or(0), word.cast_unsigned()).is_some()))

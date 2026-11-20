@@ -1,0 +1,7 @@
+## `remove` gives back what it took out, so a line that drops it is a mistake: `discard` is the one
+## that only takes it out.
+
+def main(stdout: Stdout):
+    mut items = {1, 2}
+    items.remove(3)
+    stdout.print(items)

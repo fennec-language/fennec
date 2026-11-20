@@ -31,6 +31,6 @@ def main(stdout: Stdout):
         "y" in items,
     )
     mut kept = list(items)
-    kept.remove(f"{long}")
-    kept.remove("x")
+    kept.discard(f"{long}")
+    kept.discard("x")
     stdout.print(len(kept), long in kept, "x" in kept, "café" in kept)

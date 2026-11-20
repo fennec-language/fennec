@@ -1,5 +1,6 @@
-# A key 20,000 deep that isn't there, looked up in a dict, removed from a set and removed from a
-# list, each in a launched task: each crashes only its task, saying what's missing.
+# A key 20,000 deep that isn't there, each in a launched task. Looked up in a dict, it crashes only
+# its task, saying what's missing. Removed from a set or a list, it's compared all the way down
+# and gives `None`, as `remove` does for what isn't there.
 from std.concurrent import Crashed
 
 DEPTH = 20_000
@@ -29,16 +30,14 @@ def looked_up() -> int:
     seen[chain(DEPTH, first=0)] = 7
     return seen[chain(DEPTH, first=-1)]
 
-def removed_from_a_set() -> int:
+def removed_from_a_set() -> bool:
     mut held = set[Node]()
     held.add(chain(DEPTH, first=0))
-    held.remove(chain(DEPTH, first=-1))
-    return len(held)
+    return held.remove(chain(DEPTH, first=-1)) is None and len(held) == 1
 
-def removed_from_a_list() -> int:
+def removed_from_a_list() -> bool:
     mut items = [linked(DEPTH, first=0)]
-    items.remove(linked(DEPTH, first=-1))
-    return len(items)
+    return items.remove(linked(DEPTH, first=-1)) is None and len(items) == 1
 
 def attempted(which: str, stdout: Stdout):
     if which == "dict":

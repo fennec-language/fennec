@@ -1,6 +1,20 @@
 ## `set`'s methods written in Fennec. Adding, removing and walking its items are machine
 ## operations the engines provide. A new set keeps `self`'s items first, in their order.
 extend set[T: Hashable]:
+    ## Takes out `item` and gives it back, or `None` when it isn't there, as a dict's `remove`
+    ## does for a key. To take one out without using it, `discard` does.
+    ##
+    ## ```fennec
+    ## mut seen = {"a", "b"}
+    ## assert seen.remove("a") == "a"
+    ## assert seen.remove("a") is None
+    ## assert seen == {"b"}
+    ## ```
+    def remove(ref self, item: T) -> T?:
+        if item not in self: return None
+        self.discard(item)
+        return item
+
     ## Adds every item of `more`.
     ##
     ## ```fennec

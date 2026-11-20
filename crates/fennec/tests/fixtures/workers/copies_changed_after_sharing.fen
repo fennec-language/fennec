@@ -56,7 +56,7 @@ def main(stdout: Stdout):
     mut seen = {1, 2}
     mut more = seen
     more.add(3)
-    more.remove(1)
+    more.discard(1)
     stdout.print("set", seen, more)
 
     mut table = {"a": [1], "b": [2]}

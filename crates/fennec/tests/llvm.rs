@@ -20414,6 +20414,81 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// Every server's request bodies together have 256 MiB of room, so many clients each sending a big
+/// body at once can't take the program's memory (runtime exhaustion audit, 2026-11-20). Thirty
+/// clients each start a body of the most a body may be, 10 MiB: 25 fit, and the other 5 are
+/// answered 503 at once, unread. Once they've closed, the room's all back, and a request is answered.
+#[test]
+fn an_http_server_holds_no_more_than_its_room_for_bodies_at_once() -> std::io::Result<()> {
+    use std::io::{ErrorKind, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=f"got {len(request.body)}".encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=20s)
+"#;
+    let dir = folder("http_server_body_room")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| ErrorKind::InvalidData)?;
+    // Each starts the biggest body there may be, and sends a byte of it.
+    let mut started = Vec::new();
+    for _ in 0..30 {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 10485760\r\n\r\nx")?;
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
+        started.push(stream);
+    }
+    // Those refused are answered at once; the rest wait for the rest of their bodies.
+    let mut refused = vec![String::new(); started.len()];
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while refused.iter().filter(|said| !said.is_empty()).count() < 5 && std::time::Instant::now() < until {
+        for (stream, said) in started.iter_mut().zip(refused.iter_mut()) {
+            let mut heard = [0_u8; 512];
+            match stream.read(&mut heard) {
+                Ok(read) => said.push_str(&String::from_utf8_lossy(heard.get(..read).unwrap_or_default())),
+                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(err) => {
+                    said.push('[');
+                    said.push_str(&err.to_string());
+                    said.push(']');
+                }
+            }
+        }
+    }
+    let answered: Vec<&String> = refused.iter().filter(|said| !said.is_empty()).collect();
+    drop(started);
+    // The room's back once they've gone.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let mut after = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    after.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    after.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 3\r\nconnection: close\r\n\r\nabc")?;
+    let mut heard = Vec::new();
+    let _ = after.read_to_end(&mut heard);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    let busy = "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 67\r\nconnection: close\r\n\r\n\
+                the server is reading as many bodies as it holds at once: try again";
+    assert_eq!(answered.len(), 5, "{answered:?}");
+    assert!(answered.iter().all(|said| said.as_str() == busy), "{answered:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&heard),
+        "HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\ngot 3"
+    );
+    Ok(())
+}
+
 /// A native server gives a whole request, its head and body, one `timeout`, so a client sending a
 /// body a byte at a time is cut off once it passes rather than held for as long as it keeps sending.
 #[test]

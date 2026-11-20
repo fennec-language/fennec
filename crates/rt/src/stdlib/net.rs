@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -60,6 +60,9 @@ struct Stream {
     /// set: a server gives a request's head and body one, so a client sending a byte at a time
     /// can't hold a connection open for longer than a request may take.
     reads_by: Mutex<Option<(Instant, Duration)>>,
+    /// Its share of the room every server's request bodies have, for the body it's reading or
+    /// answering, given back as its next request starts, as it closes, or as it goes.
+    body_held: BodyHeld,
     /// Whether it's been closed from here. A task about to park on it looks first, as nothing
     /// would wake it after.
     closed: AtomicBool,
@@ -426,6 +429,25 @@ impl Fake {
                 let count = bytes_asked(*count, span)?;
                 self.read_by(handle, Some(count), timeout, span)?
                     .map(|data| Value::Bytes(Rc::from(data.unwrap_or_default())))
+            }
+            // A test's connection holds what was sent in memory, so its body needs no room among
+            // a real server's: it always has room, and is read whole, or as far as was sent.
+            ("Connection", "_room_for_body", [Value::Int(_)]) => return Ok(Value::Bool(true)),
+            ("Connection", "_body", [Value::Int(size)]) => {
+                let size = bytes_asked(*size, span)?;
+                let mut body = Vec::new();
+                let mut failed = None;
+                while body.len() < size {
+                    match self.read_by(handle, Some(size - body.len()), timeout, span)? {
+                        Ok(Some(more)) if !more.is_empty() => body.extend(more),
+                        Ok(_) => break,
+                        Err(failure) => {
+                            failed = Some(failure);
+                            break;
+                        }
+                    }
+                }
+                failed.map_or_else(|| Ok(Value::Bytes(Rc::from(body))), Err)
             }
             ("Connection", "read_line", []) => or_timed_out(self.read_line(handle, false, span), timeout)?,
             ("Connection", "read_line.crlf", [Value::Bool(crlf)]) => {
@@ -874,6 +896,12 @@ pub(crate) fn real_connection(
         ("read", [Value::Int(count)]) => {
             read(handle, bytes_asked(*count, span)?, timeout).map(|data| Value::Bytes(Rc::from(data)))
         }
+        ("_room_for_body", [Value::Int(size)]) => {
+            return Ok(Value::Bool(room_for_body(handle, bytes_asked(*size, span)?)));
+        }
+        ("_body", [Value::Int(size)]) => {
+            body(handle, bytes_asked(*size, span)?, timeout).map(|data| Value::Bytes(Rc::from(data)))
+        }
         ("read_line", []) => read_line(handle, timeout).map(|line| line_value(line.as_deref())),
         ("read_line.crlf", [Value::Bool(crlf)]) => {
             read_line_crlf(handle, timeout, *crlf).map(|line| line_value(line.as_deref()))
@@ -892,11 +920,13 @@ pub(crate) fn real_connection(
         ("peer", []) => return Ok(stream(handle).map_or_else(|_| Value::str(""), |it| Value::str(&it.peer))),
         ("_label", []) => return Ok(Value::Int(stream(handle).map_or(0, |stream| stream.label))),
         // Has every read from now on done within `after`.
+        // As a server starts on a next request: the last one's body is let go of too.
         ("_reads_within", [after]) => {
             let after = duration_of(after, span)?;
             if let Ok(stream) = stream(handle) {
                 *stream.reads_by.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some((Instant::now() + after, after));
+                stream.body_held.give_back();
             }
             return Ok(Value::Unit);
         }
@@ -1502,6 +1532,7 @@ fn keep_stream_made(
         awaiting_a_message: AtomicBool::new(false),
         label: if served { next_label(0) } else { 0 },
         reads_by: Mutex::new(None),
+        body_held: BodyHeld::default(),
         closed: AtomicBool::new(false),
         never_blocks: AtomicBool::new(never_blocks),
         #[cfg(windows)]
@@ -1585,6 +1616,84 @@ fn wait_at_most(socket: &TcpStream, timeout: Option<Duration>) -> Result<(), Fai
 /// count far past that, as one from a request's header can be, reads no more at once, and room
 /// is never made for what only a count says is coming.
 const MOST_READ_AT_ONCE: usize = 64 * 1024;
+
+/// The most bytes of request bodies the program's servers hold at once, as they read them and
+/// answer. A body is at most 10 MiB (`MOST_BODY` in `std.net`), so it's room for 25 of the biggest
+/// at once. One that would go past it is answered 503 without being read, so many clients each
+/// sending a big body at once can't take a server's memory (runtime exhaustion audit, 2026-11-20).
+pub(crate) const MOST_BODIES_HELD: usize = 256 * 1024 * 1024;
+
+/// The bytes of request bodies the program's servers hold now, out of `MOST_BODIES_HELD`.
+static BODIES_HELD: AtomicUsize = AtomicUsize::new(0);
+
+/// A connection's share of the room its pool has, `BODIES_HELD` for a real one: the length of the
+/// body it's reading or answering, given back when it's let go of, as the connection's next
+/// request starts, it closes, or it goes.
+pub(crate) struct BodyHeld {
+    held: AtomicUsize,
+    pool: &'static AtomicUsize,
+}
+
+impl Default for BodyHeld {
+    fn default() -> BodyHeld {
+        BodyHeld { held: AtomicUsize::new(0), pool: &BODIES_HELD }
+    }
+}
+
+impl BodyHeld {
+    /// Takes `size` of its pool's room, in place of what it held, when there's that much left of
+    /// `most`.
+    pub(crate) fn take(&self, size: usize, most: usize) -> bool {
+        self.give_back();
+        let taken = self.pool.try_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+            held.checked_add(size).filter(|after| *after <= most)
+        });
+        if taken.is_ok() {
+            self.held.store(size, Ordering::SeqCst);
+        }
+        taken.is_ok()
+    }
+
+    /// Gives back what it holds.
+    pub(crate) fn give_back(&self) {
+        let held = self.held.swap(0, Ordering::SeqCst);
+        if held > 0 {
+            self.pool.fetch_sub(held, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for BodyHeld {
+    fn drop(&mut self) {
+        self.give_back();
+    }
+}
+
+/// `connection._room_for_body(size)`: takes room for a request's body of `size` bytes among every
+/// server's bodies, in place of the room its last one had, and says whether there was that much.
+fn room_for_body(handle: i64, size: usize) -> bool {
+    stream(handle).is_ok_and(|stream| stream.body_held.take(size, MOST_BODIES_HELD))
+}
+
+/// `connection._body(size)`: a request's body of `size` bytes, read whole, once its room is taken.
+/// Room is made for it once, at its size, and filled as it comes, so what a slow client hasn't sent
+/// is never held. Fewer bytes come back when the client stopped sending before the end.
+fn body(handle: i64, size: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
+    let stream = stream(handle)?;
+    let mut data = Vec::with_capacity(size);
+    while data.len() < size {
+        let got = data.len();
+        data.resize(got + (size - got).min(MOST_READ_AT_ONCE), 0);
+        let read =
+            reading(&stream, timeout, false, |reader| reader.read(data.get_mut(got..).unwrap_or_default()));
+        data.truncate(got + *read.as_ref().unwrap_or(&0));
+        if read? == 0 {
+            break;
+        }
+        stream.read_since_write.store(true, Ordering::SeqCst);
+    }
+    Ok(data)
+}
 
 fn read(handle: i64, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
     let stream = stream(handle)?;
@@ -2254,7 +2363,7 @@ fn own_poll_wait(
 /// For tests: how many of them are having sockets park on a copy on every platform, as Windows
 /// always does. A count, so one that's done doesn't turn it off under another.
 #[cfg(test)]
-static PARKING_ON_COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static PARKING_ON_COPIES: AtomicUsize = AtomicUsize::new(0);
 
 /// For tests: while one of these lives, sockets park on a copy on every platform.
 #[cfg(test)]
@@ -2769,6 +2878,7 @@ fn close(handle: i64) {
     let closed = open(|open| open.remove(&handle));
     if let Some(Socket::Stream(stream)) = &closed {
         stream.closed.store(true, Ordering::SeqCst);
+        stream.body_held.give_back();
         if stream.served {
             // A task that can park lingers parked, on a socket that doesn't block, as it reads
             // and writes. It used to hand the wait to a blocking thread, for up to `LINGER` a
@@ -2931,6 +3041,29 @@ pub(crate) mod tests {
 
     /// How many connect at once to a server that takes none yet.
     const CONNECTING: usize = 200;
+
+    /// Request bodies take room from their pool as they're read, and give it back when let go
+    /// of, taking another, or gone: past the most, one is refused, and the others keep theirs. A
+    /// pool of the test's own, so other tests' bodies don't count.
+    #[test]
+    fn bodies_take_room_from_their_pool_and_give_it_back() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static POOL: AtomicUsize = AtomicUsize::new(0);
+        let hold = || super::BodyHeld { held: AtomicUsize::new(0), pool: &POOL };
+        let (first, second) = (hold(), hold());
+        assert!(first.take(60, 100));
+        assert!(!second.take(50, 100), "past the most");
+        assert!(second.take(40, 100));
+        assert_eq!(POOL.load(Ordering::SeqCst), 100);
+        // A next request's body takes the room in place of the last one's.
+        assert!(first.take(10, 100));
+        assert_eq!(POOL.load(Ordering::SeqCst), 50);
+        first.give_back();
+        drop(second);
+        assert_eq!(POOL.load(Ordering::SeqCst), 0);
+        assert!(hold().take(100, 100));
+        assert_eq!(POOL.load(Ordering::SeqCst), 0, "a hold that goes gives its room back");
+    }
 
     /// A server's queue of connections waiting for it to take them holds as many as the system
     /// allows, where Rust's `bind` asked for 128 (#1903): of 200 that connect at once, as many as

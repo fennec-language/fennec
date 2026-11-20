@@ -127,6 +127,29 @@ enum Given {
     Unknown,
 }
 
+impl crate::checker::HoldsSpan for LockCall {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        let LockCall { callee: _, name: _, span, held: _ } = self;
+        hit(*span)
+    }
+}
+
+impl crate::checker::HoldsSpan for Values {
+    // Named in full, so a field added later can't be left out of what's looked through.
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        let Values { called: _, passed, waits, calls, locks, local_calls, through: _, captured_arrows } =
+            self;
+        passed.iter().any(|passed| {
+            let Passed { callee: _, name: _, param: _, given, span, held: _ } = passed;
+            hit(*span) || matches!(given, Given::Arrow(arrow, _) if arrow.holds_span(hit))
+        }) || waits.holds_span(hit)
+            || calls.holds_span(hit)
+            || locks.holds_span(hit)
+            || local_calls.iter().any(|(arrow, _, at, _)| arrow.holds_span(hit) || hit(*at))
+            || captured_arrows.iter().any(|(_, arrow)| arrow.holds_span(hit))
+    }
+}
+
 /// What a function value does, as a lock held while it's called sees it.
 enum Verdict {
     Waits(String),

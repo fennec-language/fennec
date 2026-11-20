@@ -27,6 +27,8 @@
 //!   number at the end. Which worker took a job is the recording's, but each job is taken once.
 //! - **`parallel` cut short,** by a `break` in a loop's range or a failure in a list's, which `main`
 //!   handles. Which ranges started is the recording's, but the one that ended it always did.
+//! - **Several senders on one channel,** which `main` takes every number from once its steps are
+//!   done. Which arrived first is the recording's, but each number arrives once.
 //! - **Locks,** on two `shared` accounts `main` makes, taken by tasks, by `main` and by each of the
 //!   `parallel` call's ranges: one account, or both in one `lock`, named in either order. A lock
 //!   adds to an account's total and appends to its moves, and prints the total it left. Some are

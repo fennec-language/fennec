@@ -5544,7 +5544,10 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
         command.args(["build", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", home);
         command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
         if daemon {
-            command.env_remove("FENNEC_NO_DAEMON");
+            // A test's own daemons, which start for a Fennec folder in the temp folder.
+            command
+                .env_remove("FENNEC_NO_DAEMON")
+                .env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
         }
         command.output().unwrap()
     };
@@ -5587,7 +5590,8 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
         let mut command = crate::executables::fennec_command();
         command.args(["run", "."]).current_dir(&kit).env("FENNEC_HOME", &home);
         command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
-        let ran = command.env_remove("FENNEC_NO_DAEMON").output().unwrap();
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+        let ran = command.output().unwrap();
         let stderr = text(&ran.stderr);
         assert_eq!(ran.status.code(), Some(0), "{stderr}");
         assert!(text(&ran.stdout).ends_with(&format!("6\n{printed}\n")), "{}", text(&ran.stdout));

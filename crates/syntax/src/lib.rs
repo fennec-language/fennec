@@ -36,7 +36,8 @@ pub use parser::{parse, parse_at, parse_prelude, parse_written};
 pub use sources::{Sources, Trace};
 pub use span::{Copied, Span};
 pub use stdlib::{
-    KeptPrelude, core_to_run, given, keep_prelude_in, module_providing, module_to_run, prelude,
-    prelude_file_at, prelude_files, prelude_modules, prelude_to_run,
+    EngineDeclaration, KeptPrelude, core_to_run, engine_declarations, given, keep_prelude_in,
+    module_providing, module_to_run, prelude, prelude_file_at, prelude_files, prelude_modules,
+    prelude_to_run,
 };
 pub use trivia::{Lexed, SourceToken, TokenKind, lex_source};

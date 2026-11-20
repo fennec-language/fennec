@@ -9459,7 +9459,8 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
 }
 
 /// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4, 8 and 16
-/// threads, wanting what it prints, what it says and its exit code every time.
+/// threads, wanting what it prints, what it says and its exit code every time. Where it's said a
+/// failure happened, its folder is `<dir>`.
 fn deadlock_fixture_runs_as(name: &str, runs: usize, wanted: (&str, &str, i32)) -> std::io::Result<()> {
     deadlock_fixture_runs_with(name, runs, &[], wanted)
 }
@@ -9487,9 +9488,12 @@ fn deadlock_fixture_runs_with(
                 .env("FENNEC_THREADS", threads)
                 .envs(env.iter().copied())
                 .output_within()?;
-            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            let said = (
+                String::from_utf8_lossy(&ran.stdout),
+                String::from_utf8_lossy(&ran.stderr).replace(dir.to_string_lossy().as_ref(), "<dir>"),
+            );
             assert_eq!(
-                (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
+                (said.0.as_ref(), said.1.as_str(), ran.status.code()),
                 (out, err, Some(code)),
                 "{name} on {threads} threads"
             );
@@ -9616,7 +9620,10 @@ fn a_parallel_call_that_can_still_end_is_never_a_deadlock() -> std::io::Result<(
     for turn in 0..8 {
         let _ = writeln!(crashed, "{turn} it crashed");
     }
-    let said = "error: index 5 is out of range for length 2\n".repeat(8);
+    // Each says where it happened, as a crash on `main` does (#2045).
+    let said = "error: index 5 is out of range for length 2\n --> <dir>/crash_under_join.fen:9:12\n  |\n\
+                9 |     return numbers[5]\n  |            ^^^^^^^^^^\n"
+        .repeat(8);
     deadlock_fixture_runs_as("crash_under_join", 5, (&crashed, &said, 0))?;
     deadlock_fixture_runs_with("two_calls_napping", 5, &[("FENNEC_TEST_SLOW_WAKE_MS", "20")], ("42\n", "", 0))
 }
@@ -9635,7 +9642,12 @@ fn a_wait_something_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
     let mut cases = vec![
         ("timeout_fine", "gave up\n", ""),
         ("sender_naps", "7\n", ""),
-        ("crash_wakes", "it crashed\n", "error: index 5 is out of range for length 2\n"),
+        (
+            "crash_wakes",
+            "it crashed\n",
+            "error: index 5 is out of range for length 2\n  --> <dir>/crash_wakes.fen:10:18\n   |\n\
+             10 |     stdout.print(numbers[5])\n   |                  ^^^^^^^^^^\n",
+        ),
         ("stopped_counting", "counted True\nthe block is over\n", ""),
     ];
     // It runs `sleep`, which Windows doesn't have.

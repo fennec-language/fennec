@@ -781,7 +781,9 @@ fn report_failure() {
     let followed = crate::replay::divergence().is_none();
     if let Some(failure) = failure.filter(|_| followed) {
         write_kept_output();
-        let _ = writeln!(std::io::stderr(), "error: {}", failure.message);
+        // Where it happened, as `main`'s failure and a range's say it (#2045).
+        let said = aot::rendered_here(&failure).unwrap_or_else(|| format!("error: {}\n", failure.message));
+        let _ = std::io::stderr().write_all(said.as_bytes());
     }
 }
 

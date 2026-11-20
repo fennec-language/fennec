@@ -242,7 +242,7 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
     super::write_kept_output();
     let Some(channel) = find(channel) else { return CLOSED };
     // In a replay, it waits its turn, and a send that didn't go through doesn't wait again.
-    let timeout_ns = match replayed(&channel, "send") {
+    let timeout_ns = match replayed(&channel, "send", timeout_ns < 0) {
         Turn::Live => timeout_ns,
         Turn::Goes => -1,
         Turn::Gives(code) => return code,
@@ -332,7 +332,7 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
         ));
         return DONE;
     }
-    let timeout_ns = match replayed(&channel, "receive") {
+    let timeout_ns = match replayed(&channel, "receive", timeout_ns < 0) {
         Turn::Live => timeout_ns,
         Turn::Goes => -1,
         Turn::Gives(code) => return code,
@@ -379,15 +379,16 @@ enum Turn {
     Gives(i64),
 }
 
-/// Waits, in a replay, for the running task's turn to do `what` at `channel`. A replay that's
-/// diverged fails, as having found the channel closed.
-fn replayed(channel: &Channel, what: &str) -> Turn {
+/// Waits, in a replay, for the running task's turn to do `what` at `channel`, a wait with no time
+/// limit when `for_good`. A replay that's diverged fails, as having found the channel closed.
+fn replayed(channel: &Channel, what: &str, for_good: bool) -> Turn {
     // A channel's named only in a recording or a replay: anywhere else nothing's waited for.
     let Some(place) = channel.replay.as_deref() else { return Turn::Live };
-    // A send or a receive is a stuck wait where nothing can end it, which a replay of a run that
-    // deadlocked goes on into past its recording's end, as the run was when the check fired. A
-    // listener's on a channel to `.Every` is no stuck wait, so it never goes past.
-    let turn = if matches!(what, "send" | "receive") && !channel.to_every {
+    // A send or a receive with no time limit is a stuck wait where nothing can end it, which a
+    // replay of a run that deadlocked goes on into past its recording's end, as the run was when
+    // the check fired. One with a limit, or a listener's on a channel to `.Every`, is no stuck
+    // wait, so it never goes past: it fails at once, where it waited its limit out first.
+    let turn = if for_good && matches!(what, "send" | "receive") && !channel.to_every {
         crate::replay::turn_to_wait(Some(place), what)
     } else {
         crate::replay::turn(Some(place), what)
@@ -431,7 +432,7 @@ fn met(channel: &Channel, what: &str, outcome: i64) {
 /// it's closed. Everything waiting on it wakes.
 pub extern "C" fn channel_close(channel: i64) {
     let Some(channel) = find(channel) else { return };
-    if let Turn::Gives(_) = replayed(&channel, "close") {
+    if let Turn::Gives(_) = replayed(&channel, "close", false) {
         return;
     }
     let mut queue = channel.queue();

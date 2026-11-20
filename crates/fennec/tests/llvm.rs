@@ -9521,6 +9521,11 @@ fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
         "sibling_fails",
         "two_fail",
         "sibling_crashes",
+        // Ranges a failure kept from starting, logged as they're kept, since the call's end, where
+        // they were logged, never comes; and tasks whose numbers depend on which range launched
+        // first, which a replay says as its recording did (Fable 5.2's review, 2026-11-20).
+        "skipped_would_wait",
+        "range_at_block_end",
     ];
     for name in deadlocking {
         let dir = folder(&format!("deadlock-replays-{name}"))?;
@@ -9550,13 +9555,17 @@ fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
             recorded.1.starts_with("error: a deadlock") && recorded.2 == Some(1),
             "{name} recorded: {recorded:?}"
         );
+        // Many times where which task got which number is the run's own.
+        let times = if name == "range_at_block_end" { 24 } else { 1 };
         for threads in ["1", "4", "16"] {
-            let replayed = crate::executables::fennec_command()
-                .args(["replay", &log.to_string_lossy()])
-                .current_dir(&dir)
-                .env("FENNEC_THREADS", threads)
-                .output_within()?;
-            assert_eq!(said(&replayed), recorded, "{name} replayed at {threads} threads");
+            for _ in 0..times {
+                let replayed = crate::executables::fennec_command()
+                    .args(["replay", &log.to_string_lossy()])
+                    .current_dir(&dir)
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                assert_eq!(said(&replayed), recorded, "{name} replayed at {threads} threads");
+            }
         }
         std::fs::remove_dir_all(&dir)?;
     }

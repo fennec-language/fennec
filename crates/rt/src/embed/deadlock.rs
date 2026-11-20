@@ -640,8 +640,10 @@ fn report(notes: &[Note]) {
     let _ = std::io::stdout().flush();
     // A recording logs the deadlock, and a replay holds its own to the recording's: one that isn't
     // the same has diverged, and says that instead.
-    let said = match crate::replay::deadlocked(&replay_lines(notes)) {
-        Ok(()) => said(notes),
+    let words = said(notes);
+    let said = match crate::replay::deadlocked(&replay_lines(notes), &words) {
+        // A replay that came to its recording's deadlock says it as the recording did.
+        Ok(recorded) => recorded.unwrap_or(words),
         Err(why) => format!("error: {why}\n"),
     };
     let _ = std::io::stderr().write_all(said.as_bytes());

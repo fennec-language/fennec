@@ -346,7 +346,7 @@ fn deadlocked_player(lines: &str, entries: &[(&str, &str, &[u8])]) -> Mutex<Play
 #[test]
 fn a_replay_of_a_deadlock_waits_past_its_recordings_end() {
     let player = deadlocked_player(
-        "0 receive 0:c0\n0.0 receive 0:c1",
+        "0 receive 0:c0\n0.0 receive 0:c1\n\nerror: a deadlock: as the recording said it\n",
         &[("0:c0", "0.0 send", &0_i64.to_le_bytes()), ("0", "Clock.now", &5_i64.to_le_bytes())],
     );
     let lines = || vec!["0 receive 0:c0".to_owned(), "0.0 receive 0:c1".to_owned()];
@@ -373,11 +373,16 @@ fn a_replay_of_a_deadlock_waits_past_its_recordings_end() {
     assert_eq!(turn_in(&player, ("0:c0", "send", true), Duration::from_millis(50), wait_noted), Ok(0));
     end_turn(&player, "0:c0", "send");
     TASK.with_borrow_mut(|running| *running = None);
-    assert_eq!(deadlocked_in(&player.lock().unwrap(), &lines()), Ok(()));
+    // The same deadlock is said as the recording said it, whatever this replay's own words.
+    assert_eq!(
+        deadlocked_in(&player.lock().unwrap(), &lines()),
+        Ok(Some("error: a deadlock: as the recording said it\n".to_owned()))
+    );
+    // Another names only the lines that differ.
     let other = vec!["0 receive 0:c0".to_owned(), "0.0 send 0:c1".to_owned()];
     let why = deadlocked_in(&player.lock().unwrap(), &other).unwrap_err();
     assert!(
-        why.contains("waiting at `0 receive 0:c0`, `0.0 send 0:c1`, where its recording's waited at"),
+        why.contains("waiting at `0.0 send 0:c1` where the recording wasn't, and not at `0.0 receive 0:c1` where it was"),
         "{why}"
     );
     // A receive that went through past the end is a divergence, whatever comes after.
@@ -430,4 +435,30 @@ fn a_turn_waits_as_long_as_its_place_moves() {
     entries.push(("0:c0", "0 receive", &[0; 8]));
     let player = MOVING.get_or_init(|| player(&entries));
     assert_eq!(turn_in(player, ("0:c0", "receive", true), Duration::from_millis(100), taking_turns), Ok(0));
+}
+
+/// A replay that printed more than its recording did, past its last burst, and comes to its
+/// recording's deadlock has diverged, as at a normal end: what it held back was never written.
+#[test]
+fn a_replay_that_printed_more_than_its_recording_has_diverged_at_its_deadlock() {
+    let three = 3_u64.to_le_bytes();
+    let player = deadlocked_player("0 receive 0:c0\n\nsaid\n", &[(OUTPUT, "0 write", &three)]);
+    let mut player = player.into_inner().unwrap();
+    player.takes_output("0", b"abc", |_| Ok(())).unwrap();
+    assert_eq!(deadlocked_in(&player, &["0 receive 0:c0".to_owned()]), Ok(Some("said\n".to_owned())));
+    player.takes_output("0", b"more", |_| Ok(())).unwrap();
+    let why = deadlocked_in(&player, &["0 receive 0:c0".to_owned()]).unwrap_err();
+    assert!(why.starts_with("this replay printed more than its recording did,"), "{why}");
+}
+
+/// A `deadlock` entry is a recorded deadlock only in a log new enough to have one: in an older log
+/// it's an entry of `main`'s like any other.
+#[test]
+fn only_a_log_new_enough_has_a_deadlock() {
+    let mut log = log_of(&[("0", DEADLOCK, b"0 receive 0:c0")]);
+    assert!(player_of(&log).unwrap().deadlock.is_some());
+    log.splice(..MAGIC.len(), MAGIC_BEFORE_DEADLOCKS.iter().copied());
+    let older = player_of(&log).unwrap();
+    assert!(older.deadlock.is_none());
+    assert_eq!(older.streams.get("0").map(VecDeque::len), Some(1));
 }

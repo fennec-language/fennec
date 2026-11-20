@@ -196,6 +196,10 @@ struct Player {
     whole: bool,
     /// Each stuck wait's line, when the recorded run ended in a deadlock.
     deadlock: Option<Vec<String>>,
+    /// The report the recorded run said at its deadlock, which a replay that comes to the same one
+    /// says: its words name tasks by numbers handed out in whatever order they launched, which the
+    /// replay's own may not have (Fable 5.2's review, 2026-11-20).
+    deadlock_said: Option<String>,
     /// The first step a replay took past where its recording ended in a deadlock: a divergence,
     /// said when the replay comes to its deadlock or its end.
     past: Option<String>,
@@ -581,46 +585,60 @@ pub(crate) fn line(kind: &str, place: &str) -> Arc<str> {
     Arc::from(format!("{} {kind} {place}", running()))
 }
 
-/// The deadlock check has proven a deadlock whose stuck waits are `lines`, in order. A recording
-/// logs them under `main`, whichever thread found it. A replay holds them to its recording's: the
-/// same, with nothing of the recording left over, is the run that was recorded, and anything else
-/// is a divergence, said in the `Err`. A normal run has nothing to do.
+/// The deadlock check has proven a deadlock whose stuck waits are `lines`, in order, and that it
+/// says as `said`. A recording logs both under `main`, whichever thread found it. A replay holds
+/// its lines to its recording's: the same, with nothing of the recording left over or held back,
+/// is the run that was recorded, and gives the recording's report to say; anything else is a
+/// divergence, said in the `Err`. A normal run has nothing to do.
 #[cfg_attr(
     test,
     expect(dead_code, reason = "only a deadlock's report calls it, which this crate's tests never make")
 )]
-pub(crate) fn deadlocked(lines: &[String]) -> Result<(), String> {
+pub(crate) fn deadlocked(lines: &[String], said: &str) -> Result<Option<String>, String> {
     match mode() {
-        Mode::Off => Ok(()),
+        Mode::Off => Ok(None),
         Mode::Record(file) => {
-            log(file, "0", DEADLOCK, lines.join("\n").as_bytes());
-            Ok(())
+            log(file, "0", DEADLOCK, format!("{}\n\n{said}", lines.join("\n")).as_bytes());
+            Ok(None)
         }
         Mode::Replay(player) => deadlocked_in(&player.lock().unwrap_or_else(PoisonError::into_inner), lines),
     }
 }
 
 /// [`deadlocked`], in a replay of `player`.
-fn deadlocked_in(player: &Player, lines: &[String]) -> Result<(), String> {
+fn deadlocked_in(player: &Player, lines: &[String]) -> Result<Option<String>, String> {
     let quoted =
-        |lines: &[String]| lines.iter().map(|line| format!("`{line}`")).collect::<Vec<_>>().join(", ");
+        |lines: Vec<&String>| lines.iter().map(|line| format!("`{line}`")).collect::<Vec<_>>().join(", ");
     let not_recorded = "so it isn't the run that was recorded: something it depends on wasn't recorded, or the \
                         program has changed";
     if let Some(past) = &player.past {
         return Err(past.clone());
     }
+    if let Some(task) = printed_more(player) {
+        return Err(format!(
+            "this replay printed more than its recording did{}, {not_recorded}",
+            in_task(task)
+        ));
+    }
     let Some(recorded) = &player.deadlock else {
         return Err(format!(
             "this replay came to a deadlock its recording didn't have, its tasks waiting at {}, {not_recorded}",
-            quoted(lines)
+            quoted(lines.iter().collect())
         ));
     };
     if recorded.as_slice() != lines {
+        // Only the lines one side has: the rest, which may be many, are the same.
+        let in_replay_alone: Vec<&String> = lines.iter().filter(|line| !recorded.contains(line)).collect();
+        let in_recording_alone: Vec<&String> = recorded.iter().filter(|line| !lines.contains(line)).collect();
         return Err(format!(
-            "this replay came to a deadlock with its tasks waiting at {}, where its recording's waited at {}, \
-             {not_recorded}",
-            quoted(lines),
-            quoted(recorded)
+            "this replay came to a deadlock other than its recording's: waiting at {} where the recording \
+             wasn't, and not at {} where it was, {not_recorded}",
+            if in_replay_alone.is_empty() { "nothing more".to_owned() } else { quoted(in_replay_alone) },
+            if in_recording_alone.is_empty() {
+                "nothing less".to_owned()
+            } else {
+                quoted(in_recording_alone)
+            },
         ));
     }
     if let Some((task, next)) = left_over(player) {
@@ -630,7 +648,16 @@ fn deadlocked_in(player: &Player, lines: &[String]) -> Result<(), String> {
             in_task(&task)
         ));
     }
-    Ok(())
+    Ok(player.deadlock_said.clone())
+}
+
+/// The first task, by name, that has printed more than its recording did, which a replay holds
+/// back and never writes.
+fn printed_more(player: &Player) -> Option<&String> {
+    let mut held: Vec<&String> =
+        player.held.iter().filter(|(_, bytes)| !bytes.is_empty()).map(|(task, _)| task).collect();
+    held.sort();
+    held.first().copied()
 }
 
 /// How many workers the recorded run had, for a replay to have as many.
@@ -748,6 +775,7 @@ fn player_of(log: &[u8]) -> Option<Player> {
         orders_output: false,
         held: HashMap::new(),
         deadlock: None,
+        deadlock_said: None,
         past: None,
         whole: ![
             MAGIC,
@@ -774,9 +802,14 @@ fn player_of(log: &[u8]) -> Option<Player> {
             player.stressed = true;
             continue;
         }
-        if task == "0" && call == DEADLOCK {
-            let lines = String::from_utf8_lossy(&payload).into_owned();
+        // Its lines, then a blank line, then its report. Only a log new enough to have one: in an
+        // older one, it's an entry of `main`'s like any.
+        if task == "0" && call == DEADLOCK && log.starts_with(MAGIC) {
+            let entry = String::from_utf8_lossy(&payload).into_owned();
+            let (lines, said) =
+                entry.split_once("\n\n").map_or((entry.as_str(), None), |(lines, said)| (lines, Some(said)));
             player.deadlock = Some(lines.lines().map(str::to_owned).collect());
+            player.deadlock_said = said.map(str::to_owned);
             continue;
         }
         if task.is_empty() && call == WORKERS {
@@ -881,10 +914,7 @@ pub fn unfinished() -> Option<String> {
                 .to_owned(),
         );
     }
-    let mut held: Vec<&String> =
-        player.held.iter().filter(|(_, bytes)| !bytes.is_empty()).map(|(task, _)| task).collect();
-    held.sort();
-    if let Some(task) = held.first() {
+    if let Some(task) = printed_more(&player) {
         return Some(format!(
             "this replay printed more than its recording did{}, so it isn't the run that was recorded: \
              something it depends on wasn't recorded, or the program has changed",

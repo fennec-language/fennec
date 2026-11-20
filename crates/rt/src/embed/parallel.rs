@@ -163,7 +163,7 @@ struct Run {
 enum Skipped {
     /// Neither a recording nor a replay: what's live says.
     Off,
-    /// A recording: each kept from starting, as noted, for `log` to log under the call.
+    /// A recording: each kept back, as noted, logged under the call as it was (`note`).
     Noted(Mutex<Vec<(usize, usize)>>),
     /// A replay: those its recording logged, and only those.
     Replayed(std::collections::HashSet<(usize, usize)>),
@@ -186,7 +186,13 @@ impl Skipped {
         if !crate::replay::replaying() {
             return Skipped::Noted(Mutex::new(Vec::new()));
         }
-        let recorded = crate::replay::logged_numbers(&call.name(), entry).unwrap_or_default();
+        // Every entry logged for the call: a range is logged as it's kept back, so a run that never
+        // comes to the call's end, as one that deadlocks in it, still has them (Fable 5.2's review of
+        // deadlock record and replay, 2026-11-20). A log from before held them all in one entry.
+        let mut recorded = Vec::new();
+        while let Some(more) = crate::replay::logged_numbers(&call.name(), entry) {
+            recorded.extend(more);
+        }
         Skipped::Replayed(
             recorded
                 .as_chunks::<2>()
@@ -197,23 +203,21 @@ impl Skipped {
         )
     }
 
-    /// In a recording, logs under the call, as `entry`, the ranges kept from starting, each once, in
-    /// order, if any were.
-    fn log(&self, call: Option<&crate::replay::Task>, entry: &str) {
-        let (Skipped::Noted(noted), Some(call)) = (self, call) else { return };
-        let mut noted = std::mem::take(&mut *noted.lock().unwrap_or_else(PoisonError::into_inner));
-        if noted.is_empty() {
+    /// In a recording, notes that the range `range` was kept back, and logs it under the call, as
+    /// `entry`, at once and once: a call a deadlock stops never comes to its end, where it was logged,
+    /// and its replay then started every one of them.
+    fn note(&self, call: Option<&crate::replay::Task>, entry: &str, range: (usize, usize)) {
+        let Skipped::Noted(noted) = self else { return };
+        let mut noted = noted.lock().unwrap_or_else(PoisonError::into_inner);
+        if noted.contains(&range) {
             return;
         }
-        noted.sort_unstable();
-        noted.dedup();
-        let numbers: Vec<u64> = noted
-            .into_iter()
-            .flat_map(|(from, to)| {
-                [u64::try_from(from).unwrap_or(u64::MAX), u64::try_from(to).unwrap_or(u64::MAX)]
-            })
-            .collect();
-        crate::replay::log_numbers(&call.name(), entry, &numbers);
+        noted.push(range);
+        if let Some(call) = call {
+            let pair =
+                [u64::try_from(range.0).unwrap_or(u64::MAX), u64::try_from(range.1).unwrap_or(u64::MAX)];
+            crate::replay::log_numbers(&call.name(), entry, &pair);
+        }
     }
 }
 
@@ -364,10 +368,10 @@ impl Run {
     fn stop_keeps_from_beginning(&self, range: (usize, usize)) -> bool {
         match &self.not_begun {
             Skipped::Off => pool::cut_short(),
-            Skipped::Noted(noted) => {
+            Skipped::Noted(_) => {
                 let cut = pool::cut_short();
                 if cut {
-                    noted.lock().unwrap_or_else(PoisonError::into_inner).push(range);
+                    self.not_begun.note(self.task.as_ref(), NOT_BEGUN, range);
                 }
                 cut
             }
@@ -386,10 +390,10 @@ impl Run {
     fn skips(&self, (from, to): (usize, usize)) -> bool {
         match &self.skipped {
             Skipped::Off => from > self.stop.load(Ordering::Relaxed),
-            Skipped::Noted(noted) => {
+            Skipped::Noted(_) => {
                 let skipped = from > self.stop.load(Ordering::Relaxed);
                 if skipped {
-                    noted.lock().unwrap_or_else(PoisonError::into_inner).push((from, to));
+                    self.skipped.note(self.task.as_ref(), SKIPPED, (from, to));
                 }
                 skipped
             }
@@ -535,8 +539,6 @@ impl Run {
         if self.pieces_stopped.load(Ordering::Acquire) {
             crate::replay::mark_stopped();
         }
-        self.skipped.log(self.task.as_ref(), SKIPPED);
-        self.not_begun.log(self.task.as_ref(), NOT_BEGUN);
         let made = self.made.into_inner().unwrap_or_else(PoisonError::into_inner);
         if self.calling.is_task_s() {
             // A task's own, as what it makes itself is: listed, for it to hand over when it ends.

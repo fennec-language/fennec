@@ -184,6 +184,13 @@ impl Session {
         self.changes += 1;
         let Some(file) = text::path_of(uri).map(|path| canonical(&path)) else { return Vec::new() };
         let program = program_of(&file);
+        // The lints and costs of the program last checked, when they're still to work out, come
+        // first: an edit's quick check starts from them. Left to the server's idle moments, an
+        // editor typing right after an open or a save never left one, so each edit checked all of
+        // the program again. What finishing publishes, this edit publishes again just after.
+        if self.pending() && self.cached.as_ref().is_some_and(|(cached, ..)| *cached == program) {
+            let _ = self.finish();
+        }
         let quick = self.clean.as_ref().and_then(|clean| edited_bodies(clean, &program, &self.overlay()));
         match quick {
             Some(analysis) => self.cached = Some((program.clone(), self.changes, analysis)),

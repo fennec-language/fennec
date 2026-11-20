@@ -68,6 +68,7 @@ fn liftable(body: &[Stmt]) -> bool {
         | StmtKind::OnFailure { body, .. } => liftable(body),
         _ => true,
     }) && !tries(body)
+        && arm_blocks(body).iter().all(|block| liftable(block))
 }
 
 /// Whether nothing in a body leaves the function it's in, other than by failing.
@@ -83,7 +84,57 @@ fn no_returning(body: &[Stmt]) -> bool {
         | StmtKind::With { body, .. }
         | StmtKind::OnFailure { body, .. } => no_returning(body),
         _ => true,
-    })
+    }) && arm_blocks(body).iter().all(|block| no_returning(block))
+}
+
+/// The blocks of statements the expressions in `body` hold, however deep: each case of a `match`,
+/// which an `except why:` is written in as. A `return` there, as in
+/// `line = conn.read_line() except why: return`, leaves the function as one written as a
+/// statement does. A function written inside `body`, as a `with launch` is written in with, is
+/// left out: a `return` in it leaves only it.
+fn arm_blocks(body: &[Stmt]) -> Vec<Vec<Stmt>> {
+    let mut blocks = Vec::new();
+    let mut written = body.to_vec();
+    without_functions(&mut written);
+    visit::in_stmts(&mut written, &mut |seen| {
+        if let ExprKind::Match { arms, .. } = &seen.kind {
+            blocks.extend(arms.iter().map(|arm| arm.body.clone()));
+        }
+    });
+    blocks
+}
+
+/// Takes out of `body` the functions written inside it, at any depth, those in a `match`'s cases
+/// included.
+fn without_functions(body: &mut Vec<Stmt>) {
+    body.retain(|stmt| !matches!(stmt.kind, StmtKind::Def(_)));
+    for stmt in body.iter_mut() {
+        match &mut stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches.iter_mut() {
+                    without_functions(block);
+                }
+                if let Some(block) = otherwise {
+                    without_functions(block);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                without_functions(body);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                without_functions(cleanup);
+                without_functions(body);
+            }
+            _ => {}
+        }
+    }
+    visit::in_stmts(body, &mut |seen| {
+        if let ExprKind::Match { arms, .. } = &mut seen.kind {
+            for arm in arms.iter_mut() {
+                without_functions(&mut arm.body);
+            }
+        }
+    });
 }
 
 /// Whether an expression uses `?` outside a nested function's own body.

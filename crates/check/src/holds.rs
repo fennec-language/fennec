@@ -110,6 +110,28 @@ pub(crate) struct Handovers {
     pub(crate) arrows: BTreeMap<String, BTreeMap<(u32, u32), Arrow>>,
 }
 
+impl crate::checker::HoldsSpan for Handovers {
+    // Named in full, so a field added later can't be left out of what's looked through.
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        let Handovers { handed, arrows } = self;
+        let value = |value: &Value| {
+            let Value { span, arrow, ty: _, made_by, maker } = value;
+            hit(*span) || arrow.holds_span(hit) || made_by.holds_span(hit) || maker.holds_span(hit)
+        };
+        let to = |to: &To| match to {
+            To::Function(_) | To::Type(_) | To::Interface(_) => false,
+            To::Into(places) | To::Lent(places, _) => places.holds_span(hit),
+        };
+        handed.values().flatten().any(|((at, _), handed)| {
+            let Handed { to: going, values } = handed;
+            at.holds_span(hit) || to(going) || values.iter().any(value)
+        }) || arrows.values().flatten().any(|(at, arrow)| {
+            let Arrow { reads, params: _ } = arrow;
+            at.holds_span(hit) || reads.iter().any(|read| hit(*read))
+        })
+    }
+}
+
 impl Handovers {
     /// Adds what one function's check found it hands over.
     pub(crate) fn add(&mut self, other: &Handovers) {

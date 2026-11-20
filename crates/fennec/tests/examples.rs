@@ -94,6 +94,7 @@ fn benchmark_kernels_copy_what_was_pinned() {
     for path in &paths {
         let kernel = path.file_stem().unwrap().to_string_lossy().into_owned();
         let executable = dir.join(&kernel);
+        // A Fennec folder of its own, so no other command's sweep or cleanup reaches its work.
         let built = crate::executables::fennec_command()
             .args([
                 "build",
@@ -103,6 +104,7 @@ fn benchmark_kernels_copy_what_was_pinned() {
                 "-o",
                 &executable.to_string_lossy(),
             ])
+            .env("FENNEC_HOME", dir.join("home"))
             .output()
             .unwrap();
         assert!(built.status.success(), "{kernel}: {}", String::from_utf8_lossy(&built.stderr));

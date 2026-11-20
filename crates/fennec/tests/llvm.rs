@@ -19189,6 +19189,82 @@ fn a_task_writing_a_file_lets_the_others_answer() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Two tasks write a file each into each of 300 folders at once, so in each folder one of them
+/// clears what gone runs left while the other may be making the file it writes beside its own:
+/// that one is held by the run, whichever thread it's on, and is never taken for one left.
+const TWO_TASKS_IN_ONE_FOLDER: &str = "\
+from std.concurrent import Crashed
+
+## Writes one file into each of `folders` folders, as `side`, whole, not waiting for the disk.
+def fill(fs: Fs, side: str, folders: int) fails IoError:
+    for at in range(folders):
+        fs.write_text(f\"shared/f{at}/{side}.txt\", f\"{side}{at}\", durable=False)?
+    return
+
+def main(fs: Fs, stdout: Stdout) fails IoError | Crashed:
+    folders = 300
+    with launch(() => fill(fs, \"first\", folders)?)?:
+        with launch(() => fill(fs, \"second\", folders)?)?:
+            pass
+    mut whole = 0
+    mut left = 0
+    for at in range(folders):
+        for name in fs.list_dir(f\"shared/f{at}\")?:
+            if str(name).endswith(\".fennec-partial\"):
+                left += 1
+        from_first = fs.read_text(f\"shared/f{at}/first.txt\")?
+        from_second = fs.read_text(f\"shared/f{at}/second.txt\")?
+        if from_first == f\"first{at}\" and from_second == f\"second{at}\":
+            whole += 1
+    stdout.print(whole, left)
+";
+
+#[test]
+fn two_tasks_writing_into_one_folder_never_clear_each_others_files() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("two-tasks-one-folder")?;
+    let program = dir.join("two.fen");
+    std::fs::write(&program, TWO_TASKS_IN_ONE_FOLDER)?;
+    let executable = dir.join("two");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // A process that's ended, whose number nothing has yet: what it left in the first folders is
+    // cleared as the tasks write there.
+    let mut ended =
+        Command::new(std::env::current_exe()?).arg("--list").stdout(std::process::Stdio::null()).spawn()?;
+    let gone = ended.id();
+    ended.wait()?;
+    for threads in ["1", "4", "8"] {
+        let shared = dir.join("shared");
+        if shared.exists() {
+            std::fs::remove_dir_all(&shared)?;
+        }
+        for at in 0..300 {
+            std::fs::create_dir_all(shared.join(format!("f{at}")))?;
+        }
+        for at in 0..10 {
+            std::fs::write(shared.join(format!("f{at}/.first.txt.{gone}.1.fennec-partial")), "half")?;
+        }
+        let ran =
+            Command::new(&executable).current_dir(&dir).env("FENNEC_THREADS", threads).output_within()?;
+        let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
+            ("300 0\n", "", Some(0)),
+            "{threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A `parallel` comprehension whose items can fail runs on every thread, and the failure that
 /// passes up is the first in the list's order, as it is when the items are made in order: here
 /// 70007, though 71007 and others fail too. Natively it was once made in order, on one thread.

@@ -3677,6 +3677,26 @@ fn a_crash_in_a_lock_of_two_values_puts_both_back_whatever_their_order() -> std:
     )
 }
 
+/// A function that makes a value and never uses it builds in a program that launches a task and
+/// has a `parallel` call, so runs on the runtime's threads. There a `shared` value is made a table
+/// of its own, which can fail, so a function making one can fail even when nothing else in it can:
+/// the analysis said it couldn't, and the build stopped with the backend's own error that it fails
+/// where it worked out it can't (#2231). A `shared` int, struct, and struct holding a list, and a
+/// list, dict, `Table`, text and struct, each made in a function of its own and let go of. It
+/// prints what the reference evaluator prints, built either way. CI's workers jobs run it at 1, 4
+/// and 8 threads.
+#[test]
+fn a_value_made_and_never_used_builds_beside_tasks() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "unused_values_made_beside_tasks",
+        include_str!("fixtures/workers/unused_values_made_beside_tasks.fen"),
+        include_str!("fixtures/workers/unused_values_made_beside_tasks.out"),
+    )
+}
+
 /// A value that's out of the list or dict holding it goes back when a crash leaves the function,
 /// before anything looks at what it came out of. Taken out by a method on it or by hand, in the
 /// function that made the list or dict, in one handed it by `ref`, in a struct through `ref self`,

@@ -936,6 +936,94 @@ fn a_replay_waits_for_every_turn_a_lock_of_two_values_has_before_taking_either()
     Ok(())
 }
 
+/// Tasks moving amounts between two accounts, each `lock` taking both, named in either order, and
+/// doing inside it what may be done there: reading a file and printing. Nothing may wait inside a
+/// lock, which the checker holds to across calls, so in a replay no task waits for a turn while it
+/// holds one, once a lock asks for every turn it takes before taking any.
+const ALLOWED_INSIDE_LOCKS: &str = "from std.concurrent import Crashed
+
+struct Account:
+    total: int
+
+# Moves `amount` between the accounts, reading a note and printing inside the lock, which may.
+def moved(fs: Fs, giving: shared Account, taking: shared Account, amount: int, stdout: Stdout) fails IoError:
+    lock giving, taking as ref giver, ref taker:
+        note = fs.read_text(\"note.txt\")?
+        giver.total -= amount
+        taker.total += amount
+        stdout.print(note.strip(), amount, giver.total, taker.total)
+
+def mover(fs: Fs, savings: shared Account, checking: shared Account, start: int, stdout: Stdout) fails IoError:
+    for step in range(4):
+        amount = start + step
+        if step % 2 == 0:
+            moved(fs, giving=savings, taking=checking, amount=amount, stdout=stdout)?
+        else:
+            moved(fs, giving=checking, taking=savings, amount=amount, stdout=stdout)?
+
+def main(fs: Fs, stdout: Stdout) fails IoError | Crashed:
+    shared savings = Account(total=100)
+    shared checking = Account(total=100)
+    with launch(() => mover(fs, savings=savings, checking=checking, start=10, stdout=stdout)?)?:
+        with launch(() => mover(fs, savings=savings, checking=checking, start=20, stdout=stdout)?)?:
+            with launch(() => mover(fs, savings=savings, checking=checking, start=30, stdout=stdout)?)?:
+                moved(fs, giving=savings, taking=checking, amount=1, stdout=stdout)?
+    lock savings, checking as held_savings, held_checking:
+        stdout.print(\"savings\", held_savings.total, \"checking\", held_checking.total)
+";
+
+/// What may be done inside a lock, a file read and a print, under locks of two values taken by
+/// several tasks, replays as it ran, recorded and replayed on 1 thread and on 4.
+#[test]
+fn reads_and_prints_inside_locks_of_two_values_replay_as_they_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("inside-locks")?;
+    let program = dir.join("moves.fen");
+    std::fs::write(&program, ALLOWED_INSIDE_LOCKS)?;
+    std::fs::write(dir.join("note.txt"), "kept\n")?;
+    let executable = dir.join("moves");
+    let built = fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_THREADS_RUNTIME", "1")
+        .output_within()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for recorded_on in ["1", "4"] {
+        let log = dir.join(format!("moves-{recorded_on}.log"));
+        fennec_rt::replay::start_log(&log, format!("native\0{}", program.display()).as_bytes())?;
+        let recorded = std::process::Command::new(&executable)
+            .env("FENNEC_RECORD", &log)
+            .env("FENNEC_THREADS", recorded_on)
+            .current_dir(&dir)
+            .output_within()?;
+        let recorded = outcome(&recorded);
+        assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+        // 13 moves of their amounts, each line read inside its lock.
+        assert_eq!(recorded.0.matches("kept ").count(), 13, "{}", recorded.0);
+        assert!(recorded.0.ends_with("savings 105 checking 95\n"), "{}", recorded.0);
+        // The note changes after the recording: the replay reads it from the recording.
+        std::fs::write(dir.join("note.txt"), "changed\n")?;
+        for threads in ["1", "4"] {
+            let replayed = std::process::Command::new(&executable)
+                .env("FENNEC_REPLAY", &log)
+                .env("FENNEC_THREADS", threads)
+                .current_dir(&dir)
+                .output_limited(DEADLINE, Duration::from_secs(60))?;
+            let replayed = outcome(&replayed);
+            let how = format!("recorded on {recorded_on} threads, replayed on {threads}: {}", replayed.1);
+            assert_eq!(replayed.0, recorded.0, "{how}");
+            assert_eq!(replayed.2, Some(0), "{how}");
+        }
+        std::fs::write(dir.join("note.txt"), "kept\n")?;
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A replay that can't follow its recording at a lock says so, naming the lock, and ends. It waited
 /// out its patience, crashed, and then its connection's cleanup asked for a close where the
 /// recording read a line: the replay said only that, "while cleaning up after a crash", and hung.

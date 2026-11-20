@@ -1166,11 +1166,14 @@ mod tests {
         let run = |steps: Vec<RuleStep>| {
             let program = Program { body: vec![Stmt::Ruled(Ruling { id: 1, steps })], threadless: true };
             let source = source::source(&program);
-            let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
             if let Err(err) = fennec_check::check(&module) {
                 unreachable!("{source}\n{err:?}");
             }
-            let Some(ran) = eval::run_saying(&program) else { unreachable!("the evaluator isn't sure:\n{source}") };
+            let Some(ran) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure:\n{source}")
+            };
             (source, ran)
         };
         let steps = (0..3_i64)
@@ -1198,7 +1201,8 @@ mod tests {
             } else {
                 let said = said.unwrap_or_default();
                 assert!(!ended && said.contains("breaks the `where` rule"), "{way:?}: {said}");
-                let stopped = matches!(&oracle.ended, fennec_oracle::Ended::Stopped(why) if why.contains(&said));
+                let stopped =
+                    matches!(&oracle.ended, fennec_oracle::Ended::Stopped(why) if why.contains(&said));
                 assert!(stopped, "{way:?}: {:?}\n{source}", oracle.ended);
             }
         }

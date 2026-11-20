@@ -14,7 +14,6 @@
 )]
 
 use super::ast::{ARRAY_WAYS, ArrayStep, ArrayWay, Arraying};
-use super::ast::{RULE_WAYS, RuleStep, RuleWay, Ruling};
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
@@ -33,6 +32,7 @@ use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 use super::ast::{LOCK_WAYS, LockStep, LockWay, LockingTogether};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
+use super::ast::{RULE_WAYS, RuleStep, RuleWay, Ruling};
 use super::ast::{STUCK_WAYS, Sticking, StuckWay};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending

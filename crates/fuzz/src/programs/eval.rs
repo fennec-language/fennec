@@ -18,7 +18,6 @@ use super::ast::{
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
 use super::ast::{ArrayWay, Arraying};
-use super::ast::{RuleStep, RuleWay, Ruling};
 use super::ast::{Between, Looping, Reading};
 use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
@@ -31,6 +30,7 @@ use super::ast::{InOrder, OrderStep};
 use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{RuleStep, RuleWay, Ruling};
 use super::ast::{Sticking, StuckWay};
 use super::source::LONG_PIECE;
 

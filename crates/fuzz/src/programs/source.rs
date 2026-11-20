@@ -10,7 +10,6 @@ use super::ast::{
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
 use super::ast::{ArrayStep, ArrayWay, Arraying};
-use super::ast::{RuleStep, RuleWay, Ruling};
 use super::ast::{
     Between, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, Looping, REF_TEXTS,
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
@@ -22,6 +21,7 @@ use super::ast::{InOrder, OrderStep};
 use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{RuleStep, RuleWay, Ruling};
 use super::ast::{Sticking, StuckWay};
 
 /// What every program starts with, for its body to use.
@@ -2691,7 +2691,11 @@ fn ruled_written(ruling: &Ruling) -> String {
         let at = v % 2;
         // What's taken from a level: no more than it holds, or one more when it breaks.
         let amount = |level: &str| {
-            if breaks { format!("amount{n} = {level} + {}", v + 1) } else { format!("amount{n} = min({level}, {v})") }
+            if breaks {
+                format!("amount{n} = {level} + {}", v + 1)
+            } else {
+                format!("amount{n} = min({level}, {v})")
+            }
         };
         let picked = if breaks { -(v + 1) } else { v };
         let line = match way {

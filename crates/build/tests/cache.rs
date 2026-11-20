@@ -466,7 +466,8 @@ fn a_cache_that_cant_be_written_says_so() {
 
 /// What a command stopped before it tidied up leaves in `work` goes, and what a command running
 /// now has there stays, however long its folder has gone without changing, as when the machine
-/// slept through its build. An entry named otherwise goes once it's old.
+/// slept through its build. One named for a running id before that process started goes, as
+/// another process given the id left it. An entry named otherwise goes once it's old.
 #[cfg(unix)]
 #[test]
 fn old_scratch_work_is_swept_and_current_work_stays() -> std::io::Result<()> {
@@ -476,22 +477,28 @@ fn old_scratch_work_is_swept_and_current_work_stays() -> std::io::Result<()> {
     let mut child = std::process::Command::new("true").spawn()?;
     let gone = child.id();
     child.wait()?;
-    let current = home.join(format!("work/fennec-llvm-{running}-a-0"));
+    // Named now, as `own_temp` names them, after this process started.
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_nanos());
+    let current = home.join(format!("work/fennec-llvm-{running}-{now:x}-0"));
     entry(&current.join("f0.ll"), 10, 7200)?;
     age_folder(&current, 7200)?;
-    let fresh = home.join(format!("work/fennec-llvm-again-{running}-b-1"));
+    let fresh = home.join(format!("work/fennec-llvm-again-{running}-{now:x}-1"));
     entry(&fresh.join("f0.ll"), 10, 0)?;
-    let left = home.join(format!("work/fennec-llvm-again-{gone}-c-0"));
+    let left = home.join(format!("work/fennec-llvm-again-{gone}-{now:x}-0"));
     entry(&left.join("f0.ll"), 10, 0)?;
+    // Named for this process's id long before it started: what another process given the id left.
+    let reused = home.join(format!("work/fennec-run-{running}-a-0"));
+    entry(&reused, 10, 7200)?;
     let named_otherwise = home.join("work/scratch");
     entry(&named_otherwise, 10, 7200)?;
     let named_otherwise_new = home.join("work/scratch-new");
     entry(&named_otherwise_new, 10, 0)?;
-    assert_eq!(fennec_build::sweep_work(&home, fennec_build::WORK_KEPT), 2);
+    assert_eq!(fennec_build::sweep_work(&home, fennec_build::WORK_KEPT), 3);
     assert!(current.join("f0.ll").is_file(), "work of a running command went for its age");
     assert!(fresh.join("f0.ll").is_file());
     assert!(named_otherwise_new.is_file());
     assert!(!left.exists(), "what a command that's gone left stayed");
+    assert!(!reused.exists(), "what a process given the id again left stayed");
     assert!(!named_otherwise.exists());
     assert_eq!(fennec_build::sweep_work(&home.join("nowhere"), Duration::ZERO), 0);
     std::fs::remove_dir_all(&home)

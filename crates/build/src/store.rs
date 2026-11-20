@@ -40,42 +40,64 @@ pub const WORK_KEPT: std::time::Duration = std::time::Duration::from_secs(3600);
 /// An entry a command named for itself (`fennec-<what>-<id>-<time>-<count>`, see the `fennec`
 /// crate's `own_temp`) is that command's while it runs, however long its folder has gone without
 /// changing: a tool writing into a file it made doesn't change its folder, and the machine may
-/// sleep through a build. Once the command is gone, its entry goes. A reused process id only keeps
-/// an entry longer. Any other entry, and every entry where a process can't be asked after, goes
-/// once it hasn't changed for `older_than`.
+/// sleep through a build. Once the command is gone, its entry goes. A process running under the
+/// same id isn't its owner if it started after the entry was named, as one given the id again
+/// after the owner went did. Any other entry, and every entry where a process can't be asked
+/// after, goes once it hasn't changed for `older_than`.
 pub fn sweep_work(home: &Path, older_than: std::time::Duration) -> usize {
     let Ok(listing) = std::fs::read_dir(home.join("work")) else { return 0 };
     let now = std::time::SystemTime::now();
-    let mut removed = 0;
+    let mut left = Vec::new();
+    // Old entries whose id is running, with when each was named: their owner's start is asked.
+    let mut asked = Vec::new();
     for entry in listing.flatten() {
         let path = entry.path();
-        let left = if let Some(running) = owner_running(&path) {
-            !running
-        } else {
-            let changed = entry.metadata().and_then(|metadata| metadata.modified()).ok();
-            changed.and_then(|at| now.duration_since(at).ok()).is_some_and(|age| age > older_than)
-        };
-        if !left {
-            continue;
+        let changed = entry.metadata().and_then(|metadata| metadata.modified()).ok();
+        let old = changed.and_then(|at| now.duration_since(at).ok()).is_some_and(|age| age > older_than);
+        match owner(&path).map(|(id, named)| (id, named, running(id))) {
+            Some((_, _, Some(false))) => left.push(path),
+            Some((id, named, Some(true))) => {
+                if old {
+                    asked.push((path, id, named));
+                }
+            }
+            _ => {
+                if old {
+                    left.push(path);
+                }
+            }
         }
-        let gone = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
-        removed += usize::from(gone.is_ok());
     }
-    removed
+    if !asked.is_empty() {
+        let started = started_at(&asked.iter().map(|(_, id, _)| *id).collect::<Vec<_>>(), now);
+        // A second's slack, as `ps` gives a start to the second.
+        let slack = std::time::Duration::from_secs(1);
+        for (path, id, named) in asked {
+            if started.get(&id).is_some_and(|started| *started > named + slack) {
+                left.push(path);
+            }
+        }
+    }
+    left.into_iter()
+        .filter(|path| {
+            if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }.is_ok()
+        })
+        .count()
 }
 
-/// Whether the command that named the `work` entry at `path` for itself is running: `None` for an
-/// entry named otherwise, or where a process can't be asked after.
-fn owner_running(path: &Path) -> Option<bool> {
+/// The process id and the time in the name of a `work` entry a command named for itself: `None`
+/// for an entry named otherwise.
+fn owner(path: &Path) -> Option<(i32, std::time::SystemTime)> {
     let name = path.file_stem()?.to_str()?.strip_prefix("fennec-")?;
     // What it's for may hold dashes, as `llvm-again` does: the id is the third field from the end.
     let mut fields = name.rsplitn(4, '-');
-    let (_count, _time, id, _what) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?);
-    running(id.parse().ok()?)
+    let (_count, time, id, _what) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+    let nanos = u64::try_from(u128::from_str_radix(time, 16).ok()?).ok()?;
+    Some((id.parse().ok()?, std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos)))
 }
 
 /// Whether the process `id` is running: a signal of none sent to it finds it, or finds it isn't
-/// this user's, which is running too.
+/// this user's, which is running too. `None` where a process can't be asked after.
 #[cfg(unix)]
 fn running(id: i32) -> Option<bool> {
     let pid = rustix::process::Pid::from_raw(id)?;
@@ -88,6 +110,41 @@ fn running(id: i32) -> Option<bool> {
 #[cfg(not(unix))]
 fn running(_: i32) -> Option<bool> {
     None
+}
+
+/// When each of the processes `ids` started, as `ps` gives how long each has run: one that's gone
+/// by the time it's asked isn't in it.
+fn started_at(
+    ids: &[i32],
+    now: std::time::SystemTime,
+) -> std::collections::HashMap<i32, std::time::SystemTime> {
+    let list: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    let Ok(output) =
+        std::process::Command::new("ps").args(["-o", "pid=,etime=", "-p", &list.join(",")]).output()
+    else {
+        return std::collections::HashMap::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let id = fields.next()?.parse().ok()?;
+            Some((id, now.checked_sub(elapsed(fields.next()?)?)?))
+        })
+        .collect()
+}
+
+/// A time `ps` gives as `[[days-]hours:]minutes:seconds`.
+fn elapsed(written: &str) -> Option<std::time::Duration> {
+    let (days, clock) = match written.split_once('-') {
+        Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
+        None => (0, written),
+    };
+    let mut seconds = 0_u64;
+    for part in clock.split(':') {
+        seconds = seconds.checked_mul(60)?.checked_add(part.parse().ok()?)?;
+    }
+    Some(std::time::Duration::from_secs(days.checked_mul(86_400)?.checked_add(seconds)?))
 }
 
 /// The name of the entry that holds `program`'s last snapshot.

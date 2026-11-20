@@ -119,10 +119,20 @@ pub(crate) fn built_within(command: &mut Command) -> Result<std::process::Output
 /// Builds `source` in `work`, giving back the executable, or None when the backend doesn't take
 /// the program yet.
 pub(crate) fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, String> {
+    build_with(&fennec(), source, work, release)
+}
+
+/// [`build`], with the `fennec` at `fennec`, whose runtime is the one beside it.
+pub(crate) fn build_with(
+    fennec: &Path,
+    source: &str,
+    work: &Path,
+    release: bool,
+) -> Result<Option<PathBuf>, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("{}: {err}", work.display()))?;
     let (program, executable) = (work.join("program.fen"), work.join("program"));
     std::fs::write(&program, source).map_err(|err| format!("{}: {err}", program.display()))?;
-    let mut command = Command::new(fennec());
+    let mut command = Command::new(fennec);
     command
         .args(["build", "--llvm"])
         .args(release.then_some("--release"))

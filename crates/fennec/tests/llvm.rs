@@ -9485,7 +9485,8 @@ fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
         // hints of its own first, which only the recording, building it, may have.
         let said = |ran: &Output| {
             let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
-            let deadlock = errors.find("error: ").map_or(errors.clone(), |at| errors[at..].to_owned());
+            let deadlock =
+                errors.find("error: ").and_then(|at| errors.get(at..)).unwrap_or(&errors).to_owned();
             (String::from_utf8_lossy(&ran.stdout).into_owned(), deadlock, ran.status.code())
         };
         let recorded = said(

@@ -25,7 +25,8 @@
 //! call. A wrong proof would only turn a negative index's count from the end into a failure
 //! that it's out of range, as the comparison is still made, unsigned.
 
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_ir::{BlockId, Function, InstKind, LocalId, Operand, Program, Terminator};
@@ -67,13 +68,104 @@ impl Floor {
 pub(crate) type NonNegative = HashMap<String, HashSet<(usize, usize)>>;
 
 /// What's known across the program, worked out until it stops changing.
-#[derive(Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 struct Facts {
     fields: HashMap<(String, String), Floor>,
     params: HashMap<(String, usize), Floor>,
     returns: HashMap<String, Floor>,
     /// What a parameter a function changes in its caller's place holds wherever it leaves.
     changed: HashMap<(String, usize), Floor>,
+}
+
+/// One thing known across the program, as a walk reads it.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Fact {
+    Field(String, String),
+    Param(String, usize),
+    Return(String),
+    Changed(String, usize),
+}
+
+/// What's known across the program, as a walk reads it, noting each fact it reads when asked.
+struct Known<'f> {
+    facts: &'f Facts,
+    read: Option<RefCell<BTreeSet<Fact>>>,
+}
+
+impl Known<'_> {
+    fn note(&self, fact: impl FnOnce() -> Fact) {
+        if let Some(read) = &self.read {
+            read.borrow_mut().insert(fact());
+        }
+    }
+
+    fn field(&self, owner: &str, field: &str) -> Floor {
+        self.note(|| Fact::Field(owner.to_owned(), field.to_owned()));
+        self.facts.fields.get(&(owner.to_owned(), field.to_owned())).copied().unwrap_or(Floor::Unset)
+    }
+
+    fn param(&self, function: &str, at: usize) -> Floor {
+        self.note(|| Fact::Param(function.to_owned(), at));
+        self.facts.params.get(&(function.to_owned(), at)).copied().unwrap_or(Floor::Unset)
+    }
+
+    fn returned(&self, function: &str) -> Floor {
+        self.note(|| Fact::Return(function.to_owned()));
+        self.facts.returns.get(function).copied().unwrap_or(Floor::Unset)
+    }
+
+    fn changed(&self, function: &str, at: usize) -> Floor {
+        self.note(|| Fact::Changed(function.to_owned(), at));
+        self.facts.changed.get(&(function.to_owned(), at)).copied().unwrap_or(Floor::Unset)
+    }
+}
+
+impl Facts {
+    /// Whether these say what `other` says of every fact, one not written being unset in either.
+    fn same_as(&self, other: &Facts) -> bool {
+        fn same<K: Eq + std::hash::Hash>(a: &HashMap<K, Floor>, b: &HashMap<K, Floor>) -> bool {
+            let floor = |map: &HashMap<K, Floor>, key: &K| map.get(key).copied().unwrap_or(Floor::Unset);
+            a.iter().all(|(key, floor_a)| floor(b, key) == *floor_a)
+                && b.iter().all(|(key, floor_b)| floor(a, key) == *floor_b)
+        }
+        same(&self.fields, &other.fields)
+            && same(&self.params, &other.params)
+            && same(&self.returns, &other.returns)
+            && same(&self.changed, &other.changed)
+    }
+
+    /// Joins what one function's walk wrote into these, giving back each fact that rose.
+    fn join_in(&mut self, given: &Facts) -> Vec<Fact> {
+        fn join<K: Clone + Ord + std::hash::Hash>(
+            known: &mut HashMap<K, Floor>,
+            given: &HashMap<K, Floor>,
+            fact: impl Fn(&K) -> Fact,
+            risen: &mut Vec<Fact>,
+        ) {
+            // In order, as every walk over what's known is, though only a set is filled from it.
+            let mut given: Vec<(&K, &Floor)> = given.iter().collect();
+            given.sort_unstable_by_key(|(key, _)| *key);
+            for (key, floor) in given {
+                let was = known.get(key).copied().unwrap_or(Floor::Unset);
+                let now = was.join(*floor);
+                if now != was {
+                    known.insert(key.clone(), now);
+                    risen.push(fact(key));
+                }
+            }
+        }
+        let mut risen = Vec::new();
+        join(
+            &mut self.fields,
+            &given.fields,
+            |(owner, field)| Fact::Field(owner.clone(), field.clone()),
+            &mut risen,
+        );
+        join(&mut self.params, &given.params, |(name, at)| Fact::Param(name.clone(), *at), &mut risen);
+        join(&mut self.returns, &given.returns, |name| Fact::Return(name.clone()), &mut risen);
+        join(&mut self.changed, &given.changed, |(name, at)| Fact::Changed(name.clone(), *at), &mut risen);
+        risen
+    }
 }
 
 /// What can't be known from the program's own code.
@@ -100,10 +192,24 @@ struct Outside {
 pub(crate) fn non_negative(program: &Program) -> NonNegative {
     let outside = outside(program);
     let facts = settled(program, &outside);
+    // `FENNEC_CHECK_SIGNS=1` works the facts out again round by round, as before the worklist, and
+    // stops if the two differ: what's proven here leaves bounds checks out.
+    if std::env::var("FENNEC_CHECK_SIGNS").as_deref() == Ok("1") {
+        assert!(
+            settled_in_rounds(program, &outside).same_as(&facts),
+            "the worklist's facts about which ints aren't negative aren't the rounds' own, which is a bug in it"
+        );
+    }
+    proven_with(program, &outside, &facts)
+}
+
+/// Each function's indexes and products proven not negative, with `facts` settled.
+fn proven_with(program: &Program, outside: &Outside, facts: &Facts) -> NonNegative {
+    let known = Known { facts, read: None };
     let mut proven = NonNegative::new();
     for function in program.functions.iter().chain(&program.constants) {
         let mut found = HashSet::new();
-        walk(function, &facts, &outside, &mut Facts::default(), Some(&mut found));
+        walk(function, &known, outside, &mut Facts::default(), Some(&mut found));
         if !found.is_empty() {
             proven.insert(function.name.clone(), found);
         }
@@ -115,12 +221,54 @@ pub(crate) fn non_negative(program: &Program) -> NonNegative {
 /// written and reads what the last one found, so facts only go up, through four states, and this
 /// ends where every write, call and return is accounted for. What the program can't see, like a
 /// struct a builtin makes or a function the runtime calls, is anything from the start.
+///
+/// It's worked out with a worklist: every function is walked once, then only those that read a
+/// fact that rose since, until none waits. Each function's walk writes more as what it reads
+/// rises, and facts only rise, so each fact is the join of every function's last walk, and this
+/// ends at the same least fixed point as walking every function each round until a round changes
+/// nothing ([`settled_in_rounds`]), in a fraction of the walks. What a function reads doesn't
+/// depend on what's known, as every block it reaches is walked, so its first walk notes it.
 fn settled(program: &Program, outside: &Outside) -> Facts {
+    let functions: Vec<&Function> = program.functions.iter().chain(&program.constants).collect();
+    let mut facts = Facts::default();
+    // What each function's last walk wrote, and which functions read each fact.
+    let mut given: Vec<Option<Facts>> = vec![None; functions.len()];
+    let mut readers: BTreeMap<Fact, Vec<usize>> = BTreeMap::new();
+    let mut waiting: BTreeSet<usize> = (0..functions.len()).collect();
+    while let Some(at) = waiting.pop_first() {
+        let Some(function) = functions.get(at) else { continue };
+        let first = given.get(at).is_some_and(Option::is_none);
+        let known = Known { facts: &facts, read: first.then(|| RefCell::new(BTreeSet::new())) };
+        let mut next = Facts::default();
+        walk(function, &known, outside, &mut next, None);
+        if let Some(read) = known.read {
+            for fact in read.into_inner() {
+                readers.entry(fact).or_default().push(at);
+            }
+        }
+        if given.get(at).is_some_and(|last| last.as_ref() == Some(&next)) {
+            continue;
+        }
+        for fact in facts.join_in(&next) {
+            waiting.extend(readers.get(&fact).into_iter().flatten());
+        }
+        if let Some(last) = given.get_mut(at) {
+            *last = Some(next);
+        }
+    }
+    facts
+}
+
+/// [`settled`] as it was worked out before the worklist: every function walked each round, from
+/// what the last round found, until a round changes nothing. Kept to check the worklist against
+/// (`FENNEC_CHECK_SIGNS`, and the tests).
+fn settled_in_rounds(program: &Program, outside: &Outside) -> Facts {
     let mut facts = Facts::default();
     loop {
         let mut next = Facts::default();
+        let known = Known { facts: &facts, read: None };
         for function in program.functions.iter().chain(&program.constants) {
-            walk(function, &facts, outside, &mut next, None);
+            walk(function, &known, outside, &mut next, None);
         }
         if next == facts {
             return facts;
@@ -302,7 +450,7 @@ fn constant_int(function: &Function) -> Option<i64> {
 /// to `next`, and, when `found` is given, the places it indexes with what isn't negative.
 fn walk(
     function: &Function,
-    facts: &Facts,
+    facts: &Known<'_>,
     outside: &Outside,
     next: &mut Facts,
     mut found: Option<&mut HashSet<(usize, usize)>>,
@@ -314,17 +462,13 @@ fn walk(
     // what the runtime or a caller gives it.
     let captured = outside.closures.get(&function.name).copied().unwrap_or(0);
     for (at, floor) in start.iter_mut().enumerate().take(function.params) {
-        *floor = if external && at >= captured {
-            Floor::Any
-        } else {
-            facts.params.get(&(function.name.clone(), at)).copied().unwrap_or(Floor::Unset)
-        };
+        *floor = if external && at >= captured { Floor::Any } else { facts.param(&function.name, at) };
     }
     let mut coming_in: Vec<Option<Vec<Floor>>> = vec![None; function.blocks.len()];
     if let Some(first) = coming_in.first_mut() {
         *first = Some(start);
     }
-    let mut waiting: std::collections::BTreeSet<usize> = std::collections::BTreeSet::from([0]);
+    let mut waiting: BTreeSet<usize> = BTreeSet::from([0]);
     // What's proven is found only once every block's state has settled: a pass before that may see
     // a local as it is on the first turn of a loop, before a later turn makes it negative.
     for settled in [false, true] {
@@ -398,20 +542,19 @@ fn walk(
             if settled {
                 continue;
             }
-            let mut send =
-                |to: BlockId, state: Vec<Floor>, waiting: &mut std::collections::BTreeSet<usize>| {
-                    let Some(theirs) = coming_in.get_mut(to.0) else { return };
-                    if let Some(known) = theirs {
-                        let joined: Vec<Floor> = known.iter().zip(&state).map(|(a, b)| a.join(*b)).collect();
-                        if joined != *known {
-                            *known = joined;
-                            waiting.insert(to.0);
-                        }
-                    } else {
-                        *theirs = Some(state);
+            let mut send = |to: BlockId, state: Vec<Floor>, waiting: &mut BTreeSet<usize>| {
+                let Some(theirs) = coming_in.get_mut(to.0) else { return };
+                if let Some(known) = theirs {
+                    let joined: Vec<Floor> = known.iter().zip(&state).map(|(a, b)| a.join(*b)).collect();
+                    if joined != *known {
+                        *known = joined;
                         waiting.insert(to.0);
                     }
-                };
+                } else {
+                    *theirs = Some(state);
+                    waiting.insert(to.0);
+                }
+            };
             match &block.end {
                 Terminator::Jump(to) => send(*to, now, &mut waiting),
                 Terminator::Branch { cond, then, otherwise } => {
@@ -526,7 +669,7 @@ fn refine(op: BinOp, lhs: &Operand, rhs: &Operand, on_then: &mut [Floor], on_oth
 fn step(
     function: &Function,
     inst: &InstKind,
-    (facts, outside): (&Facts, &Outside),
+    (facts, outside): (&Known<'_>, &Outside),
     next: &mut Facts,
     now: &mut [Floor],
     exact: &mut HashMap<LocalId, i64>,
@@ -538,7 +681,7 @@ fn step(
         if outside.structs.contains(owner) || !outside.made.contains(owner) {
             return Floor::Any;
         }
-        facts.fields.get(&(owner.to_owned(), field.to_owned())).copied().unwrap_or(Floor::Unset)
+        facts.field(owner, field)
     };
     let mut dest_floor: Option<(LocalId, Floor)> = None;
     match inst {
@@ -689,7 +832,7 @@ fn step(
                     && let Some(slot) = now.get_mut(local.0)
                 {
                     *slot = if outside.defined.contains(callee) {
-                        facts.changed.get(&(callee.clone(), *at)).copied().unwrap_or(Floor::Unset)
+                        facts.changed(callee, *at)
                     } else {
                         Floor::Any
                     };
@@ -697,11 +840,8 @@ fn step(
                 }
             }
             if let Some(dest) = dest {
-                let returned = if outside.defined.contains(callee) {
-                    facts.returns.get(callee).copied().unwrap_or(Floor::Unset)
-                } else {
-                    Floor::Any
-                };
+                let returned =
+                    if outside.defined.contains(callee) { facts.returned(callee) } else { Floor::Any };
                 dest_floor = Some((*dest, returned));
             }
         }
@@ -1046,6 +1186,53 @@ def main(stdout: Stdout):
             assert_eq!(got, (then, otherwise), "{op:?} {constant} from {before:?}");
         }
     }
+    /// The worklist works out the same facts as walking every function round after round, over
+    /// every kernel, example and real program, so it proves the same indexes and products: these
+    /// leave bounds checks out, so a fact it got wrong would be a check missing.
+    #[test]
+    fn the_worklist_settles_what_the_rounds_settle() -> Result<(), String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for folder in ["bench/kernels", "examples", "bench/realworld"] {
+            for entry in std::fs::read_dir(root.join(folder)).map_err(|err| err.to_string())? {
+                let path = entry.map_err(|err| err.to_string())?.path();
+                if path.extension().is_some_and(|extension| extension == "fen") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        let (mut compared, mut differ) = (0, Vec::new());
+        for path in files {
+            let Ok(source) = std::fs::read_to_string(&path) else { continue };
+            let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+            let Ok(checked) = fennec_check::check_and_resolve(&mut module) else { continue };
+            let program = fennec_ir::lower(&module, &checked);
+            let outside = outside(&program);
+            let (listed, rounds) = (settled(&program, &outside), settled_in_rounds(&program, &outside));
+            let proven = |facts: &Facts| -> BTreeMap<String, BTreeSet<(usize, usize)>> {
+                proven_with(&program, &outside, facts)
+                    .into_iter()
+                    .map(|(function, places)| (function, places.into_iter().collect()))
+                    .collect()
+            };
+            compared += 1;
+            if !listed.same_as(&rounds) || proven(&listed) != proven(&rounds) {
+                differ.push(path.display().to_string());
+            }
+        }
+        if !differ.is_empty() {
+            return Err(format!(
+                "the worklist settled other facts than the rounds for:\n{}",
+                differ.join("\n")
+            ));
+        }
+        if compared < 100 {
+            return Err(format!("only {compared} programs were compared"));
+        }
+        Ok(())
+    }
+
     /// The range facts (`fennec_ir::ranges`) prove every index and product this proves, over
     /// every kernel, example and real program, so this can go once the backend reads them. Until
     /// then, a place this proves and they don't fails here.
@@ -1070,11 +1257,10 @@ def main(stdout: Stdout):
             let program = fennec_ir::lower(&module, &checked);
             let ranges = fennec_ir::ranges::Ranges::of(&program);
             // In order, so what's missing reads the same each run.
-            let proven: std::collections::BTreeMap<String, std::collections::BTreeSet<(usize, usize)>> =
-                non_negative(&program)
-                    .into_iter()
-                    .map(|(function, places)| (function, places.into_iter().collect()))
-                    .collect();
+            let proven: BTreeMap<String, BTreeSet<(usize, usize)>> = non_negative(&program)
+                .into_iter()
+                .map(|(function, places)| (function, places.into_iter().collect()))
+                .collect();
             for (function, places_here) in proven {
                 let known = ranges.function(&function);
                 for place in places_here {

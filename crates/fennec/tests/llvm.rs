@@ -3658,6 +3658,25 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     )
 }
 
+/// A crash in a `lock` of two values puts both back whatever order they're named in. They're taken
+/// in order of address, and named against it a crash gave each back with the other's table: their
+/// ints went back, but their lists and dicts read as `None` after, or kept what the block did to
+/// them (#2223). In a task, both orders, a failure, two from a dict by key, values whose lists the
+/// block left alone, and one held only to read, each with lists, a list of lists and a dict of
+/// lists changed; each value is then read under a lock of its own. CI's workers jobs run it at 1,
+/// 4 and 8 threads.
+#[test]
+fn a_crash_in_a_lock_of_two_values_puts_both_back_whatever_their_order() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "crash_in_a_lock_named_against_its_order",
+        include_str!("fixtures/workers/crash_in_a_lock_named_against_its_order.fen"),
+        include_str!("fixtures/workers/crash_in_a_lock_named_against_its_order.out"),
+    )
+}
+
 /// A value that's out of the list or dict holding it goes back when a crash leaves the function,
 /// before anything looks at what it came out of. Taken out by a method on it or by hand, in the
 /// function that made the list or dict, in one handed it by `ref`, in a struct through `ref self`,
@@ -9353,7 +9372,7 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
     Ok(())
 }
 
-/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
+/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4, 8 and 16
 /// threads, wanting what it prints, what it says and its exit code every time.
 fn deadlock_fixture_runs_as(name: &str, runs: usize, wanted: (&str, &str, i32)) -> std::io::Result<()> {
     deadlock_fixture_runs_with(name, runs, &[], wanted)
@@ -9376,7 +9395,7 @@ fn deadlock_fixture_runs_with(
     let (source, built_as) = (program.to_string_lossy(), executable.to_string_lossy());
     let built = fennec(&["build", "--llvm", &source, "-o", &built_as], &dir)?;
     assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-    for threads in ["1", "4", "16"] {
+    for threads in ["1", "4", "8", "16"] {
         for _ in 0..runs {
             let ran = Command::new(&executable)
                 .env("FENNEC_THREADS", threads)

@@ -5136,8 +5136,14 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
         "{}",
         status()
     );
-    // The one snapshot is a few hundred bytes, under a tenth of a megabyte.
-    assert!(status().ends_with("\ncache: 0.0 MB of 1073.7 MB\n"), "{}", status());
+    // The one snapshot is a few hundred bytes, under a tenth of a megabyte. The cap is 20 GiB, or a
+    // tenth of the space free on the disk if that's less, so it's read rather than pinned.
+    let said = status();
+    let cap = said
+        .strip_suffix(" MB\n")
+        .and_then(|rest| rest.rsplit_once("\ncache: 0.0 MB of "))
+        .and_then(|(_, cap)| cap.parse::<f64>().ok());
+    assert!(cap.is_some_and(|cap| cap > 0.0 && cap <= 21_474.9), "{said}");
 
     let again = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
     assert_eq!(text(&again.stdout), "0 files parsed, 1 unchanged and not parsed again\nnothing changed\n");
@@ -6569,6 +6575,47 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
     std::fs::write(dir.join("edited.fen"), EDITED_BASE.replace("LIMIT = 40", "LIMIT = 42"))?;
     let last = (edit_build(&dir, "last", true, false)?, edit_build(&dir, "last-whole", false, false)?);
     same("types in place again", "last", &last.0, &last.1);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A kit built in one folder and then in another with the same Fennec home, as a second checkout
+/// or a worktree of it is, uses the first build's units again on its first build there: the index
+/// of kept units is named by the kit and its entry, not by where the kit is. Each unit is used
+/// again only when its function and every read it made are as they were, so the second checkout's
+/// program is the first's, byte for byte. Before, its first build wrote every function again.
+#[test]
+fn a_second_checkout_of_a_kit_uses_the_first_ones_units_again() -> std::io::Result<()> {
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("second-checkout")?;
+    for checkout in ["first", "second"] {
+        std::fs::create_dir_all(dir.join(checkout).join("src"))?;
+        std::fs::write(
+            dir.join(checkout).join("kit.toml"),
+            "name = \"twice\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n\n[dependencies]\n",
+        )?;
+        std::fs::write(dir.join(checkout).join("src/main.fen"), EDITED_BASE)?;
+    }
+    let build = |checkout: &str| {
+        crate::executables::fennec_command()
+            .args(["build", ".", "-o", "program"])
+            .current_dir(dir.join(checkout))
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+    };
+    let first = build("first")?;
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let second = build("second")?;
+    assert!(second.status.success(), "{}", text(&second.stderr));
+    let written = written_of(&second);
+    assert!(written.is_some_and(|(written, total)| written < total), "{written:?}: {}", text(&second.stdout));
+    assert!(
+        std::fs::read(dir.join("first/program"))? == std::fs::read(dir.join("second/program"))?,
+        "the second checkout's program isn't the first's"
+    );
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

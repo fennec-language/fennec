@@ -430,7 +430,7 @@ export struct Tree[T]:
         return found
 
     ## Moves a node, with everything below it, to be the last child of `parent`.
-    def move(ref self, id: Id[TreeNode[T]], parent: Id[TreeNode[T]]):
+    def move(ref self, id: Id[TreeNode[T]], parent: Id[TreeNode[T]]) fails TreeCycle:
         if id == parent or id in self.ancestors(parent):
             fail TreeCycle(message="a node can't move under itself or its descendants")
         self._unlink(id)

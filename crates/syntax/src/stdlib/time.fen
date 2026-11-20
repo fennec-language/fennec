@@ -210,19 +210,19 @@ export struct Time:
     ## The moment RFC 3339 text says, like `2026-11-06T21:55:56Z` or
     ## `2026-11-06T23:55:56.25+02:00`. `t` and `z` may be lowercase, and a space may stand for the
     ## `T`. Digits past nanoseconds are left off. A moment outside the years from 1678 to 2261 in
-    ## UTC fails, even when its offset is what takes it there.
+    ## UTC fails, even when its offset is what takes it there. Text that isn't one fails with an
+    ## `InvalidValue`, as `int.parse` and the other parses do.
     ##
     ## ```fennec
     ## from std.time import Time
     ## assert Time.parse("2026-11-06T23:55:56.25+02:00")?.iso() == "2026-11-06T21:55:56.25Z"
-    ## assert Time.parse("yesterday") fails ParseError()
+    ## assert Time.parse("yesterday") fails InvalidValue()
     ## ```
-    def parse(text: str) -> Time fails ParseError:
-        if len(text) < 20: fail Time._not_rfc3339(text, at=len(text))
+    def parse(text: str) -> Time fails InvalidValue:
+        if len(text) < 20: fail Time._not_rfc3339(text)
         for at, wanted in [(4, "-"), (7, "-"), (13, ":"), (16, ":")]:
-            if text[at] != wanted: fail Time._not_rfc3339(text, at=at)
-        if text[10] != "T" and text[10] != "t" and text[10] != " ":
-            fail Time._not_rfc3339(text, at=10)
+            if text[at] != wanted: fail Time._not_rfc3339(text)
+        if text[10] != "T" and text[10] != "t" and text[10] != " ": fail Time._not_rfc3339(text)
         year = Time._digits_at(text, at=0, count=4)?
         month = Time._digits_at(text, at=5, count=2)?
         day = Time._digits_at(text, at=8, count=2)?
@@ -239,46 +239,36 @@ export struct Time:
                     fraction = fraction * 10 + (int(text[at]) else 0)
                     places += 1
                 at += 1
-            if places == 0: fail Time._not_rfc3339(text, at=at)
+            if places == 0: fail Time._not_rfc3339(text)
             while places < 9:
                 fraction *= 10
                 places += 1
-        if at >= len(text): fail Time._not_rfc3339(text, at=at)
+        if at >= len(text): fail Time._not_rfc3339(text)
         mut offset = 0
         sign = text[at]
         if sign == "Z" or sign == "z":
             at += 1
         elif sign == "+" or sign == "-":
-            if at + 6 > len(text) or text[at + 3] != ":": fail Time._not_rfc3339(text, at=at)
+            if at + 6 > len(text) or text[at + 3] != ":": fail Time._not_rfc3339(text)
             hours = Time._digits_at(text, at=at + 1, count=2)?
             minutes = Time._digits_at(text, at=at + 4, count=2)?
-            if hours > 23 or minutes > 59: fail Time._not_rfc3339(text, at=at)
+            if hours > 23 or minutes > 59: fail Time._not_rfc3339(text)
             offset = (hours * 60 + minutes) * 60_000_000_000
             if sign == "-":
                 offset = -offset
             at += 6
         else:
-            fail Time._not_rfc3339(text, at=at)
-        if at != len(text): fail Time._not_rfc3339(text, at=at)
-        found = Time.utc(
-            year,
-            month=month,
-            day=day,
-            hour=hour,
-            minute=minute,
-            second=second,
-        ) except problem:
-            fail ParseError(message=problem.message, line=1, column=1)
+            fail Time._not_rfc3339(text)
+        if at != len(text): fail Time._not_rfc3339(text)
+        found = Time.utc(year, month=month, day=day, hour=hour, minute=minute, second=second)?
         moment = found.nanos + fraction - offset
         # The date written is inside the years a `Time` holds, but an offset can take the moment
         # past either end, where `iso` would write a year `parse` refuses.
         first = Time._days_from_date(1678, month=1, day=1) * 86_400_000_000_000
         past = Time._days_from_date(2262, month=1, day=1) * 86_400_000_000_000
         if moment < first or moment >= past:
-            fail ParseError(
+            fail InvalidValue(
                 message=f"{quoted_input(text)} is outside the years from 1678 to 2261 in UTC, which a `Time` holds",
-                line=1,
-                column=1,
             )
         return Time(nanos=moment)
 
@@ -526,17 +516,15 @@ export struct Time:
         return whole + "." + Time._without_trailing_zeros(Time._padded(part, width=places))
 
     ## The number of `count` digits at `at` in RFC 3339 text.
-    def _digits_at(text: str, at: int, count: int) -> int fails ParseError:
+    def _digits_at(text: str, at: int, count: int) -> int fails InvalidValue:
         part = text[at:at + count]
-        if len(part) != count or not part.isdigit(): fail Time._not_rfc3339(text, at=at)
+        if len(part) != count or not part.isdigit(): fail Time._not_rfc3339(text)
         return int(part) except InvalidValue(): 0
 
-    ## The error for text that isn't RFC 3339, at the character it goes wrong at.
-    def _not_rfc3339(text: str, at: int) -> ParseError:
-        return ParseError(
+    ## The error for text that isn't RFC 3339.
+    def _not_rfc3339(text: str) -> InvalidValue:
+        return InvalidValue(
             message=f"{quoted_input(text)} isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`",
-            line=1,
-            column=at + 1,
         )
 
     ## The name of the day of the week `weekday` counts, from 0 for Monday.
@@ -573,7 +561,7 @@ extend Time:
     ## ```
     def deserialize(ref src: Deserializer) -> Time fails ParseError:
         text = src.text()?
-        return Time.parse(text) except ParseError(): fail src.here(
+        return Time.parse(text) except InvalidValue(): fail src.here(
             f"is {quoted_input(text)}, which isn't an RFC 3339 time",
         )
 

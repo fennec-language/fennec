@@ -206,7 +206,7 @@ impl Emit<'_, '_, '_> {
                 self.dict_clear(*dict);
                 Ok(())
             }
-            ("set.discard", [Operand::Local(set), key], _) => self.set_remove(*set, key, false, span),
+            ("set.discard", [Operand::Local(set), key], _) => self.set_discard(*set, key),
             ("list.sort", [Operand::Local(list)], _) => self.sort_in_place(*list),
             ("list.sort.key", [Operand::Local(list), key], _) => self.sort_by_in_place(*list, key, span),
             ("list.clear", [Operand::Local(list)], _) => {

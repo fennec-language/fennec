@@ -1983,40 +1983,26 @@ found:
         self.line(&format!("store ptr {empty}, ptr {place}"));
     }
 
-    /// `set.discard(key)`, or `set.remove(key)` when `must`, which fails on a key that isn't there.
-    pub(crate) fn set_remove(
-        &mut self,
-        set: LocalId,
-        key: &Operand,
-        must: bool,
-        span: Span,
-    ) -> Result<(), String> {
+    /// `set.discard(key)`, which takes the key out if the set has it, and can't fail.
+    pub(crate) fn set_discard(&mut self, set: LocalId, key: &Operand) -> Result<(), String> {
         let Kind::Dict(key_word, _) = self.kind_of(set)?.clone() else {
             return Err("a set's method on something else".to_owned());
         };
         let key = self.key_value(key, key_word)?;
         let place = self.slot(set);
         let (held, changed) = (self.temp(), self.temp());
-        let ((from, to), must) = (self.place_in_source(span), i8::from(must));
         self.line(&format!("{held} = load ptr, ptr {place}"));
         if key_word == Word::Text {
             // The key's owner stays here.
-            self.declare("declare ptr @fennec_set_remove_header(ptr, i64, i64, i64, i8, i64, i64) nounwind");
+            self.declare("declare ptr @fennec_set_remove_header(ptr, i64, i64, i64) nounwind");
             let [a, b, c] = [0, 1, 2].map(|at| self.header_word(&key, at));
             self.line(&format!(
-                "{changed} = call ptr @fennec_set_remove_header(ptr {held}, i64 {a}, i64 {b}, i64 {c}, i8 {must}, i64 {from}, i64 {to})"
+                "{changed} = call ptr @fennec_set_remove_header(ptr {held}, i64 {a}, i64 {b}, i64 {c})"
             ));
         } else {
             let key_held = self.key_word(key_word, &key)?;
-            self.declare("declare ptr @fennec_set_remove(ptr, i64, i8, i64, i64) nounwind");
-            self.line(&format!(
-                "{changed} = call ptr @fennec_set_remove(ptr {held}, i64 {key_held}, i8 {must}, i64 {from}, i64 {to})"
-            ));
-        }
-        // Only `remove` can fail: `discard` of a key that isn't there does nothing, so a function
-        // that can't fail may call it.
-        if must == 1 {
-            self.leave_if_failed();
+            self.declare("declare ptr @fennec_set_remove(ptr, i64) nounwind");
+            self.line(&format!("{changed} = call ptr @fennec_set_remove(ptr {held}, i64 {key_held})"));
         }
         self.line(&format!("store ptr {changed}, ptr {place}"));
         Ok(())

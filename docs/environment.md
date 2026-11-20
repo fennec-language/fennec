@@ -19,7 +19,8 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_NO_CACHE`: build without the cache, and run every test rather than reusing results.
 - `FENNEC_TOOLCHAIN_STORE`: the toolchain's store, which every home reads the standard library's parse and the runtime libraries' stamps from, in place of `fennec-store` beside `fennec`; empty turns it off. See [store.md](store.md).
 - `FENNEC_NO_DAEMON`: never start or use the daemon. `fennec build`, `fennec run` and `fennec test` then do their work in their own process, as they do whenever `CI` is set.
-- `FENNEC_DAEMON_IDLE`: how many seconds the daemon stays up with nothing to do; 1800 by default.
+- `FENNEC_DAEMON_IDLE`: how many seconds the daemon stays up with nothing to do; 1800 by default. One that has served only one request goes after 60, or this if it's less.
+- `FENNEC_DAEMONS`: the folder where build daemons note themselves, for the cap of four a user runs at once; by default one of the user's own in the temp folder. Tests set it to keep their daemons apart, which also lets a daemon start for a `FENNEC_HOME` in the temp folder, where commands otherwise never start one.
 - `FENNEC_LLVM_BIN`: the folder holding LLVM's `opt` and `llc`.
 - `FENNEC_LLVM_KEEP`: keeps the folder of LLVM text a build writes, to read what was emitted.
 - `FENNEC_BUILD_JOBS`: how many functions a dev build compiles at once; the number of cores by default. `.cargo/config.toml` sets it to 2 for everything Cargo runs, the tests among them, since they run many builds at once.

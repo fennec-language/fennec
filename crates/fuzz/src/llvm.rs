@@ -139,9 +139,11 @@ pub(crate) fn build_with(
         .arg(&program)
         .arg("-o")
         .arg(&executable)
-        // Its own home and no cache, so fuzzing leaves nothing behind in the real ones.
+        // Its own home and no cache, so fuzzing leaves nothing behind in the real ones, and no
+        // daemon, which a home of its own would start and keep for half an hour.
         .env("FENNEC_HOME", work)
-        .env("FENNEC_NO_CACHE", "1");
+        .env("FENNEC_NO_CACHE", "1")
+        .env("FENNEC_NO_DAEMON", "1");
     let built = built_within(&mut command)?;
     if built.status.success() {
         return Ok(Some(executable));
@@ -174,7 +176,8 @@ pub(crate) fn built_and_run(
         .arg("-o")
         .arg(&executable)
         .env("FENNEC_HOME", &work)
-        .env("FENNEC_NO_CACHE", "1");
+        .env("FENNEC_NO_CACHE", "1")
+        .env("FENNEC_NO_DAEMON", "1");
     let built = built_within(&mut command)?;
     if !built.status.success() {
         let how = if release { "with --release" } else { "as a dev build" };

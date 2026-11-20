@@ -7,13 +7,15 @@
 //! its target only where a kill came between making it and putting it in place.
 //!
 //! The model follows the hook's agreement with the runtime lane, in the coverage lane's notes as
-//! `runtime-lane-fault-hook-spec.md`: what each call counts, in order, and what each failure leaves.
-//! It models today's whole writes, which neither sync nor refuse to write in place; the runtime
-//! lane's write-safety change (#2238, #2239, #2240) turns `WHOLE_WRITES_SYNCED` and
-//! `DENIED_WHOLE_WRITES_FAIL` on.
+//! `runtime-lane-fault-hook-spec.md`: what each call counts, in order, and what each failure leaves,
+//! with the write-safety change of #2271. A whole write syncs the file before its rename and the
+//! folder after, unless it's `durable=False`; a refusal to make the file beside its target fails
+//! the write, leaving the target as it was; and a run's first write into a folder clears the files
+//! left beside their targets by runs that are gone, but not those of a run that's still going.
 //!
-//! The input chooses the program, one to three writes, each whole (text or bytes) or a block of one
-//! to five pieces: writes, lines, `flush()` and `sync()`, some catching their own failure. It then
+//! The input chooses the program, one to three writes, each whole (text or bytes, durable or not)
+//! or a block of one to five pieces: writes, lines, `flush()` and `sync()`, some catching their
+//! own failure. It then
 //! chooses four sets of rules, each failing one or two pieces of the work a run without rules
 //! does, or work past it. Every program runs without rules first, then with each set, built as a
 //! dev build and with `--release`.
@@ -29,14 +31,6 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::supervise::{Failure, MOST_KILOBYTES, STUCK, watch};
-
-/// Whether a whole `fs.write_text` or `fs.write_bytes` syncs the file before its rename and its
-/// folder after, as a durable block does (#2240). Not yet.
-const WHOLE_WRITES_SYNCED: bool = false;
-
-/// Whether a whole write whose file beside its target can't be made, refused, fails with that
-/// refusal rather than writing over the target in place (#2239). Not yet.
-const DENIED_WHOLE_WRITES_FAIL: bool = false;
 
 /// The two files each program writes, and what each holds before a run.
 const FILES: [(&str, &str); 2] = [("f.txt", "old f\nkept whole\n"), ("g.txt", "old g\n")];
@@ -164,8 +158,9 @@ enum Piece {
 /// One of a program's writes.
 #[derive(Clone, Debug)]
 enum Act {
-    /// `fs.write_text(name, text)?`, or `write_bytes(name, text.encode())?`.
-    Whole { file: usize, text: String, bytes: bool },
+    /// `fs.write_text(name, text)?`, or `write_bytes(name, text.encode())?`, with
+    /// `durable=False` where it isn't durable.
+    Whole { file: usize, text: String, bytes: bool, durable: bool },
     /// `with fs.create(name)? as file:`, with `durable=False` where it isn't durable.
     Block { file: usize, durable: bool, pieces: Vec<Piece> },
 }
@@ -219,7 +214,7 @@ fn plan(input: &[u8]) -> Plan {
     for _ in 0..=bytes.below(3) {
         let file = bytes.below(2);
         acts.push(if bytes.below(2) == 0 {
-            Act::Whole { file, text: bytes.text(), bytes: bytes.below(2) == 0 }
+            Act::Whole { file, text: bytes.text(), bytes: bytes.below(2) == 0, durable: bytes.below(3) != 0 }
         } else {
             let durable = bytes.below(3) != 0;
             let mut pieces = Vec::new();
@@ -266,12 +261,13 @@ fn source(plan: &Plan) -> String {
     for (at, act) in plan.acts.iter().enumerate() {
         let _ = writeln!(out, "def act{at}(fs: Fs, stdout: Stdout) fails IoError:");
         match act {
-            Act::Whole { file, text, bytes } => {
+            Act::Whole { file, text, bytes, durable } => {
                 let (name, text) = (file_name(*file), literal(text));
+                let durable = if *durable { "" } else { ", durable=False" };
                 let _ = if *bytes {
-                    writeln!(out, "    fs.write_bytes(\"{name}\", {text}.encode())?")
+                    writeln!(out, "    fs.write_bytes(\"{name}\", {text}.encode(){durable})?")
                 } else {
-                    writeln!(out, "    fs.write_text(\"{name}\", {text})?")
+                    writeln!(out, "    fs.write_text(\"{name}\", {text}{durable})?")
                 };
                 let _ = writeln!(out, "    stdout.print(\"wrote\", {at})\n");
             }
@@ -378,7 +374,9 @@ fn modelled(plan: &Plan, rules: &[Rule]) -> (Left, Vec<(Work, usize)>) {
     let mut printed = String::new();
     for (at, act) in plan.acts.iter().enumerate() {
         let ended = match act {
-            Act::Whole { file, text, .. } => whole(&mut model, &mut files, (*file, text.as_bytes()), at),
+            Act::Whole { file, text, durable, .. } => {
+                whole(&mut model, &mut files, (*file, text.as_bytes(), *durable), at)
+            }
             Act::Block { file, durable, pieces } => {
                 block(&mut model, &mut files, (*file, *durable), pieces, (at, &mut printed))
             }
@@ -394,52 +392,30 @@ fn modelled(plan: &Plan, rules: &[Rule]) -> (Left, Vec<(Work, usize)>) {
     (Left { printed: Some(printed), killed: false, files, partial: None }, model.work)
 }
 
-/// `fs.write_text` or `fs.write_bytes`: create, write, rename, and today nothing synced.
+/// `fs.write_text` or `fs.write_bytes`: create, write, a sync of the file where it's durable,
+/// rename, and a sync of the folder where it's durable. A failure before the rename throws its file
+/// away, leaving the target as it was, a refusal to make it too; the folder's sync fails only
+/// after the rename.
 fn whole(
     model: &mut Model<'_>,
     files: &mut [Option<Vec<u8>>; 2],
-    (file, data): (usize, &[u8]),
+    (file, data, durable): (usize, &[u8], bool),
     at: usize,
 ) -> Ended {
     let failed = |fault: Fault| Ended::Printed(format!("failed {}\n", fault.printed()));
-    let cut = |landed: usize| data.get(..landed).unwrap_or_default().to_vec();
     match model.begin(Work::Create, 0) {
         Went::Done => {}
         Went::Killed(_) => return Ended::Killed(None),
-        // Today a refusal to make the file beside the target writes over the target where it is,
-        // one write and no rename, which a failure leaves cut short.
-        Went::Failed(Fault::Denied, _) if !DENIED_WHOLE_WRITES_FAIL => {
-            let written = model.begin(Work::Write, data.len());
-            let target = files.get_mut(file);
-            return match written {
-                Went::Done => {
-                    if let Some(target) = target {
-                        *target = Some(data.to_vec());
-                    }
-                    Ended::Printed(format!("wrote {at}\n"))
-                }
-                Went::Killed(landed) => {
-                    if let Some(target) = target {
-                        *target = Some(cut(landed));
-                    }
-                    Ended::Killed(None)
-                }
-                Went::Failed(fault, landed) => {
-                    if let Some(target) = target {
-                        *target = Some(cut(landed));
-                    }
-                    failed(fault)
-                }
-            };
-        }
         Went::Failed(fault, _) => return failed(fault),
     }
     match model.begin(Work::Write, data.len()) {
         Went::Done => {}
-        Went::Killed(landed) => return Ended::Killed(Some((file, cut(landed)))),
+        Went::Killed(landed) => {
+            return Ended::Killed(Some((file, data.get(..landed).unwrap_or_default().to_vec())));
+        }
         Went::Failed(fault, _) => return failed(fault),
     }
-    if WHOLE_WRITES_SYNCED {
+    if durable {
         match model.begin(Work::Sync, 0) {
             Went::Done => {}
             Went::Killed(_) => return Ended::Killed(Some((file, data.to_vec()))),
@@ -454,7 +430,7 @@ fn whole(
     if let Some(target) = files.get_mut(file) {
         *target = Some(data.to_vec());
     }
-    if WHOLE_WRITES_SYNCED {
+    if durable {
         match model.begin(Work::Sync, 0) {
             Went::Done => {}
             Went::Killed(_) => return Ended::Killed(None),
@@ -591,8 +567,20 @@ fn rule_sets(plan: &Plan) -> Vec<Vec<Rule>> {
         .collect()
 }
 
-/// A fresh folder under `work`, holding each file's old text.
-fn fresh(work: &Path) -> Result<PathBuf, String> {
+/// The files a fresh folder holds beside its targets, as runs before left them: one by a run that's
+/// gone, which a run's first write into the folder clears, and one by a run still going, this
+/// one, which it never does (#2238).
+struct Seeded {
+    gone: String,
+    live: String,
+}
+
+/// What the file a run still going left holds.
+const LIVE: &[u8] = b"still being written";
+
+/// A fresh folder under `work`, holding each file's old text, and beside them what two earlier
+/// runs left.
+fn fresh(work: &Path) -> Result<(PathBuf, Seeded), String> {
     let folder = work.join("folder");
     let _ = std::fs::remove_dir_all(&folder);
     std::fs::create_dir_all(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
@@ -600,18 +588,44 @@ fn fresh(work: &Path) -> Result<PathBuf, String> {
         let file = folder.join(name);
         std::fs::write(&file, old).map_err(|err| format!("{}: {err}", file.display()))?;
     }
-    Ok(folder)
+    // A process number no process has: one that's just ended.
+    let gone = Command::new("true")
+        .spawn()
+        .and_then(|mut child| child.wait().map(|_| child.id()))
+        .map_err(|err| format!("couldn't run `true`: {err}"))?;
+    let seeded = Seeded {
+        gone: format!(".f.txt.{gone}.1.fennec-partial"),
+        live: format!(".g.txt.{}.1.fennec-partial", std::process::id()),
+    };
+    for (name, held) in [(&seeded.gone, b"left by a gone run".as_slice()), (&seeded.live, LIVE)] {
+        let file = folder.join(name);
+        std::fs::write(&file, held).map_err(|err| format!("{}: {err}", file.display()))?;
+    }
+    Ok((folder, seeded))
 }
 
 /// What a run left in `folder`: each file, and the file of a write's own beside one, named
-/// `.NAME.PID.N.fennec-partial`. Anything else there is a failure.
-fn found(folder: &Path, printed: Option<String>, killed: bool) -> Result<Left, String> {
+/// `.NAME.PID.N.fennec-partial`. The one a gone run left must be cleared, since every program
+/// writes into the folder, and the one a run still going left must be there as it was. Anything
+/// else there is a failure.
+fn found(folder: &Path, seeded: &Seeded, (printed, killed): (Option<String>, bool)) -> Result<Left, String> {
     let mut left = Left { printed, killed, files: [None, None], partial: None };
     let entries = std::fs::read_dir(folder).map_err(|err| format!("{}: {err}", folder.display()))?;
+    let mut live = false;
     for entry in entries {
         let entry = entry.map_err(|err| err.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let held = std::fs::read(entry.path()).map_err(|err| format!("{name}: {err}"))?;
+        if name == seeded.gone {
+            return Err(format!("`{name}`, left by a run that's gone, wasn't cleared"));
+        }
+        if name == seeded.live {
+            if held != LIVE {
+                return Err(format!("`{name}`, left by a run still going, was changed"));
+            }
+            live = true;
+            continue;
+        }
         if let Some(file) = FILES.iter().position(|(each, _)| *each == name) {
             if let Some(slot) = left.files.get_mut(file) {
                 *slot = Some(held);
@@ -625,6 +639,9 @@ fn found(folder: &Path, printed: Option<String>, killed: bool) -> Result<Left, S
             (Some(file), None) => left.partial = Some((file, held)),
             _ => return Err(format!("the run left `{name}` too")),
         }
+    }
+    if !live {
+        return Err(format!("`{}`, left by a run still going, was cleared", seeded.live));
     }
     Ok(left)
 }
@@ -691,7 +708,7 @@ fn canary() -> Result<(), String> {
             for release in [false, true] {
                 let executable = crate::llvm::build_with(&faulted_fennec(), source, &work, release)?
                     .ok_or("LLVM doesn't take the canary")?;
-                let folder = fresh(&work)?;
+                let (folder, _) = fresh(&work)?;
                 let (printed, _, _) = ran(&executable, &work, &folder, &rule)?;
                 if printed != format!("failed {}\n", Fault::NoSpace.printed()) {
                     return Err(format!(
@@ -719,11 +736,11 @@ pub(crate) fn fault_writes(input: &[u8]) -> Result<(), String> {
         };
         for rules in &runs {
             let (wanted, _) = modelled(&plan, rules);
-            let folder = fresh(&work)?;
+            let (folder, seeded) = fresh(&work)?;
             let how = if release { "--release" } else { "a dev build" };
             let (printed, _, killed) = ran(&executable, &work, &folder, rules)
                 .map_err(|err| format!("{how}, {}: {err}\n{source}", spec(rules)))?;
-            let left = found(&folder, (!killed).then_some(printed), killed)
+            let left = found(&folder, &seeded, ((!killed).then_some(printed), killed))
                 .map_err(|err| format!("{how}, {}: {err}\n{source}", spec(rules)))?;
             if left != wanted {
                 return Err(format!(

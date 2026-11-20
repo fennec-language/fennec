@@ -124,16 +124,24 @@ fn only_what_could_have_been_freed_is_left_over() {
 /// A live run's lines go out as they're printed to a terminal. To a pipe or a file they go once
 /// 8 KB is kept, at the first line, or at a line printed 100 ms or more after the last write, and
 /// the clock is read only for that last, at the 1st, 2nd, 4th, 8th and so on line since the write.
+/// A recording's go at 8 KB only, and a host's are kept.
 #[test]
-fn a_live_runs_lines_are_written_when_due() {
+fn a_runs_lines_are_written_when_due() {
+    use super::Writes::{InTime, Kept, Lines, Sized};
     let moment = std::time::Duration::from_millis(1);
     let later = std::time::Duration::from_millis(100);
     let unread = || panic!("the clock isn't read here");
-    assert!(super::due(6, true, 3, unread), "a terminal's line goes out");
-    assert!(!super::due(6, false, 1, || Some(moment)), "a pipe's line a moment after the last write waits");
-    assert!(super::due(super::LIVE_OUTPUT, false, 3, unread), "8 KB goes out");
-    assert!(super::due(6, false, 1, || Some(later)), "a line 100 ms after the last write goes out");
-    assert!(super::due(6, false, 1, || None), "the first line goes out");
-    assert!(super::due(6, false, 8, || Some(later)), "so does the 8th since the write");
-    assert!(!super::due(6, false, 6, unread), "the 6th waits for the 8th");
+    let most = super::LIVE_OUTPUT;
+    assert!(super::due(Lines, 6, 3, unread), "a terminal's line goes out");
+    assert!(!super::due(InTime, 6, 1, || Some(moment)), "a pipe's line a moment after the last write waits");
+    assert!(super::due(InTime, most, 3, unread), "8 KB goes out");
+    assert!(super::due(InTime, 6, 1, || Some(later)), "a line 100 ms after the last write goes out");
+    assert!(super::due(InTime, 6, 1, || None), "the first line goes out");
+    assert!(super::due(InTime, 6, 8, || Some(later)), "so does the 8th since the write");
+    assert!(!super::due(InTime, 6, 6, unread), "the 6th waits for the 8th");
+    assert!(
+        !super::due(Sized, most - 1, 1, unread) && super::due(Sized, most, 1, unread),
+        "a recording's at 8 KB"
+    );
+    assert!(!super::due(Kept, most, 1, unread), "a host's are kept");
 }

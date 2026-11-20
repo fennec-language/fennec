@@ -229,9 +229,30 @@ impl Tables {
     }
 }
 
-/// Collects what the program prints.
+/// Collects what the program prints: what's kept, how it's written (`Writes`), and since when.
 #[derive(Clone, Default)]
-struct Output(Rc<RefCell<Vec<u8>>>, bool);
+struct Output(Rc<RefCell<Vec<u8>>>, Writes, Rc<Cell<Since>>);
+
+/// How a run writes what it prints, settled as it starts.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum Writes {
+    /// It's kept for the run's host, as a test's is, or a `parallel` range's, to come out whole.
+    #[default]
+    Kept,
+    /// A line at a time, to a terminal, where a person waits on each.
+    Lines,
+    /// To a pipe or a file: at 8 KB, or at a line once `OUTPUT_AGE` has gone since the last write.
+    InTime,
+    /// At 8 KB only, in a recording or a replay: see `Output::due`.
+    Sized,
+}
+
+/// When a run last wrote what it printed, if it has, and how many lines it has kept since.
+#[derive(Clone, Copy, Default)]
+struct Since {
+    written: Option<std::time::Instant>,
+    lines: u32,
+}
 
 thread_local! {
     /// Whether what's running here is a launched task of a program that writes as it goes. A
@@ -246,7 +267,8 @@ thread_local! {
 /// would see.
 #[cfg(any(test, feature = "threads"))]
 pub(in crate::embed) fn program_writes() -> bool {
-    TASK_WRITES.get() || OUTPUT.with_borrow(|output| output.as_ref().is_some_and(|output| output.1))
+    TASK_WRITES.get()
+        || OUTPUT.with_borrow(|output| output.as_ref().is_some_and(|output| output.1 != Writes::Kept))
 }
 
 /// Says whether what's about to run here writes as it goes, giving back what was.
@@ -262,19 +284,25 @@ const LIVE_OUTPUT: usize = 1 << 13;
 /// however little is kept, so a program killed loses only its last moment's lines.
 const OUTPUT_AGE: std::time::Duration = std::time::Duration::from_millis(100);
 
-thread_local! {
-    /// When this thread last wrote its output, if it has.
-    static WRITTEN_AT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
-    /// How many pieces ending a line this thread has kept since it last wrote its output.
-    static LINES_KEPT: Cell<u32> = const { Cell::new(0) };
+/// How a run that writes as it goes writes: a line at a time to a terminal, and in time to a pipe or
+/// a file. A recording and its replay break their output only at waits and at 8 KB, as before lines
+/// went out in time, whatever the clock or the terminal: a replay writes the bursts its recording
+/// logged, and one the clock broke off there would wait for bytes the replay keeps.
+fn live_writes() -> Writes {
+    if crate::replay::active() {
+        Writes::Sized
+    } else if to_terminal() {
+        Writes::Lines
+    } else {
+        Writes::InTime
+    }
 }
 
-/// Whether standard output is a terminal, where a person waits on each line.
+/// Whether standard output is a terminal.
 #[cfg(not(test))]
 fn to_terminal() -> bool {
     use std::io::IsTerminal;
-    static TERMINAL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::io::stdout().is_terminal());
-    *TERMINAL
+    std::io::stdout().is_terminal()
 }
 
 /// Tests write to `WRITTEN`, not to a terminal.
@@ -283,21 +311,27 @@ const fn to_terminal() -> bool {
     false
 }
 
-/// Whether a live run writes the lines it has kept, now that a piece ending one has come, the
-/// `lines`th since the last write: at once to a terminal, and to a pipe or a file once
-/// `LIVE_OUTPUT` bytes are kept or `OUTPUT_AGE` has gone since the last write. The clock is read
-/// only when the others haven't said yes, and only at the 1st, 2nd, 4th, 8th and so on line since
-/// the last write: read at every line, it cost a program printing a million short lines a fifth
-/// more instructions on macOS, and this way one printing fast reads it about ten times in 8 KB.
+/// Whether a run that `writes` so writes the lines it has kept, now that a piece ending one has
+/// come, the `lines`th since the last write. To a pipe or a file, that's once `LIVE_OUTPUT` bytes
+/// are kept, or once `OUTPUT_AGE` has gone since the last write. The clock is read only when 8 KB
+/// hasn't said yes, and only at the 1st, 2nd, 4th, 8th and so on line since the last write: read at
+/// every line, it cost a program printing a million short lines a fifth more instructions on macOS,
+/// and this way one printing fast reads it about ten times in 8 KB.
 fn due(
+    writes: Writes,
     kept: usize,
-    terminal: bool,
     lines: u32,
     since_written: impl FnOnce() -> Option<std::time::Duration>,
 ) -> bool {
-    terminal
-        || kept >= LIVE_OUTPUT
-        || (lines.is_power_of_two() && since_written().is_none_or(|since| since >= OUTPUT_AGE))
+    match writes {
+        Writes::Kept => false,
+        Writes::Lines => true,
+        Writes::Sized => kept >= LIVE_OUTPUT,
+        Writes::InTime => {
+            kept >= LIVE_OUTPUT
+                || (lines.is_power_of_two() && since_written().is_none_or(|since| since >= OUTPUT_AGE))
+        }
+    }
 }
 
 impl Output {
@@ -307,26 +341,21 @@ impl Output {
         let mut kept = self.0.borrow_mut();
         write_whole(kept.get(..length).unwrap_or_default())?;
         kept.drain(..length);
-        WRITTEN_AT.set(Some(std::time::Instant::now()));
-        LINES_KEPT.set(0);
+        self.2.set(Since { written: Some(std::time::Instant::now()), lines: 0 });
         Ok(())
     }
 
-    /// Whether this run writes the `kept` bytes' lines now (`due`), if it writes as it goes. A
-    /// recording's output breaks only at waits and at 8 KB kept by the program itself, as before
-    /// lines went out in time, whatever the clock or the terminal: its replay writes the bursts the
-    /// recording logged, and one the clock broke off there would wait for bytes the replay keeps.
+    /// Whether this run writes the `kept` bytes' lines now (`due`). A launched task of a run that
+    /// writes as it goes writes as the run does, but as before in a recording: only at waits.
     fn due(&self, kept: usize) -> bool {
-        if crate::replay::active() {
-            return self.1 && kept >= LIVE_OUTPUT;
-        }
-        if !self.1 && !TASK_WRITES.get() {
-            return false;
-        }
-        let lines = LINES_KEPT.get().saturating_add(1);
-        LINES_KEPT.set(lines);
-        let since_written = || WRITTEN_AT.get().map(|written| written.elapsed());
-        due(kept, to_terminal(), lines, since_written)
+        let writes = match self.1 {
+            Writes::Kept if TASK_WRITES.get() && !crate::replay::active() => live_writes(),
+            writes => writes,
+        };
+        let mut since = self.2.get();
+        since.lines = since.lines.saturating_add(1);
+        self.2.set(since);
+        due(writes, kept, since.lines, || since.written.map(|written| written.elapsed()))
     }
 }
 
@@ -374,9 +403,9 @@ impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0.borrow_mut().extend_from_slice(bytes);
         let kept = self.0.borrow().len();
-        // Only a piece with a line's end in it finishes a line, so the clock is read once a line,
-        // not once a piece. 8 KB kept writes the lines before it as well.
-        let may_write = kept >= LIVE_OUTPUT || bytes.contains(&b'\n');
+        // A print's last piece ends its line, so whether to write is asked once a line, not once a
+        // piece, and only of its last byte. 8 KB kept writes the lines before it as well.
+        let may_write = kept >= LIVE_OUTPUT || bytes.last() == Some(&b'\n');
         if may_write && self.due(kept) {
             let lines = self.0.borrow().iter().rposition(|byte| *byte == b'\n');
             if let Some(last) = lines {
@@ -388,7 +417,7 @@ impl Write for Output {
 
     /// Writes what a live run has kept. Any other run's output stays for its host.
     fn flush(&mut self) -> std::io::Result<()> {
-        if !self.1 && !TASK_WRITES.get() {
+        if self.1 == Writes::Kept && !TASK_WRITES.get() {
             return Ok(());
         }
         let length = self.0.borrow().len();
@@ -659,7 +688,8 @@ fn capability(kind: i64) -> Capability {
 /// Sets up the runtime to run a program with `tables` and `inputs`, replacing any earlier run's.
 pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     let crate::Inputs { program, arguments, live, .. } = inputs;
-    let output = Output(Rc::default(), live);
+    let writes = if live { live_writes() } else { Writes::Kept };
+    let output = Output(Rc::default(), writes, Rc::default());
     OUTPUT.set(Some(output.clone()));
     #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();

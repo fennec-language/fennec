@@ -15,6 +15,18 @@ fn only_the_standard_library_has_intrinsics() {
     );
 }
 
+/// A method an `extend` adds has its annotations, as a type's own methods do: a program's can be
+/// `@hot`, and only std's can be `@intrinsic`.
+#[test]
+fn an_extensions_method_has_its_annotations_checked() {
+    let program = "struct Point:\n    x = 0\n\nextend Point:\n    @hot\n    def moved(self) -> int:\n        return self.x + 1\n";
+    assert_eq!(problems_as_written(program), Vec::<String>::new());
+    assert_eq!(
+        problems_as_written(&program.replace("@hot", "@intrinsic")),
+        ["only the standard library has `@intrinsic` functions @ @intrinsic"]
+    );
+}
+
 #[test]
 fn a_def_without_a_body_needs_one() {
     assert_eq!(

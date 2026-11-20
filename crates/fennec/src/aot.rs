@@ -149,6 +149,26 @@ pub(crate) fn main_reaches(module: &fennec_syntax::Module) -> fennec_syntax::Mod
 /// Whether `--cpu baseline` asked for code any machine of its architecture runs.
 pub(crate) static BASELINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// What the daemon's last build loaded, for its next build to use again: each file's parse, and
+/// its rewriting of names across files (`fennec_kit::load_keeping`). Only the daemon keeps one,
+/// from when it starts: a command building in its own process loads once.
+pub(crate) static KEPT_LOAD: std::sync::Mutex<Option<fennec_kit::KeptLoad>> = std::sync::Mutex::new(None);
+
+/// Loads a program to build, as `crate::load` does, using what the daemon's last build kept.
+/// A dev build compares one kept load in 8 with loading it all again.
+fn load_to_build(path: &str) -> Option<fennec_kit::Program> {
+    let mut kept = KEPT_LOAD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(kept) = kept.as_mut() else { return crate::load(path, fennec_kit::Entry::Main) };
+    let compare = fennec_kit::Compare::InDevBuilds;
+    match fennec_kit::load_keeping(Path::new(path), path, fennec_kit::Entry::Main, kept, compare) {
+        Ok(program) => Some(program),
+        Err(problems) => {
+            eprint!("{}", problems.render());
+            None
+        }
+    }
+}
+
 /// `fennec build`: a native program through LLVM, which says what it can't take yet rather than
 /// falling back to anything. `--release` optimizes the whole program as one.
 pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> ExitCode {
@@ -161,7 +181,7 @@ pub(crate) fn build_kept(
     output: Option<&str>,
     release: bool,
 ) -> Result<(fennec_kit::Program, Built), ExitCode> {
-    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return Err(ExitCode::FAILURE) };
+    let Some(mut program) = load_to_build(path) else { return Err(ExitCode::FAILURE) };
     // A build the daemon runs for a command that has gone stops between its steps.
     if fennec_build::cancelled() {
         return Err(ExitCode::FAILURE);

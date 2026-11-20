@@ -38,9 +38,11 @@
 # Resident memory may rise by SOAK_RSS_RISE percent, 5 unless set, or SOAK_RSS_LEAST KB, 4 MB
 # unless set, whichever is more. It was 10% or 16 MB, which let web_backend in a task rise 6 MB over
 # the hour and pass: its tables' empty pages, held until a first look half an hour in (#2156). A
-# server's memory should level off within the warm-up. game_server's job keeps 10% or 16 MB until
-# #2158, its own rise in a task, is fixed: its floor swings by megabytes as its caches fill and
-# empty.
+# server's memory should level off within the warm-up. game_server's job may rise 10% or 8 MB: in
+# a task its four workers' allocator heaps hold freed memory they give back only when they next
+# allocate, so its resident memory wanders within a band about 9 MB wide, 74 to 83 MB, for hours,
+# with nothing live rising (#2158). An hour's window has caught it rising as much as 6 MB, which
+# three hours later came back down.
 set -u
 fennec=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 program=$2

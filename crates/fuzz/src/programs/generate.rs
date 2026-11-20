@@ -92,8 +92,8 @@ const LOCKED_AGAINST_MADE_ORDER: bool = true;
 const ARRAYS: bool = true;
 
 /// Whether an `Arrayed` statement changes a field of an optional struct in an array once
-/// `is not None` narrows it. A built program can't yet: it isn't lowered (#2255).
-pub(super) const NARROWED_FIELD_WRITES: bool = false;
+/// `is not None` narrows it, in a `for ref` over the array. On since #2266 lowered it (#2255).
+pub(super) const NARROWED_FIELD_WRITES: bool = true;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled

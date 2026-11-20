@@ -81,9 +81,8 @@ const INTERFACES: bool = true;
 const LOCKED_TOGETHER: bool = true;
 
 /// Whether a `LockedTogether` statement's `lock` may name its two values against the order they
-/// were made. A crash there leaves their lists reading as `None` after the rollback (#2223), so
-/// it's off until that's fixed.
-const LOCKED_AGAINST_MADE_ORDER: bool = false;
+/// were made. A crash there once left their lists reading as `None` after the rollback (#2223).
+const LOCKED_AGAINST_MADE_ORDER: bool = true;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled

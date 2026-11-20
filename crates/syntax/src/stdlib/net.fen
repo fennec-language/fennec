@@ -14,7 +14,7 @@
 
 from std import json
 from std.crypto import Secret
-from std.intrinsics import bytes_builder, bytes_push_bytes, stop, text_byte, text_part, text_same_at, text_size
+from std.intrinsics import stop, text_byte, text_part, text_same_at, text_size
 from std.url import decode_query, unquote
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
@@ -537,6 +537,32 @@ def answer_all(
                 connection.close()
                 return
 
+## What reading a request's body came to: the body, or the status and reason to refuse it with.
+enum BodyRead:
+    Read(body: bytes)
+    Refused(status: int, reason: str)
+
+## A request's body, as long as its `content-length`, `written`, says. It's read whole into room
+## made once at its size, after taking its share of the room every server's bodies have: past
+## 256 MiB held at once it's refused unread, so many clients each sending a big body at once can't
+## take the program's memory.
+def read_body(connection: Connection, written: str, timeout: Duration) -> BodyRead fails NetError:
+    if not only_digits(written):
+        return .Refused(status=400, reason="the content length isn't a number")
+    length = int(written) except InvalidValue(): return .Refused(
+        status=400,
+        reason="the content length isn't a number",
+    )
+    if length > MOST_BODY: return .Refused(status=413, reason="the body is too big")
+    if not connection._room_for_body(length):
+        return .Refused(
+            status=503,
+            reason="the server is reading as many bodies as it holds at once: try again",
+        )
+    body = connection._body(length, timeout=timeout)?
+    if len(body) < length: return .Refused(status=400, reason="the body ended early")
+    return .Read(body=body)
+
 ## The runtime's words for a line it won't read: one too long, and one ended by a bare line feed.
 LONG_LINE = "a line was longer than 1048576 bytes"
 BARE_LINE_FEED = "a line ended without a carriage return"
@@ -661,22 +687,11 @@ def read_request(
         return .Bad(status=501, reason="chunked bodies aren't taken yet")
     mut body = bytes([])
     if sent_length is not None:
-        written = sent_length
-        if not only_digits(written):
-            return .Bad(status=400, reason="the content length isn't a number")
-        length = int(written) except InvalidValue(): return .Bad(
-            status=400,
-            reason="the content length isn't a number",
-        )
-        if length > MOST_BODY: return .Bad(status=413, reason="the body is too big")
-        # Each piece goes into a builder with room to grow, so a body read in many pieces is
-        # copied about once, where joining them with `+` copied all of it again for each.
-        mut built = bytes_builder()
-        while len(built) < length:
-            more = connection.read(length - len(built), timeout=timeout)?
-            if len(more) == 0: return .Bad(status=400, reason="the body ended early")
-            bytes_push_bytes(ref built, more)
-        body = built[0:len(built)]
+        match read_body(connection, sent_length, timeout)?:
+            case .Read(read):
+                body = read
+            case .Refused(status, reason):
+                return .Bad(status=status, reason=reason)
     if host is not None:
         headers["host"] = host
     version = parts[2]

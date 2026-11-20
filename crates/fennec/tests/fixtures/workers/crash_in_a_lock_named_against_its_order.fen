@@ -1,0 +1,129 @@
+from std.concurrent import Crashed
+
+error Refused:
+    Declined(why: str)
+
+struct Account:
+    total: int
+    moves: list[int]
+    nested: list[list[int]]
+    tags: dict[str, list[int]]
+
+def account(total: int, first: int) -> Account:
+    return Account(
+        total=total,
+        moves=[first],
+        nested=[[first], [first, first]],
+        tags={"t": [first]},
+    )
+
+def crash_against(first: shared Account, second: shared Account):
+    lock second, first as ref other, ref held:
+        held.total += 1
+        held.moves.append(1)
+        held.nested[1].append(2)
+        held.tags["t"] = [3]
+        held.tags["u"] = [4]
+        other.total -= 1
+        other.moves.append(5)
+        other.nested[0][0] = 6
+        _ = held.moves[99]
+
+def crash_in_order(first: shared Account, second: shared Account):
+    lock first, second as ref held, ref other:
+        held.total += 1
+        held.moves.append(1)
+        held.nested[1].append(2)
+        held.tags["t"] = [3]
+        other.total -= 1
+        other.moves.append(5)
+        other.tags["v"] = [6]
+        _ = other.moves[99]
+
+def fail_against(first: shared Account, second: shared Account) fails Refused:
+    lock second, first as ref other, ref held:
+        held.total += 1
+        held.moves.append(1)
+        held.nested[0].append(2)
+        other.total -= 1
+        other.tags["t"] = [5]
+        fail .Declined(why="refused")
+
+def crash_by_key(accounts: dict[str, shared Account]):
+    lock accounts["b"], accounts["a"] as ref later, ref earlier:
+        earlier.total += 1
+        earlier.moves.append(1)
+        later.nested[1][1] = 9
+        later.tags["t"] = [9]
+        _ = earlier.moves[99]
+
+def crash_untouched(first: shared Account, second: shared Account):
+    lock second, first as ref other, ref held:
+        held.total += 1
+        _ = held.moves[99]
+
+def launched_untouched(first: shared Account, second: shared Account) fails Crashed:
+    with launch(() => crash_untouched(first=first, second=second)):
+        pass
+
+def crash_one_read(first: shared Account, second: shared Account):
+    lock second, first as other, ref held:
+        held.total += other.total
+        held.moves.append(other.moves[0])
+        held.tags["w"] = [other.total]
+        _ = held.moves[99]
+
+def launched_one_read(first: shared Account, second: shared Account) fails Crashed:
+    with launch(() => crash_one_read(first=first, second=second)):
+        pass
+
+def launched_against(first: shared Account, second: shared Account) fails Crashed:
+    with launch(() => crash_against(first=first, second=second)):
+        pass
+
+def launched_in_order(first: shared Account, second: shared Account) fails Crashed:
+    with launch(() => crash_in_order(first=first, second=second)):
+        pass
+
+def launched_by_key(accounts: dict[str, shared Account]) fails Crashed:
+    with launch(() => crash_by_key(accounts)):
+        pass
+
+def show(stdout: Stdout, first: shared Account, second: shared Account):
+    lock first as held:
+        stdout.print(held.total, held.moves, held.nested, held.tags)
+    lock second as held:
+        stdout.print(held.total, held.moves, held.nested, held.tags)
+
+def main(stdout: Stdout):
+    shared first_against = account(total=10, first=7)
+    shared second_against = account(total=5, first=8)
+    launched_against(first=first_against, second=second_against) except Crashed():
+        stdout.print("crashed, named against their order")
+    show(stdout, first=first_against, second=second_against)
+    shared first_in_order = account(total=10, first=7)
+    shared second_in_order = account(total=5, first=8)
+    launched_in_order(first=first_in_order, second=second_in_order) except Crashed():
+        stdout.print("crashed, named in their order")
+    show(stdout, first=first_in_order, second=second_in_order)
+    shared first_failing = account(total=10, first=7)
+    shared second_failing = account(total=5, first=8)
+    fail_against(first=first_failing, second=second_failing) except why:
+        stdout.print("failed", why)
+    show(stdout, first=first_failing, second=second_failing)
+    shared first_by_key = account(total=10, first=7)
+    shared second_by_key = account(total=5, first=8)
+    launched_by_key({"a": first_by_key, "b": second_by_key}) except Crashed():
+        stdout.print("crashed, by key")
+    show(stdout, first=first_by_key, second=second_by_key)
+    shared first_untouched = account(total=10, first=7)
+    shared second_untouched = account(total=5, first=8)
+    launched_untouched(first=first_untouched, second=second_untouched) except Crashed():
+        stdout.print("crashed, against their order, their lists untouched")
+    show(stdout, first=first_untouched, second=second_untouched)
+    shared first_reading = account(total=10, first=7)
+    shared second_reading = account(total=5, first=8)
+    launched_one_read(first=first_reading, second=second_reading) except Crashed():
+        stdout.print("crashed, against their order, one held to read")
+    show(stdout, first=first_reading, second=second_reading)
+    return

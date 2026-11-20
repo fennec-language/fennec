@@ -32,7 +32,7 @@ use crate::analysis::Analysis;
 use crate::keys::Key;
 
 /// What an analysis asked of the rest of the program, and what it was told.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Asked {
     /// Which of a callee's parameters it changes.
     Changes(String, Vec<usize>),
@@ -91,20 +91,17 @@ pub(crate) struct Keeping {
 
 /// What was asked of the program for one analysis, as it's worked out.
 pub(crate) struct Asking {
-    asked: RefCell<Vec<Asked>>,
+    asked: RefCell<std::collections::HashSet<Asked>>,
 }
 
 impl Asking {
     pub(crate) fn new() -> Self {
-        Asking { asked: RefCell::new(Vec::new()) }
+        Asking { asked: RefCell::new(std::collections::HashSet::new()) }
     }
 
     // Each ask is noted once, however often it's made: an analysis asks of a callee at every call.
     fn note(&self, asked: Asked) {
-        let mut noted = self.asked.borrow_mut();
-        if !noted.contains(&asked) {
-            noted.push(asked);
-        }
+        self.asked.borrow_mut().insert(asked);
     }
 
     pub(crate) fn changes(&self, callee: &str, told: &[usize]) {
@@ -246,7 +243,7 @@ impl Keeping {
 
 impl Asking {
     pub(crate) fn into_asked(self) -> Vec<Asked> {
-        self.asked.into_inner()
+        self.asked.into_inner().into_iter().collect()
     }
 }
 
@@ -269,7 +266,8 @@ pub fn analyses_kept_and_checked(
     let keeping = Keeping { checks_all: true, ..Keeping::from(kept.0.take()) };
     let (_, differ) = crate::analysis::whole_keeping(program, &keeping);
     let used_again = keeping.used_again();
-    kept.0 = Some(keeping.into_kept());
+    // As a build does: what was found wrong isn't handed on.
+    kept.0 = differ.is_empty().then(|| keeping.into_kept());
     (differ, used_again)
 }
 
@@ -296,4 +294,32 @@ pub fn analyses_used_again() -> (usize, usize) {
 pub(crate) fn compares(inputs: u64) -> bool {
     std::env::var("FENNEC_CHECK_WHOLE").as_deref() == Ok("1")
         || (cfg!(debug_assertions) && inputs.is_multiple_of(8))
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    /// A kept analysis the check finds isn't what analyzing again gives is handed to no later build:
+    /// the next works every analysis out afresh.
+    #[test]
+    fn an_analysis_found_wrong_is_kept_for_no_later_build() -> Result<(), String> {
+        let text = "def doubled(count: int) -> int:\n    return count * 2\n\ndef listed(count: int) -> int:\n    return [5, 6, 7][count]\n\ndef main(stdout: Stdout):\n    stdout.print(doubled(2), listed(1))\n    return\n";
+        let mut module = fennec_syntax::parse(text).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let mut kept = KeptForNext::default();
+        let (differ, used) = analyses_kept_and_checked(&program, &mut kept);
+        assert_eq!((differ.len(), used), (0, 0));
+        // `listed`'s analysis swapped for `doubled`'s, as a mistake in what's compared would leave it.
+        let store = kept.0.as_mut().ok_or("nothing kept")?;
+        let doubled =
+            store.by_function.get("doubled").map(|kept| Arc::clone(&kept.analysis)).ok_or("no `doubled`")?;
+        store.by_function.get_mut("listed").ok_or("no `listed`")?.analysis = doubled;
+        let (differ, _) = analyses_kept_and_checked(&program, &mut kept);
+        assert_eq!(differ, ["listed"]);
+        let (differ, used) = analyses_kept_and_checked(&program, &mut kept);
+        assert_eq!((differ.len(), used), (0, 0), "the build after one found wrong used what was kept");
+        Ok(())
+    }
 }

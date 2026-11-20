@@ -4817,7 +4817,11 @@ pub(crate) fn whole_kept(program: &Program) -> (Whole<'_>, Vec<String>) {
     let keeping = crate::kept::Keeping::start();
     let found = whole_keeping(program, &keeping);
     crate::kept::note_used_again(keeping.used_again(), found.0.analyses.len());
-    keeping.finish();
+    // A kept analysis that analyzing again doesn't give: nothing is handed on, the wrong one least
+    // of all, so the build after this one works every analysis out.
+    if found.1.is_empty() {
+        keeping.finish();
+    }
     found
 }
 

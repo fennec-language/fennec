@@ -192,7 +192,7 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
 fn list_method(item: &Type, name: &str) -> Option<Method> {
     let item = item.clone();
     Some(match name {
-        "append" | "remove" => changes(&[item], Type::Unit),
+        "append" => changes(&[item], Type::Unit),
         "insert" => changes(&[Type::Int, item], Type::Unit),
         "clear" => changes(&[], Type::Unit),
         "remove_where" => changes(&[], Type::Unit).receiving(&item).any_args(),
@@ -220,7 +220,7 @@ fn buffer_method(item: &Type, name: &str) -> Option<Method> {
 
 fn set_method(item: &Type, name: &str) -> Option<Method> {
     Some(match name {
-        "add" | "discard" | "remove" => changes(std::slice::from_ref(item), Type::Unit),
+        "add" | "discard" => changes(std::slice::from_ref(item), Type::Unit),
         "clear" => changes(&[], Type::Unit),
         _ => return None,
     })

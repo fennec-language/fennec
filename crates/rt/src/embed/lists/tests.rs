@@ -146,9 +146,11 @@ fn a_struct_item_handed_over_as_a_block_is_found_by_its_fields() {
     let wanted = with(|state| Some(state.push(unit("medic", 2)))).unwrap();
     let wanted = heap::from_value(wanted, 0, 0, 0);
     assert_eq!(super::contains(all, wanted), 1);
-    super::remove(all, wanted, 0, 0);
-    assert_eq!(read(all), Value::list(vec![unit("archer", 1), unit("soldier", 3)]));
-    assert_eq!(super::contains(all, wanted), 0);
+    // One whose fields differ from every item's in one of them isn't found.
+    let other = with(|state| Some(state.push(unit("medic", 9)))).unwrap();
+    let other = heap::from_value(other, 0, 0, 0);
+    assert_eq!(super::contains(all, other), 0);
+    heap::free(other);
     heap::free(wanted);
     heap::free(all);
     assert_eq!(live(), before);

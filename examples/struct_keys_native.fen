@@ -81,7 +81,7 @@ def main(stdout: Stdout):
     marks.add(Cell(x=3, y=3))
     marks.discard(Cell(x=2, y=2))
     marks.discard(Cell(x=9, y=9))
-    marks.remove(Cell(x=3, y=3))
+    marks.discard(Cell(x=3, y=3))
     stdout.print(marks, len(marks), Cell(x=1, y=1) in marks, Cell(x=3, y=3) in marks)
     made = {Cell(x=i % 3, y=0) for i in range(10)}
     stdout.print(len(made), sorted([cell.x for cell in made]))
@@ -90,7 +90,7 @@ def main(stdout: Stdout):
     visit(ref grid, Cell(x=1, y=0))
     visit(ref grid, Cell(x=1, y=0))
     grid.seen[Cell(x=5, y=5)] = 50
-    grid.marks.remove(Cell(x=0, y=0))
+    grid.marks.discard(Cell(x=0, y=0))
     stdout.print(grid, (grid.seen.get(Cell(x=1, y=0)) else 0))
 
     mut large: dict[Cell, int] = {}

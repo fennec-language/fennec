@@ -163,7 +163,7 @@ fn each_way_a_length_can_change_drops_what_was_known() {
         (false, "extra = xs.pop() else 0"),
         (false, "xs.clear()"),
         (false, "xs.insert(0, 9)"),
-        (false, "xs.remove(0)"),
+        (false, "_ = xs.remove(0)"),
         (false, "xs.remove_where((x) => x > 2)"),
         (false, "xs = xs + ys"),
         (false, "xs += [1]"),

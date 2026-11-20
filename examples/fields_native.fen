@@ -121,7 +121,7 @@ def main(stdout: Stdout):
     last = bag.items.pop() else return
     stdout.print(bag.numbers.pop(), bag.numbers, last.id, len(bag.items))
     bag.numbers.insert(0, 42)
-    bag.numbers.remove(8)
+    bag.numbers.discard(8)
     bag.numbers.sort()
     stdout.print(bag.numbers, sorted(bag.numbers), 42 in bag.numbers, "a" in bag.counts)
     bag.numbers.remove_where((n) => n > 40)

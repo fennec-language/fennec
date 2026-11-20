@@ -1,0 +1,9 @@
+source 41d00ef30adb80cd0c55847c6a461fbb1f5125fe33bb169070ba0d61b50f1783
+code 1
+stdout 0
+stderr 127
+error: index 2 is out of range for length 1
+ --> <dir>/pop_missing.fen:3:9
+  |
+3 |     _ = some.pop(2)
+  |         ^^^^^^^^^^^

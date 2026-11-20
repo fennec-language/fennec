@@ -39,9 +39,9 @@ def built_in_interfaces() -> list[str]:
 def built_in_types() -> list[str]:
     return [
         "int", "float", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool",
-        "str", "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList", "Iterator",
-        "set", "dict", "tuple", "Id", "Table", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process",
-        "Entropy", "Net", "Env", "Result", "->",
+        "str", "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList", "Buffer",
+        "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Stderr", "Fs", "Clock", "Args",
+        "Stdin", "Process", "Entropy", "Net", "Env", "Signals", "Result", "->",
     ]
 
 ## Every declaration in a program, keyed the way the signature table is: `name` for a

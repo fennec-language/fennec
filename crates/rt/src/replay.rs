@@ -300,12 +300,12 @@ fn end_turn(player: &Mutex<Player>, place: &str, what: &str) {
         && player.deadlock.is_some()
         && player.past.is_none()
     {
-        player.past = Some(format!(
+        player.past = Some(diverged(format!(
             "this replay's `{} {what}` at {place} went through past where its recording ended in a \
              deadlock, where it only waited, so it isn't the run that was recorded: something it \
              depends on wasn't recorded, or the program has changed",
             running()
-        ));
+        )));
     }
 }
 
@@ -319,7 +319,45 @@ const TURN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 /// diverged, and says so.
 pub(crate) fn turn(place: Option<&str>, what: &str) -> Result<Option<i64>, String> {
     let (Some(place), Mode::Replay(player)) = (place, mode()) else { return Ok(None) };
-    turn_in(player, (place, what, false), TURN_PATIENCE, crate::embed::make_way).map(Some)
+    followed(player, place, what, false)
+}
+
+/// [`turn_in`] for [`turn`] and [`turn_to_wait`] (`waits`), noting a divergence (`diverged`).
+fn followed(player: &Mutex<Player>, place: &str, what: &str, waits: bool) -> Result<Option<i64>, String> {
+    // Past where it couldn't follow, no turn is anyone's: each task waiting for one would wait out
+    // its patience, crash, and leave cleanups that don't follow either.
+    if let Some(first) = divergence() {
+        return Err(first.to_owned());
+    }
+    turn_in(player, (place, what, waits), TURN_PATIENCE, crate::embed::make_way).map(Some).map_err(|why| {
+        // Another task's turn was next there: the replay can't follow its recording. A place with
+        // nothing more for it, as a round cancelled at its end asks for, is said as it was.
+        let others = player
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .streams
+            .get(place)
+            .is_some_and(|stream| !stream.is_empty());
+        if others { diverged(why) } else { why }
+    })
+}
+
+/// Where a replay first couldn't follow its recording at a place where tasks meet, once it's found
+/// it: a task waited out its patience for its turn while the recording had another's next. What
+/// goes wrong after, like a task's cleanup asking for other calls than its recording's, comes of
+/// it, and isn't what the replay says.
+static DIVERGED: OnceLock<String> = OnceLock::new();
+
+/// Notes `why` as where the replay couldn't follow its recording, if it's the first, and gives it
+/// back.
+fn diverged(why: String) -> String {
+    let _ = DIVERGED.set(why.clone());
+    why
+}
+
+/// Where the replay first couldn't follow its recording, if it's found one.
+pub fn divergence() -> Option<&'static str> {
+    DIVERGED.get().map(String::as_str)
 }
 
 /// `turn`, for a wait, a channel's send or receive: in a replay of a run that deadlocked, one the
@@ -327,7 +365,7 @@ pub(crate) fn turn(place: Option<&str>, what: &str) -> Result<Option<i64>, Strin
 /// wait.
 pub(crate) fn turn_to_wait(place: Option<&str>, what: &str) -> Result<Option<i64>, String> {
     let (Some(place), Mode::Replay(player)) = (place, mode()) else { return Ok(None) };
-    turn_in(player, (place, what, true), TURN_PATIENCE, crate::embed::make_way).map(Some)
+    followed(player, place, what, true)
 }
 
 /// Waits for the running task's turn to do `what` at `place` in `player`'s log, calling `make_way`
@@ -601,7 +639,9 @@ pub(crate) fn deadlocked(lines: &[String], said: &str) -> Result<Option<String>,
             log(file, "0", DEADLOCK, format!("{}\n\n{said}", lines.join("\n")).as_bytes());
             Ok(None)
         }
-        Mode::Replay(player) => deadlocked_in(&player.lock().unwrap_or_else(PoisonError::into_inner), lines),
+        Mode::Replay(player) => {
+            deadlocked_in(&player.lock().unwrap_or_else(PoisonError::into_inner), lines).map_err(diverged)
+        }
     }
 }
 

@@ -332,7 +332,70 @@ fn parse_module(name: &str, source: &str) -> Result<crate::Module, crate::Diagno
         crate::Diagnostic { message, ..problem }
     })?;
     crate::rename::discards_apart(&mut module);
+    if name != "intrinsics" {
+        without_engine_declarations(&mut module);
+    }
     Ok(module)
+}
+
+/// Whether a function or method is declared `@intrinsic`.
+fn declared_intrinsic(def: &crate::FnDef) -> bool {
+    def.annotations.iter().any(|annotation| annotation.name == "intrinsic")
+}
+
+/// Takes out what a file other than `std.intrinsics` declares `@intrinsic`: a method or function
+/// the engines provide, which the checker knows from its own table. Its declaration is there for
+/// its signature and its doc, which tools read from the file (`engine_declarations`), and is held
+/// to the checker's table by a test. An `extend` left with no methods goes too, since it may be of
+/// a type only the engines have, like `Clock`. `std.intrinsics`' own functions stay: they're the
+/// machine operations std's code calls.
+fn without_engine_declarations(module: &mut crate::Module) {
+    module.items.retain_mut(|item| match item {
+        Item::Function(def) => !declared_intrinsic(def),
+        Item::Extend(extension) => {
+            extension.methods.retain(|method| !declared_intrinsic(method));
+            !extension.methods.is_empty()
+        }
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+            def.methods.retain(|method| !declared_intrinsic(method));
+            true
+        }
+        _ => true,
+    });
+}
+
+/// A method or function the engines provide, as std declares it with `@intrinsic` outside
+/// `std.intrinsics`.
+#[derive(Clone, Debug)]
+pub struct EngineDeclaration {
+    /// The file it's in, like `str` or `fs`.
+    pub file: &'static str,
+    /// The type a method is of, as its `extend` or declaration names it, and that type's
+    /// parameters, like `list` and `T`. `None` for a module's function.
+    pub owner: Option<(String, Vec<crate::Generic>)>,
+    pub def: crate::FnDef,
+}
+
+/// Every method and function the engines provide that std declares, read from its files, since
+/// the library the compiler loads leaves them out.
+pub fn engine_declarations() -> Result<Vec<EngineDeclaration>, crate::Diagnostic> {
+    let mut declared = Vec::new();
+    for (file, source) in prelude_files().filter(|(file, _)| *file != "intrinsics") {
+        for item in crate::parser::parse_prelude(source)?.items {
+            let (owner, methods) = match item {
+                Item::Function(def) => (None, vec![def]),
+                Item::Extend(extension) => (Some((extension.name, extension.generics)), extension.methods),
+                Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                    (Some((def.name, def.generics)), def.methods)
+                }
+                _ => continue,
+            };
+            for def in methods.into_iter().filter(declared_intrinsic) {
+                declared.push(EngineDeclaration { file, owner: owner.clone(), def });
+            }
+        }
+    }
+    Ok(declared)
 }
 
 /// Gives each module's top-level functions and constants the name `module.name`, which no one can

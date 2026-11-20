@@ -451,6 +451,7 @@ fn outside_a_recording_the_lock_hooks_do_nothing() {
     assert_eq!(crate::embed::FLAGS.with(|flags| flags.replaying.get()), 0);
     replay_lock(0, 1);
     replay_locked(0, 1);
+    replay_unlocked(0, 1);
     assert!(!crate::embed::failed());
 }
 

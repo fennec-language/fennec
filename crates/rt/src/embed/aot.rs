@@ -508,6 +508,50 @@ fn report(output: &[u8], failure: &str) -> i32 {
     code
 }
 
+/// The program has run out of memory: an allocation of `size` bytes failed, which the runtime's
+/// allocator says here rather than in Rust's words with a core dump (runtime exhaustion audit,
+/// 2026-11-20). What this thread printed and kept goes out first, as for a crash, then the stop is
+/// said, and the program ends with 1. Nothing here allocates but writing the kept output, which
+/// may: an allocation failing there comes back here, and then only the words are said.
+pub fn out_of_memory(size: usize) -> ! {
+    static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !ONCE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        super::write_kept_output_if_free();
+        let _ = std::io::stdout().flush();
+    }
+    let mut line = [0_u8; 96];
+    let length = out_of_memory_said(size, &mut line);
+    let _ = std::io::stderr().write_all(line.get(..length).unwrap_or_default());
+    end_at_once(1)
+}
+
+/// Writes `error: out of memory: couldn't get SIZE bytes` and a line break into `line`, without
+/// allocating, and gives its length.
+fn out_of_memory_said(size: usize, line: &mut [u8; 96]) -> usize {
+    let (start, end) = (b"error: out of memory: couldn't get ".as_slice(), b" bytes\n".as_slice());
+    let mut digits = [0_u8; 20];
+    let mut at = digits.len();
+    let mut left = size;
+    loop {
+        at -= 1;
+        if let Some(digit) = digits.get_mut(at) {
+            *digit = b'0' + u8::try_from(left % 10).unwrap_or(0);
+        }
+        left /= 10;
+        if left == 0 || at == 0 {
+            break;
+        }
+    }
+    let mut length = 0;
+    for byte in start.iter().chain(digits.get(at..).unwrap_or_default()).chain(end) {
+        if let Some(slot) = line.get_mut(length) {
+            *slot = *byte;
+            length += 1;
+        }
+    }
+    length
+}
+
 /// The exit code of a run whose heap audit found something wrong, or that was asked to audit and
 /// couldn't.
 const AUDIT_EXIT_CODE: i32 = 87;
@@ -677,6 +721,20 @@ pub extern "C" fn literal(at: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// Running out of memory is said without allocating, with every digit of the size.
+    #[test]
+    fn running_out_of_memory_is_said_with_its_size() {
+        for (size, said) in [
+            (0, "error: out of memory: couldn't get 0 bytes\n"),
+            (2_147_483_696, "error: out of memory: couldn't get 2147483696 bytes\n"),
+            (usize::MAX, "error: out of memory: couldn't get 18446744073709551615 bytes\n"),
+        ] {
+            let mut line = [0_u8; 96];
+            let length = super::out_of_memory_said(size, &mut line);
+            assert_eq!(std::str::from_utf8(&line[..length]), Ok(said));
+        }
+    }
+
     /// A native block made and not freed is one left held, wherever it was made, and none is once
     /// it's freed: what `live` adds to the runtime's own blocks.
     #[test]

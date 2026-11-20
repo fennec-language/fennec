@@ -199,7 +199,51 @@ const fn same(a: &[u8], b: &[u8]) -> bool {
 /// for an address sanitizer to watch.
 #[cfg(not(feature = "sanitize"))]
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: Allocator = Allocator;
+
+/// mimalloc, saying when it runs out of memory in Fennec's words. Rust's own way, for an allocation
+/// that comes back null, is "memory allocation of N bytes failed", a note about `RUST_BACKTRACE`,
+/// and an abort that dumps core, with what the program printed lost (runtime exhaustion audit,
+/// 2026-11-20). Stable Rust has no hook for that but the allocator itself.
+#[cfg(not(feature = "sanitize"))]
+struct Allocator;
+
+// SAFETY: each method passes its arguments to mimalloc's, which keeps `GlobalAlloc`'s contract,
+// and gives back what it gave, never null: a null ends the program before it's given back.
+#[cfg(not(feature = "sanitize"))]
+unsafe impl std::alloc::GlobalAlloc for Allocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: as `GlobalAlloc::alloc`'s caller promises.
+        let block = unsafe { mimalloc::MiMalloc.alloc(layout) };
+        if block.is_null() {
+            aot::out_of_memory(layout.size());
+        }
+        block
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: as `GlobalAlloc::alloc_zeroed`'s caller promises.
+        let block = unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) };
+        if block.is_null() {
+            aot::out_of_memory(layout.size());
+        }
+        block
+    }
+
+    unsafe fn dealloc(&self, block: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: as `GlobalAlloc::dealloc`'s caller promises: `block` came from this allocator.
+        unsafe { mimalloc::MiMalloc.dealloc(block, layout) }
+    }
+
+    unsafe fn realloc(&self, block: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+        // SAFETY: as `GlobalAlloc::realloc`'s caller promises: `block` came from this allocator.
+        let grown = unsafe { mimalloc::MiMalloc.realloc(block, layout, size) };
+        if grown.is_null() {
+            aot::out_of_memory(size);
+        }
+        grown
+    }
+}
 
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {

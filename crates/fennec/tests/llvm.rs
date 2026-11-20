@@ -31498,6 +31498,64 @@ fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Resul
     Ok(())
 }
 
+/// A program that runs out of memory says so in Fennec's words, after what it printed, and ends
+/// with 1, where Rust's allocator said "memory allocation of N bytes failed", a note about
+/// `RUST_BACKTRACE`, and dumped core with exit code 134, the program's output lost. Linux only: an
+/// address-space limit (`ulimit -v`) makes an allocation fail there, where macOS gives it and lets
+/// the program fill memory. Once at once, a string doubling past the limit, and once a megabyte at
+/// a time, in a task too.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_that_runs_out_of_memory_says_so_after_what_it_printed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("out_of_memory")?;
+    let program = dir.join("out_of_memory.fen");
+    std::fs::write(
+        &program,
+        "\
+from std.concurrent import Crashed
+
+## Holds a megabyte more each time round, until memory runs out.
+def grow(stdout: Stdout):
+    mut held: list[str] = []
+    chunk = \"fennec \" * 149796
+    for round in range(1000000):
+        held.append(chunk + str(round))
+    stdout.print(len(held))
+
+def main(stdout: Stdout, args: Args) fails Crashed:
+    stdout.print(\"started\")
+    match args[0] if len(args) > 0 else \"\":
+        case \"huge\":
+            stdout.print(len(\"x\" * (1 << 40)))
+        case \"task\":
+            with launch(() => grow(stdout))?:
+                pass
+        case _:
+            grow(stdout)
+",
+    )?;
+    let executable = dir.join("out_of_memory");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for how in ["huge", "grow", "task"] {
+        // Three gigabytes of address space: room for the runtime, not for what the program asks.
+        let ran = Command::new("sh")
+            .args(["-c", "ulimit -v 3000000 && exec \"$0\" \"$1\"", &path(&executable), how])
+            .env("FENNEC_THREADS", "4")
+            .output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!((printed.as_ref(), ran.status.code()), ("started\n", Some(1)), "{how}: {said}");
+        assert!(said.starts_with("error: out of memory: couldn't get "), "{how}: {said}");
+        assert!(said.ends_with(" bytes\n") && !said.contains("RUST_BACKTRACE"), "{how}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A key 20,000 deep that isn't there, in a launched task, whose own stack is small. The dict's
 /// lookup says what's missing and crashes only the task, as on the main thread: the key is read
 /// for the message with room for its depth, where it was read on the task's own stack, and stopped

@@ -15,7 +15,7 @@ use crate::types::Type;
 /// the fix passes the failure up with `?`.
 pub(crate) fn check_body(checker: &Checker, key: &str, body: &[Stmt], fails: Passes<'_>) -> Vec<Diagnostic> {
     let Some(typed) = checker.typed.get(key) else { return Vec::new() };
-    let mut walk = Walk { typed, fails, lambdas: 0, problems: Vec::new() };
+    let mut walk = Walk { typed, fails, lambdas: 0, problems: Vec::new(), library: checker.in_library() };
     walk.block(body);
     walk.problems
 }
@@ -37,6 +37,8 @@ struct Walk<'b> {
     /// How many arrow functions this is inside, where `?` passes a failure up as the arrow's.
     lambdas: usize,
     problems: Vec<Diagnostic>,
+    /// Whether this is the library's check, where std's own code is held to the rules too.
+    library: bool,
 }
 
 impl Walk<'_> {
@@ -174,7 +176,7 @@ impl Walk<'_> {
     fn can_fail(&self, expr: &Expr) -> bool {
         !matches!(expr.kind, ExprKind::Name(_))
             && crate::gone::written_by_hand(expr.span)
-            && !expr.span.in_prelude()
+            && (self.library || !expr.span.in_prelude())
             && matches!(self.typed.expr(expr.span), Some(Type::Result(..)))
     }
 

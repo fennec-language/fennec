@@ -1,0 +1,344 @@
+# What the checker finds in the standard library that a program would be told, by file and
+# message, held by crates/check/tests/typed.rs: fix one and it leaves this list, which only
+# shrinks. Written with FENNEC_PIN_OUTPUTS=1.
+cli.fen: `rest`'s default is written as `list[str]()`
+cli.fen: `takes`'s default is written as `list[CliArg]()`
+cli.fen: `values`'s default is written as `dict[str, str]()`
+collections.fen: `T` could be any type, so `==` might not work on it
+collections.fen: `_cells`'s default is written as `list[T]()`
+collections.fen: `_ends`'s default is written as `list[int]()`
+collections.fen: `_first_in`'s default is written as `list[int]()`
+collections.fen: `_first_out`'s default is written as `list[int]()`
+collections.fen: `_free`'s default is written as `list[int]()`
+collections.fen: `_ids`'s default is written as `list[Id[N]]()`
+collections.fen: `_items`'s default is written as `list[T]()`
+collections.fen: `_last_in`'s default is written as `list[int]()`
+collections.fen: `_last_out`'s default is written as `list[int]()`
+collections.fen: `_next_in`'s default is written as `list[int]()`
+collections.fen: `_next_out`'s default is written as `list[int]()`
+collections.fen: `_nodes`'s default is written as `list[SortedNode[K, V]]()`
+collections.fen: `_roots`'s default is written as `list[Id[TreeNode[T]]]()`
+collections.fen: `_starts`'s default is written as `list[int]()`
+collections.fen: `_values`'s default is written as `list[E]()`
+collections.fen: `children`'s default is written as `list[Id[TreeNode[T]]]()`
+collections.fen: `children`'s default is written as `list[int]()`
+collections.fen: `counts`'s default is written as `dict[T, int]()`
+collections.fen: `items`'s default is written as `list[T]()`
+collections.fen: `keys`'s default is written as `list[K]()`
+collections.fen: `slots`'s default is written as `list[T]()`
+collections.fen: `values`'s default is written as `list[V]()`
+collections.fen: `waiting`'s default is written as `dict[int, T]()`
+collections.fen: this changes `self._nodes[...].children`, which the call it's passed to changes too
+collections.fen: this changes `self._nodes[...].children`, which the call it's passed to changes too
+collections.fen: this changes `self._nodes[...].keys`, which the call it's passed to changes too
+collections.fen: this changes `self._nodes[...].values`, which the call it's passed to changes too
+collections.fen: this gives back a (int, int)?, and nothing uses it
+collections.fen: this gives back a K, and nothing uses it
+collections.fen: this gives back a TreeNode[T]?, and nothing uses it
+collections.fen: this gives back a TreeNode[T]?, and nothing uses it
+collections.fen: this gives back a V, and nothing uses it
+collections.fen: this gives back an int, and nothing uses it
+concurrent.fen: `_back` is private to `Borrowed`
+concurrent.fen: `_channel` is private to `Channel`
+concurrent.fen: `_channel` is private to `Channel`
+concurrent.fen: `_channel` is private to `Channel`
+concurrent.fen: `_channel` is private to `Channel`
+concurrent.fen: `_channel` is private to `Channel`
+concurrent.fen: `_channel` is private to `Inbox`
+concurrent.fen: `_channel` is private to `Sender`
+concurrent.fen: `_channel` is private to `Sender`
+concurrent.fen: `_channel` is private to `Sender`
+concurrent.fen: `_channel` is private to `Sender`
+concurrent.fen: `_channel` is private to `Sender`
+concurrent.fen: `_every` is private to `Channel`
+concurrent.fen: `_keeper` is private to `Borrowed`
+concurrent.fen: `_notes` is private to `Borrowed`
+concurrent.fen: `_notes` is private to `Pool`
+concurrent.fen: `_wait` is private to `Pool`
+concurrent.fen: nothing can build `Borrowed`: `_back` has no default, and `Borrowed` has no named constructor
+concurrent.fen: nothing can build `Channel`: `_channel` has no default, and `Channel` has no named constructor
+concurrent.fen: nothing can build `Inbox`: `_channel` has no default, and `Inbox` has no named constructor
+concurrent.fen: nothing can build `Pool`: `_notes` has no default, and `Pool` has no named constructor
+concurrent.fen: nothing can build `Sender`: `_channel` has no default, and `Sender` has no named constructor
+concurrent.fen: the type here is known, so write `.Closed` without `PoolError`
+concurrent.fen: the type here is known, so write `.Open` without `PoolError`
+concurrent.fen: the type here is known, so write `.Open` without `PoolError`
+concurrent.fen: the type here is known, so write `.Open` without `PoolError`
+concurrent.fen: the type here is known, so write `.Open` without `PoolError`
+crypto.fen: `equal` takes a str or bytes, but this is a T
+crypto.fen: `equal` takes a str or bytes, but this is a T
+csv.fen: `delimiter` has a default, so it's passed by name
+csv.fen: `delimiter` has a default, so it's passed by name
+csv.fen: `delimiter` has a default, so it's passed by name
+errors.fen: this gives back a T, and nothing uses it
+fs.fen: nothing can build `File`: `_handle` has no default, and `File` has no named constructor
+html.fen: `_text` is private to `Html`
+html.fen: `_text` is private to `Html`
+html.fen: `_text` is private to `Html`
+html.fen: `_text` is private to `Html`
+html.fen: the type here is known, so write `.Misplaced` without `HtmlError`
+io.fen: `_in` is private to `StdinReader`
+io.fen: `_out` is private to `StdoutWriter`
+io.fen: nothing can build `StdinReader`: `_in` has no default, and `StdinReader` has no named constructor
+io.fen: nothing can build `StdoutWriter`: `_out` has no default, and `StdoutWriter` has no named constructor
+json.fen: `_exact` is private to `TableFinder`
+json.fen: `_explain` is private to `JsonReader`
+json.fen: `_explain` is private to `JsonReader`
+json.fen: `_extra` is private to `JsonReader`
+json.fen: `_extra` is private to `JsonReader`
+json.fen: `_floats` is private to `TableFinder`
+json.fen: `_found` is private to `JsonWriter`
+json.fen: `_indent` is private to `JsonWriter`
+json.fen: `_indent` is private to `JsonWriter`
+json.fen: `_names` is private to `JsonReader`
+json.fen: `_names` is private to `JsonReader`
+json.fen: `_names` is private to `JsonWriter`
+json.fen: `_names` is private to `JsonWriter`
+json.fen: `_seen_rare` is private to `JsonReader`
+json.fen: `_source` is private to `JsonReader`
+json.fen: `_source` is private to `JsonReader`
+json.fen: `_source` is private to `JsonReader`
+json.fen: `_tables` is private to `JsonWriter`
+json.fen: `_unwritable` is private to `JsonWriter`
+json.fen: `_wants_tables` is private to `JsonWriter`
+json.fen: `_whole` is private to `JsonReader`
+json.fen: `piece` isn't mut
+json.fen: `piece` isn't mut
+json.fen: `value != value` is always False, since NaN equals NaN here
+json.fen: nothing can build `JsonReader`: `_source` has no default, and `JsonReader` has no named constructor
+log.fen: `fields`'s default is written as `dict[str, str]()`
+net.fen: `_ =` would drop this failure
+net.fen: `_conn` is private to `ConnectionReader`
+net.fen: `_conn` is private to `ConnectionWriter`
+net.fen: `shared Connection:` is gone: a type is declared with `struct`, and `shared` goes where a value is shared
+net.fen: `shared Server:` is gone: a type is declared with `struct`, and `shared` goes where a value is shared
+net.fen: `shared UdpSocket:` is gone: a type is declared with `struct`, and `shared` goes where a value is shared
+net.fen: nothing can build `ConnectionReader`: `_conn` has no default, and `ConnectionReader` has no named constructor
+net.fen: nothing can build `ConnectionWriter`: `_conn` has no default, and `ConnectionWriter` has no named constructor
+net.fen: nothing can build `Connection`: `_handle` has no default, and `Connection` has no named constructor
+net.fen: nothing can build `Server`: `_handle` has no default, and `Server` has no named constructor
+net.fen: nothing can build `UdpSocket`: `_handle` has no default, and `UdpSocket` has no named constructor
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_at` is private to `PackReader`
+pack.fen: `_data` is private to `PackReader`
+pack.fen: `_data` is private to `PackReader`
+pack.fen: `_data` is private to `PackReader`
+pack.fen: `_data` is private to `PackReader`
+pack.fen: `_data` is private to `PackReader`
+pack.fen: `_data` is private to `PackReader`
+pack.fen: `_data` is private to `PackReader`
+pack.fen: `_deeper` is private to `PackReader`
+pack.fen: `_deeper` is private to `PackReader`
+pack.fen: `_deeper` is private to `PackReader`
+pack.fen: `_deeper` is private to `PackReader`
+pack.fen: `_deeper` is private to `PackReader`
+pack.fen: `_deeper` is private to `PackReader`
+pack.fen: `_depth` is private to `PackReader`
+pack.fen: `_depth` is private to `PackReader`
+pack.fen: `_depth` is private to `PackReader`
+pack.fen: `_depth` is private to `PackReader`
+pack.fen: `_depth` is private to `PackReader`
+pack.fen: `_depth` is private to `PackReader`
+pack.fen: `_done` is private to `PackWriter`
+pack.fen: `_done` is private to `PackWriter`
+pack.fen: `_done` is private to `PackWriter`
+pack.fen: `_done` is private to `PackWriter`
+pack.fen: `_done` is private to `PackWriter`
+pack.fen: `_exact` is private to `PackReader`
+pack.fen: `_exact` is private to `PackReader`
+pack.fen: `_exact` is private to `PackReader`
+pack.fen: `_exact` is private to `PackReader`
+pack.fen: `_exact` is private to `PackReader`
+pack.fen: `_exact` is private to `PackReader`
+pack.fen: `_exact` is private to `PackReader`
+pack.fen: `_exact` is private to `PackWriter`
+pack.fen: `_exact` is private to `PackWriter`
+pack.fen: `_exact` is private to `PackWriter`
+pack.fen: `_exact` is private to `PackWriter`
+pack.fen: `_explain` is private to `PackReader`
+pack.fen: `_explain` is private to `PackReader`
+pack.fen: `_explain` is private to `PackReader`
+pack.fen: `_fail_at` is private to `PackReader`
+pack.fen: `_fail_at` is private to `PackReader`
+pack.fen: `_fail_at` is private to `PackReader`
+pack.fen: `_fail_at` is private to `PackReader`
+pack.fen: `_fail_at` is private to `PackReader`
+pack.fen: `_fail_at` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_fail` is private to `PackReader`
+pack.fen: `_found` is private to `PackWriter`
+pack.fen: `_found` is private to `PackWriter`
+pack.fen: `_header` is private to `PackReader`
+pack.fen: `_header` is private to `PackReader`
+pack.fen: `_header` is private to `PackWriter`
+pack.fen: `_header` is private to `PackWriter`
+pack.fen: `_ids` is private to `PackReader`
+pack.fen: `_ids` is private to `PackReader`
+pack.fen: `_ids` is private to `PackReader`
+pack.fen: `_ids` is private to `PackReader`
+pack.fen: `_items_left` is private to `PackReader`
+pack.fen: `_items_left` is private to `PackReader`
+pack.fen: `_items_left` is private to `PackReader`
+pack.fen: `_items` is private to `PackReader`
+pack.fen: `_items` is private to `PackReader`
+pack.fen: `_items` is private to `PackReader`
+pack.fen: `_items` is private to `PackReader`
+pack.fen: `_items` is private to `PackReader`
+pack.fen: `_layout_at` is private to `PackByName`
+pack.fen: `_layout_at` is private to `PackReader`
+pack.fen: `_layout_at` is private to `PackReader`
+pack.fen: `_layout_end` is private to `PackReader`
+pack.fen: `_layout` is private to `PackByName`
+pack.fen: `_length` is private to `PackReader`
+pack.fen: `_length` is private to `PackReader`
+pack.fen: `_length` is private to `PackReader`
+pack.fen: `_length` is private to `PackReader`
+pack.fen: `_locked` is private to `PackReader`
+pack.fen: `_locked` is private to `PackReader`
+pack.fen: `_longest` is private to `PackReader`
+pack.fen: `_longest` is private to `PackReader`
+pack.fen: `_longest` is private to `PackReader`
+pack.fen: `_longest` is private to `PackReader`
+pack.fen: `_longest` is private to `PackReader`
+pack.fen: `_most_deep` is private to `PackReader`
+pack.fen: `_most_deep` is private to `PackReader`
+pack.fen: `_most_deep` is private to `PackReader`
+pack.fen: `_most_deep` is private to `PackReader`
+pack.fen: `_most_deep` is private to `PackReader`
+pack.fen: `_most_deep` is private to `PackReader`
+pack.fen: `_most_empty` is private to `PackReader`
+pack.fen: `_most_empty` is private to `PackReader`
+pack.fen: `_most_empty` is private to `PackReader`
+pack.fen: `_most_empty` is private to `PackReader`
+pack.fen: `_most_empty` is private to `PackReader`
+pack.fen: `_raw` is private to `PackByName`
+pack.fen: `_raw` is private to `PackByName`
+pack.fen: `_raw` is private to `PackByName`
+pack.fen: `_raw` is private to `PackByName`
+pack.fen: `_raw` is private to `PackByName`
+pack.fen: `_read_layout` is private to `PackByName`
+pack.fen: `_run` is private to `PackReader`
+pack.fen: `_tables` is private to `PackWriter`
+pack.fen: `_tables` is private to `PackWriter`
+pack.fen: `_tags` is private to `PackWriter`
+pack.fen: `_tags` is private to `PackWriter`
+pack.fen: `_took_nothing` is private to `PackReader`
+pack.fen: `_took_nothing` is private to `PackReader`
+pack.fen: `_varint` is private to `PackReader`
+pack.fen: `_varint` is private to `PackReader`
+pack.fen: `_varint` is private to `PackReader`
+pack.fen: `_varint` is private to `PackReader`
+pack.fen: `_varint` is private to `PackReader`
+pack.fen: `_varint` is private to `PackReader`
+pack.fen: `_varint` is private to `PackWriter`
+pack.fen: `_varint` is private to `PackWriter`
+pack.fen: `_varint` is private to `PackWriter`
+pack.fen: `_wants_tables` is private to `PackWriter`
+pack.fen: `_wants_tables` is private to `PackWriter`
+pack.fen: `_whole` is private to `IdsSeen`
+pack.fen: `_word` is private to `PackReader`
+pack.fen: `_word` is private to `PackWriter`
+pack.fen: nothing can build `PackByName`: `_raw` has no default, and `PackByName` has no named constructor
+pack.fen: nothing can build `PackReader`: `_data` has no default, and `PackReader` has no named constructor
+pack.fen: this gives back an int, and nothing uses it
+path.fen: this gives back a str?, and nothing uses it
+postgres.fen: `_at` is private to `PgBody`
+postgres.fen: `_at` is private to `PgBody`
+postgres.fen: `_conn` is private to `PgDatabase`
+postgres.fen: `_data` is private to `PgBody`
+postgres.fen: `_data` is private to `PgBody`
+postgres.fen: `_db` is private to `PgTransaction`
+postgres.fen: `_known` is private to `PgBody`
+postgres.fen: `_known` is private to `PgBody`
+postgres.fen: `_known` is private to `PgBody`
+postgres.fen: `_opened` is private to `PgDatabase`
+postgres.fen: `_pool` is private to `PgPool`
+postgres.fen: nothing can build `PgBody`: `_data` has no default, and `PgBody` has no named constructor
+postgres.fen: nothing can build `PgDatabase`: `_conn` has no default, and `PgDatabase` has no named constructor
+postgres.fen: nothing can build `PgPool`: `_pool` has no default, and `PgPool` has no named constructor
+postgres.fen: nothing can build `PgTransaction`: `_db` has no default, and `PgTransaction` has no named constructor
+postgres.fen: the type here is known, so write `.Busy` without `SqlError`
+postgres.fen: the type here is known, so write `.Constraint` without `SqlError`
+postgres.fen: the type here is known, so write `.Done` without `PgMessage`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+postgres.fen: the type here is known, so write `.Failed` without `SqlError`
+sized.fen: `problem` isn't used on this way out, so it drops the failure
+sql.fen: `_cell` is private to `SqlRowReader`
+sql.fen: `_column` is private to `SqlRowReader`
+sql.fen: `_in_record` is private to `SqlRowReader`
+sql.fen: `_row` is private to `SqlRowReader`
+sql.fen: `_rows` is private to `SqlRowReader`
+sql.fen: `_width` is private to `SqlRowReader`
+sql.fen: nothing can build `SqlRowReader`: `_rows` has no default, and `SqlRowReader` has no named constructor
+sqlite.fen: nothing can build `Database`: `_handle` has no default, and `Database` has no named constructor
+sqlite.fen: nothing can build `Transaction`: `_handle` has no default, and `Transaction` has no named constructor
+toml.fen: `_done` is private to `TomlWriter`
+toml.fen: `_found` is private to `TomlWriter`
+toml.fen: `_here` is private to `TomlReader`
+toml.fen: `_id_tables` is private to `TomlWriter`
+toml.fen: `_ids` is private to `TomlReader`
+toml.fen: `_wants_tables` is private to `TomlWriter`
+toml.fen: nothing can build `TomlReader`: `_here` has no default, and `TomlReader` has no named constructor
+url.fen: `_authority` is private to `Url`
+url.fen: `_raw_path` is private to `Url`
+url.fen: `_raw_query` is private to `Url`

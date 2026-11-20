@@ -4,7 +4,7 @@ name: Mutation tests
 # deleting a statement) and checks that some test fails each time. A change no test notices
 # is a gap in the tests. Pull requests check only the code they change. Every night, and on demand,
 # a slice of each of the checker, the IR, the LLVM backend and the runtime is mutated, a different
-# slice each night, so each crate is all done in 100 to 220 nights: what no test caught is ranked
+# slice each night, so each crate is all done in 125 to 290 nights: what no test caught is ranked
 # by file on the run's summary page and in the morning's nightly report. Survivors are reported,
 # never failed on. A mutant runs its own crate's tests and a small set that runs programs end to end
 # (`.github/scripts/mutants-tests.sh`), under nextest, which stops at the first failure.
@@ -103,16 +103,16 @@ jobs:
       fail-fast: false
       # One runner a crate, at night, when few pull requests wait for one.
       max-parallel: 4
-      # Each crate in as many slices as finish in about two and a half hours a night. On
-      # 2026-11-20 a runner tried, an hour, 15 of fennec-check's mutants, 9 of fennec-ir's and 28
-      # of fennec-llvm's. fennec-rt's were cut short that night by a limit that was too short, so
-      # it's sliced as fennec-check is, until a night says otherwise.
+      # Each crate in slices of about 40 mutants, which a runner tries in about two and a quarter
+      # hours. On 2026-11-20 it tried 17 to 19 an hour, for each crate, and the slices it tried
+      # put fennec-check at about 7,300 mutants, fennec-ir at 5,000, fennec-llvm at 6,400 and
+      # fennec-rt at 11,600.
       matrix:
         include:
-          - { crate: fennec-check, slices: 200 }
-          - { crate: fennec-ir, slices: 220 }
-          - { crate: fennec-llvm, slices: 100 }
-          - { crate: fennec-rt, slices: 200 }
+          - { crate: fennec-check, slices: 180 }
+          - { crate: fennec-ir, slices: 125 }
+          - { crate: fennec-llvm, slices: 160 }
+          - { crate: fennec-rt, slices: 290 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

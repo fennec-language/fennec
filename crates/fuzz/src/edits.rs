@@ -14,23 +14,41 @@
 //! directly or two calls down, a constant and a field default from a function whose type changes,
 //! a `with` source's body, a function waiting inside a lock, a field's type, a function added,
 //! removed or renamed, a field added, and a number that turns negative away from where it's used
-//! as an index. The input picks 1 to 4 edits in a row, each switching one or two pieces and
-//! sometimes moving one, so later declarations move. An edit may leave the program failing to
-//! check, which is compared too.
+//! as an index. Others are about files beside the program's: an import renamed with `as` or
+//! written as the module's name, the module an enum and a function reached by a leading dot are
+//! imported from swapped, a function and an import moved to another file, and a file growing past
+//! its 256 KiB span slot, which moves the files after it. Then lines put in above declarations,
+//! and a parameter's and a field's default read by a function written before them. The input
+//! picks 1 to 4 edits in a row, each switching one or two pieces and sometimes moving one, so
+//! later declarations move, and whether each version's types are laid out boxed. An edit may
+//! leave the program failing to check, which is compared too.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fennec_check::{KeptCheck, check_to_build_keeping, check_to_build_saying};
 
 /// A piece of the program: its first way of writing it, then the others an edit may switch to.
+/// What a way writes goes in `program.fen` until a line `# file: <name>` sends what follows to that
+/// file beside it, its imports at the top of the file it's in. A line `# pad: <bytes>` is that many
+/// bytes of comment.
 struct Piece {
     variants: &'static [&'static str],
 }
 
+/// The file the program is built from. The others are beside it.
+const PROGRAM: &str = "program.fen";
+
+/// What starts a line sending what follows to another file.
+const FILE_MARK: &str = "# file: ";
+
+/// What starts a line standing for a comment of that many bytes.
+const PAD_MARK: &str = "# pad: ";
+
 /// Every piece. `main` calls into each.
-const PIECES: [Piece; 12] = [
+const PIECES: [Piece; 19] = [
     // A body.
     Piece {
         variants: &[
@@ -113,12 +131,12 @@ const PIECES: [Piece; 12] = [
             "def spare() -> int:\n    return 1\n\ndef another_spare() -> int:\n    return 2\n",
         ],
     },
-    // A field added, which changes the struct's layout.
+    // A field added after another or before it, which changes the struct's layout.
     Piece {
         variants: &[
             "struct Rec:\n    a: int\n\ndef made_rec() -> Rec:\n    return Rec(a=1)\n\ndef rec_a(rec: Rec) -> int:\n    return rec.a\n",
             "struct Rec:\n    a: int\n    b = 0\n\ndef made_rec() -> Rec:\n    return Rec(a=1)\n\ndef rec_a(rec: Rec) -> int:\n    return rec.a\n",
-            "struct Rec:\n    b = 7\n    a: int\n\ndef made_rec() -> Rec:\n    return Rec(a=1)\n\ndef rec_a(rec: Rec) -> int:\n    return rec.a + rec.b\n",
+            "struct Rec:\n    z: int\n    a: int\n\ndef made_rec() -> Rec:\n    return Rec(z=7, a=1)\n\ndef rec_a(rec: Rec) -> int:\n    return rec.a + rec.z\n",
         ],
     },
     // A number that turns negative in one function, used as an index in another.
@@ -129,6 +147,56 @@ const PIECES: [Piece; 12] = [
             "struct Slot:\n    at = 0\n\ndef set_at(ref slot: Slot):\n    slot.at = 2\n\ndef read_slot(items: list[int]) -> int:\n    mut slot = Slot()\n    set_at(ref slot)\n    return items[slot.at]\n",
         ],
     },
+    // An import renamed with `as`, written as the module's name, and the body behind it changed.
+    Piece {
+        variants: &[
+            "from parts_a import scaled\n\ndef use_scaled() -> int:\n    return scaled(2)\n# file: parts_a.fen\nexport def scaled(n: int) -> int:\n    return n * 3\n",
+            "from parts_a import scaled as grown\n\ndef use_scaled() -> int:\n    return grown(2)\n# file: parts_a.fen\nexport def scaled(n: int) -> int:\n    return n * 3\n",
+            "import parts_a\n\ndef use_scaled() -> int:\n    return parts_a.scaled(2)\n# file: parts_a.fen\nexport def scaled(n: int) -> int:\n    return n * 3\n",
+            "from parts_a import scaled as grown\n\ndef use_scaled() -> int:\n    return grown(2)\n# file: parts_a.fen\nexport def scaled(n: int) -> int:\n    return n * 4\n",
+        ],
+    },
+    // The module the function `mode_cost` names is imported from, swapped: each takes an enum of
+    // its own by a leading dot, whose case is at another place, or has a payload. A program's
+    // files share their top-level names, so the two have their own, and `as` gives them one.
+    Piece {
+        variants: &[
+            "from parts_a import cost_a as mode_cost\n\ndef costed() -> int:\n    return mode_cost(.Fast)\n# file: parts_a.fen\nexport enum Mode:\n    Fast\n    Slow\n\nexport def cost_a(mode: Mode) -> int:\n    match mode:\n        case .Fast:\n            return 1\n        case .Slow:\n            return 2\n# file: parts_b.fen\nexport enum Gear:\n    Stopped\n    Slow\n    Fast\n\nexport def cost_b(gear: Gear) -> int:\n    match gear:\n        case .Stopped:\n            return 10\n        case .Slow:\n            return 20\n        case .Fast:\n            return 30\n",
+            "from parts_b import cost_b as mode_cost\n\ndef costed() -> int:\n    return mode_cost(.Fast)\n# file: parts_a.fen\nexport enum Mode:\n    Fast\n    Slow\n\nexport def cost_a(mode: Mode) -> int:\n    match mode:\n        case .Fast:\n            return 1\n        case .Slow:\n            return 2\n# file: parts_b.fen\nexport enum Gear:\n    Stopped\n    Slow\n    Fast\n\nexport def cost_b(gear: Gear) -> int:\n    match gear:\n        case .Stopped:\n            return 10\n        case .Slow:\n            return 20\n        case .Fast:\n            return 30\n",
+            "from parts_b import cost_b as mode_cost\n\ndef costed() -> int:\n    return mode_cost(.Fast)\n# file: parts_a.fen\nexport enum Mode:\n    Fast\n    Slow\n\nexport def cost_a(mode: Mode) -> int:\n    match mode:\n        case .Fast:\n            return 1\n        case .Slow:\n            return 2\n# file: parts_b.fen\nexport enum Gear:\n    Slow\n    Fast(level: int)\n\nexport def cost_b(gear: Gear) -> int:\n    match gear:\n        case .Slow:\n            return 20\n        case .Fast(level):\n            return 30 + level\n",
+        ],
+    },
+    // A function moved to another file, then the import of it moved there too.
+    Piece {
+        variants: &[
+            "def tripled(n: int) -> int:\n    return n * 3\n\ndef use_tripled() -> int:\n    return tripled(4)\n",
+            "from parts_b import tripled\n\ndef use_tripled() -> int:\n    return tripled(4)\n# file: parts_b.fen\nexport def tripled(n: int) -> int:\n    return n * 3\n",
+            "from parts_a import use_tripled\n# file: parts_a.fen\nfrom parts_b import tripled\n\nexport def use_tripled() -> int:\n    return tripled(4)\n# file: parts_b.fen\nexport def tripled(n: int) -> int:\n    return n * 3\n",
+        ],
+    },
+    // A file growing past its 256 KiB span slot, a module or the program's own, so every file
+    // after it starts somewhere else.
+    Piece {
+        variants: &[
+            "from parts_a import padded_size\n# file: parts_a.fen\nexport def padded_size() -> int:\n    return 4\n",
+            "from parts_a import padded_size\n# file: parts_a.fen\n# pad: 270000\nexport def padded_size() -> int:\n    return 4\n",
+            "# pad: 270000\nfrom parts_a import padded_size\n# file: parts_a.fen\nexport def padded_size() -> int:\n    return 5\n",
+        ],
+    },
+    // A function reading defaults: written before the piece after it in the first order.
+    Piece { variants: &["def use_defaults() -> int:\n    return padded() + Margin().left\n"] },
+    // A parameter's and a field's default, read by the function before them.
+    Piece {
+        variants: &[
+            "def padded(width = 3) -> int:\n    return width\n\nstruct Margin:\n    left = 2\n",
+            "def padded(width = 4) -> int:\n    return width\n\nstruct Margin:\n    left = 2\n",
+            "def padded(width = 3) -> int:\n    return width\n\nstruct Margin:\n    left = -2\n",
+            "def padded(width = 3.5) -> float:\n    return width\n\nstruct Margin:\n    left = 2\n",
+            "def padded(width = 3) -> int:\n    return width\n\nstruct Margin:\n    left = margin_default()\n\ndef margin_default() -> int:\n    return 2\n",
+        ],
+    },
+    // Lines put in above what follows, or taken out.
+    Piece { variants: &["", "# A note above what follows.\n\n# And another.\n", "\n\n"] },
 ];
 
 /// `main`, which calls into every piece.
@@ -151,15 +219,24 @@ const MAIN: &str = "def main(stdout: Stdout, clock: Clock):
     stdout.print(made_point().x)
     stdout.print(rec_a(made_rec()))
     stdout.print(read_slot([4, 5, 6]))
+    stdout.print(use_scaled(), costed(), use_tripled(), padded_size())
+    stdout.print(use_defaults())
     return
 ";
 
-/// What the input chooses: the order the pieces are written in at first, and each edit, as the
-/// pieces it switches and the variant each switches to, and whether it moves the first of them to
-/// the end.
+/// An edit: the pieces it switches and the variant each switches to, whether it moves the first of
+/// them to the end, and whether the version after it lays its types out boxed
+/// (`FENNEC_BOXED_TYPES`), as they were before step 4.
+struct Edit {
+    switched: Vec<(usize, usize)>,
+    moved: bool,
+    boxed: bool,
+}
+
+/// What the input chooses: the order the pieces are written in at first, then each edit.
 struct Plan {
     order: Vec<usize>,
-    edits: Vec<(Vec<(usize, usize)>, bool)>,
+    edits: Vec<Edit>,
 }
 
 fn plan(input: &[u8]) -> Plan {
@@ -180,42 +257,130 @@ fn plan(input: &[u8]) -> Plan {
                     (piece, usize::from(byte()) % count)
                 })
                 .collect();
-            (switched, byte() % 6 == 0)
+            let way = byte();
+            Edit { switched, moved: way % 6 == 0, boxed: way % 5 == 1 }
         })
         .collect();
     Plan { order, edits }
 }
 
-/// The program with each piece written as `chosen` says, in `order`, then `main`.
-fn written(order: &[usize], chosen: &[usize]) -> String {
-    let mut out = String::new();
+/// The files of a version, `program.fen` first, each by name with its text.
+type Files = Vec<(String, String)>;
+
+/// A version of the program: its files, and whether it's built with its types boxed.
+struct Version {
+    files: Files,
+    boxed: bool,
+}
+
+/// A file being written: its imports, then the rest.
+#[derive(Default)]
+struct Writing {
+    name: String,
+    imports: String,
+    rest: String,
+}
+
+/// `bytes` of comment, in lines.
+fn padding(bytes: usize) -> String {
+    let line = "# Padding, so what follows starts past a span slot.\n";
+    line.repeat(bytes.div_ceil(line.len()))
+}
+
+/// The files with each piece written as `chosen` says, in `order`, and `main` at the end of the
+/// program's own.
+fn written(order: &[usize], chosen: &[usize]) -> Files {
+    let mut files = vec![Writing { name: PROGRAM.to_owned(), ..Writing::default() }];
     for &piece in order {
         let variant = chosen.get(piece).copied().unwrap_or(0);
         let text = PIECES.get(piece).and_then(|piece| piece.variants.get(variant)).copied().unwrap_or("");
-        if !text.is_empty() {
-            let _ = writeln!(out, "{text}");
+        if text.is_empty() {
+            continue;
+        }
+        let mut at = 0;
+        let mut touched = vec![0];
+        for line in text.lines() {
+            if let Some(name) = line.strip_prefix(FILE_MARK) {
+                at = files.iter().position(|file| file.name == name).unwrap_or_else(|| {
+                    files.push(Writing { name: name.to_owned(), ..Writing::default() });
+                    files.len() - 1
+                });
+                touched.push(at);
+                continue;
+            }
+            let Some(file) = files.get_mut(at) else { continue };
+            if let Some(bytes) = line.strip_prefix(PAD_MARK) {
+                file.rest.push_str(&padding(bytes.parse().unwrap_or(0)));
+            } else if line.starts_with("from ") || line.starts_with("import ") {
+                let _ = writeln!(file.imports, "{line}");
+            } else {
+                let _ = writeln!(file.rest, "{line}");
+            }
+        }
+        // A blank line after each piece, in each file it wrote to.
+        touched.sort_unstable();
+        touched.dedup();
+        for at in touched {
+            if let Some(file) = files.get_mut(at) {
+                file.rest.push('\n');
+            }
         }
     }
-    out.push_str(MAIN);
-    out
+    if let Some(program) = files.first_mut() {
+        program.rest.push_str(MAIN);
+    }
+    files
+        .into_iter()
+        .map(|file| {
+            let gap = if file.imports.is_empty() { "" } else { "\n" };
+            (file.name, format!("{}{gap}{}", file.imports, file.rest))
+        })
+        .collect()
 }
 
 /// Each version of the program the input makes: the first, then one after each edit.
-fn versions(plan: &Plan) -> Vec<String> {
+fn versions(plan: &Plan) -> Vec<Version> {
     let mut order = plan.order.clone();
     let mut chosen = vec![0; PIECES.len()];
-    let mut out = vec![written(&order, &chosen)];
-    for (switched, moved) in &plan.edits {
-        for &(piece, variant) in switched {
+    let mut out = vec![Version { files: written(&order, &chosen), boxed: false }];
+    for edit in &plan.edits {
+        for &(piece, variant) in &edit.switched {
             if let Some(held) = chosen.get_mut(piece) {
                 *held = variant;
             }
         }
-        if *moved && let Some(&(first, _)) = switched.first() {
+        if edit.moved
+            && let Some(&(first, _)) = edit.switched.first()
+        {
             order.retain(|&piece| piece != first);
             order.push(first);
         }
-        out.push(written(&order, &chosen));
+        out.push(Version { files: written(&order, &chosen), boxed: edit.boxed });
+    }
+    out
+}
+
+/// The files of a version, one after another under their names, for messages and `fennec-fuzz
+/// show edits`. A padded file shows its padding as the line that stands for it.
+fn shown_files(version: &Version) -> String {
+    let mut out = String::new();
+    if version.boxed {
+        out.push_str("# ==== built with FENNEC_BOXED_TYPES=1 ====\n");
+    }
+    for (name, text) in &version.files {
+        let _ = writeln!(out, "# ==== {name} ====");
+        let mut padded = false;
+        for line in text.lines() {
+            if line.starts_with("# Padding,") {
+                if !padded {
+                    let _ = writeln!(out, "{PAD_MARK}...");
+                }
+                padded = true;
+                continue;
+            }
+            padded = false;
+            let _ = writeln!(out, "{line}");
+        }
     }
     out
 }
@@ -223,7 +388,18 @@ fn versions(plan: &Plan) -> Vec<String> {
 /// The program the input makes, each version after the one before it, for `fennec-fuzz show
 /// edits`.
 pub(crate) fn shown(input: &[u8]) -> String {
-    versions(&plan(input)).join("\n# ---- the next edit ----\n\n")
+    let versions = versions(&plan(input));
+    versions.iter().map(shown_files).collect::<Vec<_>>().join("\n# ---- the next edit ----\n\n")
+}
+
+/// Writes a version's files into `folder`, made afresh, so no file of another version is left.
+fn write_files(folder: &Path, files: &Files) -> Result<(), String> {
+    fresh_private(folder)?;
+    for (name, text) in files {
+        let path = folder.join(name);
+        std::fs::write(&path, text).map_err(|err| format!("{}: {err}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// What a check gives back: its signatures, shown with each open type variable's number taken out,
@@ -254,12 +430,22 @@ fn as_checked(found: Result<(fennec_check::Signatures, bool), Vec<fennec_syntax:
         .map_err(|problems| problems.iter().map(|problem| format!("{problem:?}")).collect())
 }
 
-/// A check of `source` that keeps what it finds, carrying over from `kept`, with the checker's own
-/// comparison on.
-fn kept_check(source: &str, kept: Option<KeptCheck>) -> (Checked, Option<KeptCheck>) {
-    let mut module = match fennec_syntax::parse(source) {
+/// The program's module, loaded from its files in `folder` as `fennec build` loads them, or what
+/// stops it loading.
+fn loaded(files: &Files, folder: &Path) -> Result<fennec_syntax::Module, Vec<String>> {
+    write_files(folder, files).map_err(|err| vec![err])?;
+    let overlay = fennec_kit::Overlay::new();
+    fennec_kit::load_with(&folder.join(PROGRAM), PROGRAM, fennec_kit::Entry::Main, &overlay)
+        .map(|program| program.module)
+        .map_err(|problems| problems.diagnostics.iter().map(|problem| format!("load: {problem:?}")).collect())
+}
+
+/// A check of the files that keeps what it finds, carrying over from `kept`, with the checker's
+/// own comparison on.
+fn kept_check(files: &Files, folder: &Path, kept: Option<KeptCheck>) -> (Checked, Option<KeptCheck>) {
+    let mut module = match loaded(files, folder) {
         Ok(module) => module,
-        Err(diagnostic) => return (Err(vec![format!("parse: {}", diagnostic.message)]), None),
+        Err(problems) => return (Err(problems), None),
     };
     match check_to_build_keeping(&mut module, kept, true) {
         Ok((signatures, as_left, kept)) => (as_checked(Ok((signatures, as_left))), Some(kept)),
@@ -267,33 +453,53 @@ fn kept_check(source: &str, kept: Option<KeptCheck>) -> (Checked, Option<KeptChe
     }
 }
 
-/// A whole check of `source`, keeping nothing.
-fn whole_check(source: &str) -> Checked {
-    let mut module =
-        fennec_syntax::parse(source).map_err(|diagnostic| vec![format!("parse: {}", diagnostic.message)])?;
+/// A whole check of the files, keeping nothing.
+fn whole_check(files: &Files, folder: &Path) -> Checked {
+    let mut module = loaded(files, folder)?;
     as_checked(check_to_build_saying(&mut module))
+}
+
+/// A folder of its own for a run's checks, so runs side by side don't share one.
+fn check_folder() -> PathBuf {
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    crate::llvm::work().join(format!("edits-check-{}", RUNS.fetch_add(1, Ordering::Relaxed)))
 }
 
 /// Each version checked carrying over what the check before it kept: each finds what a whole
 /// check finds. How many versions carried anything over.
-fn checks_agree(versions: &[String]) -> Result<usize, String> {
+fn checks_agree(versions: &[Version]) -> Result<usize, String> {
+    let folder = check_folder();
+    let agreed = checks_agree_in(versions, &folder);
+    let _ = std::fs::remove_dir_all(&folder);
+    agreed
+}
+
+fn checks_agree_in(versions: &[Version], folder: &Path) -> Result<usize, String> {
     let mut kept = None;
     let mut carried = 0;
-    for (at, source) in versions.iter().enumerate() {
-        let (found, next) = kept_check(source, kept);
+    for (at, version) in versions.iter().enumerate() {
+        let (found, next) = kept_check(&version.files, folder, kept);
         if next.as_ref().is_some_and(|next| next.carried_over() > 0) {
             carried += 1;
         }
-        let whole = whole_check(source);
+        let whole = whole_check(&version.files, folder);
         if found != whole {
             return Err(format!(
                 "after edit {at}, a check carrying over what the one before kept found\n{found:?}\nwhere a whole \
-                 check found\n{whole:?}\nin:\n{source}"
+                 check found\n{whole:?}\nin:\n{}",
+                shown_files(version)
             ));
         }
         kept = next;
     }
     Ok(carried)
+}
+
+/// How a build is made: with the edit cache or nothing kept, and with types boxed or not.
+#[derive(Clone, Copy)]
+struct Way {
+    cached: bool,
+    boxed: bool,
 }
 
 /// `fennec build` of the program at `program` into `executable`, with `envs` set: whether it
@@ -303,14 +509,19 @@ fn built(
     program: &Path,
     executable: &Path,
     envs: &[(&str, &Path)],
-    cached: bool,
+    way: Way,
 ) -> Result<bool, String> {
     let mut command = Command::new(fennec);
     command.args(["build", "--llvm"]).arg(program).arg("-o").arg(executable).env("FENNEC_NO_DAEMON", "1");
     for (name, value) in envs {
         command.env(name, value);
     }
-    if cached {
+    if way.boxed {
+        command.env("FENNEC_BOXED_TYPES", "1");
+    } else {
+        command.env_remove("FENNEC_BOXED_TYPES");
+    }
+    if way.cached {
         command.env("FENNEC_CACHE_AUDIT", "1");
     } else {
         command.env("FENNEC_NO_CACHE", "1");
@@ -355,13 +566,15 @@ fn files_in(folder: &Path) -> Vec<(String, Vec<u8>)> {
 /// Each version built in order with the edit cache, and each after the first built again with
 /// nothing kept: where both build, the executables and the linked objects are the same, byte for
 /// byte. Gives back how many versions were compared.
-fn builds_agree(fennec: &Path, versions: &[String], work: &Path) -> Result<usize, String> {
+fn builds_agree(fennec: &Path, versions: &[Version], work: &Path) -> Result<usize, String> {
     let (kept_home, cold_home) = (work.join("home-kept"), work.join("home-cold"));
     fresh_private(&kept_home)?;
-    let program = work.join("program.fen");
+    let src = work.join("src");
+    let program = src.join(PROGRAM);
     let mut compared = 0;
-    for (at, source) in versions.iter().enumerate() {
-        std::fs::write(&program, source).map_err(|err| format!("{}: {err}", program.display()))?;
+    for (at, version) in versions.iter().enumerate() {
+        write_files(&src, &version.files)?;
+        let source = shown_files(version);
         let (kept_objects, cold_objects) = (work.join("objects-kept"), work.join("objects-cold"));
         fresh_private(&kept_objects)?;
         let kept_executable = work.join("kept");
@@ -370,7 +583,7 @@ fn builds_agree(fennec: &Path, versions: &[String], work: &Path) -> Result<usize
             &program,
             &kept_executable,
             &[("FENNEC_HOME", &kept_home), ("FENNEC_LINK_KEEP", &kept_objects)],
-            true,
+            Way { cached: true, boxed: version.boxed },
         )
         .map_err(|err| format!("version {at} built with the cache: {err}\n{source}"))?;
         if at == 0 || !kept_built {
@@ -384,7 +597,7 @@ fn builds_agree(fennec: &Path, versions: &[String], work: &Path) -> Result<usize
             &program,
             &cold_executable,
             &[("FENNEC_HOME", &cold_home), ("FENNEC_LINK_KEEP", &cold_objects)],
-            false,
+            Way { cached: false, boxed: version.boxed },
         )
         .map_err(|err| format!("version {at} built with nothing kept: {err}\n{source}"))?;
         if !cold_built {
@@ -431,23 +644,33 @@ pub(crate) fn edits(input: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PIECES, Plan, builds_agree, checks_agree, versions};
+    use super::{Edit, PIECES, Plan, builds_agree, check_folder, checks_agree, loaded, versions};
 
-    /// The first way of writing every piece makes a program that checks.
+    /// An edit switching `switched`, moving none, laid out as `boxed` says.
+    fn edit(switched: &[(usize, usize)], moved: bool, boxed: bool) -> Edit {
+        Edit { switched: switched.to_vec(), moved, boxed }
+    }
+
+    /// The first way of writing every piece makes a program, of several files, that checks.
     #[test]
     fn the_first_program_checks() {
         let versions = versions(&Plan { order: (0..PIECES.len()).collect(), edits: Vec::new() });
-        let first = versions.first().cloned().unwrap_or_default();
-        let mut module = fennec_syntax::parse(&first).unwrap_or_else(|err| unreachable!("{err:?}\n{first}"));
+        let first = &versions.first().unwrap_or_else(|| unreachable!()).files;
+        assert!(first.len() >= 3, "{first:?}");
+        let folder = check_folder();
+        let mut module = loaded(first, &folder).unwrap_or_else(|err| unreachable!("{err:?}\n{first:?}"));
+        let _ = std::fs::remove_dir_all(&folder);
         if let Err(problems) = fennec_check::check_to_build_saying(&mut module) {
-            unreachable!("{problems:?}\n{first}");
+            unreachable!("{problems:?}\n{first:?}");
         }
     }
 
     /// A short run of edits, as the gate runs: a body, a number turning negative away from where it
-    /// indexes, a field added and a declaration moved, each built reusing the edit cache and with
-    /// nothing kept, byte for byte the same. It needs `fennec` built beside the tests, and says so
-    /// where it isn't rather than passing.
+    /// indexes, a field added and a declaration moved, a file growing past its span slot, an
+    /// import renamed, an enum's module swapped, a function and its import moved to another file
+    /// and a default changed, some built with types boxed. Each is built reusing the edit cache and
+    /// with nothing kept, byte for byte the same. It needs `fennec` built beside the tests, and
+    /// says so where it isn't rather than passing.
     #[test]
     fn a_short_run_of_edits_builds_the_same_with_the_cache_and_without() {
         let fennec = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/fennec");
@@ -458,17 +681,20 @@ mod tests {
         let plan = Plan {
             order: (0..PIECES.len()).collect(),
             edits: vec![
-                (vec![(0, 1)], false),
-                (vec![(11, 1)], false),
-                (vec![(10, 1), (0, 2)], true),
-                (vec![(11, 2), (10, 2)], false),
+                edit(&[(0, 1)], false, false),
+                edit(&[(11, 1)], false, false),
+                edit(&[(10, 1), (0, 2)], true, true),
+                edit(&[(11, 2), (10, 2)], false, false),
+                edit(&[(15, 1)], false, false),
+                edit(&[(12, 1), (13, 1)], false, false),
+                edit(&[(14, 2), (17, 1)], false, true),
             ],
         };
         let work = crate::llvm::work().join("edits-test");
         let compared =
             builds_agree(&fennec, &versions(&plan), &work).unwrap_or_else(|err| unreachable!("{err}"));
         let _ = std::fs::remove_dir_all(&work);
-        assert!(compared >= 3, "only {compared} edits were built both ways");
+        assert!(compared >= 6, "only {compared} edits were built both ways");
     }
 
     /// Every switch of every piece, one at a time and then back, checks carrying over just what a
@@ -480,7 +706,7 @@ mod tests {
             for variant in 1..kind.variants.len() {
                 let plan = Plan {
                     order: (0..PIECES.len()).collect(),
-                    edits: vec![(vec![(piece, variant)], false), (vec![(piece, 0)], false)],
+                    edits: vec![edit(&[(piece, variant)], false, false), edit(&[(piece, 0)], false, false)],
                 };
                 carried += checks_agree(&versions(&plan)).unwrap_or_else(|err| unreachable!("{err}"));
             }

@@ -6573,6 +6573,44 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
     Ok(())
 }
 
+/// A kit built in one folder and then in another with the same Fennec home, as a second checkout
+/// or a worktree of it is, uses the first build's units again on its first build there: the index
+/// of kept units is named by the kit and its entry, not by where the kit is. Each unit is used
+/// again only when its function and every read it made are as they were, so the second checkout's
+/// program is the first's, byte for byte. Before, its first build wrote every function again.
+#[test]
+fn a_second_checkout_of_a_kit_uses_the_first_ones_units_again() -> std::io::Result<()> {
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("second-checkout")?;
+    for checkout in ["first", "second"] {
+        std::fs::create_dir_all(dir.join(checkout).join("src"))?;
+        std::fs::write(dir.join(checkout).join("kit.toml"), "name = \"twice\"\n")?;
+        std::fs::write(dir.join(checkout).join("src/main.fen"), EDITED_BASE)?;
+    }
+    let build = |checkout: &str| {
+        crate::executables::fennec_command()
+            .args(["build", ".", "-o", "program"])
+            .current_dir(dir.join(checkout))
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+    };
+    let first = build("first")?;
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let second = build("second")?;
+    assert!(second.status.success(), "{}", text(&second.stderr));
+    let written = written_of(&second);
+    assert!(written.is_some_and(|(written, total)| written < total), "{written:?}: {}", text(&second.stdout));
+    assert!(
+        std::fs::read(dir.join("first/program"))? == std::fs::read(dir.join("second/program"))?,
+        "the second checkout's program isn't the first's"
+    );
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// With `FENNEC_CACHE_AUDIT=1`, a build writes each unit it uses again anyway, into what's thrown
 /// away, and fails if it doesn't come out as kept: its text, what it shares, every kind it asks
 /// the layouts for, in order, and every read it makes. So each of these edit builds, one for

@@ -331,7 +331,7 @@ impl Run {
     /// one that runs where it's made has no join, so neither pays for one.
     fn joins_on_a_pool(&mut self) {
         if self.waiting {
-            self.done.counts_joins(true);
+            self.done.counts_joins(true, self.task.as_ref().map(crate::replay::Task::name));
             self.named = Some(super::deadlock::CallName::here());
         }
     }
@@ -1179,7 +1179,7 @@ mod pool {
         pub(super) fn finished(&self) {}
 
         #[expect(clippy::unused_self, reason = "it stands in for the threads build's latch")]
-        pub(super) fn counts_joins(&self, _counted: bool) {}
+        pub(super) fn counts_joins(&self, _counted: bool, _replay: Option<std::sync::Arc<str>>) {}
 
         #[expect(clippy::unused_self, reason = "it stands in for the threads build's latch")]
         pub(super) fn range_failed(&self, _from: usize, _crash: Option<String>) {}

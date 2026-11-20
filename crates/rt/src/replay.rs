@@ -56,12 +56,21 @@
 //!   connection's reads and writes among them, and when they've all ended the server stops, as if
 //!   it had been stopped there, and says so.
 //!
-//! The log is `FENREPL8`, the header's length as four bytes and the header, then the entries. Each
+//! - **Deadlocks:** a run whose tasks all come to wait on each other for good is stopped by the
+//!   deadlock check (`embed::deadlock`), recorded or not. A recording logs, under `main`, a last
+//!   `deadlock` entry with each stuck wait as a line, `task kind place`, as `0.2 receive 0:c1`,
+//!   then its end mark. A replay of it lets a task whose recording has nothing more for it at a
+//!   channel go on into the real wait, unturned, as it was when the check fired: past there it may
+//!   only wait, and a step that takes effect is a divergence. When the check fires, the replay's
+//!   lines are held to the recording's, and nothing may be left over. A replay of a recording
+//!   that didn't end in a deadlock, and comes to one, has diverged, and says so.
+//!
+//! The log is `FENREPL9`, the header's length as four bytes and the header, then the entries. Each
 //! entry is its task's name and its call's name, each with its length as two bytes, then what it
 //! gave, with its length as four. All numbers are little-endian. A `FENREPL1` log, from before
 //! tasks were named, has no task names, and replays as `main`'s. A log from an older Fennec, which
 //! recorded less of what tasks do, replays as it did then, saying so when it has tasks: a
-//! `FENREPL7` log has no piece of blocking work a stop cut short, a `FENREPL6` log no `parallel` ranges a stop kept from beginning, a `FENREPL5` log no task
+//! `FENREPL8` log has no deadlock, a `FENREPL7` log has no piece of blocking work a stop cut short, a `FENREPL6` log no `parallel` ranges a stop kept from beginning, a `FENREPL5` log no task
 //! stopped while it served, a `FENREPL4` log no `parallel` ranges a
 //! failure kept from starting, and a `FENREPL3` or `FENREPL2` log no stops.
 
@@ -77,7 +86,11 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::{Instance, Value};
 
-const MAGIC: &[u8; 8] = b"FENREPL8";
+const MAGIC: &[u8; 8] = b"FENREPL9";
+
+/// A log from before deadlocks were recorded: one whose run deadlocked was cut short, without its
+/// end mark.
+const MAGIC_BEFORE_DEADLOCKS: &[u8; 8] = b"FENREPL8";
 
 /// A log from before a stop that cut a blocking piece of work short was recorded: its replay may go
 /// on past the work.
@@ -107,6 +120,15 @@ const END: &str = "end";
 
 /// A log from before tasks were named: every entry is `main`'s.
 const MAGIC_UNNAMED: &[u8; 8] = b"FENREPL1";
+
+/// The entry a recording ends with, under `main`, when the deadlock check stopped its run: each
+/// stuck wait's line, `task kind place`, in order, split by line breaks.
+const DEADLOCK: &str = "deadlock";
+
+/// What a channel's turn comes to in a replay of a run that deadlocked, past where its recording
+/// has anything for the task there: it goes on into the real wait, unturned, as it was when the
+/// check fired.
+pub(crate) const PAST_THE_END: i64 = i64::MIN;
 
 /// The entry that says how many workers the recorded run had, logged first, under no task.
 const WORKERS: &str = "workers";
@@ -172,6 +194,11 @@ struct Player {
     /// Whether the log ends with the mark its run wrote as it ended, so a replay that runs out of
     /// it is the program's doing, not the log's.
     whole: bool,
+    /// Each stuck wait's line, when the recorded run ended in a deadlock.
+    deadlock: Option<Vec<String>>,
+    /// The first step a replay took past where its recording ended in a deadlock: a divergence,
+    /// said when the replay comes to its deadlock or its end.
+    past: Option<String>,
 }
 
 /// A task, for its entries: its name, and how many tasks it has started, to name the next one.
@@ -256,15 +283,25 @@ pub(crate) fn met(place: Option<&str>, what: &str, outcome: i64) {
     match mode() {
         Mode::Off => {}
         Mode::Record(file) => log(file, place, &format!("{} {what}", running()), &outcome.to_le_bytes()),
-        Mode::Replay(player) => end_turn(player, place),
+        Mode::Replay(player) => end_turn(player, place, what),
     }
 }
 
-/// Ends the turn at the front of `place`'s stream.
-fn end_turn(player: &Mutex<Player>, place: &str) {
+/// Ends the turn at the front of `place`'s stream. A step that takes effect where the recording
+/// has nothing more, past where its run deadlocked, is a divergence: past there a task may only
+/// wait.
+fn end_turn(player: &Mutex<Player>, place: &str, what: &str) {
     let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(stream) = player.streams.get_mut(place) {
-        stream.pop_front();
+    if player.streams.get_mut(place).and_then(VecDeque::pop_front).is_none()
+        && player.deadlock.is_some()
+        && player.past.is_none()
+    {
+        player.past = Some(format!(
+            "this replay's `{} {what}` at {place} went through past where its recording ended in a \
+             deadlock, where it only waited, so it isn't the run that was recorded: something it \
+             depends on wasn't recorded, or the program has changed",
+            running()
+        ));
     }
 }
 
@@ -278,24 +315,38 @@ const TURN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 /// diverged, and says so.
 pub(crate) fn turn(place: Option<&str>, what: &str) -> Result<Option<i64>, String> {
     let (Some(place), Mode::Replay(player)) = (place, mode()) else { return Ok(None) };
-    turn_in(player, (place, what), TURN_PATIENCE, crate::embed::make_way).map(Some)
+    turn_in(player, (place, what, false), TURN_PATIENCE, crate::embed::make_way).map(Some)
 }
 
-/// Waits up to `patience` for the running task's turn to do `what` at `place` in `player`'s log,
-/// calling `make_way` between looks, and gives back what it came to.
+/// `turn`, for a wait, a channel's send or receive: in a replay of a run that deadlocked, one the
+/// recording has nothing more for at `place` comes to [`PAST_THE_END`], and goes on into the real
+/// wait.
+pub(crate) fn turn_to_wait(place: Option<&str>, what: &str) -> Result<Option<i64>, String> {
+    let (Some(place), Mode::Replay(player)) = (place, mode()) else { return Ok(None) };
+    turn_in(player, (place, what, true), TURN_PATIENCE, crate::embed::make_way).map(Some)
+}
+
+/// Waits for the running task's turn to do `what` at `place` in `player`'s log, calling `make_way`
+/// between looks, and gives back what it came to. It waits up to `patience` from when the place's
+/// next entry last changed, so a place that a long line of other tasks' turns are going through
+/// isn't taken for one that's stuck. A wait (`waits`) the recording has nothing more for, where it
+/// ended in a deadlock, comes to [`PAST_THE_END`].
 fn turn_in(
     player: &Mutex<Player>,
-    (place, what): (&str, &str),
+    (place, what, waits): (&str, &str, bool),
     patience: std::time::Duration,
     make_way: fn(),
 ) -> Result<i64, String> {
     let asked = format!("{} {what}", running());
-    let started = std::time::Instant::now();
+    let mut started = std::time::Instant::now();
+    let mut last_seen = None;
     loop {
         let waiting_for = {
             let player = player.lock().unwrap_or_else(PoisonError::into_inner);
-            let front = player.streams.get(place).and_then(|stream| stream.front());
+            let stream = player.streams.get(place);
+            let front = stream.and_then(|stream| stream.front());
             match front.map(|(next, payload)| (next.clone(), payload.clone())) {
+                None if waits && player.whole && player.deadlock.is_some() => return Ok(PAST_THE_END),
                 None if !player.whole => return Err(cut_short(what, place)),
                 None => {
                     return Err(format!(
@@ -309,7 +360,15 @@ fn turn_in(
                         payload.try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
                     return Ok(i64::from_le_bytes(bytes));
                 }
-                Some((next, _)) => next,
+                Some((next, _)) => {
+                    // Where the place has got to: its next entry moves on as each turn ends.
+                    let now = stream.map(VecDeque::len);
+                    if last_seen != Some(now) {
+                        last_seen = Some(now);
+                        started = std::time::Instant::now();
+                    }
+                    next
+                }
             }
         };
         if started.elapsed() > patience {
@@ -516,6 +575,64 @@ pub(crate) fn active() -> bool {
     !matches!(mode(), Mode::Off)
 }
 
+/// A stuck wait's line in a deadlock, `task kind place`, as `0.2 receive 0:c1`: the running task,
+/// doing `kind` at `place`, a place's or a task's name in this recording or replay.
+pub(crate) fn line(kind: &str, place: &str) -> Arc<str> {
+    Arc::from(format!("{} {kind} {place}", running()))
+}
+
+/// The deadlock check has proven a deadlock whose stuck waits are `lines`, in order. A recording
+/// logs them under `main`, whichever thread found it. A replay holds them to its recording's: the
+/// same, with nothing of the recording left over, is the run that was recorded, and anything else
+/// is a divergence, said in the `Err`. A normal run has nothing to do.
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "only a deadlock's report calls it, which this crate's tests never make")
+)]
+pub(crate) fn deadlocked(lines: &[String]) -> Result<(), String> {
+    match mode() {
+        Mode::Off => Ok(()),
+        Mode::Record(file) => {
+            log(file, "0", DEADLOCK, lines.join("\n").as_bytes());
+            Ok(())
+        }
+        Mode::Replay(player) => deadlocked_in(&player.lock().unwrap_or_else(PoisonError::into_inner), lines),
+    }
+}
+
+/// [`deadlocked`], in a replay of `player`.
+fn deadlocked_in(player: &Player, lines: &[String]) -> Result<(), String> {
+    let quoted =
+        |lines: &[String]| lines.iter().map(|line| format!("`{line}`")).collect::<Vec<_>>().join(", ");
+    let not_recorded = "so it isn't the run that was recorded: something it depends on wasn't recorded, or the \
+                        program has changed";
+    if let Some(past) = &player.past {
+        return Err(past.clone());
+    }
+    let Some(recorded) = &player.deadlock else {
+        return Err(format!(
+            "this replay came to a deadlock its recording didn't have, its tasks waiting at {}, {not_recorded}",
+            quoted(lines)
+        ));
+    };
+    if recorded.as_slice() != lines {
+        return Err(format!(
+            "this replay came to a deadlock with its tasks waiting at {}, where its recording's waited at {}, \
+             {not_recorded}",
+            quoted(lines),
+            quoted(recorded)
+        ));
+    }
+    if let Some((task, next)) = left_over(player) {
+        return Err(format!(
+            "this replay came to its recording's deadlock where its recording asked for `{next}` next{}, \
+             {not_recorded}",
+            in_task(&task)
+        ));
+    }
+    Ok(())
+}
+
 /// How many workers the recorded run had, for a replay to have as many.
 #[cfg_attr(
     not(any(test, feature = "threads")),
@@ -614,6 +731,7 @@ impl Player {
 fn player_of(log: &[u8]) -> Option<Player> {
     let named = [
         MAGIC,
+        MAGIC_BEFORE_DEADLOCKS,
         MAGIC_BEFORE_WORK_STOPS,
         MAGIC_BEFORE_UNBEGUN,
         MAGIC_BEFORE_SERVING_STOPS,
@@ -629,8 +747,11 @@ fn player_of(log: &[u8]) -> Option<Player> {
         stressed: false,
         orders_output: false,
         held: HashMap::new(),
+        deadlock: None,
+        past: None,
         whole: ![
             MAGIC,
+            MAGIC_BEFORE_DEADLOCKS,
             MAGIC_BEFORE_WORK_STOPS,
             MAGIC_BEFORE_UNBEGUN,
             MAGIC_BEFORE_SERVING_STOPS,
@@ -651,6 +772,11 @@ fn player_of(log: &[u8]) -> Option<Player> {
         }
         if task.is_empty() && call == STRESSED {
             player.stressed = true;
+            continue;
+        }
+        if task == "0" && call == DEADLOCK {
+            let lines = String::from_utf8_lossy(&payload).into_owned();
+            player.deadlock = Some(lines.lines().map(str::to_owned).collect());
             continue;
         }
         if task.is_empty() && call == WORKERS {
@@ -709,6 +835,7 @@ fn entries_start(log: &[u8]) -> Option<usize> {
     let magic = log.get(..MAGIC.len())?;
     if ![
         MAGIC,
+        MAGIC_BEFORE_DEADLOCKS,
         MAGIC_BEFORE_WORK_STOPS,
         MAGIC_BEFORE_UNBEGUN,
         MAGIC_BEFORE_SERVING_STOPS,
@@ -744,6 +871,16 @@ pub fn replay_from(path: &Path) -> std::io::Result<()> {
 pub fn unfinished() -> Option<String> {
     let Mode::Replay(player) = mode() else { return None };
     let player = player.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(past) = &player.past {
+        return Some(past.clone());
+    }
+    if player.deadlock.is_some() {
+        return Some(
+            "this replay ended, where its recording ended in a deadlock, so it isn't the run that was \
+             recorded: something it depends on wasn't recorded, or the program has changed"
+                .to_owned(),
+        );
+    }
     let mut held: Vec<&String> =
         player.held.iter().filter(|(_, bytes)| !bytes.is_empty()).map(|(task, _)| task).collect();
     held.sort();

@@ -180,7 +180,7 @@ impl Channel {
             Side::Receiving => Kind::Receive,
             Side::Sending => Kind::Send,
         };
-        (!self.to_every).then(|| Note::on_channel(self.number, kind))
+        (!self.to_every).then(|| Note::on_channel(self.number, kind, self.replay.as_deref()))
     }
 }
 
@@ -384,8 +384,16 @@ enum Turn {
 fn replayed(channel: &Channel, what: &str) -> Turn {
     // A channel's named only in a recording or a replay: anywhere else nothing's waited for.
     let Some(place) = channel.replay.as_deref() else { return Turn::Live };
-    match crate::replay::turn(Some(place), what) {
-        Ok(None) => Turn::Live,
+    // A send or a receive is a stuck wait where nothing can end it, which a replay of a run that
+    // deadlocked goes on into past its recording's end, as the run was when the check fired. A
+    // listener's on a channel to `.Every` is no stuck wait, so it never goes past.
+    let turn = if matches!(what, "send" | "receive") && !channel.to_every {
+        crate::replay::turn_to_wait(Some(place), what)
+    } else {
+        crate::replay::turn(Some(place), what)
+    };
+    match turn {
+        Ok(None | Some(crate::replay::PAST_THE_END)) => Turn::Live,
         Ok(Some(DONE)) => Turn::Goes,
         Ok(Some(STOPPED)) => {
             met(channel, what, STOPPED);

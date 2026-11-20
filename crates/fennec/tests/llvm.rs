@@ -20607,6 +20607,75 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A server that runs out of files ends the connection that's waited longest for its next request,
+/// to take a new one (runtime exhaustion audit, 2026-11-20). Under `ulimit -n 40`, 60 clients come
+/// one after another, each sending a request and keeping its connection: every one is answered at
+/// once, and the first ones find their connections closed. Before, a client past the limit waited
+/// in the listener's queue until an idle connection's own time ran out. On one
+/// worker, which ends its own, and on four, which ask each other in turn. Linux only: there a
+/// connection that finds no file waits in the queue, where macOS drops it at once, so on macOS the
+/// one that found the limit is lost and the room goes to the next.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_out_of_files_ends_its_longest_idle_connection_to_take_a_new_one() -> std::io::Result<()> {
+    use std::io::{ErrorKind, Read, Write};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body="ok".encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=30s)
+"#;
+    let dir = folder("http_server_out_of_files")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let answer = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+    for threads in ["1", "4"] {
+        let mut server = Running(
+            Command::new("sh")
+                .args(["-c", "ulimit -n 40 && exec \"$0\"", &executable.to_string_lossy()])
+                .env("FENNEC_THREADS", threads)
+                .stdout(std::process::Stdio::piped())
+                .spawn()?,
+        );
+        let port: u16 = server.first_line()?.trim().parse().map_err(|_| ErrorKind::InvalidData)?;
+        let mut kept = Vec::new();
+        for client in 0..60 {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            stream.write_all(format!("GET /{client} HTTP/1.1\r\nhost: here\r\n\r\n").as_bytes())?;
+            let mut heard = Vec::new();
+            let mut chunk = [0_u8; 256];
+            while !heard.ends_with(b"ok") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => heard.extend_from_slice(chunk.get(..read).unwrap_or_default()),
+                }
+            }
+            assert_eq!(String::from_utf8_lossy(&heard), answer, "client {client} on {threads} threads");
+            kept.push(stream);
+        }
+        // The first client's connection was ended to make room: it reads the end.
+        let first = kept.first_mut().ok_or(ErrorKind::NotFound)?;
+        first.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let mut rest = [0_u8; 16];
+        assert_eq!(first.read(&mut rest).ok(), Some(0), "the first connection on {threads} threads");
+        drop(kept);
+        drop(server);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A native server gives a whole request, its head and body, one `timeout`, so a client sending a
 /// body a byte at a time is cut off once it passes rather than held for as long as it keeps sending.
 #[test]

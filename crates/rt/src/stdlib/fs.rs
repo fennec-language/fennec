@@ -10,6 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::methods::no_method;
+use crate::stdlib::faults::{self, Work};
 use crate::stdlib::turns::Held;
 use crate::value::{Capability, Value};
 
@@ -144,6 +145,7 @@ fn through_links(path: &Path) -> std::io::Result<PathBuf> {
 /// made first, or a link waiting there, is passed over. It has `target`'s permissions before
 /// anything's in it, so what's being written is never readable by more than the file was.
 fn new_beside(target: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+    faults::check(Work::Create)?;
     let replaced = std::fs::metadata(target).ok();
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -180,17 +182,19 @@ fn replaceable(target: &Path) -> bool {
 /// program can't add to, it's written where it is.
 fn write_whole(path: &str, data: &[u8]) -> std::io::Result<()> {
     let target = through_links(Path::new(path))?;
+    // Written where it is, as `std::fs::write` does it.
+    let in_place = || faults::write_all(&mut std::fs::File::create(&target)?, data);
     if !replaceable(&target) {
-        return std::fs::write(target, data);
+        return in_place();
     }
     let (mut file, temporary) = match new_beside(&target) {
         Ok(made) => made,
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-            return std::fs::write(target, data);
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return in_place(),
         Err(err) => return Err(err),
     };
-    let done = file.write_all(data).and_then(|()| std::fs::rename(&temporary, &target));
+    let done = faults::write_all(&mut file, data)
+        .and_then(|()| faults::check(Work::Rename))
+        .and_then(|()| std::fs::rename(&temporary, &target));
     if done.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
@@ -235,17 +239,22 @@ fn open(path: &str) -> Value {
 /// A file written takes its target's place: everything written is on the disk first, and the
 /// rename is too, after, unless it was made with `durable=False`. Anything left is thrown away
 /// when that fails, leaving the target as it was.
-fn finish_writing(out: &mut BufWriter<std::fs::File>, at: &Written, durable: bool) -> Result<(), String> {
+fn finish_writing(out: &mut BufWriter<std::fs::File>, at: &Written, durable: bool) -> Result<(), Fail> {
     let done = (|| {
+        faults::check(Work::Flush)?;
         out.flush()?;
         if durable {
+            faults::check(Work::Sync)?;
             out.get_ref().sync_all()?;
         }
+        faults::check(Work::Rename)?;
         at.put_in_place()?;
-        // Windows has no handle to a folder to sync, and its renames are written through by
-        // the file system.
-        #[cfg(unix)]
         if durable {
+            // Counted on every system, so a rule fails the same work on each.
+            faults::check(Work::Sync)?;
+            // Windows has no handle to a folder to sync, and its renames are written through by
+            // the file system.
+            #[cfg(unix)]
             at.sync_folder()?;
         }
         Ok::<(), std::io::Error>(())
@@ -253,7 +262,7 @@ fn finish_writing(out: &mut BufWriter<std::fs::File>, at: &Written, durable: boo
     if done.is_err() {
         at.throw_away();
     }
-    done.map_err(|err| err.to_string())
+    done.map_err(Fail::from)
 }
 
 /// Puts a rename in `path`'s folder on the disk.
@@ -268,20 +277,20 @@ type FakeWrite<'a> = dyn FnMut(&str, &[u8]) -> Result<(), String> + 'a;
 
 /// `fs._finish(file)`: a file written takes its target's place, and one read is closed. A fake
 /// one goes into the test's fake file system, by `fake`.
-fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
+fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), Fail> {
     let Some(file) = taken(file) else { return Ok(()) };
     let fake_written = match &mut *file.lock() {
         OpenFile::FakeWriting { target, data } => Some((std::mem::take(target), std::mem::take(data))),
         _ => None,
     };
     if let Some((target, data)) = fake_written {
-        return fake(&target, &data);
+        return fake(&target, &data).map_err(Fail::from);
     }
     let Ok(turn) = file.turn() else {
         // Stopped, or cancelled, waiting its turn to finish it: it's failed as stopped, so what was
         // written never takes its target's place, and is thrown away as a failed block's is.
         throw_away(file);
-        return Err(STOPPED.to_owned());
+        return Err(Fail::from(STOPPED.to_owned()));
     };
     let held = Arc::clone(&file);
     let done = blocking(move || match &mut *held.lock_for_work() {
@@ -366,7 +375,7 @@ pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -
             Ok(text) => Value::Ok(Rc::new(Value::str(&text))),
             Err(reason) => io_error(&reason),
         },
-        Err(reason) => io_error(&reason),
+        Err(fail) => io_failed(&fail),
     })
 }
 
@@ -376,11 +385,12 @@ fn file_work(
     method: &str,
     data: Option<Vec<u8>>,
     size: Option<usize>,
-) -> Result<Given, String> {
-    let io = |err: std::io::Error| err.to_string();
+) -> Result<Given, Fail> {
+    // Said in Fennec's words, as a path's failure is, which are the same on every system.
+    let io = Fail::from;
     match (method, file) {
         ("write", OpenFile::Writing { out, .. }) => {
-            out.write_all(&data.unwrap_or_default()).map_err(io)?;
+            faults::write_all(out, &data.unwrap_or_default()).map_err(io)?;
             Ok(Given::Nothing)
         }
         ("write", OpenFile::FakeWriting { data: kept, .. }) => {
@@ -388,17 +398,17 @@ fn file_work(
             Ok(Given::Nothing)
         }
         ("sync", OpenFile::Writing { out, .. }) => {
-            out.flush().map_err(io)?;
-            out.get_ref().sync_all().map_err(io)?;
+            faults::check(Work::Flush).and_then(|()| out.flush()).map_err(io)?;
+            faults::check(Work::Sync).and_then(|()| out.get_ref().sync_all()).map_err(io)?;
             Ok(Given::Nothing)
         }
         // What's been written goes to the file now, without waiting for the disk.
         ("flush", OpenFile::Writing { out, .. }) => {
-            out.flush().map_err(io)?;
+            faults::check(Work::Flush).and_then(|()| out.flush()).map_err(io)?;
             Ok(Given::Nothing)
         }
         ("sync" | "flush", _) => Ok(Given::Nothing),
-        ("write", _) => Err("this file was opened to read, not to write".to_owned()),
+        ("write", _) => Err(Fail::from("this file was opened to read, not to write".to_owned())),
         ("read", OpenFile::Reading(reader)) => {
             let mut all = Vec::new();
             reader.read_to_end(&mut all).map_err(io)?;
@@ -431,7 +441,7 @@ fn file_work(
             *at += end;
             Ok(if reading == "read_line" { Given::Line(Some(taken)) } else { Given::Data(taken) })
         }
-        _ => Err("this file was made to write, not to read".to_owned()),
+        _ => Err(Fail::from("this file was made to write, not to read".to_owned())),
     }
 }
 
@@ -492,9 +502,9 @@ pub(crate) fn fake_method(
                 };
                 Ok(())
             });
-            Some(Ok(match done.and(written) {
+            Some(Ok(match done.and(written.map_err(Fail::from)) {
                 Ok(()) => Value::Ok(Rc::new(Value::Unit)),
-                Err(reason) => io_error(&reason),
+                Err(fail) => io_failed(&fail),
             }))
         }
         _ => world.fs(method, paths, span),
@@ -645,7 +655,7 @@ fn on_real_fs<D: Databases>(method: &str, paths: &[Value], span: Span) -> Result
         ("_create", [Value::Str(path), Value::Bool(durable)]) => create(path, *durable),
         ("_open", [Value::Str(path)]) => open(path),
         ("_sqlite_open" | "_sqlite_read", [Value::Str(path)]) => D::whole(method, path, span)?,
-        ("_finish", [file]) => done(finish(file, &mut |_, _| Ok(())).map_err(Fail::from), |()| Value::Unit),
+        ("_finish", [file]) => done(finish(file, &mut |_, _| Ok(())), |()| Value::Unit),
         ("_discard", [file]) => {
             discard(file);
             Value::Unit
@@ -1104,6 +1114,7 @@ impl WrittenAt {
 
     /// [`new_beside`], in the file's folder: a new file beside it, with its permissions.
     fn new_beside(&self) -> std::io::Result<(std::fs::File, PathBuf)> {
+        faults::check(Work::Create)?;
         let mut options = cap_std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -1150,17 +1161,19 @@ fn permissions_like(file: &std::fs::File, replaced: &cap_std::fs::Metadata) -> s
 fn write_whole_beneath(folder: &Arc<cap_std::fs::Dir>, at: &Path, data: &[u8]) -> std::io::Result<()> {
     let place = written_at(folder, at)?;
     let (here, name) = (&place.here, &place.name);
+    // Written where it is, as `Dir::write` does it.
+    let in_place = || faults::write_all(&mut here.create(name)?, data);
     if !place.replaceable() {
-        return here.write(name, data);
+        return in_place();
     }
     let (mut file, temporary) = match place.new_beside() {
         Ok(made) => made,
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-            return here.write(name, data);
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return in_place(),
         Err(err) => return Err(err),
     };
-    let done = file.write_all(data).and_then(|()| here.rename(&temporary, here, name));
+    let done = faults::write_all(&mut file, data)
+        .and_then(|()| faults::check(Work::Rename))
+        .and_then(|()| here.rename(&temporary, here, name));
     if done.is_err() {
         let _ = here.remove_file(&temporary);
     }
@@ -1506,7 +1519,13 @@ pub(crate) fn path_text(value: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::Fail;
+    use std::rc::Rc;
+
+    use fennec_syntax::Span;
+
+    use super::{Fail, handle_of, real_file, real_fs};
+    use crate::stdlib::faults;
+    use crate::value::Value;
 
     /// The system's failures that a caller may handle differently each have a case of their own,
     /// on the real file system, and the rest are `Other`. Each is said in Fennec's words, the same
@@ -1518,10 +1537,8 @@ mod tests {
         assert_eq!((fail.case, fail.reason.as_str()), ("NotFound", "nothing is there"));
         // A folder read as a file is said as one on every system, though Windows calls it missing.
         for read in ["read_text", "read_bytes", "_open"] {
-            let folder = crate::value::Value::str(&std::env::temp_dir().to_string_lossy());
-            let shown = crate::format::repr(
-                &super::real_fs(read, &[folder], fennec_syntax::Span::default()).unwrap(),
-            );
+            let folder = Value::str(&std::env::temp_dir().to_string_lossy());
+            let shown = crate::format::repr(&real_fs(read, &[folder], Span::default()).unwrap());
             assert!(shown.contains("reason=\"it's a folder, not a file\""), "{read}: {shown}");
         }
         let binary = std::io::read_to_string(&[0xFF, 0xFE][..]).expect_err("it isn't text");
@@ -1540,5 +1557,201 @@ mod tests {
             assert_eq!((fail.case, fail.reason.as_str()), (case, "said"));
         }
         assert_eq!(Fail::from("words".to_owned()).case, "Other");
+    }
+
+    /// The names in `folder`, in order.
+    fn names(folder: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// What `fs`'s method gives, as Fennec shows it.
+    fn shown(method: &str, args: &[Value]) -> String {
+        crate::format::repr(
+            &real_fs(method, args, Span::default()).unwrap_or_else(|why| panic!("{}", why.message)),
+        )
+    }
+
+    /// A `File` made to write `target`, its block not yet ended.
+    fn made(target: &std::path::Path, durable: bool) -> Rc<Value> {
+        let path = Value::str(&target.to_string_lossy());
+        match real_fs("_create", &[path, Value::Bool(durable)], Span::default()) {
+            Ok(Value::Ok(file)) => file,
+            other => panic!("{:?}", other.map(|made| crate::format::repr(&made))),
+        }
+    }
+
+    /// What a `File`'s method gives, as Fennec shows it.
+    fn file_does(file: &Value, method: &str, args: &[Value]) -> String {
+        let handle = handle_of(file).expect("the file is open");
+        crate::format::repr(
+            &real_file(handle, method, args, Span::default()).unwrap_or_else(|why| panic!("{}", why.message)),
+        )
+    }
+
+    /// A whole file written that fails, at any step, leaves the file it was to replace as it was and
+    /// nothing beside it, and says why in Fennec's words, the same on every system.
+    #[test]
+    fn a_whole_write_that_fails_leaves_the_file_as_it_was() -> std::io::Result<()> {
+        let temp = fennec_temp::Temp::folder("faults-whole")?;
+        let target = temp.path().join("kept.txt");
+        std::fs::write(&target, "old")?;
+        let path = Value::str(&target.to_string_lossy());
+        // Each error, as the `IoError` case and words a program is given.
+        for (rule, said) in [
+            ("create:1:nospace", "Other(reason=\"the disk is full\")"),
+            ("write:1:quota", "Other(reason=\"the disk space allowed is used up\")"),
+            ("write:1:readonly", "Other(reason=\"the disk can't be written to\")"),
+            ("write:1:denied", "PermissionDenied(reason=\"the system won't allow it\")"),
+            ("write:1:nospace:2", "Other(reason=\"the disk is full\")"),
+            ("write:1:toolarge:100", "Other(reason=\"the file is too big for the system\")"),
+            ("rename:1:io", "Other(reason=\"the system failed: other error\")"),
+        ] {
+            faults::put_in(rule);
+            let written = shown("write_text", &[path.clone(), Value::str("new text")]);
+            assert!(written.contains(said), "{rule}: {written}");
+            assert_eq!(std::fs::read_to_string(&target)?, "old", "{rule}");
+            assert_eq!(names(temp.path()), ["kept.txt"], "{rule}");
+        }
+        // A folder the program can't add a file to has the file written where it is, as it's
+        // always been: so it's written whole, with no file beside it.
+        faults::put_in("create:1:denied");
+        assert_eq!(shown("write_text", &[path.clone(), Value::str("new text")]), "Ok()");
+        assert_eq!(std::fs::read_to_string(&target)?, "new text");
+        // A rule for more of a kind of work than the program does fails nothing. A whole write is
+        // one create, one write and one rename, with no flush or sync.
+        faults::put_in("create:2:io,write:2:nospace,rename:2:io,flush:1:io,sync:1:io");
+        assert_eq!(shown("write_text", &[path.clone(), Value::str("newer")]), "Ok()");
+        assert_eq!(std::fs::read_to_string(&target)?, "newer");
+        assert_eq!(names(temp.path()), ["kept.txt"]);
+        faults::put_in("");
+        Ok(())
+    }
+
+    /// A run killed at each step of a write, run again as this test in a process of its own,
+    /// leaves the file it was to replace whole, old or new, never part of either. The file it was
+    /// writing beside it is left where the kill came before the rename, as nothing's left to throw
+    /// it away, holding what reached it. Nothing clears it on a later run.
+    #[test]
+    fn a_run_killed_partway_leaves_its_target_old_or_new() -> std::io::Result<()> {
+        if let Some(rule) = std::env::var_os("FENNEC_FAULTS_KILL_RULE") {
+            let rule = rule.to_string_lossy().into_owned();
+            let target =
+                std::path::PathBuf::from(std::env::var_os("FENNEC_FAULTS_KILL_IN").unwrap_or_default())
+                    .join("kept.txt");
+            faults::put_in(&rule);
+            if std::env::var_os("FENNEC_FAULTS_KILL_WHOLE").is_some() {
+                shown("write_text", &[Value::str(&target.to_string_lossy()), Value::str("new")]);
+            } else {
+                let file = made(&target, true);
+                file_does(&file, "write", &[Value::str("n")]);
+                file_does(&file, "write", &[Value::str("ew")]);
+                shown("_finish", &[(*file).clone()]);
+            }
+            panic!("{rule} didn't kill the run");
+        }
+        // Each rule, whether the write is whole, what the target holds after, and what the file
+        // beside it holds, if one's left.
+        for (rule, whole, left, beside) in [
+            ("create:1:kill", false, "old", None),
+            ("write:2:kill:1", false, "old", Some("ne")),
+            ("flush:1:kill", false, "old", Some("")),
+            ("sync:1:kill", false, "old", Some("new")),
+            ("rename:1:kill", false, "old", Some("new")),
+            ("sync:2:kill", false, "new", None),
+            ("create:1:kill", true, "old", None),
+            ("write:1:kill:2", true, "old", Some("ne")),
+            ("rename:1:kill", true, "old", Some("new")),
+        ] {
+            let temp = fennec_temp::Temp::folder("faults-killed")?;
+            std::fs::write(temp.path().join("kept.txt"), "old")?;
+            let mut run = std::process::Command::new(std::env::current_exe()?);
+            run.args(["--exact", "stdlib::fs::tests::a_run_killed_partway_leaves_its_target_old_or_new"])
+                .env("FENNEC_FAULTS_KILL_RULE", rule)
+                .env("FENNEC_FAULTS_KILL_IN", temp.path());
+            if whole {
+                run.env("FENNEC_FAULTS_KILL_WHOLE", "1");
+            }
+            let ran = run.output()?;
+            let said =
+                String::from_utf8_lossy(&ran.stdout).into_owned() + &String::from_utf8_lossy(&ran.stderr);
+            assert!(!ran.status.success(), "{rule}: {said}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt as _;
+                assert_eq!(ran.status.signal(), Some(9), "{rule}: {said}");
+            }
+            assert_eq!(std::fs::read_to_string(temp.path().join("kept.txt"))?, left, "{rule}");
+            let partial: Vec<String> =
+                names(temp.path()).into_iter().filter(|name| name.ends_with(".fennec-partial")).collect();
+            match beside {
+                None => assert!(partial.is_empty(), "{rule}: {partial:?}"),
+                Some(held) => {
+                    assert_eq!(partial.len(), 1, "{rule}: {partial:?}");
+                    let found = partial.first().map(|name| temp.path().join(name)).unwrap_or_default();
+                    assert_eq!(std::fs::read_to_string(found)?, held, "{rule}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A `File`'s write the disk cuts short leaves what reached the file, and fails in Fennec's
+    /// words. A program that goes on writing past it has the rest after what reached it.
+    #[test]
+    fn a_files_write_cut_short_keeps_what_reached_it() -> std::io::Result<()> {
+        let temp = fennec_temp::Temp::folder("faults-file")?;
+        let target = temp.path().join("log.txt");
+        faults::put_in("write:2:nospace:3");
+        let file = made(&target, true);
+        assert_eq!(file_does(&file, "write", &[Value::str("one\n")]), "Ok()");
+        let cut = file_does(&file, "write", &[Value::str("two\n")]);
+        assert!(cut.contains("Other(reason=\"the disk is full\")"), "{cut}");
+        assert_eq!(file_does(&file, "write", &[Value::str("three\n")]), "Ok()");
+        assert_eq!(shown("_finish", &[(*file).clone()]), "Ok()");
+        assert_eq!(std::fs::read_to_string(&target)?, "one\ntwothree\n");
+        assert_eq!(names(temp.path()), ["log.txt"]);
+        faults::put_in("");
+        Ok(())
+    }
+
+    /// A `File`'s block that fails as it ends, at any step before its rename, leaves its target as
+    /// it was, and nothing beside it. A durable file's folder is synced after the rename, and
+    /// counted on every system, so `sync:2` fails there on each, with the file already in place.
+    #[test]
+    fn a_file_whose_end_fails_leaves_its_target_as_it_was() -> std::io::Result<()> {
+        let temp = fennec_temp::Temp::folder("faults-end")?;
+        let target = temp.path().join("kept.txt");
+        for (rule, durable, said, left) in [
+            ("flush:1:nospace", true, "the disk is full", "old"),
+            ("sync:1:readonly", true, "the disk can't be written to", "old"),
+            ("rename:1:denied", false, "the system won't allow it", "old"),
+            ("sync:2:io", true, "the system failed: other error", "new"),
+        ] {
+            std::fs::write(&target, "old")?;
+            faults::put_in(rule);
+            let file = made(&target, durable);
+            assert_eq!(file_does(&file, "write", &[Value::str("new")]), "Ok()", "{rule}");
+            let ended = shown("_finish", &[(*file).clone()]);
+            assert!(ended.contains(&format!("reason=\"{said}\"")), "{rule}: {ended}");
+            assert_eq!(std::fs::read_to_string(&target)?, left, "{rule}");
+            assert_eq!(names(temp.path()), ["kept.txt"], "{rule}");
+        }
+        // A `flush` or `sync` the program asks for fails where it's asked, and is counted with
+        // those its block's end does.
+        faults::put_in("flush:1:quota,sync:2:io");
+        let file = made(&target, true);
+        assert!(file_does(&file, "flush", &[]).contains("the disk space allowed is used up"));
+        assert_eq!(file_does(&file, "sync", &[]), "Ok()");
+        assert_eq!(file_does(&file, "write", &[Value::str("synced")]), "Ok()");
+        assert!(shown("_finish", &[(*file).clone()]).contains("the system failed: other error"));
+        faults::put_in("");
+        Ok(())
     }
 }

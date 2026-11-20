@@ -1156,6 +1156,58 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 
+    /// Every way of a `Ruled` step that keeps to its rules, three times over with shifting values,
+    /// checks, and the evaluator prints what the oracle prints. Then each way that can break one
+    /// does, on its own, and stops the program where the evaluator says, but making a value, which
+    /// is refused and goes on: a field lent alone by `ref` stops it as it comes back (#2270).
+    #[test]
+    fn the_where_rule_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, RULE_WAYS, RuleStep, RuleWay, Ruling, Stmt};
+        let run = |steps: Vec<RuleStep>| {
+            let program = Program { body: vec![Stmt::Ruled(Ruling { id: 1, steps })], threadless: true };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some(ran) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure:\n{source}")
+            };
+            (source, ran)
+        };
+        let steps = (0..3_i64)
+            .flat_map(|round| {
+                RULE_WAYS.iter().enumerate().map(move |(at, way)| RuleStep {
+                    way: *way,
+                    value: (i64::try_from(at).unwrap_or(0) * 3 + round) % 10,
+                    breaks: false,
+                })
+            })
+            .collect();
+        let (source, (printed, ended, _)) = run(steps);
+        assert!(ended && printed.contains("counted 1\n") && printed.contains("made Gauge1"), "{printed}");
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+        for way in RULE_WAYS {
+            let first = RuleStep { way: RuleWay::Raised, value: 2, breaks: false };
+            let (source, (printed, ended, said)) = run(vec![first, RuleStep { way, value: 4, breaks: true }]);
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+            if matches!(way, RuleWay::Raised | RuleWay::Dipped | RuleWay::Made) {
+                assert!(ended, "{way:?}: {printed}");
+                assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+            } else {
+                let said = said.unwrap_or_default();
+                assert!(!ended && said.contains("breaks the `where` rule"), "{way:?}: {said}");
+                let stopped =
+                    matches!(&oracle.ended, fennec_oracle::Ended::Stopped(why) if why.contains(&said));
+                assert!(stopped, "{way:?}: {:?}\n{source}", oracle.ended);
+            }
+        }
+    }
+
     /// Every way of a `Popped` step, twice over, for each type, in a local and in a field, checks,
     /// and the evaluator prints what the oracle prints: an optional of a heap type taken out of a
     /// list is the item it was, and a missing one, or one that's `None`, is what `else` gives.

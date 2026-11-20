@@ -34,6 +34,7 @@ use super::ast::{LOCK_WAYS, LockStep, LockWay, LockingTogether};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
 use super::ast::{POP_TYS, POP_WAYS, PopTy, PopWay, Popping};
+use super::ast::{RULE_WAYS, RuleStep, RuleWay, Ruling};
 use super::ast::{STUCK_WAYS, Sticking, StuckWay};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
@@ -94,8 +95,16 @@ const LOCKED_AGAINST_MADE_ORDER: bool = true;
 const ARRAYS: bool = true;
 
 /// Whether an `Arrayed` statement changes a field of an optional struct in an array once
-/// `is not None` narrows it. A built program can't yet: it isn't lowered (#2255).
-pub(super) const NARROWED_FIELD_WRITES: bool = false;
+/// `is not None` narrows it, in a `for ref` over the array. On since #2266 lowered it (#2255).
+pub(super) const NARROWED_FIELD_WRITES: bool = true;
+
+/// Whether random programs write fields with `where` rules every way (`Ruled`): set, added to,
+/// taken from, through a `ref self` method, lent alone by `ref` to a call and to a `for ref`
+/// loop's turn, and dipped below and put back before it comes back, which is fine (#2270); the
+/// whole struct lent by `ref`; in a list and a dict; `copy`; and a value made from a number worked
+/// out as it runs, which is refused when it breaks one. A risky program breaks one, which stops
+/// it. Map row 9: nothing wrote a `where` rule before.
+const WHERE_RULES: bool = true;
 
 /// Whether random programs loop over generators that fail partway (`Generated`): wrapped with
 /// `? from` in a `for`, in `enumerate` and in `zip` on either side or both, and held in a name, a
@@ -783,6 +792,7 @@ impl Writer<'_> {
             27 if LOCKED_TOGETHER && self.choice(4) == 0 => self.locked_together(body),
             27 if ARRAYS && self.choice(4) == 0 => self.arrays(body),
             27 if FAILING_GENERATORS && self.choice(4) == 0 => self.failing_generators(body),
+            27 if WHERE_RULES && self.choice(4) == 0 => self.where_rules(body),
             27 if POPPED_OPTIONALS && self.choice(4) == 0 => self.popped_optionals(body),
             27 => self.change_buffer(body),
             29 => {
@@ -1588,6 +1598,21 @@ impl Writer<'_> {
         body.push(Stmt::LockedTogether(LockingTogether { id, base, steps }));
     }
 
+    /// A `Ruled` statement: 3 to 10 steps, each with a value from 0 to 9. Only a risky program
+    /// breaks a rule, and then a step in four does.
+    fn where_rules(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let way = RULE_WAYS.get(self.choice(RULE_WAYS.len())).copied().unwrap_or(RuleWay::Raised);
+            let value = i64::from(self.byte() % 10);
+            let breaks = self.risky && self.choice(4) == 0;
+            steps.push(RuleStep { way, value, breaks });
+        }
+        body.push(Stmt::Ruled(Ruling { id, steps }));
+    }
+
     /// A `Popped` statement: one type, in a local or a field, then 3 to 12 steps, each with a
     /// value from 0 to 2.
     fn popped_optionals(&mut self, body: &mut Vec<Stmt>) {
@@ -2072,7 +2097,8 @@ impl Writer<'_> {
                 if ty == Ty::Node {
                     self.reshape(body, &first);
                 } else {
-                    let node = self.of(Ty::Node, 1);
+                    // In a loop, a node holding the list itself would double it every round.
+                    let node = self.node_for_list();
                     body.push(Stmt::NodesAppend(first.clone(), node));
                     self.read_back(body, &first);
                 }

@@ -6012,6 +6012,50 @@ def main(stdout: Stdout):
     stdout.print(counts)
 "#;
 
+/// A field path checked for `None` stays checked while what changes leaves it as it was (#2267): a
+/// change inside it, and one to a field beside it, nested a struct down, and in a `for ref` item,
+/// where `None` is passed over. The oracle runs it the same.
+#[test]
+fn a_checked_field_path_is_changed_inside_where_it_is_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "checked_field_path_changed",
+        CHECKED_FIELD_PATH_CHANGED,
+        "35\nHolder(cell=Cell(health=35), name=\"lair\")\nCamp(holder=Holder(cell=Cell(health=70), name=\"lair\"))\n\
+         [Holder(cell=Cell(health=34), name=\"lair\"), Holder(cell=None, name=\"empty\")]\n",
+    )
+}
+
+const CHECKED_FIELD_PATH_CHANGED: &str = r#"struct Cell:
+    health = 0
+
+struct Holder:
+    cell: Cell?
+    name: str
+
+struct Camp:
+    holder: Holder
+
+def main(stdout: Stdout):
+    mut holder = Holder(cell=Cell(health=5), name="den")
+    if holder.cell is not None:
+        holder.cell.health += 30
+        holder.name = "lair"
+        stdout.print(holder.cell.health)
+    stdout.print(holder)
+    mut camp = Camp(holder=holder)
+    if camp.holder.cell is not None:
+        camp.holder.cell.health *= 2
+    stdout.print(camp)
+    mut holders = [holder, Holder(cell=None, name="empty")]
+    for ref each in holders:
+        if each.cell is not None:
+            each.cell.health -= 1
+    stdout.print(holders)
+"#;
+
 /// A local `ref` inside `lock ... as ref held:` reads and writes the locked value, `slot = slot * 2`
 /// and `x = slot + 1` as well as `+=`, and a failure leaving the lock undoes what was changed
 /// through it, as it undoes a write made directly.
@@ -9494,6 +9538,80 @@ fn deadlock_fixture_runs_with(
                 "{name} on {threads} threads"
             );
         }
+    }
+    Ok(())
+}
+
+/// A deadlock recorded replays to the same report: each program that deadlocks in the tests below,
+/// recorded at 4 threads, says its deadlock and ends with 1, and its recording ends with the
+/// deadlock's lines. Replayed, at 1, 4 and 16 threads, each task's waits past its recording's end
+/// are the ones it was in, so the check finds the same deadlock, prints the same, and ends with 1.
+#[test]
+fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let deadlocking = [
+        "receive_alone",
+        "each_other",
+        "block_end",
+        "send_full",
+        "last_ends",
+        "inside_a_task",
+        "stuck_ranges",
+        "stuck_ranges_in_task",
+        "nested_call",
+        "ring",
+        "sibling_fails",
+        "two_fail",
+        "sibling_crashes",
+        // Ranges a failure kept from starting, logged as they're kept, since the call's end, where
+        // they were logged, never comes; and tasks whose numbers depend on which range launched
+        // first, which a replay says as its recording did (Fable 5.2's review, 2026-11-20).
+        "skipped_would_wait",
+        "range_at_block_end",
+    ];
+    for name in deadlocking {
+        let dir = folder(&format!("deadlock-replays-{name}"))?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/deadlocks/{name}.fen")),
+            &program,
+        )?;
+        let log = dir.join("run.log");
+        // What it printed, and what it said from the deadlock on: a build that isn't cached says
+        // hints of its own first, which only the recording, building it, may have.
+        let said = |ran: &Output| {
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            let deadlock =
+                errors.find("error: ").and_then(|at| errors.get(at..)).unwrap_or(&errors).to_owned();
+            (String::from_utf8_lossy(&ran.stdout).into_owned(), deadlock, ran.status.code())
+        };
+        let recorded = said(
+            &crate::executables::fennec_command()
+                .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+                .arg(&program)
+                .current_dir(&dir)
+                .env("FENNEC_THREADS", "4")
+                .output_within()?,
+        );
+        assert!(
+            recorded.1.starts_with("error: a deadlock") && recorded.2 == Some(1),
+            "{name} recorded: {recorded:?}"
+        );
+        // Many times where which task got which number is the run's own.
+        let times = if name == "range_at_block_end" { 24 } else { 1 };
+        for threads in ["1", "4", "16"] {
+            for _ in 0..times {
+                let replayed = crate::executables::fennec_command()
+                    .args(["replay", &log.to_string_lossy()])
+                    .current_dir(&dir)
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                assert_eq!(said(&replayed), recorded, "{name} replayed at {threads} threads");
+            }
+        }
+        std::fs::remove_dir_all(&dir)?;
     }
     Ok(())
 }
@@ -20489,6 +20607,75 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A server that runs out of files ends the connection that's waited longest for its next request,
+/// to take a new one (runtime exhaustion audit, 2026-11-20). Under `ulimit -n 40`, 60 clients come
+/// one after another, each sending a request and keeping its connection: every one is answered at
+/// once, and the first ones find their connections closed. Before, a client past the limit waited
+/// in the listener's queue until an idle connection's own time ran out. On one
+/// worker, which ends its own, and on four, which ask each other in turn. Linux only: there a
+/// connection that finds no file waits in the queue, where macOS drops it at once, so on macOS the
+/// one that found the limit is lost and the room goes to the next.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_out_of_files_ends_its_longest_idle_connection_to_take_a_new_one() -> std::io::Result<()> {
+    use std::io::{ErrorKind, Read, Write};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body="ok".encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=30s)
+"#;
+    let dir = folder("http_server_out_of_files")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let answer = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+    for threads in ["1", "4"] {
+        let mut server = Running(
+            Command::new("sh")
+                .args(["-c", "ulimit -n 40 && exec \"$0\"", &executable.to_string_lossy()])
+                .env("FENNEC_THREADS", threads)
+                .stdout(std::process::Stdio::piped())
+                .spawn()?,
+        );
+        let port: u16 = server.first_line()?.trim().parse().map_err(|_| ErrorKind::InvalidData)?;
+        let mut kept = Vec::new();
+        for client in 0..60 {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+            stream.write_all(format!("GET /{client} HTTP/1.1\r\nhost: here\r\n\r\n").as_bytes())?;
+            let mut heard = Vec::new();
+            let mut chunk = [0_u8; 256];
+            while !heard.ends_with(b"ok") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => heard.extend_from_slice(chunk.get(..read).unwrap_or_default()),
+                }
+            }
+            assert_eq!(String::from_utf8_lossy(&heard), answer, "client {client} on {threads} threads");
+            kept.push(stream);
+        }
+        // The first client's connection was ended to make room: it reads the end.
+        let first = kept.first_mut().ok_or(ErrorKind::NotFound)?;
+        first.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let mut rest = [0_u8; 16];
+        assert_eq!(first.read(&mut rest).ok(), Some(0), "the first connection on {threads} threads");
+        drop(kept);
+        drop(server);
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A native server gives a whole request, its head and body, one `timeout`, so a client sending a
 /// body a byte at a time is cut off once it passes rather than held for as long as it keeps sending.
 #[test]
@@ -21752,6 +21939,81 @@ fn served_while_its_clients_post(name: &str, clients: &[usize]) -> std::io::Resu
             assert!(said.contains(" live 0"), "{how}: {said}");
             assert!(!said.contains("heap audit"), "{how}: {said}");
         }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// A `return` in a server's round leaves the function serving, as it does from a plain `parallel`
+/// loop, and each connection still closes (#2284). Written in an `except` arm, it used to be missed,
+/// so the round was made a task that gives back how it ended, and the `return` in it gave back
+/// nothing: "the IR isn't sound". Two servers, each answering two lines and then told to stop:
+/// one whose only `return` is in an `except` arm, stopped by `break`, and one stopped by a `return`
+/// in its body, after which `main` goes on.
+#[test]
+fn a_return_in_a_served_round_leaves_the_function_serving() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("round-returns")?;
+    let head = "from std.net import NetError, Server
+
+def answering(server: Server, stdout: Stdout):
+    for conn in parallel(server):
+        line = conn.read_line() except why:
+            stdout.print(\"a read failed\", f\"{why}\")
+            return
+        said = line else \"nothing\"
+        if said == \"stop\":
+";
+    let tail = "        conn.write(f\"{said} back\\n\") except why:
+            stdout.print(\"a write failed\", f\"{why}\")
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        answering(server, stdout=stdout)
+    stdout.print(\"served\")
+";
+    for (name, stops) in [("by_break", "            break\n"), ("by_return", "            return\n")] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{head}{stops}{tail}"))?;
+        let executable = dir.join(name);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let mut server = Running(
+            Command::new(&executable)
+                .env("FENNEC_THREADS", "2")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?,
+        );
+        let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+        for line in ["a", "b", "stop"] {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+            stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+            stream.write_all(format!("{line}\n").as_bytes())?;
+            let mut back = String::new();
+            let _ = std::io::BufReader::new(stream).read_line(&mut back);
+            let wanted = if line == "stop" { String::new() } else { format!("{line} back\n") };
+            assert_eq!(back, wanted, "{name}");
+        }
+        // Serving ends, `answering` returns and `main` ends: the program exits by itself.
+        let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
+        let ended = loop {
+            if let Some(status) = server.0.try_wait()? {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "{name}: the server went on after `stop`");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert_eq!(ended.code(), Some(0), "{name}");
     }
     std::fs::remove_dir_all(&dir)
 }
@@ -31568,6 +31830,108 @@ fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Resul
                 "{case}: {said}"
             );
         }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A program that runs out of memory says so in Fennec's words, after what it printed, and ends
+/// with 1, where Rust's allocator said "memory allocation of N bytes failed", a note about
+/// `RUST_BACKTRACE`, and dumped core with exit code 134, the program's output lost. Linux only: an
+/// address-space limit (`ulimit -v`) makes an allocation fail there, where macOS gives it and lets
+/// the program fill memory. Once at once, a string doubling past the limit, and once a megabyte at
+/// a time, in a task too.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_that_runs_out_of_memory_says_so_after_what_it_printed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("out_of_memory")?;
+    let program = dir.join("out_of_memory.fen");
+    std::fs::write(
+        &program,
+        "\
+from std.concurrent import Crashed
+
+## Holds a megabyte more each time round, until memory runs out.
+def grow(stdout: Stdout):
+    mut held: list[str] = []
+    chunk = \"fennec \" * 149796
+    for round in range(1000000):
+        held.append(chunk + str(round))
+    stdout.print(len(held))
+
+def main(stdout: Stdout, args: Args) fails Crashed:
+    stdout.print(\"started\")
+    asked = args[0] if len(args) > 0 else \"\"
+    match asked:
+        case \"huge\":
+            stdout.print(len(\"x\" * (1 << 40)))
+        case \"task\":
+            with launch(() => grow(stdout))?:
+                pass
+        case _:
+            grow(stdout)
+",
+    )?;
+    let executable = dir.join("out_of_memory");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for how in ["huge", "grow", "task"] {
+        // Three gigabytes of address space: room for the runtime, not for what the program asks.
+        let ran = Command::new("sh")
+            .args(["-c", "ulimit -v 3000000 && exec \"$0\" \"$1\"", &path(&executable), how])
+            .env("FENNEC_THREADS", "4")
+            .output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!((printed.as_ref(), ran.status.code()), ("started\n", Some(1)), "{how}: {said}");
+        assert_eq!(said, "error: out of memory\n", "{how}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Eight ranges of a `parallel` call run out of memory at once, each doubling a string past an
+/// address-space limit they share: the first to run out stops the program, and the others wait
+/// for it, so it's said once and after what was printed. Each said it too, and the first's stop
+/// could be cut short by another's, which ended the program while it was still writing (Fable 5.2's
+/// review of #2278: the words came 2 to 4 times in 31 runs of 150). Run 20 times. Linux only, as
+/// for one thread above: macOS gives what's asked and lets the program fill memory.
+#[cfg(target_os = "linux")]
+#[test]
+fn ranges_running_out_of_memory_at_once_say_so_once() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("out_of_memory_at_once")?;
+    let program = dir.join("at_once.fen");
+    std::fs::write(
+        &program,
+        "\
+def asked(at: int) -> int:
+    return len(\"x\" * (1 << 40)) + at
+
+def main(stdout: Stdout):
+    stdout.print(\"started\")
+    lengths = [asked(at) for at in parallel(range(8))]
+    stdout.print(sum(lengths))
+",
+    )?;
+    let executable = dir.join("at_once");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for run in 0..20 {
+        // Three gigabytes of address space, as above.
+        let ran = Command::new("sh")
+            .args(["-c", "ulimit -v 3000000 && exec \"$0\"", &path(&executable)])
+            .env("FENNEC_THREADS", "8")
+            .output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!((printed.as_ref(), ran.status.code()), ("started\n", Some(1)), "run {run}: {said}");
+        assert_eq!(said.matches("error: out of memory").count(), 1, "run {run}: {said}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

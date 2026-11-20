@@ -119,19 +119,31 @@ pub(crate) fn built_within(command: &mut Command) -> Result<std::process::Output
 /// Builds `source` in `work`, giving back the executable, or None when the backend doesn't take
 /// the program yet.
 pub(crate) fn build(source: &str, work: &Path, release: bool) -> Result<Option<PathBuf>, String> {
+    build_with(&fennec(), source, work, release)
+}
+
+/// [`build`], with the `fennec` at `fennec`, whose runtime is the one beside it.
+pub(crate) fn build_with(
+    fennec: &Path,
+    source: &str,
+    work: &Path,
+    release: bool,
+) -> Result<Option<PathBuf>, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("{}: {err}", work.display()))?;
     let (program, executable) = (work.join("program.fen"), work.join("program"));
     std::fs::write(&program, source).map_err(|err| format!("{}: {err}", program.display()))?;
-    let mut command = Command::new(fennec());
+    let mut command = Command::new(fennec);
     command
         .args(["build", "--llvm"])
         .args(release.then_some("--release"))
         .arg(&program)
         .arg("-o")
         .arg(&executable)
-        // Its own home and no cache, so fuzzing leaves nothing behind in the real ones.
+        // Its own home and no cache, so fuzzing leaves nothing behind in the real ones, and no
+        // daemon, which a home of its own would start and keep for half an hour.
         .env("FENNEC_HOME", work)
-        .env("FENNEC_NO_CACHE", "1");
+        .env("FENNEC_NO_CACHE", "1")
+        .env("FENNEC_NO_DAEMON", "1");
     let built = built_within(&mut command)?;
     if built.status.success() {
         return Ok(Some(executable));
@@ -164,7 +176,8 @@ pub(crate) fn built_and_run(
         .arg("-o")
         .arg(&executable)
         .env("FENNEC_HOME", &work)
-        .env("FENNEC_NO_CACHE", "1");
+        .env("FENNEC_NO_CACHE", "1")
+        .env("FENNEC_NO_DAEMON", "1");
     let built = built_within(&mut command)?;
     if !built.status.success() {
         let how = if release { "with --release" } else { "as a dev build" };

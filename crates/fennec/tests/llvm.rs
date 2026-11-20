@@ -31691,6 +31691,108 @@ fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Resul
     Ok(())
 }
 
+/// A program that runs out of memory says so in Fennec's words, after what it printed, and ends
+/// with 1, where Rust's allocator said "memory allocation of N bytes failed", a note about
+/// `RUST_BACKTRACE`, and dumped core with exit code 134, the program's output lost. Linux only: an
+/// address-space limit (`ulimit -v`) makes an allocation fail there, where macOS gives it and lets
+/// the program fill memory. Once at once, a string doubling past the limit, and once a megabyte at
+/// a time, in a task too.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_that_runs_out_of_memory_says_so_after_what_it_printed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("out_of_memory")?;
+    let program = dir.join("out_of_memory.fen");
+    std::fs::write(
+        &program,
+        "\
+from std.concurrent import Crashed
+
+## Holds a megabyte more each time round, until memory runs out.
+def grow(stdout: Stdout):
+    mut held: list[str] = []
+    chunk = \"fennec \" * 149796
+    for round in range(1000000):
+        held.append(chunk + str(round))
+    stdout.print(len(held))
+
+def main(stdout: Stdout, args: Args) fails Crashed:
+    stdout.print(\"started\")
+    asked = args[0] if len(args) > 0 else \"\"
+    match asked:
+        case \"huge\":
+            stdout.print(len(\"x\" * (1 << 40)))
+        case \"task\":
+            with launch(() => grow(stdout))?:
+                pass
+        case _:
+            grow(stdout)
+",
+    )?;
+    let executable = dir.join("out_of_memory");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for how in ["huge", "grow", "task"] {
+        // Three gigabytes of address space: room for the runtime, not for what the program asks.
+        let ran = Command::new("sh")
+            .args(["-c", "ulimit -v 3000000 && exec \"$0\" \"$1\"", &path(&executable), how])
+            .env("FENNEC_THREADS", "4")
+            .output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!((printed.as_ref(), ran.status.code()), ("started\n", Some(1)), "{how}: {said}");
+        assert_eq!(said, "error: out of memory\n", "{how}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Eight ranges of a `parallel` call run out of memory at once, each doubling a string past an
+/// address-space limit they share: the first to run out stops the program, and the others wait
+/// for it, so it's said once and after what was printed. Each said it too, and the first's stop
+/// could be cut short by another's, which ended the program while it was still writing (Fable 5.2's
+/// review of #2278: the words came 2 to 4 times in 31 runs of 150). Run 20 times. Linux only, as
+/// for one thread above: macOS gives what's asked and lets the program fill memory.
+#[cfg(target_os = "linux")]
+#[test]
+fn ranges_running_out_of_memory_at_once_say_so_once() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("out_of_memory_at_once")?;
+    let program = dir.join("at_once.fen");
+    std::fs::write(
+        &program,
+        "\
+def asked(at: int) -> int:
+    return len(\"x\" * (1 << 40)) + at
+
+def main(stdout: Stdout):
+    stdout.print(\"started\")
+    lengths = [asked(at) for at in parallel(range(8))]
+    stdout.print(sum(lengths))
+",
+    )?;
+    let executable = dir.join("at_once");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for run in 0..20 {
+        // Three gigabytes of address space, as above.
+        let ran = Command::new("sh")
+            .args(["-c", "ulimit -v 3000000 && exec \"$0\"", &path(&executable)])
+            .env("FENNEC_THREADS", "8")
+            .output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!((printed.as_ref(), ran.status.code()), ("started\n", Some(1)), "run {run}: {said}");
+        assert_eq!(said.matches("error: out of memory").count(), 1, "run {run}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A key 20,000 deep that isn't there, in a launched task, whose own stack is small. The dict's
 /// lookup says what's missing and crashes only the task, as on the main thread: the key is read
 /// for the message with room for its depth, where it was read on the task's own stack, and stopped

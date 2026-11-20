@@ -687,7 +687,7 @@ mod unix {
             if reader.get_ref().stream.set_read_timeout(None).is_err() {
                 return;
             }
-            language_server(&mut reader, &mut writer, state);
+            language_server(reader, &mut writer, state);
             return;
         }
         let mut rest = String::new();
@@ -801,20 +801,24 @@ mod unix {
     }
 
     /// Serves a language server session over a connection, on a thread with room for the
-    /// checker to recurse, until the editor is done.
-    fn language_server(reader: &mut BufReader<Within>, writer: &mut UnixStream, state: &Mutex<State>) {
+    /// checker to recurse, until the editor is done. The session reads the connection on a thread
+    /// of its own, so it's shut once the session ends, which ends that thread and tells the
+    /// editor's side the session is over.
+    fn language_server(reader: BufReader<Within>, writer: &mut UnixStream, state: &Mutex<State>) {
         let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
         {
             let mut state = lock();
             state.sessions += 1;
             state.served += 1;
         }
+        let output = &mut *writer;
         std::thread::scope(|scope| {
             let session = std::thread::Builder::new()
                 .stack_size(crate::STACK_BYTES)
-                .spawn_scoped(scope, || fennec_lsp::serve(reader, writer));
+                .spawn_scoped(scope, move || fennec_lsp::serve(reader, output));
             let _ = session.map(std::thread::ScopedJoinHandle::join);
         });
+        let _ = writer.shutdown(std::net::Shutdown::Both);
         let mut state = lock();
         state.sessions = state.sessions.saturating_sub(1);
         state.last_work = Instant::now();

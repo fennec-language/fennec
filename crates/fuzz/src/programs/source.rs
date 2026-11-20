@@ -14,6 +14,7 @@ use super::ast::{
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
 use super::ast::{FILE_PIECES, FileWay, Filing};
+use super::ast::{GenStep, GenWay, Generating};
 use super::ast::{GenericStep, GenericTy, Genericking};
 use super::ast::{IfaceStep, Interfacing};
 use super::ast::{InOrder, OrderStep};
@@ -2636,6 +2637,120 @@ fn locked_together_written(locking: &LockingTogether) -> String {
     out
 }
 
+/// `generated{id}`, the function a `Generated` calls, after its errors, its failing generator and a
+/// function for each step: each step called in turn, its failure printed.
+fn generated_written(generating: &Generating) -> String {
+    let id = generating.id;
+    let mut out = format!(
+        "error Shut{id}:\n    code: int\n\nerror Lost{id}:\n    step: int\n\nerror Left{id}:\n    step: int\n\nerror \
+         Right{id}:\n    step: int\n\nstruct Boxed{id}[T]:\n    item: T\n\ndef failing{id}(limit: int, fail_at: int) -> \
+         Iterator[int] fails Shut{id}:\n    for each in range(limit):\n        if each == fail_at:\n            fail \
+         Shut{id}(code=each)\n        yield each\n\n"
+    );
+    for (n, step) in generating.steps.iter().enumerate() {
+        let GenStep { way, limit, fail_at, other_at } = *step;
+        let first = format!("failing{id}({limit}, fail_at={fail_at})");
+        let second = format!("failing{id}({}, fail_at={other_at})", limit + 1);
+        let zipped = |left: &str, right: &str| {
+            format!(
+                "    for one, other in zip({left}, {right}):\n        stdout.print(\"zip\", one, other)\n"
+            )
+        };
+        let (fails, body) = match way {
+            GenWay::ForFrom => (
+                format!("Lost{id}"),
+                format!(
+                    "    for value in {first}? from Lost{id}(step={n}):\n        stdout.print(\"for\", value)\n"
+                ),
+            ),
+            GenWay::EnumerateFrom => (
+                format!("Lost{id}"),
+                format!(
+                    "    for place, value in enumerate({first}? from Lost{id}(step={n})):\n        \
+                     stdout.print(\"enumerate\", place, value)\n"
+                ),
+            ),
+            GenWay::ZipBothFrom => (
+                format!("Left{id} | Right{id}"),
+                zipped(
+                    &format!("{first}? from Left{id}(step={n})"),
+                    &format!("{second}? from Right{id}(step={n})"),
+                ),
+            ),
+            GenWay::ZipLeftFrom => (
+                format!("Left{id} | Shut{id}"),
+                zipped(&format!("{first}? from Left{id}(step={n})"), &format!("{second}?")),
+            ),
+            GenWay::ZipRightFrom => (
+                format!("Shut{id} | Right{id}"),
+                zipped(&format!("{first}?"), &format!("{second}? from Right{id}(step={n})")),
+            ),
+            GenWay::ZipListFrom => {
+                (format!("Right{id}"), zipped("[10, 20, 30]", &format!("{first}? from Right{id}(step={n})")))
+            }
+            GenWay::Broken => (
+                format!("Lost{id}"),
+                format!(
+                    "    for value in {first}? from Lost{id}(step={n}):\n        stdout.print(\"broken\", value)\n        if \
+                     value == {other_at}:\n            break\n"
+                ),
+            ),
+            GenWay::Named => (
+                format!("Shut{id}"),
+                format!(
+                    "    held = {first}?\n    stdout.print(\"named\")\n    for value in held:\n        \
+                     stdout.print(\"named\", value)\n"
+                ),
+            ),
+            GenWay::KeptOver => (
+                format!("Shut{id}"),
+                format!(
+                    "    gens = (failing{id}(size + 1, fail_at={fail_at})? for size in range({limit}))\n    for gen in \
+                     gens:\n        for value in gen:\n            stdout.print(\"kept\", value)\n"
+                ),
+            ),
+            GenWay::InTuple => (
+                format!("Shut{id}"),
+                format!(
+                    "    first, second = ({first}?, {second}?)\n    for value in first:\n        \
+                     stdout.print(\"first\", value)\n    for value in second:\n        stdout.print(\"second\", value)\n"
+                ),
+            ),
+            GenWay::TupleIndexed => (
+                format!("Shut{id}"),
+                format!(
+                    "    pair = ({first}?, {n})\n    for value in pair[0]:\n        stdout.print(\"indexed\", value, \
+                     pair[1])\n"
+                ),
+            ),
+            GenWay::InList => (
+                format!("Shut{id}"),
+                format!(
+                    "    gens = [{first}?, {second}?]\n    for gen in gens:\n        for value in gen:\n            \
+                     stdout.print(\"listed\", value)\n"
+                ),
+            ),
+            GenWay::InBox => (
+                format!("Shut{id}"),
+                format!(
+                    "    boxed = Boxed{id}(item={first}?)\n    for value in boxed.item:\n        stdout.print(\"boxed\", \
+                     value)\n"
+                ),
+            ),
+        };
+        let _ = write!(
+            out,
+            "def step{id}_{n}(stdout: Stdout) fails {fails}:\n{body}    stdout.print(\"end\", {n})\n\n"
+        );
+    }
+    let _ = writeln!(out, "def generated{id}(stdout: Stdout):");
+    for n in 0..generating.steps.len() {
+        let _ = writeln!(out, "    step{id}_{n}(stdout) except why:\n        stdout.print(\"failed\", why)");
+    }
+    out.push('\n');
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -3403,6 +3518,10 @@ impl Writer {
             Stmt::LockedTogether(locking) => {
                 let _ = write!(self.helpers, "{}", locked_together_written(locking));
                 self.line(indent, &format!("locked_together{}(stdout)", locking.id));
+            }
+            Stmt::Generated(generating) => {
+                let _ = write!(self.helpers, "{}", generated_written(generating));
+                self.line(indent, &format!("generated{}(stdout)", generating.id));
             }
             Stmt::Ordered(in_order) => {
                 let _ = write!(self.helpers, "{}", ordered_written(in_order));

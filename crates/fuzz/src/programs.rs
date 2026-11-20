@@ -1156,6 +1156,48 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 
+    /// Every way of a `Generated` step, with its generators failing before, partway and not at
+    /// all, checks, and the evaluator prints what the oracle prints: each failure wrapped as the
+    /// `? from` of the generator that failed says, `zip` asking its first side first.
+    #[test]
+    fn the_failing_generator_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{GEN_WAYS, GenStep, Generating, Program, Stmt};
+        let body = (0..3_i64)
+            .map(|round| {
+                let steps = GEN_WAYS
+                    .iter()
+                    .chain(GEN_WAYS.iter())
+                    .enumerate()
+                    .map(|(at, way)| {
+                        let at = i64::try_from(at).unwrap_or(0) + round;
+                        GenStep {
+                            way: *way,
+                            limit: at % 5 + 1,
+                            fail_at: (at * 3) % 7,
+                            other_at: (at * 5 + 2) % 7,
+                        }
+                    })
+                    .collect();
+                Stmt::Generated(Generating { id: usize::try_from(round).unwrap_or(0) + 1, steps })
+            })
+            .collect();
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        for said in ["failed Left", "failed Right", "failed Lost", "failed Shut", "end "] {
+            assert!(printed.contains(said), "{said}: {printed}");
+        }
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
     /// Every step of an `Ordered` statement checks, and the evaluator prints what the oracle
     /// prints, each line read left to right: a receiver, a field's receiver, a list's and a dict's
     /// method, an index's base, arguments, operators, a list, a text, and writes, each changed by

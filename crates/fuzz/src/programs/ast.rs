@@ -1470,6 +1470,84 @@ pub(crate) enum LockWay {
 pub(crate) const LOCK_WAYS: [LockWay; 4] =
     [LockWay::Moved, LockWay::Crashed, LockWay::Summed, LockWay::HalfRef];
 
+/// A `Generated` statement: `generated{id}(stdout)`, a step at a time, each a function looping
+/// over generators that fail partway, `failing{id}(limit, fail_at=...)`, which yields from 0 and
+/// fails with `Shut{id}(code=fail_at)` there, if it's below `limit`. Each step's failure is caught
+/// and printed by its caller. The steps wrap a failure with `? from` in a `for`, in `enumerate` and
+/// in `zip` on either side or both, and hold failing generators in a name, a generator kept for
+/// later, a tuple, a list and a generic struct, each looped over where it's made.
+#[derive(Clone, Debug)]
+pub(crate) struct Generating {
+    pub(crate) id: usize,
+    pub(crate) steps: Vec<GenStep>,
+}
+
+/// A step of a `Generated` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GenStep {
+    pub(crate) way: GenWay,
+    /// How many items the first generator yields, from 1 to 5, or how many generators a `KeptOver`
+    /// makes.
+    pub(crate) limit: i64,
+    /// Where the first generator fails, from 0 to 6: past `limit`, it doesn't.
+    pub(crate) fail_at: i64,
+    /// Where the second one fails, from 0 to 6, or where a `Broken` loop breaks. The second yields
+    /// one more than the first.
+    pub(crate) other_at: i64,
+}
+
+/// How a `Generated` step loops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenWay {
+    /// `for value in failing(...)? from Lost{id}(step=n)`.
+    ForFrom,
+    /// `enumerate(failing(...)? from Lost{id}(step=n))`.
+    EnumerateFrom,
+    /// `zip(failing(...)? from Left{id}(...), failing(...)? from Right{id}(...))`: the failure of
+    /// the side that failed, wrapped as it says, the first side asked first.
+    ZipBothFrom,
+    /// `zip(failing(...)? from Left{id}(...), failing(...)?)`: the second's failure passes up as
+    /// it is.
+    ZipLeftFrom,
+    /// `zip(failing(...)?, failing(...)? from Right{id}(...))`.
+    ZipRightFrom,
+    /// `zip([10, 20, 30], failing(...)? from Right{id}(...))`.
+    ZipListFrom,
+    /// `for value in failing(...)? from Lost{id}(...)`, breaking at `other_at`.
+    Broken,
+    /// `held = failing(...)?`, a line printed, then `for value in held`.
+    Named,
+    /// `(failing(size + 1, ...)? for size in range(limit))`, a generator kept for later whose items
+    /// are failing generators, each looped over in turn.
+    KeptOver,
+    /// `first, second = (failing(...)?, failing(...)?)`, each looped over.
+    InTuple,
+    /// `pair = (failing(...)?, n)`, `for value in pair[0]`.
+    TupleIndexed,
+    /// `[failing(...)?, failing(...)?]`, each looped over.
+    InList,
+    /// `Boxed{id}(item=failing(...)?)`: a generic struct holding one, looped over through its
+    /// field.
+    InBox,
+}
+
+/// Every `GenWay`, for the generator to pick from.
+pub(crate) const GEN_WAYS: [GenWay; 13] = [
+    GenWay::ForFrom,
+    GenWay::EnumerateFrom,
+    GenWay::ZipBothFrom,
+    GenWay::ZipLeftFrom,
+    GenWay::ZipRightFrom,
+    GenWay::ZipListFrom,
+    GenWay::Broken,
+    GenWay::Named,
+    GenWay::KeptOver,
+    GenWay::InTuple,
+    GenWay::TupleIndexed,
+    GenWay::InList,
+    GenWay::InBox,
+];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1742,6 +1820,9 @@ pub(crate) enum Stmt {
     Ordered(InOrder),
     /// `locked_together{id}(stdout)`: two `shared` values taken in one `lock`, changed and put back.
     LockedTogether(LockingTogether),
+    /// `generated{id}(stdout)`: generators that fail partway, wrapped with `? from` and held in
+    /// names, tuples, lists, generic structs and a generator kept for later.
+    Generated(Generating),
     /// `interfaced{id}(stdout)`: two types with one interface, through generic functions bounded by it.
     Interfaced(Interfacing),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.

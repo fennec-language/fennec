@@ -1,5 +1,5 @@
 # A time from outside, in a request or a file, is RFC 3339 text, and `Time.parse` reads it
-# exactly: anything else fails with a `ParseError` saying what's wrong, never a crash and never a
+# exactly: anything else fails with an `InvalidValue` saying what's wrong, never a crash and never a
 # moment other than the one written. A field out of its range, an offset that isn't one, a year a
 # `Time` can't hold, a digit that isn't ASCII, a sign in front, something after the end, and text
 # cut short anywhere all fail. Digits past nanoseconds are left off, as RFC 3339 allows.

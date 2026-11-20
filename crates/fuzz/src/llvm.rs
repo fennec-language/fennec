@@ -20,7 +20,7 @@ use crate::generate::printing_plainly;
 use crate::supervise::{BUILD_STUCK, MOST_KILOBYTES, STUCK, output_watched, watch};
 
 /// `fennec`: where `FENNEC` says, or beside this program.
-fn fennec() -> PathBuf {
+pub(crate) fn fennec() -> PathBuf {
     std::env::var_os("FENNEC")
         .map_or_else(|| std::env::current_exe().unwrap_or_default().with_file_name("fennec"), PathBuf::from)
 }
@@ -98,13 +98,14 @@ pub(crate) fn ready() -> Result<(), String> {
 
 /// What `fennec build --llvm` says when building went wrong, rather than the backend saying what
 /// it doesn't take yet.
-const BROKEN: [&str; 5] = ["linking failed", "failed on", "couldn't run", "once trimmed", "panicked"];
+pub(crate) const BROKEN: [&str; 5] =
+    ["linking failed", "failed on", "couldn't run", "once trimmed", "panicked"];
 
 /// What `fennec build` gave, run with the tools it starts in a group of their own: one whose
 /// tools together take more than `BUILD_STUCK` CPU time or `MOST_KILOBYTES` of memory is
 /// stopped, every tool with it, and that's a failure of its own, since building a program
 /// should never take that.
-fn built_within(command: &mut Command) -> Result<std::process::Output, String> {
+pub(crate) fn built_within(command: &mut Command) -> Result<std::process::Output, String> {
     let (built, failure) = output_watched(command, BUILD_STUCK, MOST_KILOBYTES)?;
     match failure {
         Some(failure) => Err(format!(

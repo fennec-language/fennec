@@ -36,12 +36,14 @@ jobs:
             only: ""
           # The targets built natively, which need `fennec`, its runtime library and LLVM's tools:
           # programs built through LLVM must print the same as a dev build and with `--release`,
-          # and the standard library's JSON, TOML and UTF-8 readers must never crash.
+          # the standard library's JSON, TOML and UTF-8 readers must never crash, and a program
+          # edited a piece at a time must check and build, reusing what the build before kept, as
+          # it does from nothing.
           - name: LLVM
             toolchain: ""
             flags: ""
             target: ""
-            only: llvm json toml utf8
+            only: llvm json toml utf8 edits
           # The standard library's readers of outside input, built natively, each held to its
           # format's own rules: JSON, TOML, std.pack, CSV, URLs, the HTTP server and client,
           # Postgres's messages, the Router's paths and the values a page renders.

@@ -20,7 +20,8 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_TOOLCHAIN_STORE`: the toolchain's store, which every home reads the standard library's parse and the runtime libraries' stamps from, in place of `fennec-store` beside `fennec`; empty turns it off. See [store.md](store.md).
 - `FENNEC_NO_DAEMON`: never start or use the daemon. `fennec build` then builds in its own process, as it does whenever `CI` is set.
 - `FENNEC_DAEMON_IDLE`: how many seconds the daemon stays up with nothing to do; 1800 by default.
-- `FENNEC_COMPARE_KEPT`: the build daemon checks all of a kit again after every build that carried over what its last build's check found, and fails the build, as the compiler's mistake, on any difference. Without it, one build in 8 of a dev compiler does, picked by a hash of the files' texts, and a release compiler none.
+- `FENNEC_COMPARE_KEPT`: the build daemon checks all of a kit again after every build that carried over what its last build's check found, and fails the build, as the compiler's mistake, on any difference. Without it, one build in 8 of a dev compiler does, picked by a hash of the files' texts, and a release compiler none. Set to `0`, none does, and only the daemon's check in the background after the build compares.
+- `FENNEC_KEPT_RULE_OFF`: a dev compiler leaves out the rule it names for carrying a check over, so a test can see a wrong carried check caught. `bounds` is the one: a callee whose type parameters' bounds changed has its callers checked again. A release compiler ignores it.
 - `FENNEC_LLVM_BIN`: the folder holding LLVM's `opt` and `llc`.
 - `FENNEC_LLVM_KEEP`: keeps the folder of LLVM text a build writes, to read what was emitted.
 - `FENNEC_BUILD_JOBS`: how many functions a dev build compiles at once; the number of cores by default. `.cargo/config.toml` sets it to 2 for everything Cargo runs, the tests among them, since they run many builds at once.

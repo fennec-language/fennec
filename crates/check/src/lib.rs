@@ -689,23 +689,32 @@ impl KeptCheck {
         self.module.take()
     }
 
+    /// Whether checking it all again, `whole`, agrees with what the check that kept this found,
+    /// as can be seen without copying either: everything compared as it is, but for the open type
+    /// variables of generic calls, which each check numbers itself. False when that can't be seen
+    /// so; `differs_from` then says whether they differ.
+    #[must_use]
+    pub fn agrees_quickly(&self, whole: &WholeCheck) -> bool {
+        let (Ok(whole), carried) = (&whole.0, &self.first) else { return false };
+        whole.signatures == carried.signatures
+            && whole.types == carried.types
+            && differing_table(whole, carried) == "something else"
+    }
+
     /// Where checking it all again, `whole`, disagrees with what the check that kept this found:
     /// whether it passes, its signatures, typed bodies or what it found to write in. Nothing when
-    /// they agree, which is found without copying either.
+    /// they agree, which is found without copying either when `agrees_quickly` sees it.
     #[must_use]
     pub fn differs_from(&self, whole: &WholeCheck) -> Option<String> {
+        if self.agrees_quickly(whole) {
+            return None;
+        }
         let Ok(whole) = &whole.0 else {
             return Some(
                 "whether it passes: checking it all again doesn't, and carrying over did".to_owned(),
             );
         };
         let carried = &self.first;
-        if whole.signatures == carried.signatures
-            && whole.types == carried.types
-            && differing_table(whole, carried) == "something else"
-        {
-            return None;
-        }
         // Two checks that agree can number their open type variables apart.
         differs_from_checked_again_given(Ok(whole.clone()), &Ok(carried.clone()))
     }
@@ -790,6 +799,14 @@ pub fn check_to_build_keeping(
 #[must_use]
 pub fn compares_kept_check(inputs: u64) -> bool {
     cfg!(debug_assertions) && inputs.is_multiple_of(8)
+}
+
+/// Whether a dev compiler was asked to leave out one of the rules for carrying a check over,
+/// `FENNEC_KEPT_RULE_OFF` naming it, so a test can make a carried check go wrong and see what
+/// catches it. Only `bounds` is named: a callee whose type parameters' bounds changed has its
+/// callers checked again. A release compiler leaves out none.
+pub(crate) fn kept_rule_off(rule: &str) -> bool {
+    cfg!(debug_assertions) && std::env::var("FENNEC_KEPT_RULE_OFF").is_ok_and(|off| off == rule)
 }
 
 /// Like `check_to_run`, with every standard library type's fields typed too, so the module can
@@ -1112,7 +1129,6 @@ fn differing_table(one: &Checked, other: &Checked) -> &'static str {
         sources,
         widened_values,
         generic_sources,
-        generic_calls,
         union_sources,
         opened_apart,
         launches,
@@ -1126,6 +1142,16 @@ fn differing_table(one: &Checked, other: &Checked) -> &'static str {
         saved_types,
         holds,
     );
+    // A generic call in the standard library can leave a type variable open, which each check
+    // numbers itself.
+    let calls_differ = one.generic_calls.len() != other.generic_calls.len()
+        || one.generic_calls.iter().zip(&other.generic_calls).any(|(one, other)| {
+            one != other
+                && without_var_numbers(&format!("{one:?}")) != without_var_numbers(&format!("{other:?}"))
+        });
+    if calls_differ {
+        return "generic_calls";
+    }
     "something else"
 }
 

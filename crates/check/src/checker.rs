@@ -1024,14 +1024,15 @@ impl Checker {
     /// parameters' bounds, or for a `with` source, which its callers keep whole to write in where
     /// they use it, anything at all.
     fn changed_functions(&self) -> BTreeSet<String> {
+        let bounds_rule_off = crate::kept_rule_off("bounds");
         self.states
             .iter()
             .filter_map(|(key, state)| match state {
                 State::Done(signature) if !self.carried.contains(key) => {
                     let entry = self.program.functions.get(key);
                     let signature_changed = self.before.get(key).is_none_or(|was| was != signature);
-                    let bounds_changed =
-                        entry.is_some_and(|entry| self.before_bounds.get(key) != Some(&bounds_of(entry)));
+                    let bounds_changed = !bounds_rule_off
+                        && entry.is_some_and(|entry| self.before_bounds.get(key) != Some(&bounds_of(entry)));
                     let source = entry.is_some_and(|entry| {
                         entry.def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH)
                     });
@@ -2162,10 +2163,10 @@ fn written_inside(
     nested
 }
 
-/// Whether `at` overlaps `edited`, or ends where it starts: an edit there can make the token
-/// ending there longer. A span covering nothing does where it is.
+/// Whether `at` overlaps `edited`, or touches it at either end: an edit there can make the token
+/// ending or starting there longer. A span covering nothing does where it is.
 fn overlaps(at: Span, edited: Span) -> bool {
-    at.start < edited.end && edited.start <= at.end
+    at.start <= edited.end && edited.start <= at.end
 }
 
 /// The outermost function `key` is written inside, by way of `nested`, which holds the functions

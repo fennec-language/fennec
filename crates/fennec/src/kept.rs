@@ -36,6 +36,10 @@ const SLOT: u32 = 1 << 18;
 /// The checks kept, once the daemon keeps them.
 static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
 
+/// What the build in progress is noted as in the store once it's built (`built::build_here`), for
+/// the check it keeps: a disagreement found later takes that back.
+static STORED_AS: Mutex<Option<String>> = Mutex::new(None);
+
 #[derive(Default)]
 struct Kept {
     kits: HashMap<PathBuf, Kit>,
@@ -67,6 +71,12 @@ struct Kit {
         expect(dead_code, reason = "only the build daemon, which is unix's alone, reads it")
     )]
     pending: Option<(Module, Vec<String>)>,
+    /// What the build that kept it is noted as in the store.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "only the build daemon, which is unix's alone, reads it")
+    )]
+    stored_as: Option<String>,
 }
 
 /// A file a kept check was found in: its path, the span its text covers, and its text.
@@ -97,10 +107,17 @@ pub(crate) fn status() -> Option<String> {
     Some(format!("checks kept: {kits}, about {} MB{last}\n", size >> 20))
 }
 
+/// The build in progress is noted in the store as `name` once it's built, so the check it keeps
+/// knows what to take back if checking it all again disagrees later.
+pub(crate) fn building_as(name: Option<String>) {
+    *STORED_AS.lock().unwrap_or_else(PoisonError::into_inner) = name;
+}
+
 /// `fennec_check::check_to_build_saying`, as a build checks. In the build daemon, it carries over
 /// what the check of the kit's last build found for what an edit left as it was, and keeps what this
 /// one finds for the next. One build in 8 of a dev compiler, picked by what's built, or every one
-/// with `FENNEC_COMPARE_KEPT` set, checks all of it again before going on, to compare.
+/// with `FENNEC_COMPARE_KEPT` set, checks all of it again before going on, to compare; none with
+/// it set to `0`.
 ///
 /// # Errors
 ///
@@ -109,8 +126,10 @@ pub(crate) fn check_to_build(
     module: &mut Module,
     sources: &Sources,
 ) -> Result<(Signatures, bool), Vec<Diagnostic>> {
-    let compare = std::env::var_os("FENNEC_COMPARE_KEPT").is_some()
-        || fennec_check::compares_kept_check(inputs_hash(sources));
+    let compare = match std::env::var_os("FENNEC_COMPARE_KEPT") {
+        Some(said) => said != "0",
+        None => fennec_check::compares_kept_check(inputs_hash(sources)),
+    };
     checked_keeping(module, sources, compare)
 }
 
@@ -164,7 +183,9 @@ fn keep(kit: PathBuf, mut check: KeptCheck, files: Vec<File>, edited: Vec<String
     let size = files.iter().map(|file| file.text.len()).sum::<usize>().saturating_mul(BYTES_PER_SOURCE_BYTE);
     let pending = check.take_module().map(|module| (module, edited));
     let generation = kept.generations;
-    kept.kits.insert(kit, Kit { check, files, size, built: Instant::now(), generation, pending });
+    let stored_as = STORED_AS.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let built = Instant::now();
+    kept.kits.insert(kit, Kit { check, files, size, built, generation, pending, stored_as });
     within_budget(&mut kept.kits, BUDGET);
 }
 
@@ -179,9 +200,13 @@ pub(crate) fn pending() -> bool {
 
 /// Checks all of each kit again whose kept check carried anything over, with nothing held while
 /// it does, and compares with what that check found, if the kit's kept check is still that one. A
-/// difference is the compiler's mistake: the kit's kept check goes, a report is written in `home`'s
-/// daemon folder naming the edit and where they disagree, and the kit's next build says so and
-/// checks all of it. Gives back the reports written.
+/// difference is the compiler's mistake:
+/// - the kit's kept check goes, and so does what its build noted in the store, so the next build of
+///   the same files builds again rather than putting out the program this one made;
+/// - a report is written in `home`'s daemon folder, naming the edit and where they disagree;
+/// - the kit's next build says so and checks all of it.
+///
+/// Gives back the reports written.
 #[cfg(unix)]
 pub(crate) fn verify_pending(home: &std::path::Path) -> Vec<PathBuf> {
     let mut reports = Vec::new();
@@ -200,15 +225,29 @@ pub(crate) fn verify_pending(home: &std::path::Path) -> Vec<PathBuf> {
         let Some((kit, generation, module, edited)) = taken else { return reports };
         let whole = fennec_check::check_whole(&module);
         drop(module);
-        let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(kept) = kept.as_mut() else { return reports };
-        let differs = kept
-            .kits
-            .get(&kit)
-            .filter(|found| found.generation == generation)
-            .and_then(|found| found.check.differs_from(&whole));
-        let Some(part) = differs else { continue };
-        kept.kits.remove(&kit);
+        // Compared as they are, with the lock held, which is almost always all it takes. Otherwise
+        // the kit's check comes out of the store, so a build of it meanwhile checks all of it, and
+        // the slow way is taken with nothing held.
+        let unsure = {
+            let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(kept) = kept.as_mut() else { return reports };
+            match kept.kits.get(&kit).filter(|found| found.generation == generation) {
+                Some(found) if !found.check.agrees_quickly(&whole) => kept.kits.remove(&kit),
+                _ => None,
+            }
+        };
+        let Some(found) = unsure else { continue };
+        let Some(part) = found.check.differs_from(&whole) else {
+            let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(kept) = kept.as_mut() {
+                kept.kits.entry(kit).or_insert(found);
+            }
+            continue;
+        };
+        if let Some(name) = &found.stored_as {
+            crate::built::forget(name);
+        }
+        drop(found);
         let report =
             home.join("daemon").join(format!("kept-check-differs-{generation}-{}.txt", std::process::id()));
         let text = format!(
@@ -221,10 +260,13 @@ pub(crate) fn verify_pending(home: &std::path::Path) -> Vec<PathBuf> {
             .and_then(|()| std::fs::write(&report, text));
         let said =
             if written.is_ok() { format!(", reported in {}", report.display()) } else { String::new() };
-        kept.notices.insert(
-            kit,
-            format!("note: the build daemon checked the last build of this kit all again, and it disagreed{said}; this build checks all of it"),
-        );
+        let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(kept) = kept.as_mut() {
+            kept.notices.insert(
+                kit,
+                format!("note: the build daemon checked the last build of this kit all again, and it disagreed{said}: the program that build made may be wrong, so this build checks all of it"),
+            );
+        }
         reports.push(report);
     }
 }

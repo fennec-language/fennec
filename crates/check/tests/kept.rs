@@ -406,6 +406,14 @@ fn every_program_built_again_after_an_edit_finds_what_a_whole_check_finds() {
         assert_eq!(again, first, "{shown}, built again as it is");
         let kept = kept.unwrap_or_else(|| panic!("{shown}: built again as it is, nothing was kept"));
         assert!(kept.carried_over() > 0, "{shown}: built again as it is, nothing was carried over");
+        // Checked all again later, as the build daemon does, it agrees as it is, with nothing
+        // copied or written out to compare.
+        let mut module = parsed(&source).unwrap();
+        let (_, _, mut kept) = check_to_build_keeping(&mut module, (Some(kept), None), false).unwrap();
+        let module = kept.take_module().unwrap_or_else(|| panic!("{shown}: no module kept to check again"));
+        let whole = fennec_check::check_whole(&module);
+        assert!(kept.agrees_quickly(&whole), "{shown}: checked all again, it agrees only the slow way");
+        assert_eq!(kept.differs_from(&whole), None, "{shown}: checked all again");
         programs += 1;
         let Some(edited) = with_a_number_changed(&source) else { continue };
         if fennec_syntax::parse(&edited).is_err() {

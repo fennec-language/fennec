@@ -5319,6 +5319,67 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// When the daemon checks all of a kit again in the background, after a build that carried
+/// anything over, and disagrees with that build, the next build says so and checks all of it, with
+/// the files as they were too: what that build put in the store is taken back, so the program it
+/// made isn't put out again. A dev compiler here leaves out the rule that checks a callee's callers
+/// again once its bounds change (`FENNEC_KEPT_RULE_OFF`), and nothing compares before a build goes
+/// on (`FENNEC_COMPARE_KEPT=0`), so only the check in the background can catch it.
+#[cfg(unix)]
+#[test]
+fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let (_folder, kit, home) = small_kit("kept-disagrees").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let main = kit.join("src/main.fen");
+    let before = "interface Shape:\n    def area(self) -> float\n\n\
+                  struct Dot:\n    x: int\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(measure(Dot(1)))\n\n\
+                  def measure[T](item: T) -> int:\n    return 1\n";
+    let after = before.replace("measure[T](item", "measure[T: Shape](item");
+    let fennec = |args: &[&str], daemon: bool| {
+        let mut command = crate::executables::fennec_command();
+        command.args(args).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", "30");
+        command.env("FENNEC_COMPARE_KEPT", "0").env("FENNEC_KEPT_RULE_OFF", "bounds").env_remove("CI");
+        if daemon {
+            command.env_remove("FENNEC_NO_DAEMON");
+        }
+        command.output().unwrap()
+    };
+    std::fs::write(&main, before).unwrap();
+    let first = fennec(&["build", ".", "-o", "prog"], true);
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+    // With the rule left out, the edit's build carries over `main`, which no longer fits.
+    std::fs::write(&main, &after).unwrap();
+    let wrong = fennec(&["build", ".", "-o", "prog"], true);
+    assert_eq!(wrong.status.code(), Some(0), "{}", text(&wrong.stderr));
+    let reported = || {
+        std::fs::read_dir(home.join("daemon")).is_ok_and(|listing| {
+            listing
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().starts_with("kept-check-differs-"))
+        })
+    };
+    let waiting = std::time::Instant::now();
+    while !reported() {
+        assert!(waiting.elapsed().as_secs() < 120, "the daemon never found the build wrong");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Built again with the files as they are, it says so, checks all of it and refuses it.
+    let again = fennec(&["build", ".", "-o", "prog"], true);
+    let said = text(&again.stderr);
+    assert_eq!(again.status.code(), Some(1), "{said}");
+    assert!(said.contains("checked the last build of this kit all again, and it disagreed"), "{said}");
+    assert!(said.contains("may be wrong"), "{said}");
+    let refused = fennec(&["build", ".", "-o", "prog"], false);
+    assert_eq!(refused.status.code(), Some(1), "{}", text(&refused.stderr));
+    fennec(&["daemon", "stop"], true);
+}
+
 /// Two builds of one kit at once through the daemon queue, so neither's output takes in the
 /// other's: each prints what a build made here prints, once.
 #[cfg(unix)]

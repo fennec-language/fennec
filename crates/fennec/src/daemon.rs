@@ -21,7 +21,9 @@
 //! time, in the command's folder, with what it prints sent back. The environment is part of the
 //! socket's name, so the work runs in the command's own, as `cc` and the linker see it. A command
 //! that goes before the answer, as with Ctrl-C, stops the work. Under CI it's done in the
-//! command's own process, as a first build is.
+//! command's own process, as a first build is. Each `fennec build` keeps what it loaded for the
+//! next (`aot::KEPT_LOAD`): each file's parse, and its rewriting of names across files, so an edit
+//! build parses and rewrites only the files the edit reaches.
 //!
 //! For `fennec run`, the daemon does what comes before the program starts: the tests a change
 //! affects, the check and the build, to a file the command names. The command starts the
@@ -672,6 +674,9 @@ mod unix {
                 != bound
         };
         let mut ticks: u32 = 0;
+        // Each build keeps what it loaded for the next.
+        *crate::aot::KEPT_LOAD.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(fennec_kit::KeptLoad::default());
         let state = Arc::new(Mutex::new(State {
             home: home.to_path_buf(),
             snapshots: HashMap::new(),

@@ -13,15 +13,17 @@
 # It says too whether main's CI is green on every system, `CI` and `CI macOS` each in a line,
 # naming each job that isn't, with `main-ci.sh`, and warns when GitHub holds more than 25 branches.
 #
-# It says how the night's Fuzzing and Release runs ended too: Release's nightly installs each
-# archive through the launcher and uses it as a person would. Under each run that failed, it names
-# each job that failed and the step it failed at, a line each, as `failed: <job> :: <step>`, and
-# those lines head the copied report, so a night that failed in no test, as a soak can, still says
-# what failed.
+# It says how the newest scheduled run of every workflow with a schedule ended too, each found in
+# `.github/workflows`: Fuzzing, Release, Mutation tests, the weekly big codebase, CodeQL and the
+# rest, and CI's own run every four hours. Under each run that failed, it names each job that
+# failed and the step it failed at, a line each, as `failed: <job> :: <step>`, and for Proofs those
+# lines head the copied report, so a night that failed in no test, as a soak can, still says what
+# failed.
 #
 # It needs `gh`, signed in. A night still running, or one with no report, is said so, and nothing
-# is written. It exits 1 when the night's Proofs, Fuzzing or Release failed, a job of main's CI is red on
-# any system, or GitHub doesn't answer, so whatever runs it can say so loudly.
+# is written. It exits 1 when any scheduled workflow's newest finished run didn't succeed, when one
+# is turned off or its schedule hasn't fired in 8 days, when a job of main's CI is red on any
+# system, or when GitHub doesn't answer, so whatever runs it can say so loudly.
 set -eu
 folder=$1
 here=$(cd "$(dirname "$0")" && pwd)
@@ -86,28 +88,62 @@ failed_steps() {
     | [.steps[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name] as $steps
     | "  failed: \(.name) :: \(if ($steps | length) == 0 then "no step failed, the job ended \($how)" else $steps | join(", ") end)"'
 }
-# Whether a night's Fuzzing or Release failed, which fails the report as main's CI does.
+# Whether a scheduled workflow's night failed, which fails the report as main's CI does.
 nights=0
-# How the latest scheduled run of `workflow`, called `name`, ended: a failed one fails the night.
-# Release's nightly was red for days unseen until it was read here too.
+# How the newest finished scheduled run of the workflow `file`, called `name`, ended, in a line:
+# anything but success fails the night, a cancelled run or one out of time too, and under it each
+# job that failed and the step it failed at. A run still going is said, and the one before it is
+# still read, so a failed night can't hide behind the next one. A workflow that's turned off, or
+# whose schedule hasn't fired in 8 days, a week and a day, fails the night too, as nothing it would
+# catch is caught. Release's nightly was red for days unseen until it was read here.
 nightly() {
-  local name=$1 workflow=$2 run conclusion started
-  read -r run conclusion started <<< "$(gh run list --repo "$repository" --workflow "$workflow" --event schedule \
-    --limit 1 --json databaseId,conclusion,createdAt --jq "$how_ended")"
-  if [ -z "${run:-}" ]; then
-    echo "$name: no nightly run yet"
-  elif [ "$conclusion" = running ]; then
-    echo "$name: the nightly run $run is still going"
-  else
-    echo "$name on ${started%%T*}: $conclusion, https://github.com/$repository/actions/runs/$run"
-    if [ "$conclusion" != success ]; then
-      nights=1
-      failed_steps "$run" || echo "  failed: its jobs couldn't be read"
-    fi
+  local name=$1 file=$2 state age runs newest going run conclusion started
+  read -r state age <<< "$(gh api "repos/$repository/actions/workflows/$file" \
+    --jq '"\(.state) \(now - (.created_at[0:19] + "Z" | fromdateiso8601) | floor)"')"
+  if [ "$state" != active ]; then
+    echo "$name: its workflow is ${state:-unknown} on GitHub, so it doesn't run on its schedule"
+    nights=1
+    return 0
+  fi
+  # Each run a line, newest first, as `<id> <status> <conclusion> <started> <seconds since>`.
+  if ! runs=$(gh run list --repo "$repository" --workflow "$file" --event schedule --limit 5 \
+    --json databaseId,status,conclusion,createdAt \
+    --jq '.[] | "\(.databaseId) \(.status) \(if (.conclusion // "") == "" then "none" else .conclusion end) \(.createdAt) \(now - (.createdAt | fromdateiso8601) | floor)"'); then
+    echo "$name: its scheduled runs couldn't be read"
+    nights=1
+    return 0
+  fi
+  newest=$(head -n 1 <<< "$runs" | cut -d ' ' -f 5)
+  if [ -z "$newest" ] && [ "${age:-0}" -le $((8 * 86400)) ]; then
+    echo "$name: no scheduled run yet"
+    return 0
+  fi
+  if [ "${newest:-$age}" -gt $((8 * 86400)) ]; then
+    echo "$name: no scheduled run in $((${newest:-$age} / 86400)) days, so its schedule isn't firing"
+    nights=1
+  fi
+  going=$(awk '$2 != "completed" { print $1; exit }' <<< "$runs")
+  [ -z "$going" ] || echo "$name: the scheduled run $going is still going"
+  read -r run _ conclusion started _ <<< "$(awk '$2 == "completed" { print; exit }' <<< "$runs")"
+  [ -n "${run:-}" ] || return 0
+  echo "$name on ${started%%T*}: $conclusion, https://github.com/$repository/actions/runs/$run"
+  if [ "$conclusion" != success ]; then
+    nights=1
+    failed_steps "$run" || echo "  failed: its jobs couldn't be read"
   fi
 }
-nightly Fuzzing fuzz.yml
-nightly Release release.yml
+# Every workflow that runs on a schedule, found in the workflows beside this script, so one added
+# later is read too, by the name GitHub shows. Proofs is read here as well as below, where its
+# report is copied from its newest run, which a run by hand still going hid the night behind. CI
+# is read here as well as by `main-ci.sh`, which reads main's newest run of any kind: the heap
+# audit and coverage run only on the schedule, so a push's run after a red one hid it.
+for file in "$here"/../workflows/*.yml; do
+  grep -qE '^  schedule:' "$file" || continue
+  name=$(sed -n 's/^name: *//p' "$file" | head -n 1)
+  name=${name#[\"\']}
+  name=${name%[\"\']}
+  nightly "${name:-${file##*/}}" "${file##*/}"
+done
 # The night's mutants, from the latest scheduled Mutation tests run, as `mutants-<date>.md`: each
 # crate's slice, with what no test caught ranked by file. Survivors are reported, never a failed night.
 read -r mutants finished started <<< "$(gh run list --repo "$repository" --workflow mutants.yml --event schedule \

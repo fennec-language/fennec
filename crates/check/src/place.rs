@@ -53,7 +53,8 @@ impl FnCx<'_> {
         match root(expr) {
             None => self.error(Diagnostic::new(what, expr.span)),
             Some(name) => {
-                self.forget_fields(name);
+                let changed = crate::stmt::changed_path(expr).unwrap_or_else(|| name.to_owned());
+                self.forget_under(&changed, expr.span);
                 if self.changes_constant(name, expr.span) {
                     return;
                 }
@@ -193,6 +194,12 @@ impl FnCx<'_> {
         match &target.kind {
             ExprKind::Attr { object, name, optional: false } => {
                 let ty = self.expr(object);
+                if self.checker.settled(&ty).maybe_none()
+                    && let Some(problem) = self.changed_since_checked(object, target.span)
+                {
+                    self.error(problem);
+                    return Type::Unknown;
+                }
                 self.field_of(&ty, name, false, target.span)
             }
             _ => self.expr(target),
@@ -291,7 +298,7 @@ impl FnCx<'_> {
         }
         let held = self.lookup(name).map_or(ty, |(held, _)| held);
         self.record(span, &held);
-        self.forget_fields(name);
+        self.forget_under(name, span);
     }
 
     /// Gives an existing name a new value, which has to fit the type it was declared with.

@@ -1274,34 +1274,103 @@ fn the_standard_library_is_linted_as_a_kit_is() {
     assert!(unused.is_empty(), "these exceptions match nothing now, so take them out: {unused:?}");
     found.sort();
     let list = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(STD_FINDINGS);
+    let mut held = held_to(&found, &std::fs::read_to_string(&list).unwrap());
     if std::env::var_os("FENNEC_PIN_OUTPUTS").is_some() {
         let mut text = String::from(
             "# What the linter finds in the standard library, linted as a kit is, by file and message,\n\
              # held by crates/lint/tests/lints.rs: fix one and it leaves this list, which only shrinks.\n\
-             # Written with FENNEC_PIN_OUTPUTS=1.\n",
+             # A function's length and how deep code goes may only fall. Written with FENNEC_PIN_OUTPUTS=1.\n",
         );
-        for line in &found {
+        for line in &held.pinned {
             text.push_str(line);
             text.push('\n');
         }
-        std::fs::write(&list, text).unwrap();
+        std::fs::write(&list, &text).unwrap();
+        held = held_to(&found, &text);
     }
-    let text = std::fs::read_to_string(&list).unwrap();
-    // How many more times each is found than listed: more is new, fewer was fixed.
-    let mut more: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
-    for line in &found {
-        *more.entry(line.as_str()).or_default() += 1;
-    }
-    for line in text.lines().filter(|line| !line.is_empty() && !line.starts_with('#')) {
-        *more.entry(line).or_default() -= 1;
-    }
-    let new: Vec<&str> = more.iter().filter(|(_, more)| **more > 0).map(|(line, _)| *line).collect();
-    let fixed: Vec<&str> = more.iter().filter(|(_, more)| **more < 0).map(|(line, _)| *line).collect();
+    let Held { new, fixed, grew, .. } = held;
     assert!(
         new.is_empty(),
         "{} new in std, which a kit's lint would find: fix each\n{}",
         new.len(),
         new.join("\n")
     );
+    assert!(
+        grew.is_empty(),
+        "{} grew past what {STD_FINDINGS} holds them to\n{}",
+        grew.len(),
+        grew.join("\n")
+    );
     assert!(fixed.is_empty(), "{} fixed, so take them off {STD_FINDINGS}\n{}", fixed.len(), fixed.join("\n"));
+}
+
+/// The rules whose message says how far past its limit something is, as `long-function`'s
+/// "`step` is 120 lines": the list holds each by its message with that number taken out, and the
+/// number may only fall, so a function that grows can't be pinned again unnoticed.
+const MEASURED: [&str; 2] = ["long-function", "deep-nesting"];
+
+/// Stands for a measured finding's number in what it's matched by.
+const MEASURE: &str = "#N#";
+
+/// A line of the list as it's matched, and its number if its rule is one of `MEASURED`: the first
+/// number after " is " in its message, as the 120 in "`step` is 120 lines".
+fn keyed(line: &str) -> (String, Option<u64>) {
+    if !MEASURED.iter().any(|rule| line.contains(&format!("[{rule}] "))) {
+        return (line.to_owned(), None);
+    }
+    let Some((before, after)) = line.split_once(" is ") else { return (line.to_owned(), None) };
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    let (Ok(measure), Some(rest)) = (digits.parse::<u64>(), after.get(digits.len()..)) else {
+        return (line.to_owned(), None);
+    };
+    (format!("{before} is {MEASURE}{rest}"), Some(measure))
+}
+
+/// What the found lines make of the list's: what's new, what was fixed, what grew past its
+/// listed number, and the list as it's pinned, where one that grew keeps the number it had.
+struct Held {
+    new: Vec<String>,
+    fixed: Vec<String>,
+    grew: Vec<String>,
+    pinned: Vec<String>,
+}
+
+fn held_to(found: &[String], listed: &str) -> Held {
+    let listed: Vec<(String, Option<u64>)> =
+        listed.lines().filter(|line| !line.is_empty() && !line.starts_with('#')).map(keyed).collect();
+    let found: Vec<(String, Option<u64>)> = found.iter().map(|line| keyed(line)).collect();
+    // How many more times each is found than listed: more is new, fewer was fixed.
+    let mut more: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
+    for (key, _) in &found {
+        *more.entry(key.as_str()).or_default() += 1;
+    }
+    for (key, _) in &listed {
+        *more.entry(key.as_str()).or_default() -= 1;
+    }
+    let shown = |key: &str, measure: Option<u64>| {
+        measure.map_or_else(|| key.to_owned(), |measure| key.replacen(MEASURE, &measure.to_string(), 1))
+    };
+    let was: std::collections::BTreeMap<&str, u64> =
+        listed.iter().filter_map(|(key, measure)| Some((key.as_str(), (*measure)?))).collect();
+    let now: std::collections::BTreeMap<&str, u64> =
+        found.iter().filter_map(|(key, measure)| Some((key.as_str(), (*measure)?))).collect();
+    let mut held = Held { new: Vec::new(), fixed: Vec::new(), grew: Vec::new(), pinned: Vec::new() };
+    for (key, count) in &more {
+        if *count > 0 {
+            held.new.push(shown(key, now.get(key).copied()));
+        } else if *count < 0 {
+            held.fixed.push(shown(key, was.get(key).copied()));
+        }
+    }
+    for (key, measure) in &found {
+        let kept = match (measure, was.get(key.as_str())) {
+            (Some(now), Some(then)) if now > then => {
+                held.grew.push(format!("{} (listed at {then})", shown(key, Some(*now))));
+                Some(*then)
+            }
+            _ => *measure,
+        };
+        held.pinned.push(shown(key, kept));
+    }
+    held
 }

@@ -1,6 +1,6 @@
 # What the linter finds in the standard library, linted as a kit is, by file and message,
 # held by crates/lint/tests/lints.rs: fix one and it leaves this list, which only shrinks.
-# Written with FENNEC_PIN_OUTPUTS=1.
+# A function's length and how deep code goes may only fall. Written with FENNEC_PIN_OUTPUTS=1.
 base64.fen: [short-name] `b` is too short to say what it is: write a word
 base64.fen: [short-name] `b` is too short to say what it is: write a word
 cli.fen: [assert-outside-tests] `assert` is for tests
@@ -55,7 +55,6 @@ concurrent.fen: [missing-doc] the exported method `message` has no doc comment
 csv.fen: [long-function] `rows_in` is 81 lines, and a function can be 80
 csv.fen: [short-name] `c` is too short to say what it is: write a word
 dict.fen: [short-name] `c` is too short to say what it is: write a word
-fs.fen: [unused-import] nothing uses `bytes_builder`, `bytes_push_bytes`
 html.fen: [long-function] `step` is 120 lines, and a function can be 80
 html.fen: [short-name] `c` is too short to say what it is: write a word
 html.fen: [short-name] `c` is too short to say what it is: write a word
@@ -66,8 +65,6 @@ html.fen: [short-name] `c` is too short to say what it is: write a word
 html.fen: [short-name] `c` is too short to say what it is: write a word
 html.fen: [short-name] `c` is too short to say what it is: write a word
 html.fen: [short-name] `c` is too short to say what it is: write a word
-io.fen: [shadowed-builtin] `all` hides the builtin of that name: call it something else
-json.fen: [counted-while] this counts with `at`: write `for at in range(place):`
 json.fen: [short-name] `b` is too short to say what it is: write a word
 json.fen: [short-name] `b` is too short to say what it is: write a word
 json.fen: [short-name] `b` is too short to say what it is: write a word
@@ -260,7 +257,6 @@ pack.fen: [short-name] `b` is too short to say what it is: write a word
 pack.fen: [short-name] `b` is too short to say what it is: write a word
 pack.fen: [short-name] `b` is too short to say what it is: write a word
 path.fen: [short-name] `c` is too short to say what it is: write a word
-postgres.fen: [shadowed-builtin] `round` hides the builtin of that name: call it something else
 postgres.fen: [short-name] `_db` is too short to say what it is: write a word
 serialize.fen: [missing-doc] the exported method `bool` has no doc comment
 serialize.fen: [missing-doc] the exported method `bool` has no doc comment
@@ -286,14 +282,12 @@ sized.fen: [short-name] `a` is too short to say what it is: write a word
 sized.fen: [short-name] `a` is too short to say what it is: write a word
 sized.fen: [short-name] `b` is too short to say what it is: write a word
 sized.fen: [short-name] `b` is too short to say what it is: write a word
-sqlite.fen: [unused-import] nothing uses `SqlRows`
 str.fen: [short-name] `c` is too short to say what it is: write a word
 str.fen: [short-name] `c` is too short to say what it is: write a word
 str.fen: [short-name] `c` is too short to say what it is: write a word
 string.fen: [short-name] `c` is too short to say what it is: write a word
 toml.fen: [assert-outside-tests] `assert` is for tests
 toml.fen: [assert-outside-tests] `assert` is for tests
-toml.fen: [counted-while] this counts with `at`: write `for at in range(place):`
 toml.fen: [short-name] `a` is too short to say what it is: write a word
 toml.fen: [short-name] `b` is too short to say what it is: write a word
 toml.fen: [short-name] `b` is too short to say what it is: write a word

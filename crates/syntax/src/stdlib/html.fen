@@ -489,7 +489,7 @@ struct PageScan:
                 )
 
 def misplaced(expression: str, reason: str) -> HtmlError:
-    return HtmlError.Misplaced(expression=expression, reason=reason)
+    return .Misplaced(expression=expression, reason=reason)
 
 ## A value's text, before escaping.
 def text_of(value: HtmlValue) -> str:

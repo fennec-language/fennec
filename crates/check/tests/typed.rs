@@ -464,6 +464,15 @@ fn generic_calls_are_typed_with_their_type_filled_in() {
 
 /// The findings `the_standard_library_is_held_to_a_programs_rules` holds std to: what the checker
 /// finds in std that it doesn't yet fix, by file and message. The list only shrinks.
+///
+/// What std's own check still lets it off, each with why:
+/// - **Its imports are one pool for all its files** (`Program::std_imports`), where a program's
+///   are each file's own, so a std file can name a type another file imports. Splitting them
+///   changes how all of std's code is resolved, so it's a change of its own (#2275).
+/// - **What a kit hands the kits it depends on** (`holds`): std depends on no kit, so there's
+///   nothing to hold it to.
+/// - **`std.intrinsics` and `@intrinsic`, and `extend` of a built-in type** in the core files:
+///   those are std's to write, by design, and a program's check refuses them.
 const STD_FINDINGS: &str = "tests/std_findings.txt";
 
 /// What the checker finds in std that std truly needs, each with why: a program can't do these,

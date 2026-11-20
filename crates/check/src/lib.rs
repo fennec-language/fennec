@@ -237,14 +237,18 @@ fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, V
 }
 
 /// What checking the standard library would find were it a program's own code: everything a
-/// program is held to, which the library's code is otherwise let off. A test holds the library to
-/// it, so std is written as its users must write.
+/// program is held to, which the library's code is otherwise let off, and the forms of before
+/// 2026-11-11 a program's check refuses. A test holds the library to it, so std is written as its
+/// users must write.
 #[must_use]
 pub fn library_problems() -> Vec<Diagnostic> {
     if let Err(problems) = library_parses() {
         return problems;
     }
-    checker::Checker::new(&Module::default()).run(checker::Scope::Library).err().unwrap_or_default()
+    let mut found =
+        checker::Checker::new(&Module::default()).run(checker::Scope::Library).err().unwrap_or_default();
+    found.extend(std_migration_fixes(&Module::default()));
+    found
 }
 
 /// The types a program declares with the same name as a standard library type, each with the

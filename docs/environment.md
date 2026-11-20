@@ -7,7 +7,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 ## For people using Fennec
 
 - `FENNEC_HOME`: Fennec's own folder, in place of `~/.fennec`. See [store.md](store.md).
-- `FENNEC_CACHE_CAP`: the most bytes the store's cache holds; 1 GiB by default. See [store.md](store.md).
+- `FENNEC_CACHE_CAP`: the most bytes the store's cache holds. By default it's 20 GiB, or a tenth of the space free on its disk if that's less. See [store.md](store.md).
 - `FENNEC_OFFLINE`: never fetch anything. The launcher passes it on to the toolchain.
 - `FENNEC_TRUST`: folders, listed as `PATH` lists them, whose kits are trusted whoever owns them, as a project mounted into a container is the host user's. A folder anyone can write to still isn't. Without it, a kit is taken only through folders this user or the system owns.
 - `FENNEC_DIST`: the mirror the launcher fetches releases from.

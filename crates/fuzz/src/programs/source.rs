@@ -20,6 +20,7 @@ use super::ast::{InOrder, OrderStep};
 use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{Sticking, StuckWay};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -2401,6 +2402,40 @@ fn generic_written(generic: &Genericking) -> String {
     out
 }
 
+/// `stuck{id}`, the function a `Stuck` calls, and the two it may: `drained{id}`, a task receiving
+/// from the channel, and `taken{id}`, a round doing the same.
+fn stuck_written(sticking: Sticking) -> String {
+    let Sticking { id, way, n } = sticking;
+    let waiting = match way {
+        StuckWay::TimedReceive => format!(
+            "got = jobs.receive_within({n}ms) except Timeout(): -1\n        stdout.print(\"received\", got else -2)"
+        ),
+        StuckWay::TimedSend => format!(
+            "jobs.send(1)?\n        jobs.send_within(2, {n}ms) except why:\n            case Timeout():\n                \
+             stdout.print(\"send timed out\")\n            case _:\n                stdout.print(\"failed\", why)"
+        ),
+        StuckWay::Received => {
+            "number = jobs.receive() else return\n        stdout.print(\"never\", number)".to_owned()
+        }
+        StuckWay::SentFull => {
+            "jobs.send(1)?\n        jobs.send(2)?\n        stdout.print(\"never\")".to_owned()
+        }
+        StuckWay::BlockEnd => {
+            format!("with launch(() => drained{id}(jobs, stdout)) as task:\n            pass")
+        }
+        StuckWay::Rounds => {
+            format!("stdout.print([taken{id}(number, jobs=jobs) for number in parallel(range({n}))])")
+        }
+    };
+    format!(
+        "def drained{id}(jobs: Channel[int], stdout: Stdout):\n    stdout.print(\"drained{id} waits\")\n    number = \
+         jobs.receive() else return\n    stdout.print(\"never\", number)\n\ndef taken{id}(number: int, jobs: \
+         Channel[int]) -> int:\n    return (jobs.receive() else -1) + number\n\ndef stuck{id}(stdout: Stdout) fails \
+         Crashed | Closed | Timeout:\n    with channel[int](size=1) as jobs:\n        stdout.print(\"stuck{id}\", \
+         {n})\n        {waiting}\n\n"
+    )
+}
+
 /// The interface, its two types and the generic functions an `Interfaced` statement calls, `{N}`
 /// standing for its id.
 const INTERFACED_TYPES: &str = "error Nope{N}:
@@ -3355,6 +3390,11 @@ impl Writer {
             Stmt::Generic(generic) => {
                 let _ = write!(self.helpers, "{}", generic_written(generic));
                 self.line(indent, &format!("generic{}(stdout)", generic.id));
+            }
+            Stmt::Stuck(sticking) => {
+                let _ = write!(self.helpers, "{}", stuck_written(*sticking));
+                self.line(indent, &format!("stuck{}(stdout) except why:", sticking.id));
+                self.line(indent + 1, "stdout.print(\"failed\", why)");
             }
             Stmt::Interfaced(interfacing) => {
                 let _ = write!(self.helpers, "{}", interfaced_written(interfacing));

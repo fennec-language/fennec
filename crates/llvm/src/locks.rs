@@ -249,6 +249,28 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// Gives back, after a crash, the locks of values one `lock` took together that are still
+    /// held, each with whether it is, in the opposite order from taking them, as `unlock_all` does.
+    pub(crate) fn give_back_all_on_crash(&mut self, handles: &[(Operand, String)]) -> Result<(), String> {
+        let mut held = Vec::with_capacity(handles.len());
+        for (handle, now) in handles {
+            let (word, cell, plain) = self.lock_word(handle)?;
+            held.push((word, cell, now.clone(), plain.to_string()));
+        }
+        if self.module.threads {
+            self.sort_by_address(&mut held);
+        }
+        for (word, cell, now, plain) in held.iter().rev() {
+            let (give, next) = (self.label("crash_give_back"), self.label("crash_given_back"));
+            self.line(&format!("br i1 {now}, label %{give}, label %{next}"));
+            self.start_block(&give);
+            self.give_back_word(word, cell, plain, true);
+            self.line(&format!("br label %{next}"));
+            self.start_block(&next);
+        }
+        Ok(())
+    }
+
     fn give_back_word(&mut self, word: &str, cell: &str, plain: &str, on_crash: bool) {
         if !self.module.threads {
             self.line(&format!("store i64 0, ptr {word}"));

@@ -62,7 +62,19 @@ Once a release is out, this installs the newest one for macOS or Linux into `~/.
 curl -fsSL https://fennec-lang.dev/install.sh | sh
 ```
 
-Until then, install it from a checkout of this repository. This builds `fennec` for release with every runtime library it links programs with, from the same source, and LLVM's tools, into `~/.fennec/bin`. Run it again after pulling:
+Until then, install it from a checkout of this repository. It needs three things first:
+
+- git, to get the checkout;
+- Rust, through [rustup](https://rustup.rs), which installs the version this repository pins by itself;
+- a C compiler, for the runtime's C parts: `sudo apt install build-essential` on Debian or Ubuntu, `sudo dnf install gcc` on Fedora, or `xcode-select --install` on macOS.
+
+On Windows, work in WSL, or build in the checkout with Rust's gnullvm toolchain and llvm-mingw as [CONTRIBUTING.md](CONTRIBUTING.md) says: `install.sh` is for macOS and Linux.
+
+This builds `fennec` for release with every runtime library it links programs with, from the same source, and LLVM's tools, into `~/.fennec/bin`. Run it again after pulling:
+
+```bash
+git clone https://github.com/fennec-language/fennec && cd fennec
+```
 
 ```bash
 .github/scripts/install.sh

@@ -31,6 +31,7 @@ use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 use super::ast::{LOCK_WAYS, LockStep, LockWay, LockingTogether};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
+use super::ast::{STUCK_WAYS, Sticking, StuckWay};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
 /// from a source or failing partway (`ZipSumming`): the loop owns it since #2041.
@@ -62,6 +63,11 @@ const FILE_WRITES: bool = true;
 /// copies made inside generic code, a holder in a holder, in a list and in a dict. Map row 4:
 /// nothing generic was written before.
 const GENERICS: bool = true;
+
+/// Whether random programs wait on what nothing will end (`Stuck`): with a time limit, which times
+/// out, and without, a deadlock, which stops the program. Map row 3: a hang in production is a
+/// blow-up. On since the oracle stops a deadlock the runtime finds, rather than refusing it.
+const DEADLOCKS: bool = true;
 
 /// Whether random programs give two types with one interface to generic functions bounded by it
 /// (`Interfaced`): `ref self` methods through `ref G` and `for ref`, a copy grown inside generic
@@ -748,6 +754,7 @@ impl Writer<'_> {
             27 if NARROWED_UNIONS && self.choice(4) == 0 => self.narrows(body),
             27 if OWN_INDEXES && self.choice(4) == 0 => self.own_indexes(body),
             27 if GENERICS && self.choice(4) == 0 => self.generics(body),
+            27 if DEADLOCKS && self.choice(4) == 0 => self.stucks(body),
             27 if INTERFACES && self.choice(4) == 0 => self.interfaces(body),
             27 if LOCKED_TOGETHER && self.choice(4) == 0 => self.locked_together(body),
             27 => self.change_buffer(body),
@@ -1501,6 +1508,24 @@ impl Writer<'_> {
             steps.push((step, self.choice(3), self.choice(3)));
         }
         body.push(Stmt::Generic(Genericking { id, ty, steps }));
+    }
+
+    /// A `Stuck` statement. A deadlock ends the program, so one in eight is one and the rest time
+    /// out. A program without threads can't launch, or wait in rounds on other threads, so it
+    /// receives plainly where it would.
+    fn stucks(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut way = if self.choice(8) == 0 {
+            STUCK_WAYS.get(2 + self.choice(4)).copied().unwrap_or(StuckWay::Received)
+        } else {
+            STUCK_WAYS.get(self.choice(2)).copied().unwrap_or(StuckWay::TimedReceive)
+        };
+        if self.threadless && matches!(way, StuckWay::BlockEnd | StuckWay::Rounds) {
+            way = StuckWay::Received;
+        }
+        let n = if way == StuckWay::Rounds { 1 + self.choice(4) } else { 1 + self.choice(20) };
+        body.push(Stmt::Stuck(Sticking { id, way, n: i64::try_from(n).unwrap_or(1) }));
     }
 
     /// An `Interfaced` statement: 3 to 10 steps, each on the crates or the heaps, adding 0 to 9.

@@ -32,8 +32,16 @@
 //!
 //! `fennec daemon status` and `fennec daemon stop` manage every daemon of this build the user has
 //! running, one for each environment commands ran in. Each exits by itself after thirty
-//! minutes with nothing to do; `FENNEC_DAEMON_IDLE` sets that in seconds. `FENNEC_NO_DAEMON`
-//! makes commands do their work in-process.
+//! minutes with nothing to do, or one minute if it has served one request; `FENNEC_DAEMON_IDLE`
+//! sets the thirty in seconds. `FENNEC_NO_DAEMON` makes commands do their work in-process.
+//!
+//! So daemons don't pile up:
+//! - A command never starts one for a Fennec folder in the temp folder. A fuzzer, a script or a
+//!   test makes one there for a build or two, and its daemon would wait half an hour.
+//! - A user runs at most four, of any build. Each notes its socket in a folder of the user's own
+//!   in the temp folder, and one starting past four stops the one used longest ago.
+//! - A test's daemons are kept apart in a folder of their own, `FENNEC_DAEMONS`, which also lets
+//!   one start for a Fennec folder in the temp folder.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -487,6 +495,100 @@ mod unix {
         /// How many language server sessions are open. The daemon isn't idle while one is.
         sessions: usize,
         stopping: bool,
+        /// Where it's noted among the user's daemons (`note_daemon`).
+        noted: Option<PathBuf>,
+    }
+
+    impl State {
+        /// Notes that it worked just now: for its idle exit, and for which of the user's daemons
+        /// was used longest ago, which goes first past the cap (`keep_under_cap`).
+        fn worked(&mut self) {
+            self.last_work = Instant::now();
+            if let Some(noted) = &self.noted {
+                let file = std::fs::File::options().write(true).open(noted);
+                let _ = file.and_then(|file| file.set_modified(std::time::SystemTime::now()));
+            }
+        }
+    }
+
+    /// How long a daemon that has served one request, or none, waits with nothing to do before it
+    /// exits: one started for a single build, as a script's is, goes soon.
+    const ONE_REQUEST_IDLE: Duration = Duration::from_mins(1);
+
+    /// How long a daemon that has served `served` requests waits with nothing to do before it exits,
+    /// when `idle` is how long it waits once it's been used again.
+    fn idle_after(served: usize, idle: Duration) -> Duration {
+        if served <= 1 { idle.min(ONE_REQUEST_IDLE) } else { idle }
+    }
+
+    /// How many build daemons a user keeps running at once. Past it, starting one stops the one
+    /// used longest ago, which only means that one's next command starts it again, or builds on
+    /// its own.
+    const MOST_DAEMONS: usize = 4;
+
+    /// Where each of the user's daemons notes the socket it listens at: a folder of the user's own
+    /// in the temp folder, or the one `FENNEC_DAEMONS` names, as tests keep their daemons apart in.
+    fn noted_daemons() -> PathBuf {
+        std::env::var_os("FENNEC_DAEMONS").map_or_else(
+            || std::env::temp_dir().join(format!("fennec-daemons-{}", rustix::process::getuid().as_raw())),
+            PathBuf::from,
+        )
+    }
+
+    /// Notes this daemon, listening at `socket` for Fennec's folder `home`, among the user's, and
+    /// stops those used longest ago past `MOST_DAEMONS`. Gives back the note, which goes when the
+    /// daemon does; none when the folder can't be the user's alone, and then nothing is counted.
+    fn note_daemon(home: &Path, socket: &Path) -> Option<PathBuf> {
+        let folder = noted_daemons();
+        owned_privately(&folder, home, true)?;
+        let noted = folder.join(format!("{}.daemon", std::process::id()));
+        std::fs::write(&noted, format!("{}\n", socket.display())).ok()?;
+        keep_under_cap(&folder, &noted, home);
+        Some(noted)
+    }
+
+    /// Stops the daemons noted in `folder` but `own`, those used longest ago first, until no more
+    /// than `MOST_DAEMONS` are running, `own`'s included. A note whose daemon can't be reached, as
+    /// one killed leaves, goes.
+    fn keep_under_cap(folder: &Path, own: &Path, home: &Path) {
+        let Ok(listing) = std::fs::read_dir(folder) else { return };
+        let mut others = Vec::new();
+        for entry in listing.flatten() {
+            let path = entry.path();
+            if path == own || path.extension().is_none_or(|extension| extension != "daemon") {
+                continue;
+            }
+            let socket =
+                std::fs::read_to_string(&path).ok().and_then(|text| text.lines().next().map(PathBuf::from));
+            match socket.filter(|socket| connect(socket, home).is_some()) {
+                Some(socket) => {
+                    let used = entry.metadata().and_then(|metadata| metadata.modified()).ok();
+                    others.push((used, socket));
+                }
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        others.sort_by_key(|(used, _)| *used);
+        let over = (others.len() + 1).saturating_sub(MOST_DAEMONS);
+        for (_, socket) in others.into_iter().take(over) {
+            // Any build of Fennec's daemon takes `stop` (`handle`).
+            let _ = send_at(&socket, home, &["stop"], Duration::from_secs(5));
+        }
+    }
+
+    /// Whether a command may start a daemon for Fennec's folder `home`. Not for one in the temp
+    /// folder, as a fuzzer's, a script's or a test's is: each is made for a build or two, and
+    /// would leave a daemon of its own waiting half an hour. `FENNEC_DAEMONS`, which keeps a test's
+    /// daemons apart, lets one start anywhere.
+    pub(super) fn may_start(home: &Path) -> bool {
+        if std::env::var_os("FENNEC_DAEMONS").is_some() {
+            return true;
+        }
+        let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let temps = [std::env::temp_dir(), PathBuf::from("/tmp")];
+        !temps.iter().any(|temp| home.starts_with(temp) || canonical(home).starts_with(canonical(temp)))
     }
 
     /// How long a command waits for the daemon's answer, all told, once it has sent a request: far
@@ -616,6 +718,9 @@ mod unix {
 
     /// Starts the daemon in the background and waits until it answers, for up to 2 seconds.
     pub(super) fn start(home: &Path) -> Option<()> {
+        if !may_start(home) {
+            return None;
+        }
         let socket = socket_path(home, false)?;
         let exe = std::env::current_exe().ok()?;
         // The daemon outlives the command that starts it, so it's never waited for. It gives what a
@@ -665,6 +770,13 @@ mod unix {
         let Ok(listener) = listener else { return ExitCode::FAILURE };
         // The daemon keeps each kit's check, for its build after an edit to carry over from.
         crate::kept::keep_checks();
+        // Noted among the user's daemons, past whose cap the one used longest ago stops.
+        let noted = note_daemon(home, &socket);
+        let gone = |noted: &Option<PathBuf>| {
+            if let Some(noted) = noted {
+                let _ = std::fs::remove_file(noted);
+            }
+        };
         // Which socket is this daemon's: another daemon started at the same moment binds the
         // same path after it, and then this one can't be reached, so it goes.
         let bound =
@@ -685,6 +797,7 @@ mod unix {
             last_work: Instant::now(),
             sessions: 0,
             stopping: false,
+            noted: noted.clone(),
         }));
         let idle = idle_limit();
         let cache = Cache::new(home);
@@ -698,6 +811,7 @@ mod unix {
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     let done = {
                         let state = state.lock().unwrap_or_else(PoisonError::into_inner);
+                        let idle = idle_after(state.served, idle);
                         state.stopping || (state.sessions == 0 && state.last_work.elapsed() > idle)
                     };
                     if done {
@@ -707,6 +821,7 @@ mod unix {
                     // unreachable. It leaves the other's socket where it is.
                     ticks = ticks.wrapping_add(1);
                     if ticks.is_multiple_of(50) && replaced() {
+                        gone(&noted);
                         return ExitCode::SUCCESS;
                     }
                     // The daemon owns the cache, so it keeps it under its cap, in time when
@@ -722,6 +837,7 @@ mod unix {
             }
         }
         let _ = std::fs::remove_file(&socket);
+        gone(&noted);
         // The short folder under `/tmp`, once no daemon of another build is listening in it.
         if let Some(folder) = socket.parent().filter(|folder| folder.parent() == Some(Path::new("/tmp"))) {
             let _ = std::fs::remove_dir(folder);
@@ -908,7 +1024,7 @@ mod unix {
         });
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         state.sessions = state.sessions.saturating_sub(1);
-        state.last_work = Instant::now();
+        state.worked();
         drop(state);
         // A build that carried over what the kit's last check found is checked all again, off the
         // build's way, once it's answered.
@@ -997,18 +1113,25 @@ mod unix {
         let _ = writer.shutdown(std::net::Shutdown::Both);
         let mut state = lock();
         state.sessions = state.sessions.saturating_sub(1);
-        state.last_work = Instant::now();
+        state.worked();
     }
 
     fn handle(request: &str, state: &mut State) -> Outcome {
         let mut lines = request.lines();
-        if lines.next() != Some(&header()) {
+        let (asking, kind) = (lines.next(), lines.next());
+        // Any build of Fennec may ask a daemon to stop: past the user's cap, a daemon starting stops
+        // the one used longest ago, whatever its build (`keep_under_cap`).
+        if kind == Some("stop") && asking.is_some_and(|asking| asking.starts_with("fennec ")) {
+            state.stopping = true;
+            return Outcome::default();
+        }
+        if asking != Some(&header()) {
             return Outcome::failure(format!(
                 "error: this daemon is Fennec {VERSION} built from other source, {}\n",
                 BUILD.get(..16).unwrap_or(BUILD)
             ));
         }
-        match (lines.next(), lines.next()) {
+        match (kind, lines.next()) {
             (Some("status"), _) => Outcome {
                 stdout: format!(
                     "running: Fennec {VERSION}, process {}, up {} s, {} served\ncache: {} of {}\n",
@@ -1024,13 +1147,9 @@ mod unix {
                 ) + &crate::kept::status().unwrap_or_default(),
                 ..Outcome::default()
             },
-            (Some("stop"), _) => {
-                state.stopping = true;
-                Outcome::default()
-            }
             (Some("changes"), Some(path)) => {
                 state.served += 1;
-                state.last_work = Instant::now();
+                state.worked();
                 crate::changes::report(Path::new(path), &state.home.clone(), &mut state.snapshots)
             }
             _ => Outcome::failure(format!("error: the daemon doesn't know the request `{request}`\n")),
@@ -1059,6 +1178,7 @@ mod unix {
                 last_work: Instant::now(),
                 sessions: 0,
                 stopping: false,
+                noted: None,
             }
         }
 
@@ -1238,6 +1358,29 @@ mod unix {
             assert_ne!(base, of(&[("PATH", "/usr/bin"), ("CC", "cc"), ("LD", "ld")]));
         }
 
+        /// A daemon that has served one request, or none, goes after a minute with nothing to do, or
+        /// sooner if it's told to; one used again waits as long as it's told.
+        #[test]
+        fn a_daemon_used_once_goes_soon() {
+            let half_hour = Duration::from_mins(30);
+            assert_eq!(super::idle_after(0, half_hour), Duration::from_mins(1));
+            assert_eq!(super::idle_after(1, half_hour), Duration::from_mins(1));
+            assert_eq!(super::idle_after(2, half_hour), half_hour);
+            assert_eq!(super::idle_after(1, Duration::from_secs(30)), Duration::from_secs(30));
+        }
+
+        /// A command for Fennec's folder in the temp folder, as a fuzzer's is, starts no daemon; one
+        /// for a folder elsewhere does.
+        #[test]
+        fn no_daemon_starts_for_a_fennec_folder_in_the_temp_folder() {
+            if std::env::var_os("FENNEC_DAEMONS").is_some() {
+                return;
+            }
+            assert!(!super::may_start(&std::env::temp_dir().join("fennec-fuzz-llvm-1")));
+            assert!(!super::may_start(Path::new("/tmp/fennec-run")));
+            assert!(super::may_start(Path::new("/home/fennec/.fennec")));
+        }
+
         /// A command that goes while its build runs, by Ctrl-C or otherwise, closes its connection,
         /// and that stops the build. Bytes it sent before going don't, and once the build is done
         /// its going stops nothing.
@@ -1279,6 +1422,7 @@ mod unix {
                 last_work: Instant::now(),
                 sessions: 0,
                 stopping: false,
+                noted: None,
             };
             let own = handle(&format!("fennec {VERSION} {BUILD}\nstatus\n"), &mut state);
             assert!(own.stdout.starts_with("running: Fennec"), "{own:?}");

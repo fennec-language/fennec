@@ -40,7 +40,7 @@ fn session(kit: &Path, home: &Path, daemon: bool) -> std::io::Result<(String, bo
     let mut command = crate::executables::fennec_command();
     command.arg("lsp").env("FENNEC_HOME", home).env("FENNEC_DAEMON_IDLE", "30");
     if daemon {
-        command.env_remove("FENNEC_NO_DAEMON");
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
     } else {
         command.env("FENNEC_NO_DAEMON", "1");
     }
@@ -83,5 +83,12 @@ fn the_language_server_runs_in_the_daemon() {
     let status = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(status.contains("1 request served"), "the session didn't run in the daemon: {status}");
     let _ = crate::executables::fennec_command().args(["daemon", "stop"]).env("FENNEC_HOME", &home).output();
+    // It goes, and takes its note with it.
+    let noted = || std::fs::read_dir(crate::executables::daemons_of(&home)).map_or(0, Iterator::count);
+    let gone = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        noted() == 0
+    });
+    assert!(gone, "the daemon didn't stop");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }

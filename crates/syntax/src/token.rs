@@ -199,13 +199,20 @@ pub(crate) enum Punct {
     CaretEq,
     ShiftLeftEq,
     ShiftRightEq,
+    SlashSlashEq,
+    PercentEq,
+    StarStarEq,
 }
 
 impl Punct {
-    pub(crate) const THREE_CHAR: [(&'static str, Punct); 2] =
-        [("<<=", Punct::ShiftLeftEq), (">>=", Punct::ShiftRightEq)];
+    pub(crate) const THREE_CHAR: [(&'static str, Punct); 4] = [
+        ("<<=", Punct::ShiftLeftEq),
+        (">>=", Punct::ShiftRightEq),
+        ("//=", Punct::SlashSlashEq),
+        ("**=", Punct::StarStarEq),
+    ];
 
-    pub(crate) const TWO_CHAR: [(&'static str, Punct); 17] = [
+    pub(crate) const TWO_CHAR: [(&'static str, Punct); 18] = [
         ("->", Punct::Arrow),
         ("=>", Punct::FatArrow),
         ("==", Punct::EqEq),
@@ -223,6 +230,7 @@ impl Punct {
         ("&=", Punct::AmpEq),
         ("|=", Punct::PipeEq),
         ("^=", Punct::CaretEq),
+        ("%=", Punct::PercentEq),
     ];
 
     pub(crate) fn text(self) -> &'static str {

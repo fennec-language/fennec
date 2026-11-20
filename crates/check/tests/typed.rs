@@ -461,3 +461,116 @@ fn generic_calls_are_typed_with_their_type_filled_in() {
     assert_eq!(type_of(&source, "main", "first([1.5])"), Some(Type::Float));
     assert_eq!(type_of(&source, "first", "items[0]"), Some(Type::Param("T".to_owned())));
 }
+
+/// The findings `the_standard_library_is_held_to_a_programs_rules` holds std to: what the checker
+/// finds in std that it doesn't yet fix, by file and message. The list only shrinks.
+const STD_FINDINGS: &str = "tests/std_findings.txt";
+
+/// What the checker finds in std that std truly needs, each with why: a program can't do these,
+/// and std has to. Each is matched by its file and the start of its message.
+const STD_EXCEPTIONS: [(&str, &str, &str); 9] = [
+    ("fs.fen", "nothing can build `Fs`:", "the compiler builds the capabilities it hands `main` and tests"),
+    ("env.fen", "nothing can build `Env`:", "the compiler builds the capabilities it hands `main` and tests"),
+    (
+        "io.fen",
+        "nothing can build `Stdout`:",
+        "the compiler builds the capabilities it hands `main` and tests",
+    ),
+    (
+        "io.fen",
+        "nothing can build `Stdin`:",
+        "the compiler builds the capabilities it hands `main` and tests",
+    ),
+    (
+        "io.fen",
+        "nothing can build `Stderr`:",
+        "the compiler builds the capabilities it hands `main` and tests",
+    ),
+    ("net.fen", "nothing can build `Net`:", "the compiler builds the capabilities it hands `main` and tests"),
+    (
+        "signals.fen",
+        "nothing can build `Signals`:",
+        "the compiler builds the capabilities it hands `main` and tests",
+    ),
+    ("embed.fen", "nothing can build `EmbeddedFolder`:", "`embed` builds it, when the program is built"),
+    (
+        "crypto.fen",
+        "`Secret` writes `def deserialize` but not `def serialize`",
+        "a secret is read from configuration and never written out: that's what the type is for",
+    ),
+];
+
+/// The standard library's file a span is in, by its file name.
+fn library_file(span: Span) -> String {
+    fennec_syntax::prelude_file_at(span)
+        .map_or_else(|| format!("? at {}", span.start), |(name, _, _)| format!("{name}.fen"))
+}
+
+/// What `found`, each a line of a file's name and a message, has that `listed`, the text of a list
+/// of them, doesn't, and what `listed` has that `found` doesn't: a finding listed twice is found
+/// twice.
+fn unlisted_and_gone(found: &[String], listed: &str) -> (Vec<String>, Vec<String>) {
+    // How many more times each is found than listed: more is new, fewer was fixed.
+    let mut more: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
+    for line in found {
+        *more.entry(line.as_str()).or_default() += 1;
+    }
+    for line in listed.lines().filter(|line| !line.is_empty() && !line.starts_with('#')) {
+        *more.entry(line).or_default() -= 1;
+    }
+    let new = more.iter().filter(|(_, more)| **more > 0).map(|(line, _)| (*line).to_owned()).collect();
+    let fixed = more.iter().filter(|(_, more)| **more < 0).map(|(line, _)| (*line).to_owned()).collect();
+    (new, fixed)
+}
+
+/// The standard library is held to the rules a program is, though the checker lets its code off
+/// them: `library_problems` finds what it would be told. What it truly needs is listed above with
+/// why, and what's left to fix is in `std_findings.txt`, which only shrinks.
+#[test]
+fn the_standard_library_is_held_to_a_programs_rules() {
+    let problems = fennec_check::library_problems();
+    let mut excepted = [0; STD_EXCEPTIONS.len()];
+    let mut found = Vec::new();
+    for problem in &problems {
+        let file = library_file(problem.span);
+        let exception = STD_EXCEPTIONS
+            .iter()
+            .position(|(in_file, starts, _)| file == *in_file && problem.message.starts_with(starts));
+        match exception {
+            Some(at) => excepted[at] += 1,
+            None => found.push((file, problem.message.clone())),
+        }
+    }
+    let unused: Vec<&str> = STD_EXCEPTIONS
+        .iter()
+        .zip(excepted)
+        .filter(|(_, count)| *count == 0)
+        .map(|((_, starts, _), _)| *starts)
+        .collect();
+    assert!(unused.is_empty(), "these exceptions match nothing now, so take them out: {unused:?}");
+    let mut found: Vec<String> = found.iter().map(|(file, message)| format!("{file}: {message}")).collect();
+    found.sort();
+    let list = Path::new(env!("CARGO_MANIFEST_DIR")).join(STD_FINDINGS);
+    // With `FENNEC_PIN_OUTPUTS` set, the list is written as it is now, which its diff then has to
+    // show only shrinking.
+    if std::env::var_os("FENNEC_PIN_OUTPUTS").is_some() {
+        let mut text =
+            "# What the checker finds in the standard library that a program would be told, by file and\n\
+            # message, held by crates/check/tests/typed.rs: fix one and it leaves this list, which only\n\
+            # shrinks. Written with FENNEC_PIN_OUTPUTS=1.\n"
+                .to_owned();
+        for line in &found {
+            text.push_str(line);
+            text.push('\n');
+        }
+        fs::write(&list, text).unwrap();
+    }
+    let (new, fixed) = unlisted_and_gone(&found, &fs::read_to_string(&list).unwrap());
+    assert!(
+        new.is_empty(),
+        "{} new in std, which a program would be told: fix each\n{}",
+        new.len(),
+        new.join("\n")
+    );
+    assert!(fixed.is_empty(), "{} fixed, so take them off {STD_FINDINGS}\n{}", fixed.len(), fixed.join("\n"));
+}

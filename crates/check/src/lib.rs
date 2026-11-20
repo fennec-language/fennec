@@ -236,6 +236,17 @@ fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, V
     checker::Checker::new(&renamed).run(scope).map_err(|problems| as_written(problems, &names))
 }
 
+/// What checking the standard library would find were it a program's own code: everything a
+/// program is held to, which the library's code is otherwise let off. A test holds the library to
+/// it, so std is written as its users must write.
+#[must_use]
+pub fn library_problems() -> Vec<Diagnostic> {
+    if let Err(problems) = library_parses() {
+        return problems;
+    }
+    checker::Checker::new(&Module::default()).run(checker::Scope::Library).err().unwrap_or_default()
+}
+
 /// The types a program declares with the same name as a standard library type, each with the
 /// name it's checked under, as `own_type_names` gives them: for what models a run with the
 /// checker's types, which name them so.

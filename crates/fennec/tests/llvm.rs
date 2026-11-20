@@ -33444,6 +33444,62 @@ def main(stdout: Stdout):
     )
 }
 
+/// An optional of a heap type, a string, a list or a struct, popped from a list of them: by `pop()`
+/// and `pop(at)`, kept or let go of with `_ =`, present or `None`, and taken out by `remove` and
+/// `discard`. A list holds such an optional as an enum, its case first, where a local holds it as
+/// a header or one word: popped whole, the case was taken for a string's first word, and letting
+/// it go crashed (#2282). Each is what it was, in place and boxed, with nothing left held.
+#[test]
+fn an_optional_of_a_heap_type_pops_out_of_a_list_as_it_was() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed(
+        "pop_optional_heap",
+        r#"struct Point:
+    x: int
+
+def main(stdout: Stdout):
+    mut words = list[str?]()
+    words.append("kit")
+    words.append(None)
+    words.append("a word long enough to be held in a block of its own")
+    words.append("fox")
+    popped_short = words.pop() else "none"
+    popped_long = words.pop() else "none"
+    popped_none = words.pop() else "none"
+    stdout.print(popped_short, popped_long, popped_none, len(words))
+    words.append("ash")
+    popped_first = words.pop(0) else "none"
+    _ = words.pop(0)
+    stdout.print(popped_first, len(words), words.pop() else "empty")
+    words.append("kit")
+    words.append("elm")
+    removed = words.remove("kit") else "none"
+    words.discard("elm")
+    stdout.print(removed, len(words))
+    mut rows = list[list[int]?]()
+    rows.append([1, 2])
+    rows.append(None)
+    rows.append([3])
+    stdout.print(len(rows.pop() else [9, 9, 9]), len(rows.pop() else [9, 9, 9]), len(rows.pop(0) else [9]), len(rows))
+    rows.append([4, 5])
+    _ = rows.pop(0)
+    stdout.print(len(rows))
+    mut points = list[Point?]()
+    points.append(Point(x=5))
+    points.append(None)
+    points.append(Point(x=7))
+    stdout.print((points.pop() else Point(x=0)).x, (points.pop() else Point(x=-1)).x, (points.pop(0) else Point(x=0)).x, len(points))
+    points.append(Point(x=8))
+    _ = points.pop()
+    stdout.print(len(points))
+    return
+"#,
+        "fox a word long enough to be held in a block of its own none 1\nkit 0 empty\nkit 0\n1 3 2 0\n0\n7 -1 5 0\n0\n",
+    )
+}
+
 /// What's written whole through a `mut` parameter belongs to the caller's local, and what `pop`
 /// and `remove_where` take out of a list keeps or loses the owners the list had. A string made
 /// for the call has no other owner, so an owner too few frees it while it's still in use.

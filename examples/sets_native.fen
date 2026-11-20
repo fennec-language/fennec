@@ -16,7 +16,7 @@ def main(stdout: Stdout):
     numbers.add(1)
     numbers.discard(3)
     numbers.discard(77)
-    numbers.remove(2)
+    numbers.discard(2)
     stdout.print(numbers, len(numbers))
     for n in numbers:
         stdout.print(n)
@@ -25,13 +25,13 @@ def main(stdout: Stdout):
 
     kept = numbers
     numbers.add(100)
-    numbers.remove(1)
+    numbers.discard(1)
     stdout.print(kept, numbers, kept == numbers, kept == {1, 9, 3}, {1, 2} == {2, 1})
 
     mut words = {"a", "b"}
     words.add("c")
     words.add("a")
-    words.remove("b")
+    words.discard("b")
     stdout.print(
         words,
         "a" in words,

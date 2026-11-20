@@ -124,12 +124,17 @@ fn a_loop_cant_change_what_it_goes_over() {
     );
     assert_eq!(
         changes(
-            "for name in names:\n    if name == \"ash\":\n        for other in names:\n            names.remove(other)\n"
+            "for name in names:\n    if name == \"ash\":\n        for other in names:\n            names.discard(other)\n"
         ),
         [
-            "you can't change `names` while looping over it @ names.remove(other)",
-            "you can't change `names` while looping over it @ names.remove(other)",
+            "you can't change `names` while looping over it @ names.discard(other)",
+            "you can't change `names` while looping over it @ names.discard(other)",
         ]
+    );
+    // A list's methods written in std, as `extend`, change it too.
+    assert_eq!(
+        changes("for name in names:\n    names.extend([name])\n"),
+        changed("names", "names.extend([name])")
     );
     assert_eq!(
         helps(&format!(

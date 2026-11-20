@@ -1,4 +1,4 @@
 def main(stdout: Stdout):
-    mut seen = {"fire", "ice"}
+    mut seen = ["fire", "ice"]
     seen.remove("mud")
     stdout.print(seen)

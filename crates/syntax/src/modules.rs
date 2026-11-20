@@ -185,6 +185,19 @@ fn shown(module: &str, names: &[&str]) -> String {
     public.join(", ")
 }
 
+/// What a program can take from `std.<module>`, as `from std.json import dumps` does: its names,
+/// less those kept for the standard library's own code. For completion after `json.`.
+#[must_use]
+pub fn exported(module: &str) -> Vec<&'static str> {
+    names(module).iter().copied().filter(|name| !kept_inside(module, name)).collect()
+}
+
+/// The standard library module called `name`, as `json` for `std.json`, if there's one.
+#[must_use]
+pub fn std_module(name: &str) -> Option<&'static str> {
+    module(name)
+}
+
 fn names(module: &str) -> &'static [&'static str] {
     MODULES.iter().find(|known| known.name == module).map_or(&[], |known| known.names)
 }

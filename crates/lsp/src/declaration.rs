@@ -119,6 +119,10 @@ fn type_name(ty: &Type) -> Option<String> {
         Type::Dict(..) => Some("dict".to_owned()),
         Type::Set(_) => Some("set".to_owned()),
         Type::Str => Some("str".to_owned()),
+        Type::Bytes => Some("bytes".to_owned()),
+        // A `Table`'s methods are the engines', with no declaration: naming its type keeps
+        // another type's method of the same name from being shown for it.
+        Type::Table(_) => Some("Table".to_owned()),
         _ => None,
     }
 }

@@ -367,12 +367,6 @@ impl Lowering<'_> {
             if name == "Buffer" && object.is_none() {
                 "Buffer.new".clone_into(&mut name);
             }
-            if name == "list.remove"
-                && let Some(Type::List(held)) = object.and_then(|object| self.type_at(object.span))
-                && self.context.signatures.own_equality(&held)
-            {
-                return Err(super::operators::OWN_EQUALITY.to_owned());
-            }
             let mut values = self.builtin_args((&mut name, object, changes), args, &mut write_backs, span)?;
             if let Some(size) = self.array_len(&name, &values) {
                 dest = keep.map(|ty| self.temporary(ty));

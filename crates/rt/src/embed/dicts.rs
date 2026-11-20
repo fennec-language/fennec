@@ -1726,16 +1726,16 @@ fn take<const IN_PLACE: bool>(state: &mut State, at: u64, key: &[u64]) -> Option
     Some(Taken::Removed(value))
 }
 
-/// `set.discard(key)`, or `set.remove(key)` when `must`, which fails for a key the set doesn't
-/// have. Takes over the set's owner and gives back the set's.
-pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64) -> i64 {
-    remove_words(set, &[key.cast_unsigned()], Key::HandedOver, must, (start, end))
+/// `set.discard(key)`: takes the key out if the set has it, and never fails. Takes over the set's
+/// owner and gives back the set's.
+pub extern "C" fn set_remove(set: i64, key: i64) -> i64 {
+    remove_words("fennec_set_remove", set, &[key.cast_unsigned()], Key::HandedOver)
 }
 
 /// `set_remove` for a set of string keys held as headers, the key given as its header's words.
 /// The key's owner stays with the caller.
-pub extern "C" fn set_remove_header(set: i64, a: u64, b: u64, c: u64, must: i8, start: i64, end: i64) -> i64 {
-    remove_words(set, &[a, b, c], Key::Lent, must, (start, end))
+pub extern "C" fn set_remove_header(set: i64, a: u64, b: u64, c: u64) -> i64 {
+    remove_words("fennec_set_remove_header", set, &[a, b, c], Key::Lent)
 }
 
 /// Whose the key given to look something up by is, when it's held in a block.
@@ -1761,27 +1761,15 @@ fn let_go_of_key(state: &mut State, at: u64, key: &[u64], whose: Key) {
     }
 }
 
-fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64, i64)) -> i64 {
-    attempt(|state: &mut State| {
+fn remove_words(what: &str, set: i64, key: &[u64], whose: Key) -> i64 {
+    super::made_with(what, |state| {
         let at = u64::try_from(set).map_or(0, |at| to_take_from(state, at, key));
-        let removed = match take_key::<false>(state, at, key) {
-            Taken::Missing if must != 0 => {
-                let key_word = state
-                    .heap
-                    .block(at)
-                    .and_then(|block| kind(state, block))
-                    .map_or(Word::Int, |kind| kind.0);
-                // Read for the message, written and let go of with room for however deep it is.
-                let message = super::heap::with_room_to_read(|| {
-                    format!("{} isn't in the set", crate::format::repr(&key_value(state, key_word, key)))
-                });
-                Err(Diagnostic::new(message, span(start, end)))
-            }
-            Taken::NotOne => Ok(set),
-            Taken::Removed(_) | Taken::Missing | Taken::DoesntFit => Ok(i64::try_from(at).unwrap_or(0)),
+        let kept = match take_key::<false>(state, at, key) {
+            Taken::NotOne => set,
+            Taken::Removed(_) | Taken::Missing | Taken::DoesntFit => i64::try_from(at).unwrap_or(0),
         };
         let_go_of_key(state, at, key, whose);
-        removed
+        kept
     })
 }
 

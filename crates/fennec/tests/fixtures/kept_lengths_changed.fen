@@ -18,7 +18,7 @@ def changed(ref items: list[int], how: int) -> int:
                 case 2:
                     _ = items.pop()
                 case 3:
-                    items.remove(items[0])
+                    items.discard(items[0])
                 case 4:
                     items.insert(0, 11)
                 case 5:

@@ -1,12 +1,12 @@
-source 14f1f8552019e006d9b3c13f46b43d70fba799d092bc894410c273f363bd4264
+source a9108afa8acf919ac8d074c24a8d80d1d0a2b17d8df2c6a4d6ed21f55dc186af
 code 1
-stdout 17
+stdout 13
 9 1
 bcd a
-[1, 2]
-stderr 123
-error: 9 isn't in the list
-  --> <dir>/fails_only_in_max.fen:14:5
+{}
+stderr 138
+error: the dict has no key "nine"
+  --> <dir>/fails_only_in_max.fen:14:9
    |
-14 |     values.remove(9)
-   |     ^^^^^^^^^^^^^^^^
+14 |     _ = ages.pop("nine")
+   |         ^^^^^^^^^^^^^^^^

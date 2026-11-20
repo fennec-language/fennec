@@ -88,6 +88,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_dict_set_header",
     "fennec_dict_add_new_slice",
     "fennec_set_clear",
+    "fennec_set_remove",
+    "fennec_set_remove_header",
     "fennec_list_new",
     "fennec_list_with_room",
     "fennec_list_grow",
@@ -311,7 +313,6 @@ export! {
     fennec_list_insert(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::insert(a0, a1, a2, a3);
     fennec_buffer_insert(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::insert_buffer(a0, a1, a2, a3);
     fennec_list_extend(a0: i64, a1: i64) -> i64 => lists::extend(a0, a1);
-    fennec_list_remove(a0: i64, a1: i64, a2: i64, a3: i64) => lists::remove(a0, a1, a2, a3);
     fennec_list_contains(a0: i64, a1: i64) -> i8 => lists::contains(a0, a1);
     fennec_pop_empty(a0: i64, a1: i64) => lists::pop_empty(a0, a1);
     fennec_buffer_pop_empty(a0: i64, a1: i64) => lists::pop_empty_buffer(a0, a1);
@@ -391,8 +392,8 @@ export! {
     fennec_notes_list(a0: i64) -> i64 => notes::list(a0);
     fennec_notes_shown(a0: i64) -> i64 => notes::shown(a0);
     fennec_list_slice(a0: i64, a1: i64, a2: i64) -> i64 => lists::slice(a0, a1, a2);
-    fennec_set_remove(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) -> i64 => dicts::set_remove(a0, a1, a2, a3, a4);
-    fennec_set_remove_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) -> i64 => dicts::set_remove_header(a0, a1, a2, a3, a4, a5, a6);
+    fennec_set_remove(a0: i64, a1: i64) -> i64 => dicts::set_remove(a0, a1);
+    fennec_set_remove_header(a0: i64, a1: u64, a2: u64, a3: u64) -> i64 => dicts::set_remove_header(a0, a1, a2, a3);
     fennec_set_clear(a0: i64) -> i64 => dicts::set_clear(a0);
     fennec_shared_new(a0: i64) -> i64 => guarded::shared_new(a0);
     fennec_replay_lock(a0: i64, a1: i64) => guarded::replay_lock(a0, a1);

@@ -115,10 +115,6 @@ extend set[T: Hashable]:
     @intrinsic
     def discard(ref self, item: T)
 
-    ## Takes out `item`. One that isn't there stops the program, where `discard` does nothing.
-    @intrinsic
-    def remove(ref self, item: T)
-
     ## Takes out every item.
     @intrinsic
     def clear(ref self)

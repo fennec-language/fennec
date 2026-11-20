@@ -136,10 +136,6 @@ extend list[T]:
     @intrinsic
     def append(ref self, item: T)
 
-    ## Takes out the first item equal to `item`. One that isn't there stops the program.
-    @intrinsic
-    def remove(ref self, item: T)
-
     ## Puts `item` at `at`, moving the items from there on along by one.
     @intrinsic
     def insert(ref self, at: int, item: T)

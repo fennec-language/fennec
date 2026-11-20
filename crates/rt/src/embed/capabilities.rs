@@ -396,6 +396,15 @@ fn call_in<M: Module>(word: i64, method: i64, (count, start, end): (i64, i64, i6
         Value::Limited(limited) => Some(limited.capability),
         _ => None,
     };
+    // A named argument rides on the method's name (`write_text.durable`), and `durable=` on a
+    // whole write is taken off it here, once, so whatever looks at the name, as a read-only
+    // `Fs`'s refusal of every write does, sees `write_text`. The flag stays last in what's given.
+    let name = match name.strip_suffix(".durable") {
+        Some(whole @ ("write_text" | "write_bytes")) if capability == Some(Capability::Fs) => {
+            whole.to_owned()
+        }
+        _ => name,
+    };
     if capability.is_some_and(|capability| !M::takes(capability, &name)) {
         return not_this_exports(M::EXPORT, &name);
     }

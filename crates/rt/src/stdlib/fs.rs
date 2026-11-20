@@ -11,6 +11,8 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::methods::no_method;
 use crate::stdlib::faults::{self, Work};
+
+mod left;
 use crate::stdlib::turns::Held;
 use crate::value::{Capability, Value};
 
@@ -43,10 +45,14 @@ enum Written {
 impl Written {
     /// Renames the file written into its target's place.
     fn put_in_place(&self) -> std::io::Result<()> {
-        match self {
+        let done = match self {
             Written::Path { temporary, target } => std::fs::rename(temporary, target),
             Written::Beneath { folder, temporary, target } => folder.rename(temporary, folder, target),
+        };
+        if done.is_ok() {
+            self.let_go();
         }
+        done
     }
 
     /// Throws the file written away, leaving its target as it was.
@@ -55,6 +61,15 @@ impl Written {
             Written::Path { temporary, .. } => std::fs::remove_file(temporary),
             Written::Beneath { folder, temporary, .. } => folder.remove_file(temporary),
         };
+        self.let_go();
+    }
+
+    /// The file written is no longer this run's to hold beside its target.
+    fn let_go(&self) {
+        let (Written::Path { temporary, .. } | Written::Beneath { temporary, .. }) = self;
+        if let Some(name) = temporary.file_name() {
+            left::let_go(name);
+        }
     }
 
     /// Puts the rename in the target's folder on the disk.
@@ -124,14 +139,38 @@ fn taken(file: &Value) -> Option<Shared> {
 }
 
 /// Where a file being written to `target` goes until its block ends: beside it, so renaming it
-/// into place never crosses from one disk to another, and hidden, with a name no other has.
+/// into place never crosses from one disk to another, and hidden, with a name no other has. The
+/// name is held as this run's from here, before the file is made, until it's put in place or
+/// thrown away, or [`not_made`] says it wasn't made.
 fn temporary_beside(target: &Path) -> PathBuf {
     static MADE: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(0));
     let mut made = MADE.lock().unwrap_or_else(PoisonError::into_inner);
     *made += 1;
     let name = target.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    target.with_file_name(format!(".{name}.{}.{}.fennec-partial", std::process::id(), *made))
+    let temporary = target.with_file_name(format!(".{name}.{}.{}.fennec-partial", std::process::id(), *made));
+    if let Some(name) = temporary.file_name() {
+        left::hold(name);
+    }
+    temporary
 }
+
+/// A file named by [`temporary_beside`] that wasn't made, or was made and taken away again.
+fn not_made(temporary: &Path) {
+    if let Some(name) = temporary.file_name() {
+        left::let_go(name);
+    }
+}
+
+/// The folder `target` is in.
+fn folder_of(target: &Path) -> &Path {
+    target.parent().filter(|folder| !folder.as_os_str().is_empty()).unwrap_or(Path::new("."))
+}
+
+/// Windows' `FILE_SHARE_DELETE`: a file being written beside its target is opened letting others
+/// rename and remove it, as its own rename and removal do, but not open it to read or write. So
+/// one that opens to read has no writer left (`left::clear`).
+#[cfg(windows)]
+const SHARE_DELETE_ONLY: u32 = 0x0000_0004;
 
 /// Where writing to `path` really puts a file: what a link points at, so the link stays a link.
 fn through_links(path: &Path) -> std::io::Result<PathBuf> {
@@ -154,18 +193,33 @@ fn new_beside(target: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.share_mode(SHARE_DELETE_ONLY);
+    }
     let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
     for _ in 0..32 {
         let temporary = temporary_beside(target);
         match options.open(&temporary) {
             Ok(file) => {
-                if let Some(replaced) = &replaced {
-                    file.set_permissions(replaced.permissions())?;
+                let permitted =
+                    replaced.as_ref().map_or(Ok(()), |replaced| file.set_permissions(replaced.permissions()));
+                if let Err(err) = permitted {
+                    let _ = std::fs::remove_file(&temporary);
+                    not_made(&temporary);
+                    return Err(err);
                 }
                 return Ok((file, temporary));
             }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
-            Err(err) => return Err(err),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                not_made(&temporary);
+                last = err;
+            }
+            Err(err) => {
+                not_made(&temporary);
+                return Err(err);
+            }
         }
     }
     Err(last)
@@ -177,28 +231,67 @@ fn replaceable(target: &Path) -> bool {
     std::fs::metadata(target).map_or(true, |found| found.is_file())
 }
 
-/// `fs.write_text` and `fs.write_bytes`: the whole file takes the old one's place at once, so a
-/// reader never sees half of it. Where that can't be done, as for a device or in a folder this
-/// program can't add to, it's written where it is.
-fn write_whole(path: &str, data: &[u8]) -> std::io::Result<()> {
+/// `fs.write_text` and `fs.write_bytes`: the whole file is written beside the old one, put on the
+/// disk, and takes the old one's place at once, as `fs.create`'s does, so neither a reader nor a
+/// crash ever finds half of it. A device or a pipe, which has no place to take, is written where it
+/// is. A file in a folder the program can't add a file to fails with `PermissionDenied`, even
+/// where the file itself could be written: written where it is, a full disk would leave half of it.
+fn write_whole(path: &str, data: &[u8], durable: bool) -> std::io::Result<()> {
     let target = through_links(Path::new(path))?;
-    // Written where it is, as `std::fs::write` does it.
-    let in_place = || faults::write_all(&mut std::fs::File::create(&target)?, data);
     if !replaceable(&target) {
-        return in_place();
+        return faults::write_all(&mut std::fs::File::create(&target)?, data);
     }
-    let (mut file, temporary) = match new_beside(&target) {
-        Ok(made) => made,
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return in_place(),
-        Err(err) => return Err(err),
+    left::clear(folder_of(&target));
+    let (file, temporary) = new_beside(&target)?;
+    put_whole(file, &Written::Path { temporary, target }, data, durable)
+}
+
+/// What `write_text` and `write_bytes` are given: the path, what's written, and whether to wait
+/// for the disk, as `durable=` says after them, which it does unless told `durable=False`.
+fn whole_write(args: &[Value]) -> Option<(&str, Vec<u8>, bool)> {
+    match args {
+        [Value::Str(path), data @ (Value::Str(_) | Value::Bytes(_))] => {
+            Some((path, bytes_of(data).to_vec(), true))
+        }
+        [Value::Str(path), data @ (Value::Str(_) | Value::Bytes(_)), Value::Bool(durable)] => {
+            Some((path, bytes_of(data).to_vec(), *durable))
+        }
+        _ => None,
+    }
+}
+
+/// Writes `data` into `file`, made beside its target, puts it on the disk, and renames it into the
+/// target's place, then puts the rename on the disk too. Anything failing before the rename throws
+/// the file away, leaving the target as it was; the rename's own sync failing leaves the new file
+/// in place, and fails all the same, since it may not last a power cut. Not `durable`, neither
+/// waits for the disk, as `fs.create(path, durable=False)`'s doesn't: a reader still never finds
+/// half of it, but a power cut may.
+fn put_whole(mut file: std::fs::File, at: &Written, data: &[u8], durable: bool) -> std::io::Result<()> {
+    let synced = |file: &std::fs::File| {
+        if durable {
+            faults::check(Work::Sync)?;
+            file.sync_all()?;
+        }
+        Ok(())
     };
     let done = faults::write_all(&mut file, data)
+        .and_then(|()| synced(&file))
         .and_then(|()| faults::check(Work::Rename))
-        .and_then(|()| std::fs::rename(&temporary, &target));
+        .and_then(|()| at.put_in_place());
     if done.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+        at.throw_away();
     }
-    done
+    done?;
+    if !durable {
+        return Ok(());
+    }
+    // Counted on every system, so a rule fails the same work on each.
+    faults::check(Work::Sync)?;
+    // Windows has no handle to a folder to sync, and its renames are written through by the file
+    // system.
+    #[cfg(unix)]
+    at.sync_folder()?;
+    Ok(())
 }
 
 /// `fs._create(path, durable)`: a new file beside `path` to write.
@@ -209,6 +302,7 @@ fn create(path: &str, durable: bool) -> Value {
         if !replaceable(&target) {
             return Err(Fail::from(format!("`{}` isn't a file that can be replaced", target.display())));
         }
+        left::clear(folder_of(&target));
         let (file, temporary) = new_beside(&target).map_err(Fail::from)?;
         Ok((file, temporary, target))
     });
@@ -603,9 +697,9 @@ fn on_real_fs<D: Databases>(method: &str, paths: &[Value], span: Span) -> Result
                 std::fs::read(&path).map_err(|err| read_failure(err, || Path::new(&path).is_dir()))
             })
         }
-        ("write_text" | "write_bytes", [Value::Str(path), data @ (Value::Str(_) | Value::Bytes(_))]) => {
-            let (path, data) = (path.to_string(), bytes_of(data).to_vec());
-            done(blocking(move || write_whole(&path, &data).map_err(io)), |()| Value::Unit)
+        ("write_text" | "write_bytes", _) if let Some((path, data, durable)) = whole_write(paths) => {
+            let path = path.to_owned();
+            done(blocking(move || write_whole(&path, &data, durable).map_err(io)), |()| Value::Unit)
         }
         ("list_dir", [Value::Str(path)]) => {
             let folder = path.to_string();
@@ -684,6 +778,7 @@ pub(crate) fn beneath_with<D: Databases>(
     if let Some(refused) = holding_nul(paths) {
         return Ok(refused);
     }
+    let root = PathBuf::from(folder);
     let folder = match open_narrowed(folder) {
         Ok(folder) => Arc::new(folder),
         Err(fail) => return Ok(io_failed(&fail)),
@@ -697,9 +792,9 @@ pub(crate) fn beneath_with<D: Databases>(
         ("read_text" | "read_bytes", [Value::Str(_)]) => read_whole(method == "read_text", move || {
             read_beneath(&folder, &at).map_err(|err| read_failure(err, || is_folder_beneath(&folder, &at)))
         }),
-        ("write_text" | "write_bytes", [Value::Str(_), data @ (Value::Str(_) | Value::Bytes(_))]) => {
-            let data = bytes_of(data).to_vec();
-            done(blocking(move || write_whole_beneath(&folder, &at, &data).map_err(io)), |()| Value::Unit)
+        ("write_text" | "write_bytes", _) if let Some((_, data, durable)) = whole_write(paths) => {
+            let written = move || write_whole_beneath(&root, &folder, &at, &data, durable).map_err(io);
+            done(blocking(written), |()| Value::Unit)
         }
         ("list_dir", [Value::Str(path)]) => {
             let shown = path.to_string();
@@ -738,7 +833,7 @@ pub(crate) fn beneath_with<D: Databases>(
                 )
             })
         }
-        ("_create", [Value::Str(_), Value::Bool(durable)]) => create_beneath(folder, at, *durable),
+        ("_create", [Value::Str(_), Value::Bool(durable)]) => create_beneath(root, folder, at, *durable),
         ("_open", [Value::Str(_)]) => {
             let opened = move || {
                 let file = open_beneath(&folder, &at)
@@ -1122,19 +1217,34 @@ impl WrittenAt {
             use cap_std::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.share_mode(SHARE_DELETE_ONLY);
+        }
         let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
         for _ in 0..32 {
             let temporary = temporary_beside(&self.name);
             match self.here.open_with(&temporary, &options) {
                 Ok(file) => {
                     let file = file.into_std();
-                    if let Some(replaced) = &self.found {
-                        permissions_like(&file, replaced)?;
+                    let permitted =
+                        self.found.as_ref().map_or(Ok(()), |replaced| permissions_like(&file, replaced));
+                    if let Err(err) = permitted {
+                        let _ = self.here.remove_file(&temporary);
+                        not_made(&temporary);
+                        return Err(err);
                     }
                     return Ok((file, temporary));
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
-                Err(err) => return Err(err),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    not_made(&temporary);
+                    last = err;
+                }
+                Err(err) => {
+                    not_made(&temporary);
+                    return Err(err);
+                }
             }
         }
         Err(last)
@@ -1157,32 +1267,27 @@ fn permissions_like(file: &std::fs::File, replaced: &cap_std::fs::Metadata) -> s
     }
 }
 
-/// [`write_whole`], beneath `folder`.
-fn write_whole_beneath(folder: &Arc<cap_std::fs::Dir>, at: &Path, data: &[u8]) -> std::io::Result<()> {
+/// [`write_whole`], beneath `folder`, an `Fs` narrowed with `only` to `root`.
+fn write_whole_beneath(
+    root: &Path,
+    folder: &Arc<cap_std::fs::Dir>,
+    at: &Path,
+    data: &[u8],
+    durable: bool,
+) -> std::io::Result<()> {
     let place = written_at(folder, at)?;
-    let (here, name) = (&place.here, &place.name);
-    // Written where it is, as `Dir::write` does it.
-    let in_place = || faults::write_all(&mut here.create(name)?, data);
     if !place.replaceable() {
-        return in_place();
+        return faults::write_all(&mut place.here.create(&place.name)?, data);
     }
-    let (mut file, temporary) = match place.new_beside() {
-        Ok(made) => made,
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return in_place(),
-        Err(err) => return Err(err),
-    };
-    let done = faults::write_all(&mut file, data)
-        .and_then(|()| faults::check(Work::Rename))
-        .and_then(|()| here.rename(&temporary, here, name));
-    if done.is_err() {
-        let _ = here.remove_file(&temporary);
-    }
-    done
+    left::clear_beneath(&place.here, root.join(folder_of(&place.target)));
+    let (file, temporary) = place.new_beside()?;
+    let written = Written::Beneath { folder: Arc::clone(&place.here), temporary, target: place.name.clone() };
+    put_whole(file, &written, data, durable)
 }
 
 /// [`create`], beneath `folder`: a new file beside `at` to write, which takes its place by name
 /// beneath the folder when its block ends.
-fn create_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, durable: bool) -> Value {
+fn create_beneath(root: PathBuf, folder: Arc<cap_std::fs::Dir>, at: PathBuf, durable: bool) -> Value {
     let made = blocking(move || {
         let place = written_at(&folder, &at).map_err(Fail::from)?;
         if !place.replaceable() {
@@ -1191,6 +1296,7 @@ fn create_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, durable: bool) -> 
                 place.target.display()
             )));
         }
+        left::clear_beneath(&place.here, root.join(folder_of(&place.target)));
         let (file, temporary) = place.new_beside().map_err(Fail::from)?;
         Ok((file, Written::Beneath { folder: place.here, temporary, target: place.name }))
     });
@@ -1611,6 +1717,7 @@ mod tests {
             ("write:1:denied", "PermissionDenied(reason=\"the system won't allow it\")"),
             ("write:1:nospace:2", "Other(reason=\"the disk is full\")"),
             ("write:1:toolarge:100", "Other(reason=\"the file is too big for the system\")"),
+            ("sync:1:readonly", "Other(reason=\"the disk can't be written to\")"),
             ("rename:1:io", "Other(reason=\"the system failed: other error\")"),
         ] {
             faults::put_in(rule);
@@ -1619,17 +1726,28 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&target)?, "old", "{rule}");
             assert_eq!(names(temp.path()), ["kept.txt"], "{rule}");
         }
-        // A folder the program can't add a file to has the file written where it is, as it's
-        // always been: so it's written whole, with no file beside it.
+        // A refusal to add a file beside it fails the write: it's never written where it is, where
+        // a full disk would leave half of it.
         faults::put_in("create:1:denied");
-        assert_eq!(shown("write_text", &[path.clone(), Value::str("new text")]), "Ok()");
+        let refused = shown("write_text", &[path.clone(), Value::str("new text")]);
+        assert!(refused.contains("PermissionDenied(reason=\"the system won't allow it\")"), "{refused}");
+        assert_eq!(std::fs::read_to_string(&target)?, "old");
+        // The rename's own sync failing leaves the new file in place, and fails all the same.
+        faults::put_in("sync:2:io");
+        let unsynced = shown("write_text", &[path.clone(), Value::str("new text")]);
+        assert!(unsynced.contains("the system failed: other error"), "{unsynced}");
         assert_eq!(std::fs::read_to_string(&target)?, "new text");
+        assert_eq!(names(temp.path()), ["kept.txt"]);
         // A rule for more of a kind of work than the program does fails nothing. A whole write is
-        // one create, one write and one rename, with no flush or sync.
-        faults::put_in("create:2:io,write:2:nospace,rename:2:io,flush:1:io,sync:1:io");
+        // one create, one write, a sync, a rename and the folder's sync, with no flush.
+        faults::put_in("create:2:io,write:2:nospace,sync:3:io,rename:2:io,flush:1:io");
         assert_eq!(shown("write_text", &[path.clone(), Value::str("newer")]), "Ok()");
         assert_eq!(std::fs::read_to_string(&target)?, "newer");
         assert_eq!(names(temp.path()), ["kept.txt"]);
+        // `durable=False`: neither sync is done, or counted, so a rule for one fails nothing.
+        faults::put_in("sync:1:io");
+        assert_eq!(shown("write_text", &[path.clone(), Value::str("quick"), Value::Bool(false)]), "Ok()");
+        assert_eq!(std::fs::read_to_string(&target)?, "quick");
         faults::put_in("");
         Ok(())
     }
@@ -1667,7 +1785,9 @@ mod tests {
             ("sync:2:kill", false, "new", None),
             ("create:1:kill", true, "old", None),
             ("write:1:kill:2", true, "old", Some("ne")),
+            ("sync:1:kill", true, "old", Some("new")),
             ("rename:1:kill", true, "old", Some("new")),
+            ("sync:2:kill", true, "new", None),
         ] {
             let temp = fennec_temp::Temp::folder("faults-killed")?;
             std::fs::write(temp.path().join("kept.txt"), "old")?;
@@ -1752,6 +1872,72 @@ mod tests {
         assert_eq!(file_does(&file, "write", &[Value::str("synced")]), "Ok()");
         assert!(shown("_finish", &[(*file).clone()]).contains("the system failed: other error"));
         faults::put_in("");
+        Ok(())
+    }
+
+    /// A file a gone run left beside its target, writing it when it was killed, is cleared the
+    /// first time this run writes in its folder. On Unix, one whose maker's process number a live
+    /// process has is kept, as that process may be writing it. (One this run holds is kept too:
+    /// `left::tests`.)
+    #[test]
+    fn what_gone_runs_left_is_cleared_when_a_folder_is_first_written() -> std::io::Result<()> {
+        let temp = fennec_temp::Temp::folder("left-behind")?;
+        faults::put_in("");
+        // A process that's ended, whose number nothing has yet.
+        let mut ended = std::process::Command::new(std::env::current_exe()?).arg("--list").spawn()?;
+        let gone = ended.id();
+        ended.wait()?;
+        let left =
+            [format!(".kept.txt.{gone}.1.fennec-partial"), format!(".other.txt.{gone}.9.fennec-partial")];
+        // This run's own number, which no file this run holds has: left by an earlier run that had it.
+        let earlier = format!(".kept.txt.{}.999999.fennec-partial", std::process::id());
+        for name in left.iter().chain([&earlier]) {
+            std::fs::write(temp.path().join(name), "half")?;
+        }
+        // One a live process may be writing, by its number.
+        #[cfg(unix)]
+        let alive = format!(".kept.txt.{}.1.fennec-partial", std::os::unix::process::parent_id());
+        #[cfg(unix)]
+        std::fs::write(temp.path().join(&alive), "half")?;
+        let target = Value::str(&temp.path().join("kept.txt").to_string_lossy());
+        assert_eq!(shown("write_text", &[target, Value::str("whole")]), "Ok()");
+        let mut kept = vec!["kept.txt".to_owned()];
+        #[cfg(unix)]
+        kept.push(alive);
+        kept.sort();
+        assert_eq!(names(temp.path()), kept);
+        // Once a folder: a file left after the first write there is left for a later run.
+        let later = format!(".kept.txt.{gone}.2.fennec-partial");
+        std::fs::write(temp.path().join(&later), "half")?;
+        let target = Value::str(&temp.path().join("kept.txt").to_string_lossy());
+        assert_eq!(shown("write_text", &[target, Value::str("again")]), "Ok()");
+        assert!(names(temp.path()).contains(&later));
+        Ok(())
+    }
+
+    /// A file in a folder the program can't add a file to isn't written where it is, though the
+    /// file itself could be: written in place, a full disk would leave half of it. It fails with
+    /// `PermissionDenied`, and the file keeps what it held.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_in_a_folder_that_cant_be_added_to_isnt_written_in_place() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = fennec_temp::Temp::folder("no-room-beside")?;
+        let folder = temp.path().join("shut");
+        std::fs::create_dir(&folder)?;
+        let target = folder.join("kept.txt");
+        std::fs::write(&target, "old")?;
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555))?;
+        // Someone the system lets add a file anyway, as root is, can't see this.
+        let shut = std::fs::write(folder.join("probe"), "").is_err();
+        faults::put_in("");
+        let written = shown("write_text", &[Value::str(&target.to_string_lossy()), Value::str("new")]);
+        let held = std::fs::read_to_string(&target)?;
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755))?;
+        if shut {
+            assert!(written.contains("PermissionDenied(reason=\"the system won't allow it\")"), "{written}");
+            assert_eq!(held, "old");
+        }
         Ok(())
     }
 }

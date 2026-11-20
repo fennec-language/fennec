@@ -290,12 +290,32 @@ fn bytes_method(name: &str) -> Option<Method> {
     })
 }
 
+/// The named arguments a method written in Rust takes, past its plain ones, like `sort`'s `key`.
+pub(crate) fn named_arguments(ty: &Type, name: &str) -> &'static [&'static str] {
+    match ty.type_name() {
+        _ if name == "sort" => &["key"],
+        Some("Net") if name == "_connect" => &["timeout", "tls"],
+        Some("Net") if name == "_listen" => &["tls"],
+        // `crlf=True` takes a line as ending only at `\r\n`, as HTTP and SMTP do.
+        Some("Connection") if name == "read_line" => &["crlf", "timeout"],
+        Some(owner) if waits_on_network(owner, name) => &["timeout"],
+        Some("Net") if name == "_udp" => &["port"],
+        // `durable=False` puts a whole file in its path's place without waiting for the disk.
+        Some("Fs") if matches!(name, "write_text" | "write_bytes") => &["durable"],
+        Some("Process") if name == "run" => &["cwd", "env", "input", "most_output", "timeout"],
+        Some("Net") if matches!(name, "get" | "post" | "request") => {
+            &["body", "headers", "json", "most_body", "params", "timeout"]
+        }
+        _ => &[],
+    }
+}
+
 /// Whether a method waits on the network, so it takes `timeout=`, a `Duration`.
 fn waits_on_network(type_name: &str, name: &str) -> bool {
     matches!(
         (type_name, name),
         ("Net", "_connect")
-            | ("Connection", "read" | "read_line" | "start_tls" | "write")
+            | ("Connection", "read" | "_body" | "read_line" | "start_tls" | "write")
             | ("Server", "_accept")
             | ("UdpSocket", "receive")
     )
@@ -426,23 +446,10 @@ impl FnCx<'_> {
         if method.changes {
             self.mut_place(object, &format!("`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"));
         }
-        let named: &[&str] = match ty.type_name() {
-            _ if name == "sort" => &["key"],
-            Some("Net") if name == "_connect" => &["timeout", "tls"],
-            Some("Net") if name == "_listen" => &["tls"],
-            // `crlf=True` takes a line as ending only at `\r\n`, as HTTP and SMTP do.
-            Some("Connection") if name == "read_line" => &["crlf", "timeout"],
-            Some(owner) if waits_on_network(owner, name) => &["timeout"],
-            Some("Net") if name == "_udp" => &["port"],
-            // `durable=False` puts a whole file in its path's place without waiting for the disk.
-            Some("Fs") if matches!(name, "write_text" | "write_bytes") => &["durable"],
-            Some("Process") if name == "run" => &["cwd", "env", "input", "most_output", "timeout"],
-            Some("Net") if matches!(name, "get" | "post" | "request") => {
-                self.one_request_body(args, span);
-                &["body", "headers", "json", "most_body", "params", "timeout"]
-            }
-            _ => &[],
-        };
+        if ty.type_name() == Some("Net") && matches!(name, "get" | "post" | "request") {
+            self.one_request_body(args, span);
+        }
+        let named = named_arguments(ty, name);
         let plain = self.builtin_args(name, args, named, (&method.params, &method.receives), span);
         self.no_secret_printed(ty, name, &plain);
         if *ty == Type::named("Process") && name == "run" {
@@ -1070,4 +1077,187 @@ fn cased_param<'p>(arg: &Arg, params: &'p [Type], position: &mut usize) -> Optio
     *position += 1;
     let cased = crate::expect::leading_dot(&arg.value) || crate::expect::written_with_cases(&arg.value);
     params.get(*position - 1).filter(|_| cased)
+}
+
+#[cfg(test)]
+mod declared {
+    //! What std declares the engines provide, held to the checker's tables, so a method's
+    //! declaration, which hover and the docs show, says what the checker takes and gives.
+
+    use fennec_syntax::{EngineDeclaration, FnDef, TypeExpr};
+
+    use super::{Method, method, named_arguments};
+    use crate::types::Type;
+
+    /// Declarations that say what a program can write where the table says more, each with why.
+    /// A declaration can't say an argument is given by position and can be left out: one with a
+    /// default is passed by name. So each such method declares one form, and its doc the other,
+    /// until the checker reads its signatures from the declarations (#2214).
+    const AS_CALLED: [(&str, &str, &str); 4] = [
+        (
+            "list",
+            "pop",
+            "`pop()` gives `T?` and `pop(at)` gives `T`, which the checker works out from the call: the declaration says the first, and its doc both",
+        ),
+        (
+            "str",
+            "split",
+            "`separator` is given by position and can be left out: the declaration says it's given, and its doc what's done without it",
+        ),
+        (
+            "bytes",
+            "hex",
+            "`sep` is given by position and can be left out: the declaration says it's given, and its doc what's done without it",
+        ),
+        (
+            "dict",
+            "get",
+            "the table takes a default only to refuse it with a fix, `get(key) else default`: `get` takes a key",
+        ),
+    ];
+
+    /// A type as a declaration writes it, as the checker shows its own.
+    fn written(ty: &TypeExpr) -> String {
+        let args: Vec<String> = ty.args.iter().map(written).collect();
+        let shown = match (ty.name.as_str(), args.split_last()) {
+            ("|", _) => args.join(" | "),
+            ("tuple", _) if args.len() == 1 => format!("({},)", args.join("")),
+            ("tuple", _) => format!("({})", args.join(", ")),
+            ("->", Some((returns, params))) => format!("({}) -> {returns}", params.join(", ")),
+            ("fails", _) => args.join(" fails "),
+            (name, _) if args.is_empty() => name.to_owned(),
+            (name, _) => format!("{name}[{}]", args.join(", ")),
+        };
+        if ty.optional { format!("{shown}?") } else { shown }
+    }
+
+    /// The type a method declared on `owner` is called on: a built-in type with its parameters
+    /// as written, or a type by its name.
+    fn receiver(owner: &str, generics: &[fennec_syntax::Generic]) -> Type {
+        let param = |at: usize| {
+            Box::new(Type::Param(generics.get(at).map_or("T", |generic| &generic.name).to_owned()))
+        };
+        match owner {
+            "str" => Type::Str,
+            "bytes" => Type::Bytes,
+            "int" => Type::Int,
+            "float" => Type::Float,
+            "list" => Type::List(param(0)),
+            "set" => Type::Set(param(0)),
+            "dict" => Type::Dict(param(0), param(1)),
+            "Buffer" => Type::Buffer(param(0)),
+            "Table" => Type::Table(param(0)),
+            other => Type::named(other),
+        }
+    }
+
+    /// The types an arrow among a declaration's parameters receives, as `remove_where`'s test does.
+    fn received(def: &FnDef) -> Vec<String> {
+        def.params
+            .iter()
+            .filter_map(|param| param.ty.as_ref())
+            .find_map(|ty| {
+                // `((T) -> K)?`, an arrow that can be left out, is held in parentheses.
+                let arrow = if ty.name == "tuple" && ty.args.len() == 1 { &ty.args[0] } else { ty };
+                let (_, params) = arrow.args.split_last().filter(|_| arrow.name == "->")?;
+                Some(params.iter().map(written).collect())
+            })
+            .unwrap_or_default()
+    }
+
+    /// What's wrong with one declaration against the checker's table, if anything.
+    fn mismatch(declared: &EngineDeclaration, found: &Method, ty: &Type) -> Option<String> {
+        let def = &declared.def;
+        let (taken_self, params) = def.params.split_first()?;
+        if !taken_self.is_self {
+            return Some("a method's declaration takes `self` first".to_owned());
+        }
+        if taken_self.is_mut != found.changes {
+            let wanted = if found.changes {
+                "`ref self`, since it changes it"
+            } else {
+                "`self`, since it doesn't change it"
+            };
+            return Some(format!("it should take {wanted}"));
+        }
+        let arrow_takes: Vec<String> = found.receives.iter().map(ToString::to_string).collect();
+        if received(def) != arrow_takes {
+            return Some(format!("its arrow should receive ({})", arrow_takes.join(", ")));
+        }
+        let returns = match &found.returns {
+            Type::Result(value, error) => (value.as_ref(), Some(error.to_string())),
+            other => (other, None),
+        };
+        let declared_returns = def.ret.as_ref().map_or_else(|| "nothing".to_owned(), written);
+        let wanted_returns =
+            if *returns.0 == Type::Unit { "nothing".to_owned() } else { returns.0.to_string() };
+        if declared_returns != wanted_returns || def.fails.as_ref().map(written) != returns.1 {
+            let fails = returns.1.map_or_else(String::new, |error| format!(" and fail with {error}"));
+            return Some(format!("it should give back {wanted_returns}{fails}"));
+        }
+        // Any arguments at all, as an arrow and what goes with it: only what it receives is checked.
+        if found.arity.1 == usize::MAX {
+            return None;
+        }
+        let plain = found.params.len();
+        let Some((positional, named)) = (plain <= params.len()).then(|| params.split_at(plain)) else {
+            return Some(format!("it takes {plain} arguments before any named ones"));
+        };
+        for (param, wanted) in positional.iter().zip(&found.params) {
+            // One with a default is passed by name, which none of the table's plain arguments is.
+            if param.default.is_some() {
+                return Some(format!(
+                    "`{}` is given by position, so it's declared with no default",
+                    param.name
+                ));
+            }
+            let shown = param.ty.as_ref().map(written).unwrap_or_default();
+            if shown != wanted.to_string() {
+                return Some(format!("`{}` should be {wanted}, not {shown}", param.name));
+            }
+        }
+        if found.arity.0 != plain {
+            return Some(format!(
+                "{} of its arguments can be left out by position, which a declaration can't say: list it in AS_CALLED",
+                plain - found.arity.0
+            ));
+        }
+        let mut declared_names: Vec<&str> = named.iter().map(|param| param.name.as_str()).collect();
+        let mut wanted: Vec<&str> = named_arguments(ty, &def.name).to_vec();
+        declared_names.sort_unstable();
+        wanted.sort_unstable();
+        if declared_names != wanted || named.iter().any(|param| param.default.is_none()) {
+            return Some(format!("its named arguments should be {wanted:?}, each with a default"));
+        }
+        None
+    }
+
+    /// Each method std declares the engines provide is one the checker has, and says what the
+    /// checker takes and gives: whether it changes what it's called on, its arguments' types,
+    /// which can be left out, its named arguments, what an arrow it's given receives, and what it
+    /// gives back and fails with.
+    #[test]
+    fn each_engine_method_std_declares_is_the_checkers() {
+        let declared = fennec_syntax::engine_declarations().unwrap();
+        let methods: Vec<&EngineDeclaration> =
+            declared.iter().filter(|declaration| declaration.owner.is_some()).collect();
+        assert!(methods.len() > 40, "only {} engine methods are declared", methods.len());
+        let mut wrong = Vec::new();
+        for declaration in methods {
+            let Some((owner, generics)) = &declaration.owner else { continue };
+            let ty = receiver(owner, generics);
+            let name = &declaration.def.name;
+            if AS_CALLED.iter().any(|(called_on, called, _)| called_on == owner && called == name) {
+                continue;
+            }
+            let problem = match method(&ty, name) {
+                None => Some("the checker has no such method".to_owned()),
+                Some(found) => mismatch(declaration, &found, &ty),
+            };
+            if let Some(problem) = problem {
+                wrong.push(format!("{}.fen: {owner}.{name}: {problem}", declaration.file));
+            }
+        }
+        assert!(wrong.is_empty(), "declarations that aren't what the checker has:\n{}", wrong.join("\n"));
+    }
 }

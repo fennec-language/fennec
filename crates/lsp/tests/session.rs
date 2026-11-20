@@ -366,6 +366,23 @@ fn a_staged_session_publishes_mistakes_first_then_lints_and_copies() {
     assert!(!editor.session.pending());
 }
 
+/// An edit that comes before the lints and costs of the program last checked are worked out, as
+/// one typed straight after an open does, works them out first and then checks only what it
+/// touched: the other file keeps its lint, and nothing is left to do. Checking all of the program
+/// again for each edit cost the budgets' edit 4,200 million instructions, not 70 (#2247).
+#[test]
+fn an_edit_before_a_staged_session_finishes_finishes_first_and_checks_only_what_it_touched() {
+    let mut editor = Editor::new("staged_edit").unwrap();
+    editor.session = Session::staged();
+    editor.open("src/combat.fen", &COMBAT.replace("    return power * 2", "    pass\n    return power * 2"));
+    editor.open("src/main.fen", MAIN);
+    assert!(editor.session.pending(), "the lints are still to work out");
+    let published = editor.change("src/main.fen", &MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)"));
+    assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-pass"], "{published:?}");
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]));
+    assert!(!editor.session.pending(), "the edit was checked from the finished program, quickly");
+}
+
 #[test]
 fn a_quick_edit_keeps_what_other_files_show_and_lints_the_edited_one() {
     let mut editor = Editor::new("quick_lints").unwrap();
@@ -472,9 +489,10 @@ fn hovers_show_signatures_docs_and_what_names_hold() {
     assert_eq!(shown(&size), "```fennec\nSIZE = 10\n```\n\nThe arena's size.");
 }
 
-/// A method the engines give a built-in type, or one of std's types written in Rust, has no
-/// declaration, so a hover shows the signature the checker knows, with what can fail said as a
-/// signature says it, and a `Table`'s method is its own, not every type's of the same name.
+/// A method of std's written in Rust that std doesn't declare yet, as a capability's, shows the
+/// signature the checker knows, with what can fail said as a signature says it. One the engines
+/// give a built-in type shows its declaration in std, and a `Table`'s is its own, not every type's
+/// of the same name.
 #[test]
 fn hovers_on_methods_written_in_rust_show_their_signatures() {
     let mut editor = Editor::new("hovers-built-in").unwrap();
@@ -484,9 +502,11 @@ fn hovers_on_methods_written_in_rust_show_their_signatures() {
         let hover = editor.at("textDocument/hover", "src/main.fen", text, needle, 1);
         hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("nothing").to_owned()
     };
-    assert_eq!(
-        shown(&mut editor, "split"),
-        "```fennec\ndef split(self, [str]) -> list[str]\n```\n\nbuilt into `str`"
+    assert!(
+        shown(&mut editor, "split")
+            .starts_with("```fennec\ndef split(self, separator: str) -> list[str]\n```\n\nThe parts"),
+        "{}",
+        shown(&mut editor, "split")
     );
     assert_eq!(
         shown(&mut editor, "read_text"),
@@ -497,7 +517,10 @@ fn hovers_on_methods_written_in_rust_show_their_signatures() {
         "```fennec\ndef print(self, ...)\n```\n\nbuilt into `Stdout`"
     );
     let add = shown(&mut editor, "add(Spot");
-    assert_eq!(add, "```fennec\ndef add(ref self, Spot) -> Id[Spot]\n```\n\nbuilt into `Table[Spot]`");
+    assert_eq!(
+        add,
+        "```fennec\ndef add(ref self, item: T) -> Id[T]\n```\n\nAdds `item` and gives back its `Id`, which stays its own while it's there."
+    );
 }
 
 #[test]
@@ -668,6 +691,45 @@ fn the_standard_librarys_declarations_are_found_in_a_copy_of_its_files() {
     assert!(shown.contains("struct Vec3"), "{shown}");
     let params = params_at(&editor, "src/main.fen", text, "Vec3(x", vec![("newName", Json::string("Point"))]);
     assert_eq!(editor.request("textDocument/rename", params), Json::string("no result"));
+}
+
+/// A method the engines provide is declared in std's files too, for its signature and its doc, so a
+/// hover shows them and going to it goes to its declaration, as for a method written in Fennec.
+#[test]
+fn an_engine_methods_declaration_is_shown_and_found() {
+    let mut editor = Editor::new("engine-methods").unwrap();
+    let text =
+        "def main(stdout: Stdout):\n    name = \"ana\"\n    stdout.print(name.upper(), name.split(\",\"))\n";
+    editor.open("src/main.fen", text);
+    let hover = editor.at("textDocument/hover", "src/main.fen", text, "upper()", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert_eq!(
+        shown,
+        "```fennec\ndef upper(self) -> str\n```\n\nThe text in upper case, as Unicode has it: `\"Straße\".upper()` is `\"STRASSE\"`."
+    );
+    let found = editor.at("textDocument/definition", "src/main.fen", text, "split(", 0);
+    let found = &found.as_array().unwrap()[0];
+    let uri = found.get("uri").and_then(Json::as_str).unwrap();
+    assert!(uri.ends_with("/str.fen"), "{uri}");
+    let copy = std::fs::read_to_string(fennec_lsp::path_of(uri).unwrap()).unwrap();
+    let line = copy.lines().nth(line_of(found)).unwrap();
+    assert!(line.starts_with("    def split(self, separator: str)"), "{line}");
+    // A built-in type's method is its own, not one of the same name on another type: a `Buffer`'s
+    // `pop`, which a list and a dict have too.
+    let buffer = "def main(stdout: Stdout):\n    mut squares = Buffer[int]()\n    squares.push(4)\n    stdout.print(squares.pop())\n";
+    editor.change("src/main.fen", buffer);
+    let hover = editor.at("textDocument/hover", "src/main.fen", buffer, "pop()", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert_eq!(
+        shown,
+        "```fennec\ndef pop(ref self) -> T\n```\n\nTakes out the last item and gives it back. An empty buffer stops the program."
+    );
+    // An annotation between a declaration and its doc, as a program's `@hot` is, is passed over.
+    let hot = "## Twice `n`.\n@hot\ndef twice(n: int) -> int:\n    return n * 2\n\ndef main(stdout: Stdout):\n    stdout.print(twice(2))\n";
+    editor.change("src/main.fen", hot);
+    let hover = editor.at("textDocument/hover", "src/main.fen", hot, "twice(2)", 0);
+    let shown = hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("");
+    assert_eq!(shown, "```fennec\ndef twice(n: int) -> int\n```\n\nTwice `n`.");
 }
 
 /// A request about the place in `file` where `needle` starts, plus `into` characters, with more

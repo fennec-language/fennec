@@ -658,7 +658,8 @@ impl Parser {
         Ok(Item::Interface(Interface { name, methods, span: start.to(self.prev_span()) }))
     }
 
-    /// `extend Name:` and its methods. A field is an error: an extension adds methods only.
+    /// `extend Name:` and its methods, each with its annotations, as a type's own are. A field is an
+    /// error: an extension adds methods only.
     fn extension(&mut self, start: Span) -> Result<Item, Diagnostic> {
         let name = self.name("a type name")?;
         let generics = self.generic_params()?;
@@ -668,9 +669,10 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
             let _ = self.eat_pub(false).or_else(|| self.eat_export());
+            let annotations = self.annotations()?;
             if self.at_kw(Kw::Def) {
-                methods.push(self.def()?);
-            } else if self.eat_kw(Kw::Pass) {
+                methods.push(FnDef { annotations, ..self.def()? });
+            } else if annotations.is_empty() && self.eat_kw(Kw::Pass) {
                 self.end_line()?;
             } else {
                 return Err(Diagnostic::new("an extension adds methods only", self.span())

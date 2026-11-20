@@ -124,3 +124,80 @@ extend list[T: Deserializable]:
     ## ```
     def deserialize(ref src: Deserializer) -> list[T] fails ParseError:
         return src.sequence[T]()?
+
+## `list`'s methods the engines provide. Each is declared here for its signature and its doc, and a
+## test holds it to the checker's own.
+extend list[T]:
+    ## How many items it has.
+    @intrinsic
+    def len(self) -> int
+
+    ## Adds `item` at the end.
+    @intrinsic
+    def append(ref self, item: T)
+
+    ## Puts `item` at `at`, moving the items from there on along by one.
+    @intrinsic
+    def insert(ref self, at: int, item: T)
+
+    ## Takes out every item.
+    @intrinsic
+    def clear(ref self)
+
+    ## Takes out every item `test` is true of, keeping the rest in order.
+    @intrinsic
+    def remove_where(ref self, test: (T) -> bool)
+
+    ## Puts the items in order, smallest first, or by what `key` gives for each. Items that compare
+    ## equal keep the order they had.
+    @intrinsic
+    def sort[K](ref self, key: ((T) -> K)? = None)
+
+    ## Takes out the last item and gives it back, or `None` when there's none. `pop(at)`, with the
+    ## position given by position, takes out the item at `at` instead and gives it, a `T`, and a
+    ## position that isn't there stops the program, as `items[at]` does.
+    @intrinsic
+    def pop(ref self) -> T?
+
+## `Buffer`'s methods the engines provide: the growable, counted run of slots a `list` is built on.
+## Each is declared here for its signature and its doc, and a test holds it to the checker's own.
+extend Buffer[T]:
+    ## How many items it has.
+    @intrinsic
+    def len(self) -> int
+
+    ## Adds `item` at the end.
+    @intrinsic
+    def push(ref self, item: T)
+
+    ## Takes out the last item and gives it back. An empty buffer stops the program.
+    @intrinsic
+    def pop(ref self) -> T
+
+    ## Adds every item of `more` at the end, in order.
+    @intrinsic
+    def extend(ref self, more: Buffer[T])
+
+    ## Puts `item` at `at`, moving the items from there on along by one.
+    @intrinsic
+    def insert(ref self, at: int, item: T)
+
+    ## Takes out the item at `at` and gives it back.
+    @intrinsic
+    def remove(ref self, at: int) -> T
+
+    ## Makes room for at least `more` items past the ones it has, so adding them needn't grow it.
+    @intrinsic
+    def reserve(ref self, more: int)
+
+    ## Keeps only the first `length` items.
+    @intrinsic
+    def truncate(ref self, length: int)
+
+    ## How many items it has room for before it has to grow.
+    @intrinsic
+    def capacity(self) -> int
+
+    ## Whether nothing else holds its block, so changing it changes no other buffer.
+    @intrinsic
+    def is_unique(self) -> bool

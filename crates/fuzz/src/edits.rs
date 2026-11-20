@@ -2,6 +2,9 @@
 //! edit, reusing what the build before it kept. What's reused has to make just what a build that
 //! keeps nothing makes, so a stale reuse, which would be silent, is a failure here.
 //!
+//! - The loader keeps each file's parse, and its rewriting of names across files, for the next
+//!   load (`fennec_kit::load_keeping`), with its own comparison forced on. Each load has to be
+//!   what loading it all again gives, or fail as that does.
 //! - The checker keeps its check (`check_to_build_keeping`) and carries it over into the next,
 //!   with its own comparison forced on. What it finds, a check or what's wrong, has to be what a
 //!   whole check of the same text finds.
@@ -440,6 +443,28 @@ fn loaded(files: &Files, folder: &Path) -> Result<fennec_syntax::Module, Vec<Str
         .map_err(|problems| problems.diagnostics.iter().map(|problem| format!("load: {problem:?}")).collect())
 }
 
+/// The files loaded using what the load before kept, with the loader's own comparison with loading
+/// it all again on, against loading them all again here: they load the same, or fail the same.
+/// Whether the load used anything kept.
+fn loads_agree(files: &Files, folder: &Path, kept: &mut fennec_kit::KeptLoad) -> Result<bool, String> {
+    write_files(folder, files)?;
+    let compare = fennec_kit::Compare::Always;
+    let found =
+        fennec_kit::load_keeping(&folder.join(PROGRAM), PROGRAM, fennec_kit::Entry::Main, kept, compare)
+            .map(|program| program.module)
+            .map_err(|problems| {
+                problems.diagnostics.iter().map(|problem| format!("load: {problem:?}")).collect::<Vec<_>>()
+            });
+    let used = found.is_ok() && (kept.used().parses > 0 || kept.used().rewritings > 0);
+    let again = loaded(files, folder);
+    if found != again {
+        return Err(format!(
+            "a load using what the one before kept loaded\n{found:?}\nwhere loading it all again loaded\n{again:?}"
+        ));
+    }
+    Ok(used)
+}
+
 /// A check of the files that keeps what it finds, carrying over from `kept`, with the checker's
 /// own comparison on.
 fn kept_check(files: &Files, folder: &Path, kept: Option<KeptCheck>) -> (Checked, Option<KeptCheck>) {
@@ -465,22 +490,34 @@ fn check_folder() -> PathBuf {
     crate::llvm::work().join(format!("edits-check-{}", RUNS.fetch_add(1, Ordering::Relaxed)))
 }
 
-/// Each version checked carrying over what the check before it kept: each finds what a whole
-/// check finds. How many versions carried anything over.
-fn checks_agree(versions: &[Version]) -> Result<usize, String> {
+/// How many versions carried anything over from the one before: of its load, and of its check.
+#[derive(Clone, Copy, Default)]
+struct Carried {
+    loads: usize,
+    checks: usize,
+}
+
+/// Each version loaded using what the load before it kept, and checked carrying over what the
+/// check before it kept: each loads as loading it all again does, and finds what a whole check
+/// finds.
+fn checks_agree(versions: &[Version]) -> Result<Carried, String> {
     let folder = check_folder();
     let agreed = checks_agree_in(versions, &folder);
     let _ = std::fs::remove_dir_all(&folder);
     agreed
 }
 
-fn checks_agree_in(versions: &[Version], folder: &Path) -> Result<usize, String> {
+fn checks_agree_in(versions: &[Version], folder: &Path) -> Result<Carried, String> {
     let mut kept = None;
-    let mut carried = 0;
+    let mut kept_load = fennec_kit::KeptLoad::default();
+    let mut carried = Carried::default();
     for (at, version) in versions.iter().enumerate() {
+        let used = loads_agree(&version.files, folder, &mut kept_load)
+            .map_err(|why| format!("after edit {at}, {why}\nin:\n{}", shown_files(version)))?;
+        carried.loads += usize::from(used);
         let (found, next) = kept_check(&version.files, folder, kept);
         if next.as_ref().is_some_and(|next| next.carried_over() > 0) {
-            carried += 1;
+            carried.checks += 1;
         }
         let whole = whole_check(&version.files, folder);
         if found != whole {
@@ -697,20 +734,24 @@ mod tests {
         assert!(compared >= 6, "only {compared} edits were built both ways");
     }
 
-    /// Every switch of every piece, one at a time and then back, checks carrying over just what a
-    /// whole check finds, and some of them carry something over.
+    /// Every switch of every piece, one at a time and then back, loads as loading it all again
+    /// does and checks carrying over just what a whole check finds, and some of them carry
+    /// something over.
     #[test]
     fn every_single_edit_checks_carrying_over_what_a_whole_check_finds() {
-        let mut carried = 0;
+        let (mut loads, mut checks) = (0, 0);
         for (piece, kind) in PIECES.iter().enumerate() {
             for variant in 1..kind.variants.len() {
                 let plan = Plan {
                     order: (0..PIECES.len()).collect(),
                     edits: vec![edit(&[(piece, variant)], false, false), edit(&[(piece, 0)], false, false)],
                 };
-                carried += checks_agree(&versions(&plan)).unwrap_or_else(|err| unreachable!("{err}"));
+                let carried = checks_agree(&versions(&plan)).unwrap_or_else(|err| unreachable!("{err}"));
+                loads += carried.loads;
+                checks += carried.checks;
             }
         }
-        assert!(carried > 0, "no edit carried anything over");
+        assert!(checks > 0, "no edit carried anything of a check over");
+        assert!(loads > 0, "no edit used anything a load kept");
     }
 }

@@ -4804,13 +4804,15 @@ fn call_ranges<'p>(
     found
 }
 
+/// What's worked out of the whole program, for what looks at it beside a build, as `checks_left`
+/// and `copies_made` do: it uses no analysis kept from a build and keeps none (see `kept`).
 pub(crate) fn whole(program: &Program) -> Whole<'_> {
-    whole_kept(program).0
+    whole_keeping(program, &crate::kept::Keeping::off()).0
 }
 
-/// [`whole`], with the names of the functions whose analysis used again from the build before
-/// isn't what analyzing them again gives, on a build that checks them (see `kept`): none on any
-/// other.
+/// [`whole`] for a build, using again what the builds before in this process kept and keeping
+/// its own (see `kept`), with the names of the functions whose analysis used again isn't what
+/// analyzing them again gives, on a build that checks them: none on any other.
 pub(crate) fn whole_kept(program: &Program) -> (Whole<'_>, Vec<String>) {
     let keeping = crate::kept::Keeping::start();
     let found = whole_keeping(program, &keeping);
@@ -5342,6 +5344,47 @@ mod tests {
             assert_eq!(keys, afresh(&program), "other({count}), kept returning {returned}");
             kept = Some(now);
         }
+        Ok(())
+    }
+
+    /// A build keeps the build before's analyses of functions it doesn't have for one build more,
+    /// as `fennec run` building the tests and then the program needs, and lets older ones go.
+    #[test]
+    fn the_build_befores_analyses_are_kept_one_build_more_and_no_longer() -> Result<(), String> {
+        // `main` and `shared_part` are the same in every program; each has one function of its own.
+        let source = |own: &str| {
+            format!(
+                "def shared_part(count: int) -> int:\n    return count * 2\n\ndef {own}() -> int:\n    return shared_part(3)\n\ndef main(stdout: Stdout):\n    stdout.print(shared_part(4))\n    return\n"
+            )
+        };
+        let lowered = |text: &str| -> Result<Program, String> {
+            let mut module = fennec_syntax::parse(text).map_err(|err| format!("{err:?}"))?;
+            let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+            Ok(fennec_ir::lower(&module, &checked))
+        };
+        // How many analyses a build of `program` used again, starting from `kept`, and what it keeps.
+        let built = |program: &Program, kept: Option<crate::kept::KeptAnalyses>| {
+            let keeping = crate::kept::Keeping::from(kept);
+            let (whole, differ) = whole_keeping(program, &keeping);
+            assert!(differ.is_empty(), "{differ:?}");
+            (keeping.used_again(), whole.analyses.len(), keeping.into_kept())
+        };
+        let (tests, program, other) = (
+            lowered(&source("for_tests"))?,
+            lowered(&source("for_program"))?,
+            lowered(&source("elsewhere"))?,
+        );
+        let (_, _, kept) = built(&tests, None);
+        // The program, after the tests: all but its own function used again.
+        let (used, of, kept) = built(&program, Some(kept));
+        assert_eq!(used, of - 1, "the program after the tests");
+        // The tests again: every analysis used again, `for_tests`'s from two builds back.
+        let (used, of, kept) = built(&tests, Some(kept));
+        assert_eq!(used, of, "the tests again");
+        // Another program, then the program: `for_program`'s, three builds back, is gone.
+        let (_, _, kept) = built(&other, Some(kept));
+        let (used, of, _) = built(&program, Some(kept));
+        assert_eq!(used, of - 1, "the program after another");
         Ok(())
     }
 

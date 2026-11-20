@@ -381,7 +381,13 @@ pub(crate) fn emit_keeping(
     } else {
         crate::NativeBlocks::Watched
     };
-    let (everything, differ) = crate::analysis::whole_kept(program);
+    // Only a build uses and keeps analyses across builds: what notes the checks left looks at a
+    // program beside one.
+    let (everything, differ) = if shared.noting_checks {
+        (crate::analysis::whole(program), Vec::new())
+    } else {
+        crate::analysis::whole_kept(program)
+    };
     // An analysis used again from the build before that isn't what analyzing it again gives is
     // this backend's mistake: the build stops rather than use it (see `kept`).
     if !differ.is_empty() {

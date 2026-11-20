@@ -5449,7 +5449,7 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
 
 /// The daemon keeps each function's analysis from one build to the next: after a body edit it
 /// uses most of them again, each checked against analyzing it again, and makes the program a
-/// build here makes, byte for byte.
+/// build here makes, byte for byte. A `fennec run` through it uses them again too.
 #[cfg(unix)]
 #[test]
 fn a_daemon_build_uses_the_last_builds_analyses_again() {
@@ -5499,6 +5499,19 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
             // Every analysis but `main`'s, whose body changed: `doubled` is still called with 3.
             assert!(again > 0 && again < of, "{stderr}");
         }
+    }
+    // `fennec run` builds through the daemon too, using what the build before kept.
+    for printed in [5, 6] {
+        std::fs::write(kit.join("src/main.fen"), program(printed)).unwrap();
+        let mut command = crate::executables::fennec_command();
+        command.args(["run", "."]).current_dir(&kit).env("FENNEC_HOME", &home);
+        command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        let ran = command.env_remove("FENNEC_NO_DAEMON").output().unwrap();
+        let stderr = text(&ran.stderr);
+        assert_eq!(ran.status.code(), Some(0), "{stderr}");
+        assert!(text(&ran.stdout).ends_with(&format!("6\n{printed}\n")), "{}", text(&ran.stdout));
+        let (again, of) = used(&stderr);
+        assert!(again > 0 && again < of, "{stderr}");
     }
     with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");

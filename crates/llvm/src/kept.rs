@@ -7,10 +7,13 @@
 //! edit analyzes the function it changed, and the few whose callees changed what they say, rather
 //! than every function of the program.
 //!
-//! Only the last build's analyses are kept. A build of another program finds little of its own
-//! there, and keeps its own in their place. Only the daemon keeps them
-//! (`keep_analyses_between_builds`): a command that builds once does none of this work, so a
-//! build without the daemon, as under CI, costs what it did.
+//! A build keeps its own analyses, and the build before's of the functions it doesn't have, for
+//! one build more: a `fennec run` builds the tests a change affects and then the program, one
+//! after the other, and each finds the other's. Anything older goes, so at most the functions of
+//! the last two builds are kept. Only the daemon keeps them (`keep_analyses_between_builds`): a
+//! command that builds once does none of this work, so a build without the daemon, as under CI,
+//! costs what it did. What looks at a program beside a build, as `checks_left` does, keeps
+//! nothing and uses nothing kept (`analysis::whole`).
 //!
 //! What's used again is checked, as the checker's kept check is (`fennec_check::compares_kept_check`):
 //! a dev compiler analyzes every function again on one build in eight, picked by the program, and
@@ -50,9 +53,11 @@ pub(crate) struct Kept {
     params: Vec<Range>,
     asked: Vec<Asked>,
     analysis: Arc<Analysis>,
+    /// The build that last worked it out or used it, by its number.
+    built: u64,
 }
 
-/// The last build's analyses, by function.
+/// The last two builds' analyses, by function.
 static KEPT: Mutex<Option<KeptAnalyses>> = Mutex::new(None);
 
 /// Whether this process keeps analyses from one build to the next.
@@ -64,13 +69,18 @@ pub fn keep_analyses_between_builds() {
     KEEPS.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The analyses one build keeps for the next, by function.
-pub(crate) type KeptAnalyses = HashMap<String, Kept>;
+/// The analyses one build keeps for the next, by function, with the build's number.
+pub(crate) struct KeptAnalyses {
+    build: u64,
+    by_function: HashMap<String, Kept>,
+}
 
 /// What a build keeps for the next, as it works its analyses out.
 pub(crate) struct Keeping {
     found: Option<KeptAnalyses>,
-    kept_now: Mutex<KeptAnalyses>,
+    /// This build's number: one more than the build's it found.
+    build: u64,
+    kept_now: Mutex<HashMap<String, Kept>>,
     used_again: std::sync::atomic::AtomicUsize,
     /// Whether anything is kept at all: not in a process that builds once.
     keeps: bool,
@@ -115,9 +125,14 @@ impl Keeping {
     /// run them, finds none and works all its analyses out.
     pub(crate) fn start() -> Self {
         if !KEEPS.load(std::sync::atomic::Ordering::Relaxed) {
-            return Keeping { keeps: false, ..Keeping::from(None) };
+            return Keeping::off();
         }
         Keeping::from(KEPT.lock().ok().and_then(|mut kept| kept.take()))
+    }
+
+    /// Using nothing kept, and keeping nothing.
+    pub(crate) fn off() -> Self {
+        Keeping { keeps: false, ..Keeping::from(None) }
     }
 
     /// Whether this build keeps its analyses for the next.
@@ -128,6 +143,7 @@ impl Keeping {
     /// Starting from `found`, as a test does, or from nothing.
     pub(crate) fn from(found: Option<KeptAnalyses>) -> Self {
         Keeping {
+            build: found.as_ref().map_or(0, |found| found.build).wrapping_add(1),
             found,
             kept_now: Mutex::new(HashMap::new()),
             used_again: std::sync::atomic::AtomicUsize::new(0),
@@ -154,7 +170,7 @@ impl Keeping {
         (ir, params): (&Key, &[Range]),
         told: Told<'_>,
     ) -> Option<Arc<Analysis>> {
-        let kept = self.found.as_ref()?.get(&function.name)?;
+        let kept = self.found.as_ref()?.by_function.get(&function.name)?;
         let (changes, keeps, in_entries) = told;
         let same = kept.ir == *ir
             && kept.params == params
@@ -177,7 +193,8 @@ impl Keeping {
         asked: Vec<Asked>,
         analysis: &Arc<Analysis>,
     ) {
-        let kept = Kept { ir, params: params.to_vec(), asked, analysis: Arc::clone(analysis) };
+        let kept =
+            Kept { ir, params: params.to_vec(), asked, analysis: Arc::clone(analysis), built: self.build };
         if let Ok(mut kept_now) = self.kept_now.lock() {
             kept_now.insert(function.name.clone(), kept);
         }
@@ -185,12 +202,15 @@ impl Keeping {
 
     /// Keeps a function's analysis used again for the next build, as it was kept.
     pub(crate) fn keep_again(&self, function: &Function) {
-        let Some(kept) = self.found.as_ref().and_then(|found| found.get(&function.name)) else { return };
+        let Some(kept) = self.found.as_ref().and_then(|found| found.by_function.get(&function.name)) else {
+            return;
+        };
         let again = Kept {
             ir: kept.ir,
             params: kept.params.clone(),
             asked: kept.asked.clone(),
             analysis: Arc::clone(&kept.analysis),
+            built: self.build,
         };
         if let Ok(mut kept_now) = self.kept_now.lock() {
             kept_now.insert(function.name.clone(), again);
@@ -208,9 +228,19 @@ impl Keeping {
         }
     }
 
-    /// What this build kept.
+    /// What this build keeps: its own analyses, and those the build before worked out or used of
+    /// functions this build doesn't have, for one build more.
     pub(crate) fn into_kept(self) -> KeptAnalyses {
-        self.kept_now.into_inner().unwrap_or_default()
+        let mut by_function = self.kept_now.into_inner().unwrap_or_default();
+        if let Some(found) = self.found {
+            let carried: Vec<(String, Kept)> = found
+                .by_function
+                .into_iter()
+                .filter(|(name, kept)| kept.built == found.build && !by_function.contains_key(name))
+                .collect();
+            by_function.extend(carried);
+        }
+        KeptAnalyses { build: self.build, by_function }
     }
 }
 

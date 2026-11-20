@@ -13,6 +13,7 @@
     reason = "one match chooses each kind of statement, and one each kind of value"
 )]
 
+use super::ast::{ARRAY_WAYS, ArrayStep, ArrayWay, Arraying};
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
@@ -84,6 +85,16 @@ const LOCKED_TOGETHER: bool = true;
 /// Whether a `LockedTogether` statement's `lock` may name its two values against the order they
 /// were made. A crash there once left their lists reading as `None` after the rollback (#2223).
 const LOCKED_AGAINST_MADE_ORDER: bool = true;
+
+/// Whether random programs hold fixed-size arrays (`Arrayed`): of ints, of structs holding a list,
+/// of optional structs, of texts and of arrays, in a struct held in a list, a Table and a dict,
+/// changed through each, by `for ref` and by `ref`, copied by `=` and changed apart, and indexed
+/// past either end where the proofs can't see the bound. Map row 6: nothing wrote an array before.
+const ARRAYS: bool = true;
+
+/// Whether an `Arrayed` statement changes a field of an optional struct in an array once
+/// `is not None` narrows it. A built program can't yet: it isn't lowered (#2255).
+pub(super) const NARROWED_FIELD_WRITES: bool = false;
 
 /// Whether random programs loop over generators that fail partway (`Generated`): wrapped with
 /// `? from` in a `for`, in `enumerate` and in `zip` on either side or both, and held in a name, a
@@ -763,6 +774,7 @@ impl Writer<'_> {
             27 if DEADLOCKS && self.choice(4) == 0 => self.stucks(body),
             27 if INTERFACES && self.choice(4) == 0 => self.interfaces(body),
             27 if LOCKED_TOGETHER && self.choice(4) == 0 => self.locked_together(body),
+            27 if ARRAYS && self.choice(4) == 0 => self.arrays(body),
             27 if FAILING_GENERATORS && self.choice(4) == 0 => self.failing_generators(body),
             27 => self.change_buffer(body),
             29 => {
@@ -1566,6 +1578,26 @@ impl Writer<'_> {
             steps.push(LockStep { way, pair, amount, backward, against });
         }
         body.push(Stmt::LockedTogether(LockingTogether { id, base, steps }));
+    }
+
+    /// An `Arrayed` statement: 3 to 10 steps, each with a place from 0 to 3 and a value from -9 to
+    /// 9. Only a risky program indexes past an array's end, which stops it, and then half the time.
+    fn arrays(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let mut way = ARRAY_WAYS.get(self.choice(ARRAY_WAYS.len())).copied().unwrap_or(ArrayWay::Set);
+            if way == ArrayWay::ForRefSlots && !NARROWED_FIELD_WRITES {
+                way = ArrayWay::SlotRead;
+            }
+            let at = self.choice(4);
+            let value = i64::from(self.byte() % 19) - 9;
+            let past =
+                self.risky && matches!(way, ArrayWay::Looped | ArrayWay::Picked) && self.choice(2) == 0;
+            steps.push(ArrayStep { way, at, value, past });
+        }
+        body.push(Stmt::Arrayed(Arraying { id, steps }));
     }
 
     /// A `Generated` statement: 3 to 10 steps, each yielding 1 to 5 items, failing at 0 to 6.

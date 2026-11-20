@@ -144,6 +144,10 @@ jobs:
           fi
       - run: cargo clippy --all-targets --locked -- -D warnings
         if: env.CODE == 'true'
+      # The runtime's test-only fault hook, whose reading of `FENNEC_FAULTS` is built only with
+      # `faults`, so the line above never sees it.
+      - run: cargo clippy --locked -p fennec-runtime --features faults -- -D warnings
+        if: env.CODE == 'true'
       - run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings

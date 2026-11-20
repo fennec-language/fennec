@@ -9,6 +9,7 @@ use super::ast::{
     KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, Reading, RefPlace, STARTING, Stmt,
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
+use super::ast::{ArrayStep, ArrayWay, Arraying};
 use super::ast::{
     Between, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, Looping, REF_TEXTS,
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
@@ -2637,6 +2638,106 @@ fn locked_together_written(locking: &LockingTogether) -> String {
     out
 }
 
+/// The types and functions an `Arrayed` statement uses, `{N}` standing for its id.
+const ARRAY_TYPES: &str = "struct Cell{N}:
+    health = 0
+    tags = list[str]()
+
+struct Grid{N}:
+    counts = array[int, 4]()
+    cells = array[Cell{N}, 3]()
+    slots = array[Cell{N}?, 2]()
+    names = array[str, 2]()
+    rows = array[array[int, 2], 2]()
+
+def bumped{N}(ref values: array[int, 4], by: int):
+    for ref value in values:
+        value += by
+
+def summed{N}(values: array[int, 4]) -> int:
+    mut mine = values
+    mine[0] = 100
+    total = sum(value for value in values)
+    return total * 1000 + mine[0]
+
+def at{N}(n: int) -> int:
+    return n
+
+";
+
+/// `arrayed{id}`, the function an `Arrayed` calls, after its types and functions: a grid, another,
+/// both in a list, the other in a Table, the first in a dict, and a loose array, then a line for
+/// each step, then what each holds.
+fn arrayed_written(arraying: &Arraying) -> String {
+    let id = arraying.id;
+    let mut out = ARRAY_TYPES.replace("{N}", &id.to_string());
+    let _ = write!(
+        out,
+        "def arrayed{id}(stdout: Stdout):\n    mut grid = Grid{id}()\n    other = Grid{id}(counts=[1, 2, 3, -4])\n    \
+         mut grids = [grid, other]\n    mut table = Table[Grid{id}]()\n    first = table.add(other)\n    mut by_name \
+         = {{\"k\": grid}}\n    mut loose = array[int, 4]()\n"
+    );
+    for (n, step) in arraying.steps.iter().enumerate() {
+        let ArrayStep { way, at, value: v, .. } = *step;
+        let (a4, a3, a2) = (at % 4, at % 3, at % 2);
+        let line = match way {
+            ArrayWay::Set => format!("grid.counts[{a4}] = {v}"),
+            ArrayWay::Added => format!("grid.counts[{a4}] += {v}"),
+            ArrayWay::FromEnd => format!("grid.counts[-{}] += {v}", a4 + 1),
+            ArrayWay::Copied => format!(
+                "mut copied{n} = grid.counts\n    copied{n}[{a4}] = {v}\n    stdout.print(copied{n}, grid.counts)"
+            ),
+            ArrayWay::Replaced => format!("grid.counts = loose\n    loose[{a4}] = {v}"),
+            ArrayWay::ForRef => format!("for ref each in grid.counts:\n        each += {v}"),
+            ArrayWay::ForRefCells => format!(
+                "for ref cell in grid.cells:\n        cell.health += {v}\n        cell.tags.append(\"t{v}\")"
+            ),
+            ArrayWay::CellSet => format!("grid.cells[{a3}].health = {v}"),
+            ArrayWay::CellTagged => format!("grid.cells[{a3}].tags.append(\"c{v}\")"),
+            ArrayWay::SlotFilled => format!("grid.slots[{a2}] = Cell{id}(health={v})"),
+            ArrayWay::SlotCleared => format!("grid.slots[{a2}] = None"),
+            ArrayWay::ForRefSlots => format!(
+                "for ref slot in grid.slots:\n        if slot is not None:\n            slot.health += {v}"
+            ),
+            ArrayWay::SlotRead => format!(
+                "held{n} = grid.slots[{a2}] else Cell{id}(health={v})\n    stdout.print(grid.slots[{a2}] is None, \
+                 held{n}.health)"
+            ),
+            ArrayWay::InList => format!("grids[{a2}].counts[{a4}] += {v}"),
+            ArrayWay::ForRefList => format!("for ref each in grids:\n        each.counts[{a4}] += {v}"),
+            ArrayWay::InTable => format!("table[first].counts[{a4}] = {v}"),
+            ArrayWay::InDict => format!("by_name[\"k\"].counts[{a4}] += {v}"),
+            ArrayWay::ByRef => format!("bumped{id}(ref grid.counts, by={v})"),
+            ArrayWay::ByValue => format!("stdout.print(summed{id}(grid.counts))"),
+            ArrayWay::Read => format!(
+                "stdout.print({v} in grid.counts, len(grid.counts), len(grid.cells), len(grid.slots), grid.counts == \
+                 other.counts, list(grid.counts) + [{v}])"
+            ),
+            ArrayWay::Rows => format!("grid.rows[{a2}][{}] += {v}", (at + 1) % 2),
+            ArrayWay::RowCopied => {
+                format!(
+                    "mut row{n} = grid.rows[{a2}]\n    row{n}[1] = {v}\n    stdout.print(row{n}, grid.rows)"
+                )
+            }
+            ArrayWay::Named => format!("grid.names[{a2}] += \"n{v}\""),
+            ArrayWay::WholeCopied => format!(
+                "mut whole{n} = grid\n    whole{n}.counts[{a4}] = {v}\n    whole{n}.cells[0].tags.append(\"w\")\n    \
+                 stdout.print(whole{n}.counts, grid.counts, whole{n}.cells[0], grid.cells[0])"
+            ),
+            ArrayWay::Looped => {
+                format!("for place in range(at{id}({})):\n        grid.counts[place] += {v}", step.bound())
+            }
+            ArrayWay::Picked => format!("grid.counts[at{id}({})] = {v}", step.picked()),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push_str(
+        "    stdout.print(grid)\n    stdout.print(other)\n    stdout.print(grids)\n    stdout.print(table[first])\n    \
+         stdout.print(by_name)\n    stdout.print(loose)\n\n",
+    );
+    out
+}
+
 /// `generated{id}`, the function a `Generated` calls, after its errors, its failing generator and a
 /// function for each step: each step called in turn, its failure printed.
 fn generated_written(generating: &Generating) -> String {
@@ -3518,6 +3619,10 @@ impl Writer {
             Stmt::LockedTogether(locking) => {
                 let _ = write!(self.helpers, "{}", locked_together_written(locking));
                 self.line(indent, &format!("locked_together{}(stdout)", locking.id));
+            }
+            Stmt::Arrayed(arraying) => {
+                let _ = write!(self.helpers, "{}", arrayed_written(arraying));
+                self.line(indent, &format!("arrayed{}(stdout)", arraying.id));
             }
             Stmt::Generated(generating) => {
                 let _ = write!(self.helpers, "{}", generated_written(generating));

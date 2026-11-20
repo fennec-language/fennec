@@ -17,6 +17,7 @@ use super::ast::{
     Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
+use super::ast::{ArrayWay, Arraying};
 use super::ast::{Between, Looping, Reading};
 use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
@@ -2030,6 +2031,7 @@ impl Machine {
             Stmt::Stuck(sticking) => self.stuck(*sticking)?,
             Stmt::Interfaced(interfacing) => self.interfaced(interfacing)?,
             Stmt::LockedTogether(locking) => self.locked_together(locking)?,
+            Stmt::Arrayed(arraying) => self.arrayed(arraying)?,
             Stmt::Generated(generating) => self.generated(generating),
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
@@ -3318,6 +3320,186 @@ impl Machine {
                 .collect();
             let _ = writeln!(self.out, "{}", shown.join(" "));
         }
+        Ok(())
+    }
+
+    /// What `arrayed{id}` prints: each array held inline, so a copy made by `=`, given as a value
+    /// or held in a list, a Table or a dict changes apart from the rest, and an index past either
+    /// end of `counts` stops the program.
+    fn arrayed(&mut self, arraying: &Arraying) -> Ran<()> {
+        #[derive(Clone, Default, PartialEq)]
+        struct Cell {
+            health: i64,
+            tags: Vec<String>,
+        }
+        #[derive(Clone, Default, PartialEq)]
+        struct Grid {
+            counts: [i64; 4],
+            cells: [Cell; 3],
+            slots: [Option<Cell>; 2],
+            names: [String; 2],
+            rows: [[i64; 2]; 2],
+        }
+        let id = arraying.id;
+        let ints = |items: &[i64]| shown(&Value::Ints(items.to_vec()));
+        let texts = |items: &[String]| {
+            format!("[{}]", items.iter().map(|item| format!("\"{item}\"")).collect::<Vec<_>>().join(", "))
+        };
+        let cell_shown =
+            |cell: &Cell| format!("Cell{id}(health={}, tags={})", cell.health, texts(&cell.tags));
+        let grid_shown = |grid: &Grid| {
+            let cells: Vec<String> = grid.cells.iter().map(cell_shown).collect();
+            let slots: Vec<String> = grid
+                .slots
+                .iter()
+                .map(|slot| slot.as_ref().map_or_else(|| "None".to_owned(), cell_shown))
+                .collect();
+            let rows: Vec<String> = grid.rows.iter().map(|row| ints(row)).collect();
+            format!(
+                "Grid{id}(counts={}, cells=[{}], slots=[{}], names={}, rows=[{}])",
+                ints(&grid.counts),
+                cells.join(", "),
+                slots.join(", "),
+                texts(&grid.names),
+                rows.join(", ")
+            )
+        };
+        let add = |place: &mut i64, by: i64| -> Ran<()> {
+            *place = checked(place.checked_add(by))?;
+            Ok(())
+        };
+        let out_of_range = |at: i64| format!("index {at} is out of range for length 4");
+        let mut grid = Grid::default();
+        let other = Grid { counts: [1, 2, 3, -4], ..Grid::default() };
+        let mut grids = [grid.clone(), other.clone()];
+        let mut table = other.clone();
+        let mut by_name = grid.clone();
+        let mut loose = [0_i64; 4];
+        for step in &arraying.steps {
+            let v = step.value;
+            let (a4, a3, a2) = (step.at % 4, step.at % 3, step.at % 2);
+            match step.way {
+                ArrayWay::Set => *grid.counts.get_mut(a4).ok_or(Stop::Unsure)? = v,
+                ArrayWay::Added => add(grid.counts.get_mut(a4).ok_or(Stop::Unsure)?, v)?,
+                ArrayWay::FromEnd => add(grid.counts.get_mut(3 - a4).ok_or(Stop::Unsure)?, v)?,
+                ArrayWay::Copied => {
+                    let mut copied = grid.counts;
+                    *copied.get_mut(a4).ok_or(Stop::Unsure)? = v;
+                    let _ = writeln!(self.out, "{} {}", ints(&copied), ints(&grid.counts));
+                }
+                ArrayWay::Replaced => {
+                    grid.counts = loose;
+                    *loose.get_mut(a4).ok_or(Stop::Unsure)? = v;
+                }
+                ArrayWay::ForRefCells => {
+                    for cell in &mut grid.cells {
+                        add(&mut cell.health, v)?;
+                        cell.tags.push(format!("t{v}"));
+                    }
+                }
+                ArrayWay::CellSet => grid.cells.get_mut(a3).ok_or(Stop::Unsure)?.health = v,
+                ArrayWay::CellTagged => {
+                    grid.cells.get_mut(a3).ok_or(Stop::Unsure)?.tags.push(format!("c{v}"));
+                }
+                ArrayWay::SlotFilled => {
+                    *grid.slots.get_mut(a2).ok_or(Stop::Unsure)? = Some(Cell { health: v, tags: Vec::new() });
+                }
+                ArrayWay::SlotCleared => *grid.slots.get_mut(a2).ok_or(Stop::Unsure)? = None,
+                ArrayWay::ForRefSlots => {
+                    for cell in grid.slots.iter_mut().flatten() {
+                        add(&mut cell.health, v)?;
+                    }
+                }
+                ArrayWay::SlotRead => {
+                    let slot = grid.slots.get(a2).ok_or(Stop::Unsure)?;
+                    let health = slot.as_ref().map_or(v, |cell| cell.health);
+                    let _ = writeln!(self.out, "{} {health}", if slot.is_none() { "True" } else { "False" });
+                }
+                ArrayWay::InList => {
+                    add(grids.get_mut(a2).ok_or(Stop::Unsure)?.counts.get_mut(a4).ok_or(Stop::Unsure)?, v)?;
+                }
+                ArrayWay::ForRefList => {
+                    for each in &mut grids {
+                        add(each.counts.get_mut(a4).ok_or(Stop::Unsure)?, v)?;
+                    }
+                }
+                ArrayWay::InTable => *table.counts.get_mut(a4).ok_or(Stop::Unsure)? = v,
+                ArrayWay::InDict => add(by_name.counts.get_mut(a4).ok_or(Stop::Unsure)?, v)?,
+                ArrayWay::ForRef | ArrayWay::ByRef => {
+                    for each in &mut grid.counts {
+                        add(each, v)?;
+                    }
+                }
+                ArrayWay::ByValue => {
+                    let total = grid.counts.iter().try_fold(0_i64, |total, each| total.checked_add(*each));
+                    let summed =
+                        checked(checked(total)?.checked_mul(1000).and_then(|total| total.checked_add(100)))?;
+                    let _ = writeln!(self.out, "{summed}");
+                }
+                ArrayWay::Read => {
+                    let found = if grid.counts.contains(&v) { "True" } else { "False" };
+                    let same = if grid.counts == other.counts { "True" } else { "False" };
+                    let mut listed = grid.counts.to_vec();
+                    listed.push(v);
+                    let _ = writeln!(self.out, "{found} 4 3 2 {same} {}", ints(&listed));
+                }
+                ArrayWay::Rows => {
+                    let row = grid.rows.get_mut(a2).ok_or(Stop::Unsure)?;
+                    add(row.get_mut((step.at + 1) % 2).ok_or(Stop::Unsure)?, v)?;
+                }
+                ArrayWay::RowCopied => {
+                    let mut row = *grid.rows.get(a2).ok_or(Stop::Unsure)?;
+                    *row.get_mut(1).ok_or(Stop::Unsure)? = v;
+                    let rows: Vec<String> = grid.rows.iter().map(|each| ints(each)).collect();
+                    let _ = writeln!(self.out, "{} [{}]", ints(&row), rows.join(", "));
+                }
+                ArrayWay::Named => {
+                    let _ = write!(grid.names.get_mut(a2).ok_or(Stop::Unsure)?, "n{v}");
+                }
+                ArrayWay::WholeCopied => {
+                    let mut whole = grid.clone();
+                    *whole.counts.get_mut(a4).ok_or(Stop::Unsure)? = v;
+                    let [whole_first, ..] = &mut whole.cells;
+                    whole_first.tags.push("w".to_owned());
+                    let [first, ..] = &grid.cells;
+                    let _ = writeln!(
+                        self.out,
+                        "{} {} {} {}",
+                        ints(&whole.counts),
+                        ints(&grid.counts),
+                        cell_shown(whole_first),
+                        cell_shown(first)
+                    );
+                }
+                ArrayWay::Looped => {
+                    for place in 0..step.bound() {
+                        let Some(each) = usize::try_from(place).ok().and_then(|at| grid.counts.get_mut(at))
+                        else {
+                            self.said = Some(out_of_range(place));
+                            return Err(Stop::Failed);
+                        };
+                        add(each, v)?;
+                    }
+                }
+                ArrayWay::Picked => {
+                    let at = step.picked();
+                    let from_start = if at < 0 { at + 4 } else { at };
+                    let Some(place) = usize::try_from(from_start).ok().and_then(|at| grid.counts.get_mut(at))
+                    else {
+                        self.said = Some(out_of_range(at));
+                        return Err(Stop::Failed);
+                    };
+                    *place = v;
+                }
+            }
+        }
+        let shown_all: Vec<String> = grids.iter().map(grid_shown).collect();
+        let _ = writeln!(self.out, "{}", grid_shown(&grid));
+        let _ = writeln!(self.out, "{}", grid_shown(&other));
+        let _ = writeln!(self.out, "[{}]", shown_all.join(", "));
+        let _ = writeln!(self.out, "{}", grid_shown(&table));
+        let _ = writeln!(self.out, "{{\"k\": {}}}", grid_shown(&by_name));
+        let _ = writeln!(self.out, "{}", ints(&loose));
         Ok(())
     }
 

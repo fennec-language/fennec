@@ -54,6 +54,10 @@ sanitize = []
 # the end of a run under `FENNEC_AUDIT` and compares them with its count. A runtime that ships is
 # built without it.
 audit = []
+# For tests only: `std.fs`'s work on the disk fails where `FENNEC_FAULTS` says, as a full disk would
+# fail it (see `stdlib/faults.rs`). A runtime that ships is built without it, so it never reads the
+# variable.
+faults = []
 
 [dev-dependencies]
 fennec-temp.workspace = true

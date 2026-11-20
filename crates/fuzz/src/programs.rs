@@ -1156,6 +1156,63 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 
+    /// Every way of an `Arrayed` step, at each place and with values of both signs, checks, and the
+    /// evaluator prints what the oracle prints: arrays held inline, copied by `=` and changed apart,
+    /// wherever the struct holding them is. Then an index past either end of `counts`, reached by
+    /// a loop whose bound the proofs can't see and by a call, stops the program as the evaluator
+    /// says.
+    #[test]
+    fn the_array_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{ARRAY_WAYS, ArrayStep, ArrayWay, Arraying, Program, Stmt};
+        let ways: Vec<ArrayWay> = ARRAY_WAYS
+            .iter()
+            .copied()
+            .filter(|way| *way != ArrayWay::ForRefSlots || generate::NARROWED_FIELD_WRITES)
+            .collect();
+        let run = |steps: Vec<ArrayStep>| {
+            let program = Program { body: vec![Stmt::Arrayed(Arraying { id: 1, steps })], threadless: true };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some(ran) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure:\n{source}")
+            };
+            (source, ran)
+        };
+        let steps = (0..3_i64)
+            .flat_map(|round| {
+                ways.iter().enumerate().map(move |(at, way)| {
+                    let at = at + usize::try_from(round).unwrap_or(0);
+                    let value = (i64::try_from(at).unwrap_or(0) * 7 + round) % 19 - 9;
+                    ArrayStep { way: *way, at, value, past: false }
+                })
+            })
+            .collect();
+        let (source, (printed, ended, _)) = run(steps);
+        assert!(ended, "{printed}");
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+        for (way, at, says) in [
+            (ArrayWay::Looped, 1, "index 4 "),
+            (ArrayWay::Picked, 0, "index 4 "),
+            (ArrayWay::Picked, 1, "index -5 "),
+        ] {
+            let first = ArrayStep { way: ArrayWay::Set, at: 2, value: 6, past: false };
+            let (source, (printed, ended, said)) =
+                run(vec![first, ArrayStep { way, at, value: 3, past: true }]);
+            assert!(!ended && said.as_deref().is_some_and(|said| said.starts_with(says)), "{said:?}");
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            assert_eq!(oracle.exit_code(), Some(1), "{:?}", oracle.ended);
+            assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+            let stopped = matches!(&oracle.ended, fennec_oracle::Ended::Stopped(why) if why.contains(says));
+            assert!(stopped, "{:?}\n{source}", oracle.ended);
+        }
+    }
+
     /// Every way of a `Generated` step, with its generators failing before, partway and not at
     /// all, checks, and the evaluator prints what the oracle prints: each failure wrapped as the
     /// `? from` of the generator that failed says, `zip` asking its first side first.

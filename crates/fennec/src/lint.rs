@@ -235,6 +235,19 @@ pub(crate) fn show_errors_found() {
     }
 }
 
+/// Lets go of the lint errors `find_errors_beside` is finding and nothing showed, once they're
+/// found, unseen, as a command's own process does when it ends first. The build daemon calls it
+/// after each command's work: they're found in that command's folder, and the next command's
+/// must not find them.
+#[cfg(unix)]
+pub(crate) fn forget_errors_found() {
+    lend_loaded(None, "");
+    let finding = FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    if let Some(finding) = finding {
+        let _ = finding.join();
+    }
+}
+
 pub(crate) fn errors_remembered(path: &str) -> String {
     errors_remembered_with(path, &std::sync::mpsc::channel().1)
 }

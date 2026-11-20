@@ -83,6 +83,7 @@ impl Lowering<'_> {
                 InstKind::Copy { dest, value }
             }
             Step::Index(index) => InstKind::GetIndex { dest, object, index: index.clone() },
+            Step::Inside => InstKind::GetSome { dest, value: object },
         };
         self.emit(kind, span);
         Ok(dest)

@@ -20414,6 +20414,81 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// Every server's request bodies together have 256 MiB of room, so many clients each sending a big
+/// body at once can't take the program's memory (runtime exhaustion audit, 2026-11-20). Thirty
+/// clients each start a body of the most a body may be, 10 MiB: 25 fit, and the other 5 are
+/// answered 503 at once, unread. Once they've closed, the room's all back, and a request is answered.
+#[test]
+fn an_http_server_holds_no_more_than_its_room_for_bodies_at_once() -> std::io::Result<()> {
+    use std::io::{ErrorKind, Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=f"got {len(request.body)}".encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=20s)
+"#;
+    let dir = folder("http_server_body_room")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| ErrorKind::InvalidData)?;
+    // Each starts the biggest body there may be, and sends a byte of it.
+    let mut started = Vec::new();
+    for _ in 0..30 {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 10485760\r\n\r\nx")?;
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
+        started.push(stream);
+    }
+    // Those refused are answered at once; the rest wait for the rest of their bodies.
+    let mut refused = vec![String::new(); started.len()];
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while refused.iter().filter(|said| !said.is_empty()).count() < 5 && std::time::Instant::now() < until {
+        for (stream, said) in started.iter_mut().zip(refused.iter_mut()) {
+            let mut heard = [0_u8; 512];
+            match stream.read(&mut heard) {
+                Ok(read) => said.push_str(&String::from_utf8_lossy(heard.get(..read).unwrap_or_default())),
+                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(err) => {
+                    said.push('[');
+                    said.push_str(&err.to_string());
+                    said.push(']');
+                }
+            }
+        }
+    }
+    let answered: Vec<&String> = refused.iter().filter(|said| !said.is_empty()).collect();
+    drop(started);
+    // The room's back once they've gone.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let mut after = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    after.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    after.write_all(b"POST /up HTTP/1.1\r\nContent-Length: 3\r\nconnection: close\r\n\r\nabc")?;
+    let mut heard = Vec::new();
+    let _ = after.read_to_end(&mut heard);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    let busy = "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 67\r\nconnection: close\r\n\r\n\
+                the server is reading as many bodies as it holds at once: try again";
+    assert_eq!(answered.len(), 5, "{answered:?}");
+    assert!(answered.iter().all(|said| said.as_str() == busy), "{answered:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&heard),
+        "HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\ngot 3"
+    );
+    Ok(())
+}
+
 /// A native server gives a whole request, its head and body, one `timeout`, so a client sending a
 /// body a byte at a time is cut off once it passes rather than held for as long as it keeps sending.
 #[test]
@@ -33441,6 +33516,62 @@ def main(stdout: Stdout):
     _ = squad.rows[0].pop()
     stdout.print(squad.rows)
 "#,
+    )
+}
+
+/// An optional of a heap type, a string, a list or a struct, popped from a list of them: by `pop()`
+/// and `pop(at)`, kept or let go of with `_ =`, present or `None`, and taken out by `remove` and
+/// `discard`. A list holds such an optional as an enum, its case first, where a local holds it as
+/// a header or one word: popped whole, the case was taken for a string's first word, and letting
+/// it go crashed (#2282). Each is what it was, in place and boxed, with nothing left held.
+#[test]
+fn an_optional_of_a_heap_type_pops_out_of_a_list_as_it_was() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed(
+        "pop_optional_heap",
+        r#"struct Point:
+    x: int
+
+def main(stdout: Stdout):
+    mut words = list[str?]()
+    words.append("kit")
+    words.append(None)
+    words.append("a word long enough to be held in a block of its own")
+    words.append("fox")
+    popped_short = words.pop() else "none"
+    popped_long = words.pop() else "none"
+    popped_none = words.pop() else "none"
+    stdout.print(popped_short, popped_long, popped_none, len(words))
+    words.append("ash")
+    popped_first = words.pop(0) else "none"
+    _ = words.pop(0)
+    stdout.print(popped_first, len(words), words.pop() else "empty")
+    words.append("kit")
+    words.append("elm")
+    removed = words.remove("kit") else "none"
+    words.discard("elm")
+    stdout.print(removed, len(words))
+    mut rows = list[list[int]?]()
+    rows.append([1, 2])
+    rows.append(None)
+    rows.append([3])
+    stdout.print(len(rows.pop() else [9, 9, 9]), len(rows.pop() else [9, 9, 9]), len(rows.pop(0) else [9]), len(rows))
+    rows.append([4, 5])
+    _ = rows.pop(0)
+    stdout.print(len(rows))
+    mut points = list[Point?]()
+    points.append(Point(x=5))
+    points.append(None)
+    points.append(Point(x=7))
+    stdout.print((points.pop() else Point(x=0)).x, (points.pop() else Point(x=-1)).x, (points.pop(0) else Point(x=0)).x, len(points))
+    points.append(Point(x=8))
+    _ = points.pop()
+    stdout.print(len(points))
+    return
+"#,
+        "fox a word long enough to be held in a block of its own none 1\nkit 0 empty\nkit 0\n1 3 2 0\n0\n7 -1 5 0\n0\n",
     )
 }
 

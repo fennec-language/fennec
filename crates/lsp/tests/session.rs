@@ -366,6 +366,23 @@ fn a_staged_session_publishes_mistakes_first_then_lints_and_copies() {
     assert!(!editor.session.pending());
 }
 
+/// An edit that comes before the lints and costs of the program last checked are worked out, as
+/// one typed straight after an open does, works them out first and then checks only what it
+/// touched: the other file keeps its lint, and nothing is left to do. Checking all of the program
+/// again for each edit cost the budgets' edit 4,200 million instructions, not 70 (#2247).
+#[test]
+fn an_edit_before_a_staged_session_finishes_finishes_first_and_checks_only_what_it_touched() {
+    let mut editor = Editor::new("staged_edit").unwrap();
+    editor.session = Session::staged();
+    editor.open("src/combat.fen", &COMBAT.replace("    return power * 2", "    pass\n    return power * 2"));
+    editor.open("src/main.fen", MAIN);
+    assert!(editor.session.pending(), "the lints are still to work out");
+    let published = editor.change("src/main.fen", &MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)"));
+    assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-pass"], "{published:?}");
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]));
+    assert!(!editor.session.pending(), "the edit was checked from the finished program, quickly");
+}
+
 #[test]
 fn a_quick_edit_keeps_what_other_files_show_and_lints_the_edited_one() {
     let mut editor = Editor::new("quick_lints").unwrap();

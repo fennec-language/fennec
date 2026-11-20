@@ -21874,6 +21874,81 @@ fn served_while_its_clients_post(name: &str, clients: &[usize]) -> std::io::Resu
     std::fs::remove_dir_all(&dir)
 }
 
+/// A `return` in a server's round leaves the function serving, as it does from a plain `parallel`
+/// loop, and each connection still closes (#2284). Written in an `except` arm, it used to be missed,
+/// so the round was made a task that gives back how it ended, and the `return` in it gave back
+/// nothing: "the IR isn't sound". Two servers, each answering two lines and then told to stop:
+/// one whose only `return` is in an `except` arm, stopped by `break`, and one stopped by a `return`
+/// in its body, after which `main` goes on.
+#[test]
+fn a_return_in_a_served_round_leaves_the_function_serving() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("round-returns")?;
+    let head = "from std.net import NetError, Server
+
+def answering(server: Server, stdout: Stdout):
+    for conn in parallel(server):
+        line = conn.read_line() except why:
+            stdout.print(\"a read failed\", f\"{why}\")
+            return
+        said = line else \"nothing\"
+        if said == \"stop\":
+";
+    let tail = "        conn.write(f\"{said} back\\n\") except why:
+            stdout.print(\"a write failed\", f\"{why}\")
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        answering(server, stdout=stdout)
+    stdout.print(\"served\")
+";
+    for (name, stops) in [("by_break", "            break\n"), ("by_return", "            return\n")] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{head}{stops}{tail}"))?;
+        let executable = dir.join(name);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let mut server = Running(
+            Command::new(&executable)
+                .env("FENNEC_THREADS", "2")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?,
+        );
+        let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+        for line in ["a", "b", "stop"] {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+            stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+            stream.write_all(format!("{line}\n").as_bytes())?;
+            let mut back = String::new();
+            let _ = std::io::BufReader::new(stream).read_line(&mut back);
+            let wanted = if line == "stop" { String::new() } else { format!("{line} back\n") };
+            assert_eq!(back, wanted, "{name}");
+        }
+        // Serving ends, `answering` returns and `main` ends: the program exits by itself.
+        let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
+        let ended = loop {
+            if let Some(status) = server.0.try_wait()? {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "{name}: the server went on after `stop`");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert_eq!(ended.code(), Some(0), "{name}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// Runs the echo server at `executable` under a heap audit on two workers, has it serve five
 /// lines and a stop, six rounds, and gives how it ended and what it said. `selftest` is what
 /// `FENNEC_AUDIT_SELFTEST` is set to, if anything.

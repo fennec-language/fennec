@@ -792,6 +792,150 @@ fn a_replay_hands_on_a_locks_turn_when_its_given_back() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The replay fuzz target's program that hung after #2283: `t1` takes `b`, then `t0` takes `a` and
+/// `b` at once, recorded on one worker. A replay took `a`, then waited for its turn at `b`, which
+/// was `t1`'s. Holding `a`, `t0` couldn't make way on its worker, and `t1` was behind it there.
+const TURNS_AT_TWO_LOCKS: &str = "from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout
+from std.net import Connection, NetError, Server
+from std.time import Duration
+
+struct Account:
+    total: int
+    moves: list[int]
+
+# Counts `turns` turns, making way for others at the runtime's ticks.
+def counted(turns: int) -> int:
+    mut total = 0
+    for turn in range(turns):
+        total = (total + turn * turn) % 1_000_003
+    return total
+
+# The next number, if it comes within `wait`: -1 when it doesn't, -2 when the inbox closed.
+def got_within(inbox: Inbox[int], wait: Duration) -> int:
+    got = inbox.receive_within(wait) except Timeout(): return -1
+    return got else -2
+
+# Sends `number` within `wait`, or gives up, when the task has ended or its inbox stays full.
+def handed(to: Sender[int], number: int, wait: Duration):
+    to.send_within(number, wait) except Closed() | Timeout(): return
+
+def task_0(a: shared Account, b: shared Account, inbox: Inbox[int], stdout: Stdout):
+    got_0 = inbox.receive() else -1
+    stdout.print(\"t0 got\", got_0)
+    lock a, b as ref x, ref y:
+        x.total += 1
+        x.moves.append(1)
+        y.total += 1
+        y.moves.append(1)
+        stdout.print(\"t0 locked\", x.total)
+    stdout.print(\"t0 s2\")
+
+def task_1(b: shared Account, inbox: Inbox[int], stdout: Stdout):
+    lock b as ref y:
+        y.total += 3
+        y.moves.append(3)
+        stdout.print(\"t1 locked\", y.total)
+    got_1 = got_within(inbox, 2ms)
+    stdout.print(\"t1 got\", got_1)
+
+def round_0(stdout: Stdout):
+    stdout.print(\"r0 s0\")
+
+def answered(conn: Connection, stdout: Stdout):
+    line = conn.read_line() except why:
+        stdout.print(\"a read failed\", f\"{why}\")
+        return
+    asked = line else \"\"
+    match asked:
+        case \"r0\":
+            round_0(stdout=stdout)
+        case _:
+            stdout.print(\"asked for no round\", asked)
+    conn.write(f\"done {asked}\\n\") except why:
+        stdout.print(\"a write failed\", f\"{why}\")
+
+def serving(server: Server, stdout: Stdout):
+    for conn in parallel(server):
+        answered(conn, stdout=stdout)
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed | Closed:
+    shared a = Account(total=0, moves=[])
+    shared b = Account(total=0, moves=[])
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout=stdout), stop_after=100ms)?:
+            with launch((inbox) => task_0(a=a, b=b, inbox=inbox, stdout=stdout))? as to_0:
+                with launch((inbox) => task_1(b=b, inbox=inbox, stdout=stdout), inbox_size=1)? as to_1:
+                    with net.connect(\"127.0.0.1\", port)? as asking_0:
+                        asking_0.write(\"r0\\n\")?
+                        to_0.send(0)?
+                        stdout.print(\"main s1\")
+                        handed(to_1, 100, 1ms)
+                        stdout.print(\"main s3\")
+                        lock a, b as ref x, ref y:
+                            x.total += 2
+                            x.moves.append(2)
+                            y.total += 2
+                            y.moves.append(2)
+                            stdout.print(\"main locked\", x.total)
+                        stdout.print(asking_0.read_line()? else \"nothing\")
+    lock a as x:
+        stdout.print(\"total a\", x.total, len(x.moves), x.total == sum(x.moves))
+    lock b as y:
+        stdout.print(\"total b\", y.total, len(y.moves), y.total == sum(y.moves))
+    stdout.print(\"over\")
+";
+
+/// A `lock` taking two values waits for its turn at each before it takes either, so it never waits
+/// for a turn holding a lock, which no task behind it on its worker could take while it waits.
+#[test]
+fn a_replay_waits_for_every_turn_a_lock_of_two_values_has_before_taking_either() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("turns-at-two-locks")?;
+    let program = dir.join("accounts.fen");
+    std::fs::write(&program, TURNS_AT_TWO_LOCKS)?;
+    let executable = dir.join("accounts");
+    let built = fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_THREADS_RUNTIME", "1")
+        .output_within()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // Recorded and replayed as the replay fuzz target runs it, which found it: built once, then
+    // run with `FENNEC_RECORD` started as `fennec run --record` starts it, and with
+    // `FENNEC_REPLAY`. The order the tasks take the values in is the recording's, and only some
+    // orders hung.
+    for recording in 0..3 {
+        let log = dir.join(format!("accounts-{recording}.log"));
+        fennec_rt::replay::start_log(&log, format!("native\0{}", program.display()).as_bytes())?;
+        let recorded = std::process::Command::new(&executable)
+            .env("FENNEC_RECORD", &log)
+            .env("FENNEC_THREADS", "1")
+            .current_dir(&dir)
+            .output_within()?;
+        let recorded = outcome(&recorded);
+        assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+        assert!(recorded.0.ends_with("total a 3 2 True\ntotal b 6 3 True\nover\n"), "{}", recorded.0);
+        for threads in ["1", "4"] {
+            let replayed = std::process::Command::new(&executable)
+                .env("FENNEC_REPLAY", &log)
+                .env("FENNEC_THREADS", threads)
+                .current_dir(&dir)
+                .output_limited(DEADLINE, Duration::from_secs(60))?;
+            let replayed = outcome(&replayed);
+            let how = format!("recording {recording} replayed on {threads} threads: {}", replayed.1);
+            assert_eq!(replayed.0, recorded.0, "{how}");
+            assert_eq!(replayed.2, Some(0), "{how}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A replay that can't follow its recording at a lock says so, naming the lock, and ends. It waited
 /// out its patience, crashed, and then its connection's cleanup asked for a close where the
 /// recording read a line: the replay said only that, "while cleaning up after a crash", and hung.

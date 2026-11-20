@@ -548,20 +548,26 @@ fn write_kept_output_on_panic() {
     ONCE.call_once(|| {
         let earlier = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic| {
-            // A panic while the output's in use leaves it for now: it can't be read here.
-            let free = OUTPUT
-                .try_with(|output| {
-                    output
-                        .try_borrow()
-                        .is_ok_and(|kept| kept.as_ref().is_none_or(|kept| kept.0.try_borrow_mut().is_ok()))
-                })
-                .unwrap_or(false);
-            if free {
-                write_kept_output();
-            }
+            write_kept_output_if_free();
             earlier(panic);
         }));
     });
+}
+
+/// Writes what this thread printed and kept, unless the program stopped while the output was in
+/// use, when it can't be read: for a stop that can't wait for the program's own end, a panic or
+/// running out of memory.
+pub(crate) fn write_kept_output_if_free() {
+    let free = OUTPUT
+        .try_with(|output| {
+            output
+                .try_borrow()
+                .is_ok_and(|kept| kept.as_ref().is_none_or(|kept| kept.0.try_borrow_mut().is_ok()))
+        })
+        .unwrap_or(false);
+    if free {
+        write_kept_output();
+    }
 }
 
 struct State {

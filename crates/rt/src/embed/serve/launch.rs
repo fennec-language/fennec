@@ -58,6 +58,8 @@ struct Launched {
     /// asking for more than was recorded ends it as quietly as the run's end, not as a crash. Read
     /// only where a task ends: its stop, which more reads, is left as the recording has it.
     left_behind: AtomicBool,
+    /// Its name in a recording or a replay, which a stuck wait at its block's end is said by there.
+    replay: Option<Arc<str>>,
 }
 
 enum End {
@@ -129,6 +131,10 @@ impl Awaited for Launched {
         };
         this.then_some(self.number)
     }
+
+    fn replay_place(&self) -> Option<Arc<str>> {
+        self.replay.clone()
+    }
 }
 
 /// `fennec_launch(body, env)`: starts a task running `body` with a copy of `env`, a block or 0, and
@@ -173,9 +179,11 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
     });
     let Some((copy, lent)) = given else { return 0 };
     let number = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
+    let stop = Arc::new(AtomicU8::new(0));
+    let accounts = threads::Accounts::for_task(lent, Arc::clone(&stop));
     let launched = Arc::new(Launched {
         number,
-        stop: Arc::new(AtomicU8::new(0)),
+        stop,
         pool,
         worker,
         task: Mutex::new(None),
@@ -183,9 +191,9 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
         ended: Condvar::new(),
         launcher: threads::Launcher::here(),
         left_behind: AtomicBool::new(false),
+        replay: accounts.replay_name(),
     });
     tasks(|tasks| tasks.insert(number, Arc::clone(&launched)));
-    let accounts = threads::Accounts::for_task(lent, Arc::clone(&launched.stop));
     pool.run_on(
         worker,
         Box::new(move |io: &mut Io| {

@@ -1,8 +1,10 @@
 //! The `replay` target: a program of tasks and a server's rounds that print and make way for each
 //! other, recorded on 1 and on 4 threads, and each recording replayed on 1, 4 and 16. A replay must
 //! print what its recording printed, byte for byte, and end the same way. Standard error is held to
-//! what's expected: nothing from a recording, and from a replay nothing or the one note that the
-//! recording's end stopped the server, so a warning, like a recording that stopped early, fails.
+//! what's expected: from a recording nothing but what a lock's crash says, and from a replay what
+//! its recording said, in its order, and the one note that the recording's end stopped the server,
+//! wherever the stop came among the crashes, so a warning, like a recording that stopped early,
+//! fails.
 //!
 //! What each `print` prints has to be in the recording as often as it's printed, so a print torn
 //! in two or put in twice is caught in the recording as well. Where nothing printed a line in
@@ -25,6 +27,14 @@
 //!   number at the end. Which worker took a job is the recording's, but each job is taken once.
 //! - **`parallel` cut short,** by a `break` in a loop's range or a failure in a list's, which `main`
 //!   handles. Which ranges started is the recording's, but the one that ended it always did.
+//! - **Locks,** on two `shared` accounts `main` makes, taken by tasks, by `main` and by each of the
+//!   `parallel` call's ranges: one account, or both in one `lock`, named in either order. A lock
+//!   adds to an account's total and appends to its moves, and prints the total it left. Some are
+//!   undone: they add 100 and append 1000, then `fail`, or crash in a task of their own, which the
+//!   one taking them handles. What each printed is the recording's, but once every task's ended,
+//!   `main` prints each account, and its total, its count of moves and whether they agree are
+//!   known, but for the ranges a `parallel` call cut short didn't run. A crash says so on standard
+//!   error, which a replay has to say the same.
 //!
 //! The program is built once, with `fennec build --llvm`, and run with `FENNEC_RECORD` and then
 //! `FENNEC_REPLAY`, as `fennec run --record` and `fennec replay` run it. It needs what `llvm`
@@ -57,6 +67,55 @@ enum Step {
     Wait(Wait),
     /// Takes the next number from its inbox and prints it: a task's only.
     Receive,
+    /// Takes the lock the plan's lock with this number says, which also numbers what it adds.
+    Lock(usize),
+}
+
+/// The `shared` accounts a lock takes: `a`, `b`, or both, named in this order.
+#[derive(Clone, Copy)]
+enum Taken {
+    A,
+    B,
+    AB,
+    BA,
+}
+
+impl Taken {
+    fn a(self) -> bool {
+        !matches!(self, Self::B)
+    }
+
+    fn b(self) -> bool {
+        !matches!(self, Self::A)
+    }
+
+    /// The `lock` line, which names `a`'s account `x` and `b`'s `y`.
+    fn statement(self) -> &'static str {
+        match self {
+            Self::A => "lock a as ref x:",
+            Self::B => "lock b as ref y:",
+            Self::AB => "lock a, b as ref x, ref y:",
+            Self::BA => "lock b, a as ref y, ref x:",
+        }
+    }
+}
+
+/// How a lock's body ends.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    /// Its changes are kept, and it prints the total it left.
+    Kept,
+    /// It fails, which undoes its changes.
+    Failed,
+    /// It crashes, in a task of its own, which undoes its changes.
+    Crashed,
+}
+
+/// A lock a task or `main` takes.
+#[derive(Clone, Copy)]
+struct Lock {
+    taken: Taken,
+    ending: Ending,
 }
 
 /// How a step makes way for others.
@@ -79,6 +138,8 @@ enum MainStep {
     Job,
     /// Calls the `parallel` call.
     Pieces,
+    /// Takes the plan's lock with this number.
+    Lock(usize),
 }
 
 /// The most workers on the work queue, and the most jobs `main` sends them.
@@ -86,6 +147,8 @@ const MOST_WORKERS: usize = 3;
 const MOST_JOBS: usize = 6;
 /// The most ranges a `parallel` call has, so each prints one digit.
 const MOST_RANGES: usize = 8;
+/// The most locks tasks and `main` take between them, so a step's number stays one digit.
+const MOST_LOCKS: usize = 4;
 
 /// The program an input asks for.
 struct Plan {
@@ -96,6 +159,9 @@ struct Plan {
     timed: Vec<bool>,
     queue: Option<Queue>,
     pieces: Option<Pieces>,
+    locks: Vec<Lock>,
+    /// Whether each of the `parallel` call's ranges takes `a`'s lock and adds 1.
+    pieces_lock: bool,
 }
 
 /// Workers taking jobs from one channel, each looping until it takes a stop number.
@@ -197,7 +263,31 @@ fn plan(input: &[u8]) -> Plan {
         main.insert(at, MainStep::Pieces);
         pieces
     });
-    Plan { tasks, rounds, main, timed, queue, pieces }
+    let mut tasks = tasks;
+    let locks = (0..bytes.below(MOST_LOCKS + 1))
+        .map(|number| {
+            let taken = match bytes.below(4) {
+                0 => Taken::A,
+                1 => Taken::B,
+                2 => Taken::AB,
+                _ => Taken::BA,
+            };
+            let ending = match bytes.below(4) {
+                0 | 1 => Ending::Kept,
+                2 => Ending::Failed,
+                _ => Ending::Crashed,
+            };
+            // A task's, or `main`'s, past the last task.
+            let owner = bytes.below(tasks.len() + 1);
+            match tasks.get_mut(owner) {
+                Some(steps) => steps.insert(bytes.below(steps.len() + 1), Step::Lock(number)),
+                None => main.insert(bytes.below(main.len() + 1), MainStep::Lock(number)),
+            }
+            Lock { taken, ending }
+        })
+        .collect();
+    let pieces_lock = pieces.is_some() && bytes.below(2) == 1;
+    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock }
 }
 
 impl Plan {
@@ -222,6 +312,65 @@ impl Plan {
         self.tasks.iter().chain(&self.rounds).flatten().any(|step| matches!(step, Step::Pieces(_)))
     }
 
+    fn lock(&self, number: usize) -> Lock {
+        self.locks.get(number).copied().unwrap_or(Lock { taken: Taken::A, ending: Ending::Kept })
+    }
+
+    /// Whether the program makes the two accounts.
+    fn shares(&self) -> bool {
+        !self.locks.is_empty() || self.pieces_lock
+    }
+
+    /// Which accounts steps lock, `a`'s and `b`'s.
+    fn locked_by(&self, numbers: impl Iterator<Item = usize>) -> (bool, bool) {
+        numbers
+            .map(|number| self.lock(number).taken)
+            .fold((false, false), |(a, b), taken| (a || taken.a(), b || taken.b()))
+    }
+
+    /// What `main` prints of each account at the end, `a`'s then `b`'s, its total and count of moves
+    /// as `None` where the ranges a `parallel` call cut short decide them.
+    fn accounts(&self) -> [(String, Option<(usize, usize)>); 2] {
+        let kept = |held: fn(Taken) -> bool| {
+            self.locks
+                .iter()
+                .enumerate()
+                .filter(|(_, lock)| lock.ending == Ending::Kept && held(lock.taken))
+                .fold((0, 0), |(total, moves), (number, _)| (total + number + 1, moves + 1))
+        };
+        [
+            ("a".to_owned(), (!self.pieces_lock).then(|| kept(Taken::a))),
+            ("b".to_owned(), Some(kept(Taken::b))),
+        ]
+    }
+
+    /// The line `main` prints of an account at the end, as `plain` gives it.
+    fn account_line(name: &str, counted: Option<(usize, usize)>) -> String {
+        match counted {
+            Some((total, moves)) => format!("total {name} {total} {moves} True"),
+            None => format!("total {name} ? ? True"),
+        }
+    }
+
+    /// The name a task or `main` prints its lock with, and how many it keeps.
+    fn kept_locks(&self) -> Vec<(String, usize)> {
+        let kept = |number: usize| self.lock(number).ending == Ending::Kept;
+        let mut each: Vec<(String, usize)> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(task, steps)| {
+                let count =
+                    steps.iter().filter(|step| matches!(step, Step::Lock(number) if kept(*number))).count();
+                (format!("t{task}"), count)
+            })
+            .collect();
+        let main =
+            self.main.iter().filter(|step| matches!(step, MainStep::Lock(number) if kept(*number))).count();
+        each.push(("main".to_owned(), main));
+        each
+    }
+
     /// What `main` prints once the `parallel` call is over.
     fn pieces_over(&self) -> Option<&'static str> {
         self.pieces.as_ref().map(|pieces| if pieces.fails { "pieces gave -1" } else { "pieces ended" })
@@ -244,12 +393,25 @@ impl Plan {
                         printed.push(format!("{who} got {}\n", sent(&who, taken)));
                         taken += 1;
                     }
+                    Step::Lock(lock) if self.lock(*lock).ending == Ending::Kept => {}
+                    Step::Lock(lock) => printed.push(format!("{who} undone {lock}\n")),
                 }
             }
         }
         for (number, step) in self.main.iter().enumerate() {
-            if matches!(step, MainStep::Print) {
-                printed.push(format!("main s{number}\n"));
+            match step {
+                MainStep::Print => printed.push(format!("main s{number}\n")),
+                MainStep::Lock(lock) if self.lock(*lock).ending != Ending::Kept => {
+                    printed.push(format!("main undone {lock}\n"));
+                }
+                _ => {}
+            }
+        }
+        if self.shares() {
+            for (name, counted) in self.accounts() {
+                if counted.is_some() {
+                    printed.push(format!("{}\n", Self::account_line(&name, counted)));
+                }
             }
         }
         printed.extend((0..self.rounds.len()).map(|round| format!("done r{round}\n")));
@@ -277,13 +439,25 @@ impl Plan {
                         lines.push(format!("{who} got {}", sent(&who, taken)));
                         taken += 1;
                     }
+                    Step::Lock(lock) if self.lock(*lock).ending == Ending::Kept => {
+                        lines.push(format!("{who} locked ?"));
+                    }
+                    Step::Lock(lock) => lines.push(format!("{who} undone {lock}")),
                 }
             }
         }
         for (number, step) in self.main.iter().enumerate() {
-            if matches!(step, MainStep::Print) {
-                lines.push(format!("main s{number}"));
+            match step {
+                MainStep::Print => lines.push(format!("main s{number}")),
+                MainStep::Lock(lock) if self.lock(*lock).ending == Ending::Kept => {
+                    lines.push("main locked ?".to_owned());
+                }
+                MainStep::Lock(lock) => lines.push(format!("main undone {lock}")),
+                _ => {}
             }
+        }
+        if self.shares() {
+            lines.extend(self.accounts().iter().map(|(name, counted)| Self::account_line(name, *counted)));
         }
         lines.extend((0..self.rounds.len()).map(|round| format!("done r{round}")));
         lines.extend((0..self.jobs()).map(|job| format!("w? took {job}")));
@@ -308,6 +482,14 @@ impl Plan {
             && let Some((_, job)) = line.split_once(" took ")
         {
             return Some(format!("w? took {job}"));
+        }
+        if let Some((who, _)) = line.split_once(" locked ") {
+            return Some(format!("{who} locked ?"));
+        }
+        if self.pieces_lock
+            && let Some(agree) = line.strip_prefix("total a ").and_then(|rest| rest.rsplit(' ').next())
+        {
+            return Some(format!("total a ? ? {agree}"));
         }
         Some(line.to_owned())
     }
@@ -341,7 +523,25 @@ impl Plan {
         if let Some(range) = (0..count).find(|range| text.matches(&format!("p {range}\n")).count() > 1) {
             return Err(format!("range {range} printed twice"));
         }
+        for (who, kept) in self.kept_locks() {
+            let printed = text.matches(&format!("{who} locked ")).count();
+            if printed != kept {
+                return Err(format!("{who} printed {printed} kept locks, not {kept}"));
+            }
+        }
         Ok(())
+    }
+
+    /// Whether `said` is what the locks that crash say on standard error, each once, in any order,
+    /// with the length of moves they found, which the order decides.
+    fn crashes_said(&self, said: &str) -> bool {
+        let crashes = self.locks.iter().filter(|lock| lock.ending == Ending::Crashed).count();
+        let lines: Vec<&str> = said.lines().collect();
+        lines.len() == crashes
+            && (said.is_empty() || said.ends_with('\n'))
+            && lines
+                .iter()
+                .all(|line| line.strip_prefix(CRASHED).is_some_and(|length| length.parse::<usize>().is_ok()))
     }
 
     /// Each task's and round's name and steps.
@@ -367,7 +567,7 @@ fn waited(wait: Wait, indent: &str) -> String {
 
 /// The body of a task or a round, indented once. A timed task takes each number within a
 /// millisecond or two.
-fn body(who: &str, steps: &[Step], timed: bool) -> String {
+fn body(plan: &Plan, who: &str, steps: &[Step], timed: bool) -> String {
     let mut out = String::new();
     for (number, step) in steps.iter().enumerate() {
         match step {
@@ -388,6 +588,94 @@ fn body(who: &str, steps: &[Step], timed: bool) -> String {
                 let _ = writeln!(out, "    got_{number} = inbox.receive() else -1");
                 let _ = writeln!(out, "    stdout.print(\"{who} got\", got_{number})");
             }
+            Step::Lock(lock) => out.push_str(&locking(plan, *lock, who, "    ")),
+        }
+    }
+    out
+}
+
+/// What a lock's body does to each account it holds, at `indent`: adds `amount` to its total and
+/// appends `appended` to its moves.
+fn changing(taken: Taken, amount: usize, appended: usize, indent: &str) -> String {
+    let mut out = String::new();
+    for (holds, name) in [(taken.a(), "x"), (taken.b(), "y")] {
+        if holds {
+            let _ =
+                write!(out, "{indent}{name}.total += {amount}\n{indent}{name}.moves.append({appended})\n");
+        }
+    }
+    out
+}
+
+/// The accounts a function taking `taken` is handed, as parameters or as arguments.
+fn accounts_given((a, b): (bool, bool), parameters: bool) -> Vec<String> {
+    [(a, "a"), (b, "b")]
+        .iter()
+        .filter(|(needed, _)| *needed)
+        .map(
+            |(_, name)| if parameters { format!("{name}: shared Account") } else { format!("{name}={name}") },
+        )
+        .collect()
+}
+
+/// `accounts`, then `rest`, as one list of parameters or arguments.
+fn joined(accounts: Vec<String>, rest: String) -> String {
+    accounts.into_iter().chain((!rest.is_empty()).then_some(rest)).collect::<Vec<_>>().join(", ")
+}
+
+/// The statements that take lock `number` for `who`, at `indent`: the lock itself, when its
+/// changes are kept, and otherwise a call to the function that's undone, which `who` handles.
+fn locking(plan: &Plan, number: usize, who: &str, indent: &str) -> String {
+    let Lock { taken, ending } = plan.lock(number);
+    let arguments = accounts_given((taken.a(), taken.b()), false).join(", ");
+    let inner = format!("{indent}    ");
+    match ending {
+        Ending::Kept => {
+            let first = if taken.a() { "x" } else { "y" };
+            format!(
+                "{indent}{}\n{}{inner}stdout.print(\"{who} locked\", {first}.total)\n",
+                taken.statement(),
+                changing(taken, number + 1, number + 1, &inner)
+            )
+        }
+        Ending::Failed => format!(
+            "{indent}undone_{number}({arguments}) except Undone():\n{inner}stdout.print(\"{who} undone {number}\")\n"
+        ),
+        Ending::Crashed => format!(
+            "{indent}crashed_{number}({arguments}) except Crashed():\n{inner}stdout.print(\"{who} undone {number}\")\n"
+        ),
+    }
+}
+
+/// The functions each lock that's undone calls: one that fails, or one that crashes in a task of
+/// its own. Each adds 100 and appends 1000 first, so an account whose total and moves agree had
+/// both undone.
+fn undone(plan: &Plan) -> String {
+    let mut out = String::new();
+    for (number, Lock { taken, ending }) in plan.locks.iter().enumerate() {
+        let parameters = accounts_given((taken.a(), taken.b()), true).join(", ");
+        let arguments = accounts_given((taken.a(), taken.b()), false).join(", ");
+        let changes = changing(*taken, 100, 1000, "        ");
+        let first = if taken.a() { "x" } else { "y" };
+        match ending {
+            Ending::Kept => {}
+            Ending::Failed => {
+                let _ = write!(
+                    out,
+                    "\ndef undone_{number}({parameters}) fails Undone:\n    {}\n{changes}        \
+                     fail Undone(at={number})\n",
+                    taken.statement()
+                );
+            }
+            Ending::Crashed => {
+                let _ = write!(
+                    out,
+                    "\ndef crashing_{number}({parameters}):\n    {}\n{changes}        _ = {first}.moves[99]\n\
+                     \ndef crashed_{number}({parameters}) fails Crashed:\n    \
+                     with launch(() => crashing_{number}({arguments}))?:\n        pass\n",
+                    taken.statement()
+                );
+            }
         }
     }
     out
@@ -398,7 +686,7 @@ fn needs(steps: &[Step]) -> (bool, bool) {
     let sleeps = |wait: &Wait| matches!(wait, Wait::Sleep(_));
     let clock = steps.iter().any(|step| match step {
         Step::Pieces(wait) | Step::Wait(wait) => sleeps(wait),
-        Step::Print | Step::Receive => false,
+        Step::Print | Step::Receive | Step::Lock(_) => false,
     });
     (clock, steps.iter().any(|step| !matches!(step, Step::Wait(_))))
 }
@@ -422,7 +710,7 @@ fn sends_plainly(plan: &Plan) -> bool {
     plan.main.iter().any(|step| match step {
         MainStep::Send(task) => !plan.is_timed(*task),
         MainStep::Job => true,
-        MainStep::Print | MainStep::Wait(_) | MainStep::Pieces => false,
+        MainStep::Print | MainStep::Wait(_) | MainStep::Pieces | MainStep::Lock(_) => false,
     })
 }
 
@@ -456,6 +744,13 @@ fn heading(plan: &Plan) -> String {
     if plan.pieces.as_ref().is_some_and(|pieces| pieces.fails) {
         out.push_str("\nerror TooFar:\n    at: int\n");
     }
+    if plan.locks.iter().any(|lock| lock.ending == Ending::Failed) {
+        out.push_str("\nerror Undone:\n    at: int\n");
+    }
+    if plan.shares() {
+        out.push_str("\nstruct Account:\n    total: int\n    moves: list[int]\n");
+        out.push_str(&undone(plan));
+    }
     out.push_str(
         "\n# Counts `turns` turns, making way for others at the runtime's ticks.\n\
          def counted(turns: int) -> int:\n    mut total = 0\n    for turn in range(turns):\n        \
@@ -482,9 +777,14 @@ fn source(plan: &Plan) -> String {
     for (task, steps) in plan.tasks.iter().enumerate() {
         let (clock, stdout) = needs(steps);
         main_clock |= clock;
-        let parameters = given((plan.has_inbox(task), clock, stdout), true);
+        let locked = plan.locked_by(steps.iter().filter_map(|step| match step {
+            Step::Lock(lock) => Some(*lock),
+            _ => None,
+        }));
+        let parameters =
+            joined(accounts_given(locked, true), given((plan.has_inbox(task), clock, stdout), true));
         let _ = write!(out, "\ndef task_{task}({parameters}):\n");
-        out.push_str(&body(&format!("t{task}"), steps, plan.is_timed(task)));
+        out.push_str(&body(plan, &format!("t{task}"), steps, plan.is_timed(task)));
     }
     if let Some(queue) = &plan.queue {
         for (worker, wait) in queue.workers.iter().enumerate() {
@@ -502,10 +802,12 @@ fn source(plan: &Plan) -> String {
     if let Some(pieces) = &plan.pieces {
         let clock = sleeps(&pieces.wait);
         main_clock |= clock;
+        let locked = (plan.pieces_lock, false);
         out.push_str(&parallel(
             pieces,
-            &given((false, clock, true), true),
-            &given((false, clock, true), false),
+            plan.pieces_lock,
+            &joined(accounts_given(locked, true), given((false, clock, true), true)),
+            &joined(accounts_given(locked, false), given((false, clock, true), false)),
         ));
     }
     let mut server_clock = false;
@@ -514,7 +816,7 @@ fn source(plan: &Plan) -> String {
         server_clock |= clock;
         let parameters = given((false, clock, stdout), true);
         let _ = write!(out, "\ndef round_{round}({parameters}):\n");
-        out.push_str(&body(&format!("r{round}"), steps, false));
+        out.push_str(&body(plan, &format!("r{round}"), steps, false));
     }
     // What the server's rounds need between them, which the server is handed. It always prints,
     // as a round that can't read or write says so.
@@ -554,21 +856,31 @@ fn server(plan: &Plan, parameters: &str, arguments: &str) -> String {
 
 /// `pieces`, the `parallel` call, which takes `parameters`: a loop over its ranges that one breaks
 /// out of, or a list of what each gives, which one fails, which `pieces` passes up.
-fn parallel(pieces: &Pieces, parameters: &str, arguments: &str) -> String {
+fn parallel(pieces: &Pieces, locks: bool, parameters: &str, arguments: &str) -> String {
     let Pieces { count, at, fails, wait } = *pieces;
+    // Each range that runs takes `a`'s lock, before the one that cuts the call short ends it.
+    let locked = |indent: &str| {
+        if locks {
+            format!("{indent}lock a as ref x:\n{}", changing(Taken::A, 1, 1, &format!("{indent}    ")))
+        } else {
+            String::new()
+        }
+    };
     if fails {
         format!(
-            "\ndef piece(number: int, {parameters}) -> int fails TooFar:\n    stdout.print(\"p\", number)\n{}    \
+            "\ndef piece(number: int, {parameters}) -> int fails TooFar:\n    stdout.print(\"p\", number)\n{}{}    \
              if number == {at}:\n        fail TooFar(at=number)\n    return number\n\
              \ndef pieces({parameters}) -> int fails TooFar:\n    \
              passed = [piece(number, {arguments})? for number in parallel(range({count}))]\n    return len(passed)\n",
-            waited(wait, "    ")
+            waited(wait, "    "),
+            locked("    ")
         )
     } else {
         format!(
             "\ndef pieces({parameters}):\n    for number in parallel(range({count})):\n        \
-             stdout.print(\"p\", number)\n{}        if number == {at}:\n            break\n",
-            waited(wait, "        ")
+             stdout.print(\"p\", number)\n{}{}        if number == {at}:\n            break\n",
+            waited(wait, "        "),
+            locked("        ")
         )
     }
 }
@@ -592,6 +904,11 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
     let net = if serves { "net: Net, " } else { "" };
     let main_clock = if clock { "clock: Clock, " } else { "" };
     let mut out = format!("\ndef main({net}{main_clock}stdout: Stdout) fails {fails}:\n");
+    if plan.shares() {
+        out.push_str(
+            "    shared a = Account(total=0, moves=[])\n    shared b = Account(total=0, moves=[])\n",
+        );
+    }
     let mut indent = String::from("    ");
     if serves {
         let _ = writeln!(out, "{indent}with net.listen(0)? as server:");
@@ -611,7 +928,12 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
     }
     for (task, steps) in plan.tasks.iter().enumerate() {
         let (clock, stdout) = needs(steps);
-        let arguments = given((plan.has_inbox(task), clock, stdout), false);
+        let locked = plan.locked_by(steps.iter().filter_map(|step| match step {
+            Step::Lock(lock) => Some(*lock),
+            _ => None,
+        }));
+        let arguments =
+            joined(accounts_given(locked, false), given((plan.has_inbox(task), clock, stdout), false));
         if plan.has_inbox(task) && plan.is_timed(task) {
             let _ = writeln!(
                 out,
@@ -634,6 +956,15 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
     out.push_str(&main_steps(plan, &indent));
     for round in 0..plan.rounds.len() {
         let _ = writeln!(out, "{indent}stdout.print(asking_{round}.read_line()? else \"nothing\")");
+    }
+    if plan.shares() {
+        for (name, held) in [("a", "x"), ("b", "y")] {
+            let _ = write!(
+                out,
+                "    lock {name} as {held}:\n        stdout.print(\"total {name}\", {held}.total, len({held}.moves), \
+                 {held}.total == sum({held}.moves))\n"
+            );
+        }
     }
     out.push_str("    stdout.print(\"over\")\n");
     out
@@ -667,7 +998,10 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
             MainStep::Pieces => {
                 let fails = plan.pieces.as_ref().is_some_and(|pieces| pieces.fails);
                 let clock = plan.pieces.as_ref().is_some_and(|pieces| matches!(pieces.wait, Wait::Sleep(_)));
-                let arguments = given((false, clock, true), false);
+                let arguments = joined(
+                    accounts_given((plan.pieces_lock, false), false),
+                    given((false, clock, true), false),
+                );
                 if fails {
                     let _ = writeln!(out, "{indent}gave = pieces({arguments}) except TooFar(): -1");
                     let _ = writeln!(out, "{indent}stdout.print(\"pieces gave\", gave)");
@@ -676,6 +1010,7 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
                     let _ = writeln!(out, "{indent}stdout.print(\"pieces ended\")");
                 }
             }
+            MainStep::Lock(lock) => out.push_str(&locking(plan, *lock, "main", indent)),
         }
     }
     // One stop for each worker, which each takes one of, once every job's been taken.
@@ -689,6 +1024,9 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
 pub(crate) fn written(input: &[u8]) -> String {
     source(&plan(input))
 }
+
+/// What a lock that crashes says on standard error, before the length of the moves it read past.
+const CRASHED: &str = "error: index 99 is out of range for length ";
 
 /// What a replay of a server says when the recording's end stops it, and all it may say.
 const SERVER_STOPPED: &str = "replay: the recording ends here, so the server is stopped\n";
@@ -755,7 +1093,7 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
         fennec_rt::replay::start_log(&log, b"native\0program.fen")
             .map_err(|err| format!("{}: {err}", log.display()))?;
         let recorded = ran(&executable, &work, recorded_on, "FENNEC_RECORD", &log)?;
-        if recorded.2 != Some(0) || !recorded.1.is_empty() {
+        if recorded.2 != Some(0) || !plan.crashes_said(&recorded.1) {
             return Err(format!(
                 "recorded on {recorded_on} threads, it ended with {:?}, saying:\n{}",
                 recorded.2, recorded.1
@@ -780,8 +1118,15 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
         }
         for replayed_on in [1, 4, 16] {
             let replayed = ran(&executable, &work, replayed_on, "FENNEC_REPLAY", &log)?;
-            // Only a program with a server has one for the recording's end to stop.
-            let quiet = replayed.1.is_empty() || (!plan.rounds.is_empty() && replayed.1 == SERVER_STOPPED);
+            // What the recording's crashes said, in their order, and, only in a program with a
+            // server, which the recording's end stops, that it's stopped, once, wherever the stop
+            // came among the crashes.
+            let said = if plan.rounds.is_empty() {
+                replayed.1.clone()
+            } else {
+                replayed.1.replacen(SERVER_STOPPED, "", 1)
+            };
+            let quiet = said == recorded.1;
             if (&replayed.0, replayed.2) != (&recorded.0, recorded.2) || !quiet {
                 return Err(format!(
                     "recorded on {recorded_on} threads and replayed on {replayed_on}, the replay printed \

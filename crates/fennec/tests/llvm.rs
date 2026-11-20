@@ -31527,7 +31527,8 @@ def grow(stdout: Stdout):
 
 def main(stdout: Stdout, args: Args) fails Crashed:
     stdout.print(\"started\")
-    match args[0] if len(args) > 0 else \"\":
+    asked = args[0] if len(args) > 0 else \"\"
+    match asked:
         case \"huge\":
             stdout.print(len(\"x\" * (1 << 40)))
         case \"task\":

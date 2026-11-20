@@ -8581,12 +8581,7 @@ def main(stdout: Stdout):
 ";
 
 /// Each way a `lock` can come to take one value twice, all after printing something.
-const TAKEN_TWICE: [(&str, &str); 5] = [
-    ("spelled", "    lock one, one as ref x, ref y:\n        x.total = y.total + 1\n"),
-    (
-        "reading",
-        "    mut seen = 0\n    lock one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
-    ),
+const TAKEN_TWICE: [(&str, &str); 3] = [
     ("named", "    other = one\n    lock one, other as ref x, y:\n        x.total = y.total + 1\n"),
     ("passed", "    both(one, b=one)\n"),
     ("held", "    lock Holder(box=one).box, one as ref x, y:\n        x.total = y.total + 1\n"),
@@ -8689,7 +8684,18 @@ fn two_values_in_a_lock_each_change_through_their_own_name() -> std::io::Result<
     same_as_expected_in_both_builds("two_cells", TWO_CELLS)
 }
 
-/// One value taken twice ends the program, after what it printed, however it came about.
+/// One value named twice in one `lock`, by the same name, which the checker sees, is refused before
+/// it's built (#2230).
+const SPELLED_TWICE: [(&str, &str); 2] = [
+    ("spelled", "    lock one, one as ref x, ref y:\n        x.total = y.total + 1\n"),
+    (
+        "reading",
+        "    mut seen = 0\n    lock one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
+    ),
+];
+
+/// One value taken twice ends the program, after what it printed, however it came about where the
+/// checker can't see it's one value; where it can, by the same name, it's refused before it's built.
 #[test]
 fn a_lock_taking_one_value_twice_ends_the_program() -> std::io::Result<()> {
     if !ready() {
@@ -8697,6 +8703,17 @@ fn a_lock_taking_one_value_twice_ends_the_program() -> std::io::Result<()> {
     }
     let dir = folder("taken-twice")?;
     let path = |file: &Path| file.display().to_string();
+    for (name, shape) in SPELLED_TWICE {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&dir.join(name))], &dir)?;
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{name}: built");
+        assert!(
+            said.contains("this `lock` takes `one` twice, but it's one `shared` value"),
+            "{name}: {said}"
+        );
+    }
     for (name, shape) in TAKEN_TWICE {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;

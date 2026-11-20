@@ -66,6 +66,7 @@ impl FnCx<'_> {
             }
             (_, ty) => (vec![value], vec![ty]),
         };
+        self.no_value_locked_twice(&items, names);
         if let Some(outer) = self.lock.clone() {
             self.error(
                 Diagnostic::new(format!("this `lock` waits for another lock {outer}"), value.span).with_help(
@@ -107,6 +108,29 @@ impl FnCx<'_> {
         self.pop();
         self.lock = outer;
         flow
+    }
+
+    /// Refuses a `lock` that names one value twice, by the same name or the same path, as
+    /// `lock a, a` or `lock s.x, s.x`: it's one `shared` value, which one `lock` can't take twice.
+    /// One the checker can't see is the same, as two items of one list, stops the program instead.
+    fn no_value_locked_twice(&mut self, items: &[&Expr], names: &[WithName]) {
+        let mut seen: Vec<(String, usize)> = Vec::new();
+        for (at, item) in items.iter().enumerate() {
+            let Some(path) = fennec_syntax::dotted(item) else { continue };
+            let Some(&(_, first)) = seen.iter().find(|(seen, _)| *seen == path) else {
+                seen.push((path, at));
+                continue;
+            };
+            let message = format!("this `lock` takes `{path}` twice, but it's one `shared` value");
+            let help = match names.get(first) {
+                Some(held) => format!(
+                    "take it once, as `lock {path} as ref {}:`, and use `{}` for both",
+                    held.name, held.name
+                ),
+                None => format!("take `{path}` once"),
+            };
+            self.error(Diagnostic::new(message, item.span).with_help(help));
+        }
     }
 
     /// Reports a `with` on a `shared` value, which is reached with `lock`, with the fix that says so.

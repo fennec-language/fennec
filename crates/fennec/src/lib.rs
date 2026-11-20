@@ -120,7 +120,8 @@ fn arguments() -> Option<Vec<String>> {
     Some(args)
 }
 
-fn main() -> ExitCode {
+/// Runs the `fennec` command on this process's arguments.
+pub fn main() -> ExitCode {
     fennec_rt::use_tls();
     // Loading a kit parses only the files that changed since a parse of them was kept, and the
     // standard library is parsed by the first process of a build, and read by the rest.

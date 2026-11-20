@@ -5609,6 +5609,185 @@ fn two_builds_of_one_kit_at_once_queue_in_the_daemon() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// `fennec` with `args` in `kit`, with the Fennec folder `home`, through the daemon or in its own
+/// process, given `input`. With `one_file`, its standard output and error go to one file, as a
+/// terminal or `2>&1` has them, and all it printed is given back as standard output.
+#[cfg(unix)]
+fn fennec_in_kit(
+    kit: &Path,
+    home: &Path,
+    daemon: bool,
+    (args, input): (&[&str], &str),
+    one_file: bool,
+) -> std::io::Result<Output> {
+    let mut command = crate::executables::fennec_command();
+    command.args(args).current_dir(kit).env("FENNEC_HOME", home).env("FENNEC_DAEMON_IDLE", "30");
+    command.env_remove("CI").stdin(Stdio::piped());
+    if daemon {
+        command.env_remove("FENNEC_NO_DAEMON");
+    }
+    let printed = kit.with_file_name(format!("printed-{daemon}"));
+    if one_file {
+        let file = std::fs::File::create(&printed)?;
+        command.stdout(file.try_clone()?).stderr(file);
+    } else {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
+    let mut child = command.spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input.as_bytes())?;
+    }
+    let mut output = child.wait_with_output()?;
+    if one_file {
+        output.stdout = std::fs::read(&printed)?;
+        std::fs::remove_file(&printed)?;
+    }
+    Ok(output)
+}
+
+/// What a daemon's status says of how many requests it has served.
+#[cfg(unix)]
+fn served_by_daemon(kit: &Path, home: &Path) -> std::io::Result<String> {
+    let status = text(&with_daemon(kit, home, "30", &["daemon", "status"])?.stdout);
+    Ok(status.lines().next().and_then(|line| line.rsplit(", ").next()).unwrap_or_default().to_owned())
+}
+
+/// A kit for a daemon test, with a manifest a run and a test take, and `source` as its `main.fen`.
+#[cfg(unix)]
+fn kit_of(name: &str, source: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf)> {
+    let (folder, kit, home) = small_kit(name)?;
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest)?;
+    std::fs::write(kit.join("src/main.fen"), source)?;
+    Ok((folder, kit, home))
+}
+
+/// `fennec run` through the daemon prints and ends as it does in its own process, byte for byte,
+/// in one file and in two:
+/// - the program reads the command's input and arguments, and its exit code is the command's;
+/// - a lint error is shown before it runs;
+/// - a program that doesn't check says why;
+/// - a test that fails stops the run.
+///
+/// The daemon made each, and started none of them.
+#[cfg(unix)]
+#[test]
+fn a_run_through_the_daemon_prints_and_ends_as_one_here_does() {
+    let reads = "def main(stdout: Stdout, args: Args, stdin: Stdin) -> int:\n    \
+                 stdout.print(\"args:\", [arg for arg in args])\n    \
+                 stdout.print(\"lines:\", len(stdin.lines()))\n    return 3\n";
+    let (folder, kit, home) = kit_of("run-daemon", reads).unwrap();
+    let here_home = folder.join("home-here");
+    let linted = "def f(stdout: Stdout):\n    stdout.print(2)\n\ndef main(stdout: Stdout):\n    f(stdout)\n";
+    let wrong = "def main(stdout: Stdout):\n    stdout.print(1 + \"x\")\n";
+    let failing =
+        "def main(stdout: Stdout):\n    stdout.print(1)\n\ntest \"one is two\":\n    assert 1 == 2\n";
+    let sources = [
+        (reads, Some(3), "args: [\"fire\", \"ice\"]\nlines: 2\n"),
+        (linted, Some(0), "short-name"),
+        (wrong, Some(1), "error: "),
+        (failing, Some(1), "one is two"),
+    ];
+    for (source, code, said) in sources {
+        std::fs::write(kit.join("src/main.fen"), source).unwrap();
+        for one_file in [false, true] {
+            let run = |home: &Path, daemon| {
+                fennec_in_kit(&kit, home, daemon, (&["run", ".", "fire", "ice"], "one\ntwo\n"), one_file)
+                    .unwrap()
+            };
+            let here = run(&here_home, false);
+            let there = run(&home, true);
+            let printed = format!("{}{}", text(&here.stdout), text(&here.stderr));
+            assert_eq!(here.status.code(), code, "{source}: {printed}");
+            assert!(printed.contains(said), "{source}: {printed}");
+            assert_eq!(there.status.code(), here.status.code(), "{source}");
+            assert_eq!(text(&there.stdout), text(&here.stdout), "{source}, in one file: {one_file}");
+            assert_eq!(text(&there.stderr), text(&here.stderr), "{source}, in one file: {one_file}");
+        }
+    }
+    assert_eq!(served_by_daemon(&kit, &home).unwrap(), "8 requests served");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
+/// `fennec test` through the daemon prints and ends as it does in its own process, byte for byte,
+/// in one file and in two: the affected tests or all of them, listed or not, failing and passing.
+/// `--real` runs in the command's own process.
+#[cfg(unix)]
+#[test]
+fn tests_through_the_daemon_print_and_end_as_ones_here_do() {
+    let source = "def double(n: int) -> int:\n    return n * 2\n\n\
+                  test \"doubling one\":\n    assert double(1) == 2\n\n\
+                  test \"doubling two\":\n    assert double(2) == 5\n\n\
+                  test \"doubling three\":\n    assert double(3) == 7\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(double(4))\n";
+    let (folder, kit, home) = kit_of("test-daemon", source).unwrap();
+    let here_home = folder.join("home-here");
+    let asked: [&[&str]; 4] = [&["test"], &["test"], &["test", "--verbose"], &["test", "--all", "-v"]];
+    for args in asked {
+        for one_file in [false, true] {
+            let here = fennec_in_kit(&kit, &here_home, false, (args, ""), one_file).unwrap();
+            let there = fennec_in_kit(&kit, &home, true, (args, ""), one_file).unwrap();
+            assert_eq!(here.status.code(), Some(1), "{args:?}: {}", text(&here.stderr));
+            assert!(text(&here.stdout).contains("✗ doubling two"), "{args:?}: {}", text(&here.stdout));
+            assert_eq!(there.status.code(), here.status.code(), "{args:?}");
+            assert_eq!(text(&there.stdout), text(&here.stdout), "{args:?}, in one file: {one_file}");
+            assert_eq!(text(&there.stderr), text(&here.stderr), "{args:?}, in one file: {one_file}");
+        }
+    }
+    let real = fennec_in_kit(&kit, &home, true, (&["test", "--real"], ""), false).unwrap();
+    assert_eq!(real.status.code(), Some(1), "{}", text(&real.stderr));
+    assert!(text(&real.stdout).contains("✗ doubling two"), "{}", text(&real.stdout));
+    assert_eq!(served_by_daemon(&kit, &home).unwrap(), "8 requests served");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
+/// A `fennec test` that goes while the daemon runs its tests, as on Ctrl-C, stops them, even one
+/// that never ends, and the daemon goes on to the next command.
+#[cfg(unix)]
+#[test]
+fn a_test_command_gone_stops_its_tests_in_the_daemon() {
+    let source = "def main(stdout: Stdout):\n    stdout.print(1)\n\n\
+                  test \"never ends\":\n    mut count = 0\n    while count >= 0:\n        \
+                  count = (count + 1) % 1000\n";
+    let (_folder, kit, home) = kit_of("stopped-tests", source).unwrap();
+    let said = kit.with_file_name("said");
+    let mut command = crate::executables::fennec_command();
+    command.args(["test"]).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", "30");
+    command.env_remove("CI").env_remove("FENNEC_NO_DAEMON").stdout(Stdio::null());
+    let mut testing = command.stderr(std::fs::File::create(&said).unwrap()).spawn().unwrap();
+    // The tests' executable is in the Fennec folder's `work` while they run, and goes once
+    // they're done.
+    let tests_running = || {
+        std::fs::read_dir(home.join("work")).is_ok_and(|listing| {
+            listing.flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("fennec-tests-"))
+        })
+    };
+    let waiting = std::time::Instant::now();
+    while !tests_running() {
+        let ended = testing.try_wait().unwrap();
+        let why = std::fs::read_to_string(&said).unwrap_or_default();
+        assert!(ended.is_none(), "the command ended before its tests ran: {why}");
+        assert!(waiting.elapsed().as_secs() < 300, "the tests never started");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(testing.try_wait().unwrap().is_none(), "the test that never ends ended");
+    testing.kill().unwrap();
+    testing.wait().unwrap();
+    let stopping = std::time::Instant::now();
+    while tests_running() {
+        assert!(stopping.elapsed().as_secs() < 30, "the daemon didn't stop the tests");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let built = fennec_in_kit(&kit, &home, true, (&["build", "."], ""), false).unwrap();
+    assert!(built.status.success(), "{}", text(&built.stderr));
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
 #[cfg(unix)]
 #[test]
 fn an_idle_daemon_exits_by_itself() {

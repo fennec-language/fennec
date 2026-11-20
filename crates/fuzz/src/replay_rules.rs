@@ -16,6 +16,16 @@
 //! `main`'s, or tore one in two, when the round made way after printing (#2033): that's the shape
 //! this hunts, and every other way tasks print and wait around each other.
 //!
+//! Past those bytes, which older inputs end before, so they mean what they did, the input can ask
+//! for three more things, each of which the recording's order decides and a replay has to keep:
+//! - **Waits that time out.** A task may take its numbers with `receive_within`, and `main` send
+//!   them with `send_within` to an inbox of 1, each giving up after a millisecond or two. What such
+//!   a task got is any number, as one that timed out takes the next one later.
+//! - **A work queue.** Workers loop over one channel `main` sends jobs to, each taking one stop
+//!   number at the end. Which worker took a job is the recording's, but each job is taken once.
+//! - **`parallel` cut short,** by a `break` in a loop's range or a failure in a list's, which `main`
+//!   handles. Which ranges started is the recording's, but the one that ended it always did.
+//!
 //! The program is built once, with `fennec build --llvm`, and run with `FENNEC_RECORD` and then
 //! `FENNEC_REPLAY`, as `fennec run --record` and `fennec replay` run it. It needs what `llvm`
 //! needs, and the runtime with threads beside `fennec`.
@@ -65,13 +75,45 @@ enum MainStep {
     Wait(Wait),
     /// Sends the task the next number it takes.
     Send(usize),
+    /// Sends the work queue its next job.
+    Job,
+    /// Calls the `parallel` call.
+    Pieces,
 }
+
+/// The most workers on the work queue, and the most jobs `main` sends them.
+const MOST_WORKERS: usize = 3;
+const MOST_JOBS: usize = 6;
+/// The most ranges a `parallel` call has, so each prints one digit.
+const MOST_RANGES: usize = 8;
 
 /// The program an input asks for.
 struct Plan {
     tasks: Vec<Vec<Step>>,
     rounds: Vec<Vec<Step>>,
     main: Vec<MainStep>,
+    /// Which tasks take their numbers within a time, from an inbox of 1, and are sent them so.
+    timed: Vec<bool>,
+    queue: Option<Queue>,
+    pieces: Option<Pieces>,
+}
+
+/// Workers taking jobs from one channel, each looping until it takes a stop number.
+struct Queue {
+    /// Each worker's wait after a job, if it makes way.
+    workers: Vec<Option<Wait>>,
+    /// The channel's size.
+    size: usize,
+}
+
+/// A `parallel` call over `count` ranges, which range `at` cuts short, each printing, then making
+/// way as `wait` says.
+struct Pieces {
+    count: usize,
+    at: usize,
+    /// Whether range `at` fails, in a list's ranges, or breaks out of a loop's.
+    fails: bool,
+    wait: Wait,
 }
 
 /// The input's bytes, one at a time, then zeros.
@@ -134,7 +176,28 @@ fn plan(input: &[u8]) -> Plan {
             main.insert(at, MainStep::Send(task));
         }
     }
-    Plan { tasks, rounds, main }
+    // What's past here, an older input ends before, and the zeros after it ask for none of it.
+    let timed_tasks = bytes.next();
+    let timed = (0..tasks.len()).map(|task| timed_tasks >> task & 1 == 1).collect();
+    let workers = bytes.below(MOST_WORKERS + 1);
+    let queue = (workers > 0).then(|| {
+        let workers = (0..workers).map(|_| bytes.below(2).eq(&1).then(|| bytes.wait())).collect();
+        let size = 1 + bytes.below(2);
+        for _ in 0..=bytes.below(MOST_JOBS) {
+            let at = bytes.below(main.len() + 1);
+            main.insert(at, MainStep::Job);
+        }
+        Queue { workers, size }
+    });
+    let ranges = bytes.below(MOST_RANGES + 1);
+    let pieces = (ranges > 0).then(|| {
+        let pieces =
+            Pieces { count: ranges, at: bytes.below(ranges), fails: bytes.below(2) == 1, wait: bytes.wait() };
+        let at = bytes.below(main.len() + 1);
+        main.insert(at, MainStep::Pieces);
+        pieces
+    });
+    Plan { tasks, rounds, main, timed, queue, pieces }
 }
 
 impl Plan {
@@ -142,21 +205,41 @@ impl Plan {
         self.tasks.get(task).is_some_and(|steps| steps.iter().any(|step| matches!(step, Step::Receive)))
     }
 
+    fn is_timed(&self, task: usize) -> bool {
+        self.timed.get(task).copied().unwrap_or(false)
+    }
+
+    /// Whether any task takes its numbers within a time.
+    fn any_timed(&self) -> bool {
+        (0..self.tasks.len()).any(|task| self.is_timed(task) && self.has_inbox(task))
+    }
+
+    fn jobs(&self) -> usize {
+        self.main.iter().filter(|step| matches!(step, MainStep::Job)).count()
+    }
+
     fn in_pieces(&self) -> bool {
         self.tasks.iter().chain(&self.rounds).flatten().any(|step| matches!(step, Step::Pieces(_)))
     }
 
-    /// What each `print` prints, its new line too, as often as it's printed, sorted. Step numbers
-    /// are one digit, and no text ends another, so none can be found inside another.
+    /// What `main` prints once the `parallel` call is over.
+    fn pieces_over(&self) -> Option<&'static str> {
+        self.pieces.as_ref().map(|pieces| if pieces.fails { "pieces gave -1" } else { "pieces ended" })
+    }
+
+    /// What each `print` prints, its new line too, as often as it's printed, sorted, but for what
+    /// the recording's order decides, which `vague` checks. Step numbers are one digit, and no text
+    /// ends another, so none can be found inside another.
     fn printed(&self) -> Vec<String> {
         let mut printed: Vec<String> = Vec::new();
-        for (who, steps) in self.bodies() {
+        for (task, (who, steps)) in self.bodies().enumerate() {
             let mut taken = 0;
             for (number, step) in steps.iter().enumerate() {
                 match step {
                     Step::Print => printed.push(format!("{who} s{number}\n")),
                     Step::Pieces(_) => printed.push(" b\n".to_owned()),
                     Step::Wait(_) => {}
+                    Step::Receive if self.is_timed(task) => {}
                     Step::Receive => {
                         printed.push(format!("{who} got {}\n", sent(&who, taken)));
                         taken += 1;
@@ -170,21 +253,26 @@ impl Plan {
             }
         }
         printed.extend((0..self.rounds.len()).map(|round| format!("done r{round}\n")));
+        if let Some(pieces) = &self.pieces {
+            printed.push(format!("p {}\n", pieces.at));
+        }
+        printed.extend(self.pieces_over().map(|over| format!("{over}\n")));
         printed.push("over\n".to_owned());
         printed.sort();
         printed
     }
 
-    /// Every line the program prints, in no particular order.
+    /// Every line the program prints, in no particular order, as `plain` gives each.
     fn lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        for (who, steps) in self.bodies() {
+        for (task, (who, steps)) in self.bodies().enumerate() {
             let mut taken = 0;
             for (number, step) in steps.iter().enumerate() {
                 match step {
                     Step::Print => lines.push(format!("{who} s{number}")),
                     Step::Pieces(_) => lines.push(format!("{who} s{number} a b")),
                     Step::Wait(_) => {}
+                    Step::Receive if self.is_timed(task) => lines.push(format!("{who} got ?")),
                     Step::Receive => {
                         lines.push(format!("{who} got {}", sent(&who, taken)));
                         taken += 1;
@@ -198,8 +286,62 @@ impl Plan {
             }
         }
         lines.extend((0..self.rounds.len()).map(|round| format!("done r{round}")));
+        lines.extend((0..self.jobs()).map(|job| format!("w? took {job}")));
+        lines.extend(self.pieces_over().map(str::to_owned));
         lines.push("over".to_owned());
         lines
+    }
+
+    /// A line as `lines` gives it, with what the recording's order decides taken out: the number
+    /// a timed task got, the worker that took a job, and the `parallel` call's ranges, which go.
+    fn plain(&self, line: &str) -> Option<String> {
+        if line.starts_with("p ") {
+            return None;
+        }
+        if let Some((who, _)) = line.split_once(" got ")
+            && let Some(task) = who.strip_prefix('t').and_then(|task| task.parse::<usize>().ok())
+            && self.is_timed(task)
+        {
+            return Some(format!("{who} got ?"));
+        }
+        if line.starts_with('w')
+            && let Some((_, job)) = line.split_once(" took ")
+        {
+            return Some(format!("w? took {job}"));
+        }
+        Some(line.to_owned())
+    }
+
+    /// Checks what the recording's order decides: a timed task printed once for each number it
+    /// takes, each job was taken once, by any worker, and each of the `parallel` call's ranges
+    /// printed at most once, the one that cut it short once.
+    fn vague(&self, text: &str) -> Result<(), String> {
+        for task in (0..self.tasks.len()).filter(|task| self.is_timed(*task)) {
+            let takes = self
+                .tasks
+                .get(task)
+                .map_or(0, |steps| steps.iter().filter(|step| matches!(step, Step::Receive)).count());
+            let got = text.matches(&format!("t{task} got ")).count();
+            if got != takes {
+                return Err(format!("task {task} printed what it got {got} times, not {takes}"));
+            }
+        }
+        let jobs = self.jobs();
+        if text.matches(" took ").count() != jobs {
+            return Err(format!("the workers took {} jobs, not {jobs}", text.matches(" took ").count()));
+        }
+        if let Some(job) = (0..jobs).find(|job| text.matches(&format!(" took {job}\n")).count() != 1) {
+            return Err(format!("job {job} wasn't taken once"));
+        }
+        let count = self.pieces.as_ref().map_or(0, |pieces| pieces.count);
+        let ranges: usize = (0..count).map(|range| text.matches(&format!("p {range}\n")).count()).sum();
+        if text.matches("p ").count() != ranges {
+            return Err(format!("the `parallel` call's {count} ranges printed something else"));
+        }
+        if let Some(range) = (0..count).find(|range| text.matches(&format!("p {range}\n")).count() > 1) {
+            return Err(format!("range {range} printed twice"));
+        }
+        Ok(())
     }
 
     /// Each task's and round's name and steps.
@@ -223,8 +365,9 @@ fn waited(wait: Wait, indent: &str) -> String {
     }
 }
 
-/// The body of a task or a round, indented once.
-fn body(who: &str, steps: &[Step]) -> String {
+/// The body of a task or a round, indented once. A timed task takes each number within a
+/// millisecond or two.
+fn body(who: &str, steps: &[Step], timed: bool) -> String {
     let mut out = String::new();
     for (number, step) in steps.iter().enumerate() {
         match step {
@@ -237,6 +380,10 @@ fn body(who: &str, steps: &[Step]) -> String {
                 out.push_str("    stdout.print(\" b\")\n");
             }
             Step::Wait(wait) => out.push_str(&waited(*wait, "    ")),
+            Step::Receive if timed => {
+                let _ = writeln!(out, "    got_{number} = got_within(inbox, {}ms)", 1 + number % 2);
+                let _ = writeln!(out, "    stdout.print(\"{who} got\", got_{number})");
+            }
             Step::Receive => {
                 let _ = writeln!(out, "    got_{number} = inbox.receive() else -1");
                 let _ = writeln!(out, "    stdout.print(\"{who} got\", got_{number})");
@@ -269,29 +416,97 @@ fn given((inbox, clock, stdout): (bool, bool, bool), parameters: bool) -> String
     said.join(", ")
 }
 
-/// The program `plan` asks for, as Fennec.
-fn source(plan: &Plan) -> String {
-    let sends = plan.main.iter().any(|step| matches!(step, MainStep::Send(_)));
-    let mut out = String::from(if sends {
-        "from std.concurrent import Closed, Crashed, Inbox\n"
-    } else {
-        "from std.concurrent import Crashed\n"
-    });
+/// Whether `main` sends a task a number with `send`, which fails with `Closed`, rather than with
+/// `handed`, which gives up.
+fn sends_plainly(plan: &Plan) -> bool {
+    plan.main.iter().any(|step| match step {
+        MainStep::Send(task) => !plan.is_timed(*task),
+        MainStep::Job => true,
+        MainStep::Print | MainStep::Wait(_) | MainStep::Pieces => false,
+    })
+}
+
+/// What the program imports, the error it fails with if any, and the helpers it calls.
+fn heading(plan: &Plan) -> String {
+    let inbox = (0..plan.tasks.len()).any(|task| plan.has_inbox(task));
+    let mut imported = Vec::new();
+    if plan.queue.is_some() {
+        imported.push("Channel");
+    }
+    if sends_plainly(plan) || plan.any_timed() {
+        imported.push("Closed");
+    }
+    imported.push("Crashed");
+    if inbox {
+        imported.push("Inbox");
+    }
+    if plan.any_timed() {
+        imported.extend(["Sender", "Timeout"]);
+    }
+    if plan.queue.is_some() {
+        imported.push("channel");
+    }
+    let mut out = format!("from std.concurrent import {}\n", imported.join(", "));
     if !plan.rounds.is_empty() {
         out.push_str("from std.net import Connection, NetError, Server\n");
+    }
+    if plan.any_timed() {
+        out.push_str("from std.time import Duration\n");
+    }
+    if plan.pieces.as_ref().is_some_and(|pieces| pieces.fails) {
+        out.push_str("\nerror TooFar:\n    at: int\n");
     }
     out.push_str(
         "\n# Counts `turns` turns, making way for others at the runtime's ticks.\n\
          def counted(turns: int) -> int:\n    mut total = 0\n    for turn in range(turns):\n        \
          total = (total + turn * turn) % 1_000_003\n    return total\n",
     );
-    let mut main_clock = plan.main.iter().any(|step| matches!(step, MainStep::Wait(Wait::Sleep(_))));
+    if plan.any_timed() {
+        out.push_str(
+            "\n# The next number, if it comes within `wait`: -1 when it doesn't, -2 when the inbox closed.\n\
+             def got_within(inbox: Inbox[int], wait: Duration) -> int:\n    \
+             got = inbox.receive_within(wait) except Timeout(): return -1\n    return got else -2\n\
+             \n# Sends `number` within `wait`, or gives up, when the task has ended or its inbox stays full.\n\
+             def handed(to: Sender[int], number: int, wait: Duration):\n    \
+             to.send_within(number, wait) except Closed() | Timeout(): return\n",
+        );
+    }
+    out
+}
+
+/// The program `plan` asks for, as Fennec.
+fn source(plan: &Plan) -> String {
+    let mut out = heading(plan);
+    let sleeps = |wait: &Wait| matches!(wait, Wait::Sleep(_));
+    let mut main_clock = plan.main.iter().any(|step| matches!(step, MainStep::Wait(wait) if sleeps(wait)));
     for (task, steps) in plan.tasks.iter().enumerate() {
         let (clock, stdout) = needs(steps);
         main_clock |= clock;
         let parameters = given((plan.has_inbox(task), clock, stdout), true);
         let _ = write!(out, "\ndef task_{task}({parameters}):\n");
-        out.push_str(&body(&format!("t{task}"), steps));
+        out.push_str(&body(&format!("t{task}"), steps, plan.is_timed(task)));
+    }
+    if let Some(queue) = &plan.queue {
+        for (worker, wait) in queue.workers.iter().enumerate() {
+            let clock = wait.as_ref().is_some_and(sleeps);
+            main_clock |= clock;
+            let parameters = given((false, clock, true), true);
+            let _ = write!(
+                out,
+                "\ndef worker_{worker}(jobs: Channel[int], {parameters}):\n    for job in jobs:\n        \
+                 if job < 0:\n            return\n        stdout.print(\"w{worker} took\", job)\n"
+            );
+            out.extend(wait.map(|wait| waited(wait, "        ")));
+        }
+    }
+    if let Some(pieces) = &plan.pieces {
+        let clock = sleeps(&pieces.wait);
+        main_clock |= clock;
+        out.push_str(&parallel(
+            pieces,
+            &given((false, clock, true), true),
+            &given((false, clock, true), false),
+        ));
     }
     let mut server_clock = false;
     for (round, steps) in plan.rounds.iter().enumerate() {
@@ -299,7 +514,7 @@ fn source(plan: &Plan) -> String {
         server_clock |= clock;
         let parameters = given((false, clock, stdout), true);
         let _ = write!(out, "\ndef round_{round}({parameters}):\n");
-        out.push_str(&body(&format!("r{round}"), steps));
+        out.push_str(&body(&format!("r{round}"), steps, false));
     }
     // What the server's rounds need between them, which the server is handed. It always prints,
     // as a round that can't read or write says so.
@@ -337,22 +552,46 @@ fn server(plan: &Plan, parameters: &str, arguments: &str) -> String {
     out
 }
 
-/// `main`: it runs the server, if there are rounds, and launches each task, one block inside
-/// another, then asks for every round at once and takes its own steps, sending each task the
-/// numbers it takes, before it reads what each round said. `clock` says whether it needs one, and
-/// `handed` is what the server's handed.
+/// `pieces`, the `parallel` call, which takes `parameters`: a loop over its ranges that one breaks
+/// out of, or a list of what each gives, which one fails, which `pieces` passes up.
+fn parallel(pieces: &Pieces, parameters: &str, arguments: &str) -> String {
+    let Pieces { count, at, fails, wait } = *pieces;
+    if fails {
+        format!(
+            "\ndef piece(number: int, {parameters}) -> int fails TooFar:\n    stdout.print(\"p\", number)\n{}    \
+             if number == {at}:\n        fail TooFar(at=number)\n    return number\n\
+             \ndef pieces({parameters}) -> int fails TooFar:\n    \
+             passed = [piece(number, {arguments})? for number in parallel(range({count}))]\n    return len(passed)\n",
+            waited(wait, "    ")
+        )
+    } else {
+        format!(
+            "\ndef pieces({parameters}):\n    for number in parallel(range({count})):\n        \
+             stdout.print(\"p\", number)\n{}        if number == {at}:\n            break\n",
+            waited(wait, "        ")
+        )
+    }
+}
+
+/// `main`: it runs the server, if there are rounds, opens the work queue and launches its workers,
+/// if there are any, and launches each task, one block inside another, then asks for every round at
+/// once and takes its own steps, sending each task the numbers it takes and the queue its jobs,
+/// then each worker its stop, before it reads what each round said. `clock` says whether it needs
+/// one, and `handed` is what the server's handed.
 fn main(plan: &Plan, clock: bool, handed: &str) -> String {
     let serves = !plan.rounds.is_empty();
-    let sends = plan.main.iter().any(|step| matches!(step, MainStep::Send(_)));
-    let fails = match (serves, sends) {
-        (true, true) => "NetError | Crashed | Closed",
-        (true, false) => "NetError | Crashed",
-        (false, true) => "Crashed | Closed",
-        (false, false) => "Crashed",
-    };
+    let mut fails = Vec::new();
+    if serves {
+        fails.push("NetError");
+    }
+    fails.push("Crashed");
+    if sends_plainly(plan) {
+        fails.push("Closed");
+    }
+    let fails = fails.join(" | ");
     let net = if serves { "net: Net, " } else { "" };
-    let clock = if clock { "clock: Clock, " } else { "" };
-    let mut out = format!("\ndef main({net}{clock}stdout: Stdout) fails {fails}:\n");
+    let main_clock = if clock { "clock: Clock, " } else { "" };
+    let mut out = format!("\ndef main({net}{main_clock}stdout: Stdout) fails {fails}:\n");
     let mut indent = String::from("    ");
     if serves {
         let _ = writeln!(out, "{indent}with net.listen(0)? as server:");
@@ -361,10 +600,24 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
         let _ = writeln!(out, "{indent}with launch(() => serving(server, {handed}), stop_after=100ms)?:");
         indent.push_str("    ");
     }
+    if let Some(queue) = &plan.queue {
+        let _ = writeln!(out, "{indent}with channel[int](size={}) as jobs:", queue.size);
+        indent.push_str("    ");
+        for (worker, wait) in queue.workers.iter().enumerate() {
+            let arguments = given((false, matches!(wait, Some(Wait::Sleep(_))), true), false);
+            let _ = writeln!(out, "{indent}with launch(() => worker_{worker}(jobs, {arguments}))?:");
+            indent.push_str("    ");
+        }
+    }
     for (task, steps) in plan.tasks.iter().enumerate() {
         let (clock, stdout) = needs(steps);
         let arguments = given((plan.has_inbox(task), clock, stdout), false);
-        if plan.has_inbox(task) {
+        if plan.has_inbox(task) && plan.is_timed(task) {
+            let _ = writeln!(
+                out,
+                "{indent}with launch((inbox) => task_{task}({arguments}), inbox_size=1)? as to_{task}:"
+            );
+        } else if plan.has_inbox(task) {
             let _ = writeln!(out, "{indent}with launch((inbox) => task_{task}({arguments}))? as to_{task}:");
         } else {
             let _ = writeln!(out, "{indent}with launch(() => task_{task}({arguments}))?:");
@@ -378,24 +631,57 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
     for round in 0..plan.rounds.len() {
         let _ = writeln!(out, "{indent}asking_{round}.write(\"r{round}\\n\")?");
     }
+    out.push_str(&main_steps(plan, &indent));
+    for round in 0..plan.rounds.len() {
+        let _ = writeln!(out, "{indent}stdout.print(asking_{round}.read_line()? else \"nothing\")");
+    }
+    out.push_str("    stdout.print(\"over\")\n");
+    out
+}
+
+/// `main`'s own steps, at `indent`, then a stop for each worker.
+fn main_steps(plan: &Plan, indent: &str) -> String {
+    let mut out = String::new();
     let mut sent_to = vec![0; plan.tasks.len()];
+    let mut jobs = 0;
     for (number, step) in plan.main.iter().enumerate() {
         match step {
             MainStep::Print => {
                 let _ = writeln!(out, "{indent}stdout.print(\"main s{number}\")");
             }
-            MainStep::Wait(wait) => out.push_str(&waited(*wait, &indent)),
+            MainStep::Wait(wait) => out.push_str(&waited(*wait, indent)),
             MainStep::Send(task) => {
                 let Some(count) = sent_to.get_mut(*task) else { continue };
-                let _ = writeln!(out, "{indent}to_{task}.send({})?", sent(&format!("t{task}"), *count));
+                let number = sent(&format!("t{task}"), *count);
+                if plan.is_timed(*task) {
+                    let _ = writeln!(out, "{indent}handed(to_{task}, {number}, {}ms)", 1 + *count % 2);
+                } else {
+                    let _ = writeln!(out, "{indent}to_{task}.send({number})?");
+                }
                 *count += 1;
+            }
+            MainStep::Job => {
+                let _ = writeln!(out, "{indent}jobs.send({jobs})?");
+                jobs += 1;
+            }
+            MainStep::Pieces => {
+                let fails = plan.pieces.as_ref().is_some_and(|pieces| pieces.fails);
+                let clock = plan.pieces.as_ref().is_some_and(|pieces| matches!(pieces.wait, Wait::Sleep(_)));
+                let arguments = given((false, clock, true), false);
+                if fails {
+                    let _ = writeln!(out, "{indent}gave = pieces({arguments}) except TooFar(): -1");
+                    let _ = writeln!(out, "{indent}stdout.print(\"pieces gave\", gave)");
+                } else {
+                    let _ = writeln!(out, "{indent}pieces({arguments})");
+                    let _ = writeln!(out, "{indent}stdout.print(\"pieces ended\")");
+                }
             }
         }
     }
-    for round in 0..plan.rounds.len() {
-        let _ = writeln!(out, "{indent}stdout.print(asking_{round}.read_line()? else \"nothing\")");
+    // One stop for each worker, which each takes one of, once every job's been taken.
+    for _ in plan.queue.iter().flat_map(|queue| &queue.workers) {
+        let _ = writeln!(out, "{indent}jobs.send(-1)?");
     }
-    out.push_str("    stdout.print(\"over\")\n");
     out
 }
 
@@ -445,9 +731,10 @@ fn ran(executable: &Path, work: &Path, threads: usize, variable: &str, log: &Pat
     }
 }
 
-/// Every line `printed` has, sorted.
-fn sorted_lines(printed: &[u8]) -> Vec<String> {
-    let mut lines: Vec<String> = String::from_utf8_lossy(printed).lines().map(str::to_owned).collect();
+/// Every line `printed` has, as `plan.plain` gives it, sorted.
+fn plain_lines(plan: &Plan, printed: &[u8]) -> Vec<String> {
+    let mut lines: Vec<String> =
+        String::from_utf8_lossy(printed).lines().filter_map(|line| plan.plain(line)).collect();
     lines.sort();
     lines
 }
@@ -484,7 +771,8 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
                 "recorded on {recorded_on} threads, it didn't print {print:?} as often as the program does:\n{text}"
             ));
         }
-        if !plan.in_pieces() && sorted_lines(&recorded.0) != expected {
+        plan.vague(&text).map_err(|why| format!("recorded on {recorded_on} threads, {why}:\n{text}"))?;
+        if !plan.in_pieces() && plain_lines(&plan, &recorded.0) != expected {
             return Err(format!(
                 "recorded on {recorded_on} threads, it printed lines it doesn't print, or not as often:\n{}",
                 String::from_utf8_lossy(&recorded.0)

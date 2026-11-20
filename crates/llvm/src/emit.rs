@@ -444,10 +444,11 @@ pub(crate) fn emit_keeping(
                 .unwrap_or_else(|| crate::keys::ir_key(function))
         });
         if let (Some(using), Some(ir)) = (&mut using, ir)
-            && let Some(record) = using.usable(&function.name, &ir)
+            && let Some(at) = using.usable(&function.name, &ir)
+            && let Some(record) = using.record(at).cloned()
         {
             if using.audit {
-                let kept_reads = using.reads_of(&record);
+                let kept_reads = using.reads_of(at);
                 let unit_in = (&reads, threads, kept_reads.as_slice());
                 audit_unit(function, &record, unit_in, &layouts, &shared, (header, &attributes))?;
             }
@@ -471,13 +472,13 @@ pub(crate) fn emit_keeping(
                 if checking {
                     kept.push(Kept {
                         function: function.name.clone(),
-                        reads: using.reads_of(&record),
+                        reads: using.reads_of(at),
                         share,
                         asked: Some(record.asked.clone()),
                         wrote,
                     });
                 }
-                using.keep(record);
+                using.keep(at);
                 continue;
             }
         }
@@ -543,7 +544,7 @@ pub(crate) fn emit_keeping(
             let Some(unit) = units.get(at) else { continue };
             using.keep_written(unit, ir, &unit_reads, share, asked);
         }
-        using.finish();
+        using.finish()?;
     }
     shared.native = native;
     shared.waiting_closures = waiting_closures;

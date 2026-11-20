@@ -134,20 +134,44 @@ impl Index {
     }
 }
 
-/// A build using the units it kept last time again: the index it found, what it's found of
-/// each read there so far, and the index it keeps for next time.
+/// A build using the units it kept last time again: the index it found, which it brings up to
+/// date where it stands, and what it's found of each read there so far.
+///
+/// A unit used again keeps its record as it is, and a unit written again has its record put in
+/// its place, so a one-function edit touches one record rather than copying every one. Records
+/// of functions the program no longer has are let go at the end, and reads no unit makes any
+/// more once they're most of the table.
 pub(crate) struct Using<'u, 'r, 'w, 'p> {
     reuse: &'u mut Reuse<'r>,
     reads: &'u Reads<'w, 'p>,
     layouts: &'u Layouts,
     /// Whether every unit used again is written anyway and checked.
     pub(crate) audit: bool,
-    found: Index,
+    /// The index found, brought up to date as the build goes.
+    index: Index,
     by_name: HashMap<String, usize>,
-    /// Whether each read in `found` gives what it gave, once it's been looked at.
+    /// Whether each read in the index gives what it gave, once it's been looked at.
     same: Vec<Option<bool>>,
-    keeping: Index,
-    numbered: HashMap<(What, String), u32>,
+    /// Which records this build used again or wrote: the rest are let go.
+    seen: Vec<bool>,
+    /// Each read's number in the index, by a hash of what it reads, made the first time a written
+    /// unit's read is numbered: no read's name is copied to make it.
+    numbered: Option<HashMap<u64, Vec<u32>>>,
+    /// What each unit kept should come to, as a whole new index would hold it, when this build
+    /// checks the index it brings up to date (see [`compares_index`]).
+    expected: Option<Vec<Expected>>,
+}
+
+/// A unit's record with each read it made as what was read and what it gave: how the index's
+/// check compares the index a build brought up to date with one made afresh.
+type Expected = (String, Key, Key, bool, Vec<(u8, String, Option<Key>)>, Vec<Asked>, Vec<Added>);
+
+/// Whether this build checks the index it brings up to date against one made afresh: always with
+/// `FENNEC_CHECK_UNITS=1`, and in a dev compiler on one build in eight, picked by `build`, so the
+/// same program and settings always do or don't.
+fn compares_index(build: &Key) -> bool {
+    std::env::var("FENNEC_CHECK_UNITS").as_deref() == Ok("1")
+        || (cfg!(debug_assertions) && build.first().is_some_and(|byte| byte % 8 == 0))
 }
 
 impl<'u, 'r, 'w, 'p> Using<'u, 'r, 'w, 'p> {
@@ -158,44 +182,41 @@ impl<'u, 'r, 'w, 'p> Using<'u, 'r, 'w, 'p> {
         reads: &'u Reads<'w, 'p>,
         layouts: &'u Layouts,
     ) -> Self {
-        let found = reuse
+        let index = reuse
             .kept
             .as_deref()
             .and_then(Index::from_bytes)
             .filter(|index| index.build == build)
-            .unwrap_or_default();
-        let by_name = found.units.iter().enumerate().map(|(at, unit)| (unit.function.clone(), at)).collect();
-        let same = vec![None; found.reads.len()];
+            .unwrap_or(Index { build, ..Index::default() });
+        let by_name = index.units.iter().enumerate().map(|(at, unit)| (unit.function.clone(), at)).collect();
+        let same = vec![None; index.reads.len()];
+        let seen = vec![false; index.units.len()];
         let audit = reuse.audit;
-        Using {
-            reuse,
-            reads,
-            layouts,
-            audit,
-            found,
-            by_name,
-            same,
-            keeping: Index { build, ..Index::default() },
-            numbered: HashMap::new(),
-        }
+        let expected = compares_index(&build).then(Vec::new);
+        Using { reuse, reads, layouts, audit, index, by_name, same, seen, numbered: None, expected }
     }
 
-    /// The kept unit of `function`, if this build can use it: its function's IR is `ir`, as it
-    /// was, every read it made gives what it gave, and its object is still there.
-    pub(crate) fn usable(&mut self, function: &str, ir: &Key) -> Option<Record> {
-        let record = self.found.units.get(*self.by_name.get(function)?)?;
+    /// Where the kept unit of `function` is in the index, if this build can use it: its function's
+    /// IR is `ir`, as it was, every read it made gives what it gave, and its object is still there.
+    pub(crate) fn usable(&mut self, function: &str, ir: &Key) -> Option<usize> {
+        let at = *self.by_name.get(function)?;
+        let record = self.index.units.get(at)?;
         if record.ir != *ir {
             return None;
         }
-        let reads = record.reads.clone();
-        let text = record.text;
-        if !reads.iter().all(|read| self.gives_what_it_gave(*read)) {
-            return None;
+        let (text, read_count) = (record.text, record.reads.len());
+        for read in 0..read_count {
+            let number = *self.index.units.get(at)?.reads.get(read)?;
+            if !self.gives_what_it_gave(number) {
+                return None;
+            }
         }
-        if !(self.reuse.has_object)(&fennec_blake3::Hash(text)) {
-            return None;
-        }
-        self.found.units.get(*self.by_name.get(function)?).cloned()
+        (self.reuse.has_object)(&fennec_blake3::Hash(text)).then_some(at)
+    }
+
+    /// The kept unit at `at`.
+    pub(crate) fn record(&self, at: usize) -> Option<&Record> {
+        self.index.units.get(at)
     }
 
     fn gives_what_it_gave(&mut self, read: u32) -> bool {
@@ -203,7 +224,7 @@ impl<'u, 'r, 'w, 'p> Using<'u, 'r, 'w, 'p> {
         if let Some(Some(same)) = self.same.get(at) {
             return *same;
         }
-        let Some((what, name, value)) = self.found.reads.get(at) else { return false };
+        let Some((what, name, value)) = self.index.reads.get(at) else { return false };
         let same = self.reads.value_of(*what, name, self.layouts) == *value;
         if let Some(known) = self.same.get_mut(at) {
             *known = Some(same);
@@ -211,26 +232,45 @@ impl<'u, 'r, 'w, 'p> Using<'u, 'r, 'w, 'p> {
         same
     }
 
-    /// The reads a kept unit made.
-    pub(crate) fn reads_of(&self, record: &Record) -> Vec<(What, String)> {
-        let found = |read: &u32| self.found.reads.get(usize::try_from(*read).ok()?);
+    /// The reads the kept unit at `at` made.
+    pub(crate) fn reads_of(&self, at: usize) -> Vec<(What, String)> {
+        let found = |read: &u32| self.index.reads.get(usize::try_from(*read).ok()?);
+        let Some(record) = self.index.units.get(at) else { return Vec::new() };
         record.reads.iter().filter_map(found).map(|(what, name, _)| (*what, name.clone())).collect()
     }
 
-    /// Keeps a unit used again for next time, as it was.
-    pub(crate) fn keep(&mut self, mut record: Record) {
-        let reads: Vec<(What, String, Option<Key>)> = record
-            .reads
-            .iter()
-            .filter_map(|read| self.found.reads.get(usize::try_from(*read).ok()?).cloned())
-            .collect();
-        record.reads =
-            reads.into_iter().map(|(what, name, value)| self.number_kept(what, name, value)).collect();
-        self.keeping.units.push(record);
+    /// Keeps the unit at `at`, used again, for next time, as it was.
+    pub(crate) fn keep(&mut self, at: usize) {
+        if let Some(seen) = self.seen.get_mut(at) {
+            *seen = true;
+        }
+        if self.expected.is_some()
+            && let Some(record) = self.index.units.get(at)
+        {
+            let reads = record
+                .reads
+                .iter()
+                .filter_map(|read| self.index.reads.get(usize::try_from(*read).ok()?))
+                .map(|(what, name, value)| (what_number(*what), name.clone(), *value))
+                .collect();
+            let expected = (
+                record.function.clone(),
+                record.ir,
+                record.text,
+                record.huge,
+                reads,
+                record.asked.clone(),
+                record.share.clone(),
+            );
+            if let Some(all) = self.expected.as_mut() {
+                all.push(expected);
+            }
+        }
     }
 
-    /// Keeps a unit just written for next time, with what each read it made gives now. One that
-    /// shared, or asked for, a kind with no name isn't kept, and is written every time.
+    /// Keeps a unit just written for next time, in its function's record's place, with what each
+    /// read it made gives now. One that shared, or asked for, a kind with no name isn't kept, and
+    /// is written every time.
     pub(crate) fn keep_written(
         &mut self,
         unit: &Unit,
@@ -240,46 +280,176 @@ impl<'u, 'r, 'w, 'p> Using<'u, 'r, 'w, 'p> {
         asked: Option<Vec<Asked>>,
     ) {
         let (Some(share), Some(asked)) = (share.added, asked) else { return };
-        let reads = reads.iter().map(|(what, name)| self.number_now(*what, name.clone())).collect();
-        self.keeping.units.push(Record {
+        let now: Vec<(What, String, Option<Key>)> = reads
+            .iter()
+            .map(|(what, name)| (*what, name.clone(), self.reads.value_of(*what, name, self.layouts)))
+            .collect();
+        if let Some(all) = self.expected.as_mut() {
+            let reads =
+                now.iter().map(|(what, name, value)| (what_number(*what), name.clone(), *value)).collect();
+            all.push((
+                unit.function.clone(),
+                ir,
+                *unit.hash.as_bytes(),
+                unit.huge,
+                reads,
+                asked.clone(),
+                share.clone(),
+            ));
+        }
+        let numbers = now.into_iter().map(|(what, name, value)| self.number(what, name, value)).collect();
+        let record = Record {
             function: unit.function.clone(),
             ir,
             text: *unit.hash.as_bytes(),
             huge: unit.huge,
-            reads,
+            reads: numbers,
             asked,
             share,
+        };
+        if let Some(&at) = self.by_name.get(&unit.function) {
+            if let Some(place) = self.index.units.get_mut(at) {
+                *place = record;
+            }
+            if let Some(seen) = self.seen.get_mut(at) {
+                *seen = true;
+            }
+        } else {
+            self.by_name.insert(unit.function.clone(), self.index.units.len());
+            self.index.units.push(record);
+            self.seen.push(true);
+        }
+    }
+
+    /// A read's number in the index, giving `value`: its own, made to give `value` if it gave
+    /// something else, as every unit that read it then was written again this build; or a new one.
+    fn number(&mut self, what: What, name: String, value: Option<Key>) -> u32 {
+        let reads = &self.index.reads;
+        let numbered = self.numbered.get_or_insert_with(|| {
+            let mut numbered: HashMap<u64, Vec<u32>> = HashMap::new();
+            for (at, (what, name, _)) in reads.iter().enumerate() {
+                numbered
+                    .entry(read_hash(*what, name))
+                    .or_default()
+                    .push(u32::try_from(at).unwrap_or(u32::MAX));
+            }
+            numbered
         });
-    }
-
-    /// A read's number in the index being kept, known to give `value`.
-    fn number_kept(&mut self, what: What, name: String, value: Option<Key>) -> u32 {
-        match self.numbered.get(&(what, name.clone())) {
-            Some(number) => *number,
-            None => self.add_read(what, name, value),
+        let hash = read_hash(what, &name);
+        let found = numbered.get(&hash).and_then(|numbers| {
+            numbers.iter().copied().find(|number| {
+                usize::try_from(*number)
+                    .ok()
+                    .and_then(|at| reads.get(at))
+                    .is_some_and(|(was, read, _)| *was == what && *read == name)
+            })
+        });
+        if let Some(number) = found {
+            let at = usize::try_from(number).unwrap_or(usize::MAX);
+            if let Some(read) = self.index.reads.get_mut(at) {
+                read.2 = value;
+            }
+            if let Some(same) = self.same.get_mut(at) {
+                *same = Some(true);
+            }
+            return number;
         }
-    }
-
-    /// A read's number in the index being kept, with what it gives now.
-    fn number_now(&mut self, what: What, name: String) -> u32 {
-        if let Some(number) = self.numbered.get(&(what, name.clone())) {
-            return *number;
-        }
-        let value = self.reads.value_of(what, &name, self.layouts);
-        self.add_read(what, name, value)
-    }
-
-    fn add_read(&mut self, what: What, name: String, value: Option<Key>) -> u32 {
-        let number = u32::try_from(self.keeping.reads.len()).unwrap_or(u32::MAX);
-        self.keeping.reads.push((what, name.clone(), value));
-        self.numbered.insert((what, name), number);
+        let number = u32::try_from(self.index.reads.len()).unwrap_or(u32::MAX);
+        numbered.entry(hash).or_default().push(number);
+        self.index.reads.push((what, name, value));
+        self.same.push(Some(true));
         number
     }
 
-    /// Hands back the index to keep: none when a unit kept something an index can't hold.
-    pub(crate) fn finish(self) {
-        self.reuse.keep = self.keeping.to_bytes();
+    /// Lets go of the records of functions this build neither used again nor wrote, and of the
+    /// reads no unit makes any more once they're most of the table, then hands back the index to
+    /// keep: none when a unit kept something an index can't hold. A build that checks it holds it
+    /// to the index made afresh from what this build kept, and fails if they differ.
+    pub(crate) fn finish(mut self) -> Result<(), String> {
+        if self.seen.iter().any(|seen| !*seen) {
+            let mut seen = self.seen.iter();
+            self.index.units.retain(|_| seen.next().copied().unwrap_or(false));
+        }
+        let mut made = vec![false; self.index.reads.len()];
+        for read in self.index.units.iter().flat_map(|unit| &unit.reads) {
+            if let Some(made) = usize::try_from(*read).ok().and_then(|at| made.get_mut(at)) {
+                *made = true;
+            }
+        }
+        let unmade = made.iter().filter(|made| !**made).count();
+        if unmade * 2 > made.len() {
+            let mut renumbered = vec![u32::MAX; made.len()];
+            let mut reads = Vec::with_capacity(made.len() - unmade);
+            for (at, read) in std::mem::take(&mut self.index.reads).into_iter().enumerate() {
+                if made.get(at).copied().unwrap_or(false) {
+                    if let Some(number) = renumbered.get_mut(at) {
+                        *number = u32::try_from(reads.len()).unwrap_or(u32::MAX);
+                    }
+                    reads.push(read);
+                }
+            }
+            self.index.reads = reads;
+            for read in self.index.units.iter_mut().flat_map(|unit| &mut unit.reads) {
+                *read = usize::try_from(*read)
+                    .ok()
+                    .and_then(|at| renumbered.get(at))
+                    .copied()
+                    .unwrap_or(u32::MAX);
+            }
+        }
+        if let Some(expected) = self.expected.take() {
+            let index_holds = canonical(&self.index);
+            if index_holds != canonical_of(expected) {
+                return Err(
+                    "the index of kept units brought up to date isn't what one made afresh holds, which is a bug in the backend"
+                        .to_owned(),
+                );
+            }
+        }
+        self.reuse.keep = self.index.to_bytes();
+        Ok(())
     }
+}
+
+/// A hash of what a read reads, to find its number by.
+fn read_hash(what: What, name: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut state = std::hash::DefaultHasher::new();
+    what_number(what).hash(&mut state);
+    name.hash(&mut state);
+    state.finish()
+}
+
+/// An index's units, by function, each with its reads as what was read and what it gave, in order:
+/// what the index means, however its records and reads are placed.
+fn canonical(index: &Index) -> std::collections::BTreeMap<String, Expected> {
+    index
+        .units
+        .iter()
+        .map(|unit| {
+            let reads = unit
+                .reads
+                .iter()
+                .filter_map(|read| index.reads.get(usize::try_from(*read).ok()?))
+                .map(|(what, name, value)| (what_number(*what), name.clone(), *value))
+                .collect();
+            let expected = (
+                unit.function.clone(),
+                unit.ir,
+                unit.text,
+                unit.huge,
+                reads,
+                unit.asked.clone(),
+                unit.share.clone(),
+            );
+            (unit.function.clone(), expected)
+        })
+        .collect()
+}
+
+/// [`canonical`], of records with their reads given as what was read and what it gave.
+fn canonical_of(expected: Vec<Expected>) -> std::collections::BTreeMap<String, Expected> {
+    expected.into_iter().map(|record| (record.0.clone(), record)).collect()
 }
 
 /// Each kind of read's number in an index. A kind added to `What` has to be given one here, and

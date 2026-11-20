@@ -317,3 +317,37 @@ fn an_interface_s_generator_fails_exactly_as_its_types_own_do() {
     let empty: [&str; 0] = [];
     assert_eq!(with_failing(&format!("{interface}{exact}{used}")), empty);
 }
+
+/// A generator function can't take a `ref` parameter, its own `self` included (#2259): it runs a
+/// little at a time after its call has given it back, so the `ref` would be held across each
+/// `yield` while the caller changes the place by its own name. A generator taking a copy, and a
+/// plain function taking a `ref`, are fine.
+#[test]
+fn a_generator_taking_a_ref_is_a_compile_error() {
+    let drained = "def drained(ref items: list[int]) -> Iterator[int]:\n    while len(items) > 0:\n        \
+                   taken = items.pop() else break\n        yield taken\n\n\
+                   def main(stdout: Stdout):\n    mut items = [1, 2, 3]\n    for each in drained(ref items):\n        \
+                   items.append(each)\n        stdout.print(each, len(items))\n";
+    let found = problems(drained);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found.iter().all(|problem| problem
+            .starts_with("a generator can't take `ref items`: it runs after its call has given it back")),
+        "{found:?}"
+    );
+    let method = "struct Bag:\n    items: list[int]\n\n    def drained(ref self) -> Iterator[int]:\n        \
+                  while len(self.items) > 0:\n            taken = self.items.pop() else break\n            \
+                  yield taken\n\n\
+                  def main(stdout: Stdout):\n    mut bag = Bag(items=[1, 2])\n    stdout.print(list(bag.drained()))\n";
+    let found = problems(method);
+    assert!(
+        found.iter().any(|problem| problem.starts_with("a generator can't take `ref self`")),
+        "{found:?}"
+    );
+    let copied = "def drained(items: list[int]) -> Iterator[int]:\n    mut left = items\n    while len(left) > 0:\n        \
+                  taken = left.pop() else break\n        yield taken\n\n\
+                  def emptied(ref items: list[int]):\n    items.clear()\n\n\
+                  def main(stdout: Stdout):\n    mut items = [1, 2, 3]\n    stdout.print(list(drained(items)))\n    \
+                  emptied(ref items)\n    stdout.print(items)\n";
+    assert_eq!(problems(copied), Vec::<String>::new());
+}

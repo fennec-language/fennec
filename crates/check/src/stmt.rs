@@ -819,7 +819,9 @@ impl FnCx<'_> {
 /// uses, and `discard` is the one that only takes it out.
 fn removed_unused(ty: &Type, span: Span, name: Span) -> Diagnostic {
     Diagnostic::new(format!("this gives back {}, and nothing uses it", crate::types::a(ty)), span)
-        .with_help("to only take it out, write `discard`, which gives nothing back: `fennec fix` makes this change")
+        .with_help(
+            "to only take it out, write `discard`, which gives nothing back: `fennec fix` makes this change",
+        )
         .with_fix(name, "discard")
 }
 

@@ -238,12 +238,14 @@ jobs:
       matrix:
         program: [game_server, web_backend]
         in: [task, main]
-        # Resident memory may rise 5% or 4 MB after the warm-up, as `soak.sh` says. game_server keeps
-        # 10% or 16 MB until #2158, its rise in a task, is fixed.
+        # Resident memory may rise 5% or 4 MB after the warm-up, as `soak.sh` says. game_server may
+        # rise 10% or 8 MB: in a task its resident memory wanders within a band about 9 MB wide, as
+        # its workers' allocator heaps fill and give back, and an hour has caught it rising 6 MB
+        # (#2158).
         include:
           - program: game_server
             rss_rise: 10
-            rss_least: 16384
+            rss_least: 8192
           - program: web_backend
             rss_rise: 5
             rss_least: 4096

@@ -799,7 +799,7 @@ fn changed_in_place(
     match value {
         Value::List(items) => list_change(items, name, args, span),
         Value::Dict(pairs) => dict_change(pairs, name, args, span),
-        Value::Set(items) => set_change(items, name, args, span),
+        Value::Set(items) => set_change(items, name, args),
         _ => None,
     }
 }
@@ -897,7 +897,7 @@ fn dict_change(
     })
 }
 
-fn set_change(items: &mut Vec<Value>, name: &str, args: &mut [Value], span: Span) -> Option<Run<Value>> {
+fn set_change(items: &mut Vec<Value>, name: &str, args: &mut [Value]) -> Option<Run<Value>> {
     let at = |items: &Vec<Value>, item: &Value| -> Run<Option<usize>> {
         for (at, held) in items.iter().enumerate() {
             if super::show::plain_equal(held, item)? {

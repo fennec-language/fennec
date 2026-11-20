@@ -8033,10 +8033,10 @@ fn removing_what_a_set_lacks_gives_none() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    for (name, set, key, kept) in [
-        ("remove_int", "{1, 2}", "3", "1"),
-        ("remove_str", "{\"a\"}", "\"b\"", "\"a\""),
-        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\"", "\"a\""),
+    for (name, set, key, kept, left) in [
+        ("remove_int", "{1, 2}", "3", "1", 1),
+        ("remove_str", "{\"a\"}", "\"b\"", "\"a\"", 0),
+        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\"", "\"a\"", 0),
     ] {
         let program = format!(
             "def main(stdout: Stdout):
@@ -8047,7 +8047,7 @@ fn removing_what_a_set_lacks_gives_none() -> std::io::Result<()> {
         );
         // The item it gives back prints as itself, text without its quotes.
         let given = kept.trim_matches('"');
-        let wanted = format!("None {set}\n{given} {}\n", if set == "{1, 2}" { 1 } else { 0 });
+        let wanted = format!("None {set}\n{given} {left}\n");
         assert_eq!(printed_by(name, &program)?, wanted, "{name}");
     }
     Ok(())

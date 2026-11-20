@@ -23,6 +23,7 @@ use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
 use super::ast::{RuleStep, RuleWay, Ruling};
+use super::ast::{SizedStep, SizedWay, Sizing};
 use super::ast::{Sticking, StuckWay};
 
 /// What every program starts with, for its body to use.
@@ -2744,6 +2745,50 @@ fn ruled_written(ruling: &Ruling) -> String {
     out
 }
 
+/// `sized{id}`, the function a `Sized` calls, after the functions it uses: the number made from
+/// what a call gives, so nothing about it is known as it's built, then a line or two for each
+/// step, each printing it after.
+fn sized_written(sizing: &Sizing) -> String {
+    let Sizing { id, num, start, steps } = sizing;
+    let (t, convert) = (num.name(), num.convert());
+    let start = i64::try_from(*start).unwrap_or(0);
+    let mut out = format!(
+        "def picked{id}(n: int) -> int:\n    return n\n\ndef parsed{id}(text: str, stdout: Stdout):\n    got = \
+         {convert}.parse(text) except why:\n        stdout.print(\"refused\", why)\n        return\n    \
+         stdout.print(\"parsed\", got)\n\ndef sized{id}(stdout: Stdout):\n    mut x: {t} = {convert}(picked{id}({start}))\n"
+    );
+    for step in steps {
+        let SizedStep { way, operand } = *step;
+        let k = num.literal(operand);
+        let line = match way {
+            SizedWay::Added => format!("x += {k}"),
+            SizedWay::Taken => format!("x -= {k}"),
+            SizedWay::Times => format!("x *= {k}"),
+            SizedWay::Halved => format!("x = x // {k}"),
+            SizedWay::Remainder => format!("x = x % {k}"),
+            SizedWay::WrappingAdd => format!("x = x.wrapping_add({k})"),
+            SizedWay::WrappingSub => format!("x = x.wrapping_sub({k})"),
+            SizedWay::WrappingMul => format!("x = x.wrapping_mul({k})"),
+            SizedWay::SaturatingAdd => format!("x = x.saturating_add({k})"),
+            SizedWay::SaturatingSub => format!("x = x.saturating_sub({k})"),
+            SizedWay::SaturatingMul => format!("x = x.saturating_mul({k})"),
+            SizedWay::Shifted => format!("x = x << {k}"),
+            SizedWay::ShiftedDown => format!("x = x >> {k}"),
+            SizedWay::Masked => format!("x = x & {k}"),
+            SizedWay::Ored => format!("x = x | {k}"),
+            SizedWay::Xored => format!("x = x ^ {k}"),
+            SizedWay::Inverted => "x = ~x".to_owned(),
+            SizedWay::Widened => "stdout.print(\"widened\", int(x) // 3)".to_owned(),
+            SizedWay::Summed => format!("stdout.print(\"summed\", sum([x, {k}]))"),
+            SizedWay::Looped => format!("for _ in range({operand}):\n        x += {convert}(1)"),
+            SizedWay::Parsed => format!("parsed{id}(\"{operand}\", stdout)"),
+        };
+        let _ = writeln!(out, "    {line}\n    stdout.print(x)");
+    }
+    out.push('\n');
+    out
+}
+
 /// The types and functions an `Arrayed` statement uses, `{N}` standing for its id.
 const ARRAY_TYPES: &str = "struct Cell{N}:
     health = 0
@@ -3729,6 +3774,10 @@ impl Writer {
             Stmt::Arrayed(arraying) => {
                 let _ = write!(self.helpers, "{}", arrayed_written(arraying));
                 self.line(indent, &format!("arrayed{}(stdout)", arraying.id));
+            }
+            Stmt::Sized(sizing) => {
+                let _ = write!(self.helpers, "{}", sized_written(sizing));
+                self.line(indent, &format!("sized{}(stdout)", sizing.id));
             }
             Stmt::Generated(generating) => {
                 let _ = write!(self.helpers, "{}", generated_written(generating));

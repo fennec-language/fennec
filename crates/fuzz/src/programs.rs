@@ -1208,6 +1208,97 @@ mod tests {
         }
     }
 
+    /// Every way of a `Sized` step, for each of the eight sizes, from each start, checks, and the
+    /// evaluator prints what the oracle prints. Then each way that can stop the program does, for
+    /// each size, saying in compiled code's words what the evaluator says.
+    #[test]
+    fn the_sized_number_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{
+            Program, SIZE_NUMS, SIZED_WAYS, SizeNum, SizedWay, Sizing, Stmt, sized_choice, sized_step,
+        };
+        let written = |num: SizeNum, start: i128, ways: &[(SizedWay, bool, usize)]| {
+            let mut x = start;
+            let mut steps = Vec::new();
+            for &(way, breaks, pick) in ways {
+                let step = sized_choice(num, x, way, breaks, pick);
+                steps.push(step);
+                match sized_step(num, x, step.way, step.operand) {
+                    Ok(_) if matches!(step.way, SizedWay::Summed | SizedWay::Widened | SizedWay::Parsed) => {}
+                    Ok(after) => x = after,
+                    Err(_) => break,
+                }
+            }
+            (steps, x)
+        };
+        let run = |body: Vec<Stmt>| {
+            let program = Program { body, threadless: true };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some(ran) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure:\n{source}")
+            };
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            assert_eq!(String::from_utf8_lossy(&oracle.stdout), ran.0, "{:?}\n{source}", oracle.ended);
+            (source, ran, oracle)
+        };
+        let mut body = Vec::new();
+        for (at, num) in SIZE_NUMS.iter().enumerate() {
+            let (least, most) = num.range();
+            let low = if num.unsigned() { 3 } else { least + 4 };
+            for (round, start) in [7, (most - 4).min(i128::from(i64::MAX)), low].into_iter().enumerate() {
+                let ways: Vec<(SizedWay, bool, usize)> = SIZED_WAYS
+                    .iter()
+                    .filter(|way| {
+                        *num != SizeNum::I64
+                            || !format!("{way:?}").starts_with("Wrapping")
+                                && !format!("{way:?}").starts_with("Saturating")
+                    })
+                    .enumerate()
+                    .map(|(step, way)| (*way, false, (step + round + at) % 4))
+                    .collect();
+                let (steps, _) = written(*num, start, &ways);
+                body.push(Stmt::Sized(Sizing { id: body.len() + 1, num: *num, start, steps }));
+            }
+        }
+        let (_, (printed, ended, _), oracle) = run(body);
+        assert!(ended, "{printed}");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        // Each way that can stop the program, on two sizes each: a program each, since each
+        // stops, and each is checked whole, so one a size and way would take a minute.
+        for (at, num) in SIZE_NUMS.into_iter().enumerate() {
+            let (_, most) = num.range();
+            let near_most = (most - 4).min(i128::from(i64::MAX));
+            let ways = [
+                (SizedWay::Added, near_most),
+                (SizedWay::Halved, 7),
+                (SizedWay::Shifted, 7),
+                (SizedWay::Looped, near_most),
+            ];
+            for (way, start) in ways.into_iter().skip(at % 4).take(1) {
+                // A `u64` starts below the largest int, too far below its most for a loop to
+                // reach, so it's taken to its most first, as `saturating_add` does.
+                let up = (SizedWay::SaturatingAdd, false, 3);
+                let ways = if num == SizeNum::U64 && way == SizedWay::Looped {
+                    vec![up, (way, true, 0)]
+                } else {
+                    vec![(way, true, 0)]
+                };
+                let (steps, _) = written(num, start, &ways);
+                let (source, (_, ended, said), oracle) =
+                    run(vec![Stmt::Sized(Sizing { id: 1, num, start, steps })]);
+                let said = said.unwrap_or_default();
+                assert!(!ended && !said.is_empty(), "{num:?} {way:?}: {source}");
+                let stopped =
+                    matches!(&oracle.ended, fennec_oracle::Ended::Stopped(why) if why.contains(&said));
+                assert!(stopped, "{num:?} {way:?}: {:?} against {said}\n{source}", oracle.ended);
+            }
+        }
+    }
+
     /// Every way of an `Arrayed` step, at each place and with values of both signs, checks, and the
     /// evaluator prints what the oracle prints: arrays held inline, copied by `=` and changed apart,
     /// wherever the struct holding them is. Then an index past either end of `counts`, reached by

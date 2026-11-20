@@ -990,7 +990,9 @@ fn int_method(value: &Value, name: &str, args: &[Value], span: Span) -> Run<Valu
                     least
                 }
             }
-            None => return unsupported("a wrapping product past 128 bits"),
+            // Past 128 bits only the low ones matter, and a size's are the same in the product
+            // of the two's low 128 bits, as they are in the whole one.
+            None => a.cast_unsigned().wrapping_mul(b.cast_unsigned()).cast_signed(),
         },
         _ => return unsupported(format!("the int method `{name}`")),
     };
@@ -998,7 +1000,8 @@ fn int_method(value: &Value, name: &str, args: &[Value], span: Span) -> Run<Valu
         exact.clamp(least, most)
     } else {
         let modulus = most - least + 1;
-        (exact - least).rem_euclid(modulus) + least
+        // Wrapped at 128 bits, a multiple of the size's, which leaves what's kept the same.
+        exact.wrapping_sub(least).rem_euclid(modulus) + least
     };
     match num {
         Some(num) => sized(num, result, span),

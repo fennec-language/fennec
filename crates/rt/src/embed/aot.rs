@@ -57,6 +57,12 @@ pub extern "C" fn image(word: i64) {
 /// address its stack may grow to. Prints what it printed, and the failure if it failed.
 /// Gives back the process's exit code.
 pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
+    // A test build's `FENNEC_FAULTS` that can't be read stops the run before any of it, so a test
+    // never runs believing it put a failure in. A runtime that ships has none to read.
+    if let Err(why) = crate::stdlib::faults::checked() {
+        let _ = std::io::stderr().write_all(format!("{why}\n").as_bytes());
+        return 2;
+    }
     let bytes = program_handed_over(length, stop);
     // On macOS `fennec build` links every executable with a main thread of `MAIN_STACK_BYTES`, so
     // the program runs there, with no thread to start. Elsewhere the main thread's stack is the

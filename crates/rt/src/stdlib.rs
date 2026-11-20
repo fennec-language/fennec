@@ -3,6 +3,7 @@
 
 pub(crate) mod compress;
 pub(crate) mod crypto;
+pub(crate) mod faults;
 pub(crate) mod fs;
 pub(crate) mod http;
 pub(crate) mod math;

@@ -401,7 +401,10 @@ for name in "clippy" "the workspace and its tests compile on Linux" "the workspa
     continue
   fi
   case "$name" in
-    clippy) step "$name" cargo clippy --all-targets --locked -- -D warnings ;;
+    # With the runtime's test-only fault hook too, whose reading of `FENNEC_FAULTS` is built only
+    # with `faults`.
+    clippy) step "$name" bash -c 'cargo clippy --all-targets --locked -- -D warnings &&
+      cargo clippy --locked -p fennec-runtime --features faults -- -D warnings' ;;
     *Linux) step "$name" .github/scripts/linux-check.sh ;;
     *Windows) step "$name" .github/scripts/windows-check.sh ;;
     *)

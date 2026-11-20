@@ -18800,6 +18800,54 @@ def main(fs: Fs, stdout: Stdout):
     Ok(())
 }
 
+/// A runtime that ships has no fault hook: `FENNEC_FAULTS`, which a test build's runtime reads to
+/// fail `std.fs`'s work partway, is never read, so every step of a write is done, and rules that
+/// can't be read don't stop the run either.
+#[test]
+fn a_shipped_runtime_never_reads_fennec_faults() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("faults-ignored")?;
+    let program = dir.join("program.fen");
+    std::fs::write(
+        &program,
+        "\
+## Writes a file whole, and one a piece at a time, then reads both back.
+def written(fs: Fs) -> str fails IoError:
+    fs.write_text(\"whole.txt\", \"whole\")?
+    with fs.create(\"pieces.txt\")? as file:
+        file.write_text(\"one \")?
+        file.write_text(\"two\")?
+    return fs.read_text(\"whole.txt\")? + \" \" + fs.read_text(\"pieces.txt\")?
+
+def main(fs: Fs, stdout: Stdout):
+    both = written(fs) except problem:
+        stdout.print(\"failed:\", problem.message())
+        return
+    stdout.print(both)
+",
+    )?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for rules in [
+        "create:1:io,write:1:nospace,write:2:nospace:1,flush:1:io,sync:1:io,sync:2:io,rename:1:io",
+        "nonsense",
+    ] {
+        let ran = Command::new(&executable).current_dir(&dir).env("FENNEC_FAULTS", rules).output_within()?;
+        let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
+            ("whole one two\n", "", Some(0)),
+            "{rules}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Writes `megabytes` through `fs.create`, a megabyte at a time. The file takes its name only
 /// when the block ends, synced, and what's written goes straight to the disk, so the program
 /// holds next to nothing however big the file grows.

@@ -361,7 +361,7 @@ pub(crate) fn unsettled_by_end(
 /// over every function at once, from each doing nothing of the kind, as calls go both ways.
 pub(crate) fn summarized<'p>(
     functions: &HashMap<&'p str, &'p Function>,
-    analyses: &HashMap<&'p str, Analysis>,
+    analyses: &HashMap<&'p str, std::sync::Arc<Analysis>>,
     facts: Tracked,
 ) -> Summaries<'p> {
     let mut summaries: Summaries<'p> =
@@ -429,7 +429,7 @@ fn prefixes(path: &[String]) -> impl Iterator<Item = Vec<String>> + '_ {
 pub(crate) fn needed<'p>(
     program: &'p Program,
     functions: &HashMap<&'p str, &'p Function>,
-    analyses: &HashMap<&'p str, Analysis>,
+    analyses: &HashMap<&'p str, std::sync::Arc<Analysis>>,
     under_locks: &HashSet<&'p str>,
 ) -> HashMap<&'p str, Vec<FieldPath>> {
     let mut needs: HashMap<&str, HashSet<FieldPath>> = HashMap::new();

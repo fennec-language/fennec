@@ -55,6 +55,8 @@ mod holding;
 mod idmaps;
 mod index;
 mod json;
+mod kept;
+pub use kept::analyses_used_again;
 mod keys;
 mod kinds;
 mod lists;

@@ -109,7 +109,7 @@ impl<'w, 'p> Reads<'w, 'p> {
     }
 
     pub(crate) fn analysis(&self, name: &str) -> Option<&'w Analysis> {
-        entry(self, What::Analysis, &self.whole.analyses, name)
+        entry(self, What::Analysis, &self.whole.analyses, name).map(std::sync::Arc::as_ref)
     }
 
     pub(crate) fn can_fail(&self, name: &str) -> bool {

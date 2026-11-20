@@ -1,0 +1,213 @@
+//! Each function's own analysis, kept from one build to the next in the process that builds: the
+//! build daemon, which builds one program after another, edit after edit. An analysis is worked
+//! out from its function's IR and a few things it asks of the rest of the program: which of a
+//! callee's parameters it changes and which it keeps, its own parameters' ranges, and whether a
+//! kind of dict holds its values in its entries. Kept with each of those asks and what it was
+//! told, it's used again by a build whose function has the same IR and is told the same: a body
+//! edit analyzes the function it changed, and the few whose callees changed what they say, rather
+//! than every function of the program.
+//!
+//! Only the last build's analyses are kept. A build of another program finds little of its own
+//! there, and keeps its own in their place. A process that builds once, as a command without the
+//! daemon does, keeps them for nothing, at no more cost than holding on to what it made.
+//!
+//! What's used again is checked, as the checker's kept check is (`fennec_check::compares_kept_check`):
+//! a dev compiler analyzes every function again on one build in eight, picked by the program, and
+//! any compiler does with `FENNEC_CHECK_WHOLE=1`. A kept analysis that isn't what analyzing again
+//! gives stops the build, as the backend's own mistake.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use fennec_check::Type;
+use fennec_ir::Function;
+use fennec_ir::facts::Range;
+
+use crate::analysis::Analysis;
+use crate::keys::Key;
+
+/// What an analysis asked of the rest of the program, and what it was told.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Asked {
+    /// Which of a callee's parameters it changes.
+    Changes(String, Vec<usize>),
+    /// Whether a callee keeps a parameter.
+    Keeps(String, usize, bool),
+    /// Whether a kind of dict holds its values in its entries.
+    InEntries(Type, bool),
+}
+
+/// What an analysis can ask of the rest of the program: which of a callee's parameters it changes,
+/// whether a callee keeps a parameter, and whether a kind of dict holds its values in its entries.
+pub(crate) type Told<'t> =
+    (&'t dyn Fn(&str) -> Vec<usize>, &'t dyn Fn(&str, usize) -> bool, &'t dyn Fn(&Type) -> bool);
+
+/// One function's analysis as it was kept.
+pub(crate) struct Kept {
+    ir: Key,
+    params: Vec<Range>,
+    asked: Vec<Asked>,
+    analysis: Arc<Analysis>,
+}
+
+/// The last build's analyses, by function.
+static KEPT: Mutex<Option<KeptAnalyses>> = Mutex::new(None);
+
+/// The analyses one build keeps for the next, by function.
+pub(crate) type KeptAnalyses = HashMap<String, Kept>;
+
+/// What a build keeps for the next, as it works its analyses out.
+pub(crate) struct Keeping {
+    found: Option<KeptAnalyses>,
+    kept_now: Mutex<KeptAnalyses>,
+    used_again: std::sync::atomic::AtomicUsize,
+}
+
+/// What was asked of the program for one analysis, as it's worked out.
+pub(crate) struct Asking {
+    asked: RefCell<Vec<Asked>>,
+}
+
+impl Asking {
+    pub(crate) fn new() -> Self {
+        Asking { asked: RefCell::new(Vec::new()) }
+    }
+
+    // Each ask is noted once, however often it's made: an analysis asks of a callee at every call.
+    fn note(&self, asked: Asked) {
+        let mut noted = self.asked.borrow_mut();
+        if !noted.contains(&asked) {
+            noted.push(asked);
+        }
+    }
+
+    pub(crate) fn changes(&self, callee: &str, told: &[usize]) {
+        self.note(Asked::Changes(callee.to_owned(), told.to_vec()));
+    }
+
+    pub(crate) fn keeps(&self, callee: &str, at: usize, told: bool) {
+        self.note(Asked::Keeps(callee.to_owned(), at, told));
+    }
+
+    pub(crate) fn in_entries(&self, dict: &Type, told: bool) {
+        self.note(Asked::InEntries(dict.clone(), told));
+    }
+}
+
+impl Keeping {
+    /// What the last build in this process kept, taken for this one: a build beside it, as tests
+    /// run them, finds none and works all its analyses out.
+    pub(crate) fn start() -> Self {
+        Keeping::from(KEPT.lock().ok().and_then(|mut kept| kept.take()))
+    }
+
+    /// Starting from `found`, as a test does, or from nothing.
+    pub(crate) fn from(found: Option<KeptAnalyses>) -> Self {
+        Keeping {
+            found,
+            kept_now: Mutex::new(HashMap::new()),
+            used_again: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// How many analyses were used again.
+    pub(crate) fn used_again(&self) -> usize {
+        self.used_again.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The analysis kept for `function`, if its IR is `ir`, its parameters' ranges are `params`, and
+    /// everything it asked is told the same now.
+    pub(crate) fn usable(
+        &self,
+        function: &Function,
+        (ir, params): (&Key, &[Range]),
+        told: Told<'_>,
+    ) -> Option<Arc<Analysis>> {
+        let kept = self.found.as_ref()?.get(&function.name)?;
+        let (changes, keeps, in_entries) = told;
+        let same = kept.ir == *ir
+            && kept.params == params
+            && kept.asked.iter().all(|asked| match asked {
+                Asked::Changes(callee, was) => changes(callee) == *was,
+                Asked::Keeps(callee, at, was) => keeps(callee, *at) == *was,
+                Asked::InEntries(dict, was) => in_entries(dict) == *was,
+            });
+        if same {
+            self.used_again.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        same.then(|| Arc::clone(&kept.analysis))
+    }
+
+    /// Keeps `analysis` of `function` for the next build, with what it asked.
+    pub(crate) fn keep(
+        &self,
+        function: &Function,
+        (ir, params): (Key, &[Range]),
+        asked: Vec<Asked>,
+        analysis: &Arc<Analysis>,
+    ) {
+        let kept = Kept { ir, params: params.to_vec(), asked, analysis: Arc::clone(analysis) };
+        if let Ok(mut kept_now) = self.kept_now.lock() {
+            kept_now.insert(function.name.clone(), kept);
+        }
+    }
+
+    /// Keeps a function's analysis used again for the next build, as it was kept.
+    pub(crate) fn keep_again(&self, function: &Function) {
+        let Some(kept) = self.found.as_ref().and_then(|found| found.get(&function.name)) else { return };
+        let again = Kept {
+            ir: kept.ir,
+            params: kept.params.clone(),
+            asked: kept.asked.clone(),
+            analysis: Arc::clone(&kept.analysis),
+        };
+        if let Ok(mut kept_now) = self.kept_now.lock() {
+            kept_now.insert(function.name.clone(), again);
+        }
+    }
+
+    /// Hands what this build kept to the next in this process.
+    pub(crate) fn finish(self) {
+        let kept_now = self.into_kept();
+        if let Ok(mut kept) = KEPT.lock() {
+            *kept = Some(kept_now);
+        }
+    }
+
+    /// What this build kept.
+    pub(crate) fn into_kept(self) -> KeptAnalyses {
+        self.kept_now.into_inner().unwrap_or_default()
+    }
+}
+
+impl Asking {
+    pub(crate) fn into_asked(self) -> Vec<Asked> {
+        self.asked.into_inner()
+    }
+}
+
+/// How many analyses the last build in this process used again, of how many, for
+/// `FENNEC_CHECK_WHOLE=1` to say.
+static LAST: Mutex<(usize, usize)> = Mutex::new((0, 0));
+
+/// Notes how many analyses a build used again, of how many.
+pub(crate) fn note_used_again(used_again: usize, of: usize) {
+    if let Ok(mut last) = LAST.lock() {
+        *last = (used_again, of);
+    }
+}
+
+/// How many analyses the last build in this process used again from the one before, of how many.
+#[must_use]
+pub fn analyses_used_again() -> (usize, usize) {
+    LAST.lock().map_or((0, 0), |last| *last)
+}
+
+/// Whether this build analyzes every function again to check what it used again: always with
+/// `FENNEC_CHECK_WHOLE=1`, and in a dev compiler on one build in eight, picked by `inputs`, so the
+/// same program always does or doesn't.
+pub(crate) fn compares(inputs: u64) -> bool {
+    std::env::var("FENNEC_CHECK_WHOLE").as_deref() == Ok("1")
+        || (cfg!(debug_assertions) && inputs.is_multiple_of(8))
+}

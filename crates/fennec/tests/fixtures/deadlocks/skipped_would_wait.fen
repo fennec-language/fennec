@@ -1,32 +1,30 @@
-# A waiting call of many ranges. Each works a little first; the first then fails, and every other
-# waits to receive on a channel nobody sends to. The ranges the failure kept from starting never
-# run, so which ranges are left waiting is the run's own.
-from std.concurrent import Channel, channel
+# A waiting call of many ranges. The first fails once another range has said it started, and every
+# other range says so, then waits to receive on a channel nobody sends to. The ranges the failure
+# kept from starting never run, so which ranges are left waiting is the run's own, and at least one
+# always is: a first range that failed after only working a while sometimes failed before any other
+# had started, under load, and the call ended.
+from std.concurrent import Channel, Closed, channel
 
 error Boom:
     at: int
 
-def works(rounds: int) -> int:
-    mut total = 7
-    for at in range(rounds):
-        total = (total * 1103515245 + 12345 + at) % 2147483648
-    return total
-
-def part(at: int, pipe: Channel[int]) -> int fails Boom:
+def part(at: int, started: Channel[int], pipe: Channel[int]) -> int fails Boom:
     if at == 0:
-        _ = works(200000)
+        _ = started.receive()
         fail Boom(at=at)
-    _ = works(2000000)
+    started.send(at) except Closed():
+        return -1
     got = pipe.receive() else -1
     return got
 
-def all_parts(pipe: Channel[int]) -> int fails Boom:
-    got = [part(at, pipe=pipe)? for at in parallel(range(64))]
+def all_parts(started: Channel[int], pipe: Channel[int]) -> int fails Boom:
+    got = [part(at, started=started, pipe=pipe)? for at in parallel(range(64))]
     return sum(got)
 
 def main(stdout: Stdout):
-    with channel[int](size=1) as pipe:
-        total = all_parts(pipe) except why:
-            stdout.print("the call failed:", why)
-            return
-        stdout.print(total)
+    with channel[int](size=64) as started:
+        with channel[int](size=1) as pipe:
+            total = all_parts(started, pipe=pipe) except why:
+                stdout.print("the call failed:", why)
+                return
+            stdout.print(total)

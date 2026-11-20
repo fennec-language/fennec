@@ -313,7 +313,6 @@ export! {
     fennec_list_insert(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::insert(a0, a1, a2, a3);
     fennec_buffer_insert(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::insert_buffer(a0, a1, a2, a3);
     fennec_list_extend(a0: i64, a1: i64) -> i64 => lists::extend(a0, a1);
-    fennec_list_remove(a0: i64, a1: i64, a2: i64, a3: i64) => lists::remove(a0, a1, a2, a3);
     fennec_list_contains(a0: i64, a1: i64) -> i8 => lists::contains(a0, a1);
     fennec_pop_empty(a0: i64, a1: i64) => lists::pop_empty(a0, a1);
     fennec_buffer_pop_empty(a0: i64, a1: i64) => lists::pop_empty_buffer(a0, a1);

@@ -2166,7 +2166,8 @@ pub(super) fn read_in_place(state: &State, element: &Element, words: &[u64]) -> 
     read(state, element, &mut words.iter())
 }
 
-/// A value of a word, as a `Value`.
+/// A value of a word, as a `Value`: for the runtime's tests, which read what's held.
+#[cfg(test)]
 pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
     read(state, element, &mut std::iter::once(&word))
 }

@@ -16887,7 +16887,7 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
     let dir = folder("keys_let_go")?;
     let program = dir.join("keys_let_go.fen");
     std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keys_let_go.fen"), &program)?;
-    prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n8\n", &["1", "4"])
+    prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n6\n", &["1", "4"])
 }
 
 /// A task stopped while it waits in a call to the runtime leaves nothing behind. The call here is a
@@ -16901,8 +16901,8 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
 /// they held reached nothing. A pool's reset of a Postgres connection, cut short as its pool
 /// ended, left the `Duration` this way.
 ///
-/// `list.remove` had the same order: an item that isn't there stops its task, which left the block
-/// made to pass the item. It's taken out in a task here, whose crash its launcher handles.
+/// A dict's read of a key it doesn't have had the same order: it stops its task, which left the
+/// block made to pass the key. It's read in a task here, whose crash its launcher handles.
 #[test]
 fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {

@@ -456,9 +456,9 @@ export struct Tree[T]:
         parent = self._nodes[id].parent
         # A node is always among its parent's children, or the roots: one that isn't is a bug here.
         if parent is None:
-            assert self._roots.remove(id) is not None
+            self._roots.discard(id)
         else:
-            assert self._nodes[parent].children.remove(id) is not None
+            self._nodes[parent].children.discard(id)
 
 ## One node of a `SortedMap`'s B-tree: keys in order, their values, and for a node that isn't
 ## a leaf, the children between and around them.

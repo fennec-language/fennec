@@ -46,9 +46,8 @@ struct Spot:
     name: str
 
 def takes_out() -> int:
-    mut spots = [Spot(at=1, name="a name long enough for a block of its own")]
-    spots.discard(Spot(at=2, name="another name long enough for a block"))
-    return len(spots)
+    spots = {Spot(at=1, name="a name long enough for a block of its own"): 1}
+    return spots[Spot(at=2, name="another name long enough for a block")]
 
 def taking(out: Channel[int]):
     out.send(takes_out()) except Closed():

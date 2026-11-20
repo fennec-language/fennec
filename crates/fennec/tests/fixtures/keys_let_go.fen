@@ -121,7 +121,8 @@ def sets(count: int) -> int:
 def all_of(count: int) -> int:
     return pairs(count) + cells(count) + sets(count)
 
-# Each of these asks for a key that isn't there, which stops the task it's in.
+# Each of these asks for a key that isn't there. A dict's stops the task it's in, and a set's
+# `discard` finds nothing and goes on: either way the key it was handed is let go of.
 def fails(which: int) -> int:
     mut by_pair: dict[(int, str), int] = {}
     by_pair[pair(1)] = 1
@@ -137,7 +138,7 @@ def fails(which: int) -> int:
         seen.discard(pair(2))
     if which == 4: return len(by_cell[cell(2)])
     if which == 5: return len(by_cell.pop(cell(2)))
-    # The same of a dict and a set something else holds too, which the failure leaves as they were.
+    # The same of a dict and a set something else holds too, which each leaves as it was.
     if which == 6:
         also = by_pair
         return by_pair.pop(pair(2)) + len(also)

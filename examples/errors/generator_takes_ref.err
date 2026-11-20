@@ -1,0 +1,7 @@
+error: a generator can't take `ref items`: it runs after its call has given it back, while what called it can change `items` too
+ --> examples/errors/generator_takes_ref.fen:3:13
+  |
+3 | def drained(ref items: list[int]) -> Iterator[int]:
+  |             ^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: take `items` without `ref`, as a copy of its own, or give back a `list` of the items rather than yielding them

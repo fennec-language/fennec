@@ -316,6 +316,9 @@ fn test_line(
     }
 }
 
+/// What a replay that couldn't follow its recording says, before where it couldn't.
+const COULDNT_FOLLOW: &str = "the replay couldn't follow its recording: ";
+
 /// Runs the program, on the current thread: what it printed, and its failure, rendered,
 /// or nothing.
 fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
@@ -335,12 +338,28 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
     crate::replay::ended();
-    // A replay that ended with its recording not all read isn't the run that was recorded, and
-    // says so, whether it ended well or crashed: a crash said only itself (#1917).
-    let failure = match (failure, crate::replay::unfinished()) {
-        (failure, None) => failure,
-        (None, Some(why)) => Some(fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default())),
-        (Some(crash), Some(why)) => {
+    // A replay that couldn't follow its recording says where it first couldn't, whatever crashed
+    // after it, as a cleanup that didn't follow either: it said the last of those. One that ended
+    // with its recording not all read isn't the run that was recorded either, and says so, whether
+    // it ended well or crashed: a crash said only itself (#1917).
+    let failure = match (failure, crate::replay::divergence(), crate::replay::unfinished()) {
+        (Some(mut crash), Some(why), _) if crash.message == why => {
+            crash.message = format!("{COULDNT_FOLLOW}{why}");
+            Some(crash)
+        }
+        (crash, Some(why), _) => {
+            if crash.is_some() {
+                // The crash's call chain isn't this one's.
+                let _ = super::take_trace();
+            }
+            Some(fennec_syntax::Diagnostic::new(
+                format!("{COULDNT_FOLLOW}{why}"),
+                fennec_syntax::Span::default(),
+            ))
+        }
+        (failure, None, None) => failure,
+        (None, None, Some(why)) => Some(fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default())),
+        (Some(crash), None, Some(why)) => {
             // The crash's call chain isn't this one's.
             let _ = super::take_trace();
             Some(

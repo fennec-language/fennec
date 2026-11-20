@@ -442,6 +442,7 @@ export! {
     fennec_shared_new(a0: i64) -> i64 => guarded::shared_new(a0);
     fennec_replay_lock(a0: i64, a1: i64) => guarded::replay_lock(a0, a1);
     fennec_replay_locked(a0: i64, a1: i64) => guarded::replay_locked(a0, a1);
+    fennec_replay_unlocked(a0: i64, a1: i64) => guarded::replay_unlocked(a0, a1);
     fennec_shared_enter(a0: i64, a1: i64) -> i64 => guarded::shared_enter(a0, a1);
     fennec_shared_leave(a0: i64, a1: i64) -> i64 => guarded::shared_leave(a0, a1);
     fennec_shared_in(a0: i64) -> i64 => guarded::shared_in(a0);

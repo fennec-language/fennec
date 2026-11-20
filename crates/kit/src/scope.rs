@@ -7,103 +7,57 @@
 //! defines has its kit's name put in front of it in the merged module, joined by a mark no program
 //! can write, and another kit reaches only what it marks `export`.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use fennec_syntax::{
-    Diagnostic, Expr, ExprKind, FStrPart, FnDef, Generic, Item, Pattern, Span, Stmt, StmtKind, TypeExpr,
+    Diagnostic, Expr, ExprKind, FStrPart, FnDef, Generic, Item, Module, Pattern, Span, Stmt, StmtKind,
+    TypeExpr,
 };
 
 use crate::load::{File, is_std};
+use crate::names::{Looking, Reads, gather};
 
-/// What one file defines.
-struct Part {
-    name: String,
-    shown: String,
-    names: BTreeSet<String>,
-    /// What starts its kit's names in the merged module.
-    prefix: String,
-    exports: HashSet<String>,
-    /// Where the file's last import ends, where another can go.
-    imports_end: Option<Span>,
+/// A file's rewriting from the load before, and what it read of the other files' names.
+pub(crate) struct Before {
+    pub(crate) module: Arc<Module>,
+    pub(crate) reads: Arc<Reads>,
 }
 
-/// What each file defines, and which file defines each name, by the name the merged module has
-/// for it.
-struct Kit {
-    files: Vec<Part>,
-    owners: HashMap<String, usize>,
-    /// The enums with each case name, and the file each is in.
-    cases: HashMap<String, Vec<(String, usize)>>,
-}
-
-impl Kit {
-    fn name(&self, file: usize) -> &str {
-        self.files.get(file).map_or("", |part| &part.name)
-    }
-
-    fn shown(&self, file: usize) -> &str {
-        self.files.get(file).map_or("", |part| &part.shown)
-    }
-
-    fn defines(&self, file: usize, name: &str) -> bool {
-        self.files.get(file).is_some_and(|part| part.names.contains(name))
-    }
-
-    /// What the merged module calls a name `file` defines.
-    fn merged(&self, file: usize, name: &str) -> String {
-        let prefix = self.files.get(file).map_or("", |part| &part.prefix);
-        format!("{prefix}{name}")
-    }
-
-    /// Whether `file` is of a dependency rather than the program's own kit.
-    fn is_dependency(&self, file: usize) -> bool {
-        self.files.get(file).is_some_and(|part| !part.prefix.is_empty())
-    }
-
-    /// Whether the files `reader` and `file` are of different kits.
-    fn apart(&self, reader: usize, file: usize) -> bool {
-        self.files.get(reader).map(|part| &part.prefix) != self.files.get(file).map(|part| &part.prefix)
-    }
-
-    /// Whether code in `reader` can use `name` from `file`: every name inside a kit, and only
-    /// what's exported between kits.
-    fn provides(&self, reader: usize, file: usize, name: &str) -> bool {
-        self.defines(file, name)
-            && (!self.apart(reader, file)
-                || self.files.get(file).is_some_and(|part| part.exports.contains(name)))
-    }
-
-    /// A help line listing what `file` gives `reader`.
-    fn listing(&self, reader: usize, file: usize) -> String {
-        let names: Vec<&str> = self
-            .files
-            .get(file)
-            .map(|part| part.names.iter().map(String::as_str).collect())
-            .unwrap_or_default();
-        let names: Vec<&str> = names.into_iter().filter(|name| self.provides(reader, file, name)).collect();
-        if self.apart(reader, file) {
-            return if names.is_empty() {
-                format!("`{}` exports nothing", self.name(file))
-            } else {
-                format!("`{}` exports {}", self.name(file), names.join(", "))
-            };
-        }
-        if names.is_empty() {
-            format!("{} defines nothing yet", self.shown(file))
-        } else {
-            format!("{} defines {}", self.shown(file), names.join(", "))
-        }
-    }
+/// What `resolve` gives back: what each file's rewriting read of the other files' names, when
+/// noting, and how many files took their rewriting from the load before.
+pub(crate) struct Resolved {
+    pub(crate) reads: Vec<Option<Arc<Reads>>>,
+    pub(crate) kept: usize,
 }
 
 /// Checks every file's imports and the names it uses from other files.
-pub(crate) fn resolve(files: &mut [File], errors: &mut Vec<Diagnostic>) {
+///
+/// `before` holds, by file, a rewriting from the load before of a file that's as it was then, in
+/// a load of the same files in the same order. It's taken when the other files' names answer all
+/// it read as they did then, since it would come out the same. With `noting`, what each file's
+/// rewriting read is given back for the load after.
+pub(crate) fn resolve(
+    files: &mut [File],
+    errors: &mut Vec<Diagnostic>,
+    mut before: Vec<Option<Before>>,
+    noting: bool,
+) -> Resolved {
     let kit = gather(files, errors);
     let index: HashMap<String, usize> =
         files.iter().enumerate().map(|(at, file)| (file.name.clone(), at)).collect();
+    let mut resolved = Resolved { reads: Vec::with_capacity(files.len()), kept: 0 };
     for (at, file) in files.iter_mut().enumerate() {
+        if let Some(before) = before.get_mut(at).and_then(Option::take)
+            && before.reads.hold(&kit)
+        {
+            file.module = before.module;
+            resolved.reads.push(Some(before.reads));
+            resolved.kept += 1;
+            continue;
+        }
         let mut scope = Resolver {
-            kit: &kit,
+            kit: Looking::new(&kit, noting),
             file: at,
             imported: HashMap::new(),
             renamed: HashMap::new(),
@@ -141,15 +95,19 @@ pub(crate) fn resolve(files: &mut [File], errors: &mut Vec<Diagnostic>) {
                 scope.import(&module, &names, import.alias.as_deref(), from, import.span);
             }
         }
-        for item in &mut file.module.items {
+        // A module the load before kept is copied here, as it was before this rewriting.
+        let module = Arc::make_mut(&mut file.module);
+        for item in &mut module.items {
             scope.item(item);
         }
         if !file.prefix.is_empty() {
-            for item in &mut file.module.items {
+            for item in &mut module.items {
                 name_with_prefix(item, &file.prefix);
             }
         }
+        resolved.reads.push(scope.kit.into_reads().map(Arc::new));
     }
+    resolved
 }
 
 /// Renames what an item defines to what the merged module calls it.
@@ -164,71 +122,11 @@ fn name_with_prefix(item: &mut Item, prefix: &str) {
     *name = format!("{prefix}{name}");
 }
 
-/// Finds what each file defines, reporting names defined in two files.
-fn gather(files: &[File], errors: &mut Vec<Diagnostic>) -> Kit {
-    let mut kit = Kit { files: Vec::new(), owners: HashMap::new(), cases: HashMap::new() };
-    for (at, file) in files.iter().enumerate() {
-        let mut names = BTreeSet::new();
-        for item in &file.module.items {
-            if let Item::Enum(def) = item {
-                for case in &def.cases {
-                    kit.cases.entry(case.name.clone()).or_default().push((def.name.clone(), at));
-                }
-            }
-            let Some((name, span)) = defined(item) else { continue };
-            let merged = format!("{}{name}", file.prefix);
-            match kit.owners.get(&merged) {
-                Some(&owner) if owner == at => errors.push(
-                    Diagnostic::new(format!("`{name}` is already defined in this file"), span)
-                        .with_help("rename one of them"),
-                ),
-                Some(&owner) => errors.push(
-                    Diagnostic::new(format!("`{name}` is already defined in {}", kit.shown(owner)), span)
-                        .with_help(
-                            "the files of a kit share one set of top-level names, so rename one of them",
-                        ),
-                ),
-                None => {
-                    kit.owners.insert(merged, at);
-                }
-            }
-            names.insert(name.to_owned());
-        }
-        kit.files.push(Part {
-            name: file.name.clone(),
-            shown: file.shown.clone(),
-            names,
-            prefix: file.prefix.clone(),
-            exports: file.exports.clone(),
-            imports_end: file
-                .module
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    Item::Import(import) => Some(Span { start: import.span.end, end: import.span.end }),
-                    _ => None,
-                })
-                .max_by_key(|at| at.start),
-        });
-    }
-    kit
-}
-
-/// The name an item defines at the top level, and where.
-fn defined(item: &Item) -> Option<(&str, Span)> {
-    match item {
-        Item::Function(def) => Some((&def.name, def.span)),
-        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some((&def.name, def.span)),
-        Item::Interface(interface) => Some((&interface.name, interface.span)),
-        Item::TypeAlias { name, span, .. } | Item::Const { name, span, .. } => Some((name, *span)),
-        Item::Extend(_) | Item::Import(_) | Item::Test(_) | Item::Stmt(_) => None,
-    }
-}
-
 /// Walks one file, checking the names it uses. Each function is walked twice: once to
 /// collect the names it binds itself, and once to check the rest.
 struct Resolver<'a> {
-    kit: &'a Kit,
+    /// The other files' names, through what notes what's read of them.
+    kit: Looking<'a>,
     file: usize,
     /// Names brought in by `from module import name`, and the file each is from.
     imported: HashMap<String, usize>,
@@ -587,7 +485,7 @@ impl Resolver<'_> {
     /// have a case by that name too. A leading-dot case looks only at the enums its file
     /// declares or imports, so a file the kit adds can't make it ambiguous.
     fn only_visible(&self, case: &str) -> Option<String> {
-        let owners = self.kit.cases.get(case)?;
+        let owners = self.kit.cases(case)?;
         if owners.len() < 2 {
             return None;
         }
@@ -666,12 +564,12 @@ impl Resolver<'_> {
         if self.collecting {
             return;
         }
-        let Some(&owner) = self.kit.owners.get(name) else { return };
+        let Some(owner) = self.kit.owner(name) else { return };
         if !self.kit.apart(self.file, owner) {
             return;
         }
         let shown = name.rsplit(fennec_syntax::KIT_MARK).next().unwrap_or(name);
-        let kit = self.kit.files.get(owner).map_or("", |part| part.prefix.as_str());
+        let kit = self.kit.prefix(owner).unwrap_or("");
         let declared = match kit.strip_suffix(fennec_syntax::KIT_MARK) {
             Some(kit) => format!("the kit `{kit}`"),
             None => "the program's own kit".to_owned(),
@@ -690,7 +588,7 @@ impl Resolver<'_> {
         {
             return;
         }
-        if let Some(&owner) = self.kit.owners.get(&self.kit.merged(self.file, name)) {
+        if let Some(owner) = self.kit.owner(&self.kit.merged(self.file, name)) {
             let import = format!("from {} import {name}", self.kit.name(owner));
             let mut problem = Diagnostic::new(
                 format!("`{name}` is defined in {}, which this file doesn't import", self.kit.shown(owner)),
@@ -698,7 +596,7 @@ impl Resolver<'_> {
             )
             .with_help(format!("add `{import}` at the top of this file"));
             // After the file's last import, when it has one.
-            if let Some(at) = self.kit.files.get(self.file).and_then(|part| part.imports_end) {
+            if let Some(at) = self.kit.imports_end(self.file) {
                 problem = problem.with_fix(at, format!("\n{import}"));
             }
             self.errors.push(problem);
@@ -710,7 +608,7 @@ impl Resolver<'_> {
         // language gives everywhere, like `round`, is the language's in a dependency, whatever
         // the program defines: the checker and lowering never reach the program's from there.
         if self.kit.is_dependency(self.file)
-            && let Some(&owner) = self.kit.owners.get(name)
+            && let Some(owner) = self.kit.owner(name)
             && self.kit.apart(self.file, owner)
             && !fennec_check::provided_everywhere(name)
             && !fennec_check::reserved_name(name)

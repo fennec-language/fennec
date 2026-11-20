@@ -47,7 +47,7 @@ git init --quiet --bare --initial-branch=main "$work/origin.git"
 git clone --quiet "$work/origin.git" "$work/a" 2> /dev/null
 cd "$work/a" || exit 1
 mkdir -p .github/scripts
-cp "$here/.github/scripts/open-pr.sh" "$here/.github/scripts/fetch.sh" .github/scripts/
+cp "$here/.github/scripts/open-pr.sh" "$here/.github/scripts/fetch.sh" "$here/.github/scripts/gate-lock.sh" .github/scripts/
 printf 'one\ntwo\n' > shared
 git add -A
 git commit --quiet -m base
@@ -110,6 +110,17 @@ echo uncommitted >> own
 .github/scripts/open-pr.sh "Uncommitted" "$work/body.md" > /dev/null 2> "$work/said"
 check "changes not committed stop it, and push nothing" "1 " "$? $(pushed clean)"
 git checkout --quiet -- own
+
+git checkout --quiet clean
+# Another gate's process, running in this worktree, holds its lock.
+sleep 600 &
+running=$!
+.github/scripts/gate-lock.sh take "$running"
+.github/scripts/open-pr.sh "Beside another" "$work/body.md" > /dev/null 2> "$work/said"
+check "a gate already running in the worktree stops it, and pushes nothing" "1 " "$? $(pushed clean)"
+check "it names the gate's process" yes "$(grep -qF "a gate is already running in this worktree (pid $running)" "$work/said" && echo yes)"
+kill "$running"
+wait "$running" 2> /dev/null
 
 check "no pull request was opened for any of those" "" "$(cat "$OPENED" 2> /dev/null)"
 

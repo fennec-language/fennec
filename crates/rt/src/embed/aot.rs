@@ -535,9 +535,11 @@ fn report(output: &[u8], failure: &str) -> i32 {
 /// The program has run out of memory: mimalloc couldn't make an allocation, and its error handler
 /// says so here, rather than Rust in its words with a core dump (runtime exhaustion audit,
 /// 2026-11-20). What this thread printed and kept goes out first, as for a crash, then the stop is
-/// said, and the program ends with 1. Nothing here allocates: the kept output is written through
-/// standard output's buffer, both outputs' locks are taken once as the run starts, as the first use
-/// of one allocates on macOS, and the words are fixed. mimalloc doesn't say how much was asked.
+/// said, and the program ends with 1. Outside a recording or a replay, nothing here allocates: the
+/// kept output is written through standard output's buffer, both outputs' locks are taken once as
+/// the run starts, as the first use of one allocates on macOS, and the words are fixed. A recording
+/// logs what's written, which allocates; an allocation refused there comes back, as below. mimalloc
+/// doesn't say how much was asked.
 ///
 /// The first thread here stops the program. Another that runs out meanwhile waits for it to end
 /// the program, up to 5 seconds, so the words come once and after all that's written, however slow

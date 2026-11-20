@@ -71,8 +71,9 @@ Hashes are BLAKE3, written as 64 lowercase hex digits, and an entry about a prog
   an entry or none of it. Reading and writing take no locks.
 - Reading an entry sets its modified time, at most once every ten minutes, and that's how cleanup
   knows what was used least recently. Access times aren't reliable enough on every system.
-- The store has one size cap for every build's folder together: 1 GiB, or `FENNEC_CACHE_CAP` in
-  bytes. A cleanup first removes, whole, any other build's folder that nothing has used for a day,
+- The store has one size cap for every build's folder together: 20 GiB, or a tenth of the space
+  free on its disk if that's less, asked at each cleanup, or `FENNEC_CACHE_CAP` in bytes. A
+  200,000-line program's dev build keeps about half a gigabyte. A cleanup first removes, whole, any other build's folder that nothing has used for a day,
   under the cap or over it. Then, if the cache is over, it removes entries until it's at four fifths
   of the cap, the least recently used first whichever build wrote them, since another build may be
   in use elsewhere, and removes other builds' folders it empties.

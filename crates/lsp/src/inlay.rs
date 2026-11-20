@@ -135,7 +135,7 @@ fn parameters(
         .flat_map(|(_, body)| body.exprs())
         .map(|(span, ty)| ((span.start, span.end), ty))
         .collect();
-    let known = Known { module, sources };
+    let known = Known { module, sources, checked: None };
     let mut found = Vec::new();
     walk(module, &mut |expr| {
         let ExprKind::Call { callee, args } = &expr.kind else { return };

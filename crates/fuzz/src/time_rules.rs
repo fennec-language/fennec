@@ -14,13 +14,13 @@ from std.time import Time
 
 def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
     text = fs.read_text(args[0])?
-    found: Time? = Time.parse(text) except ParseError(): None
+    found: Time? = Time.parse(text) except InvalidValue(): None
     if found is None:
         stdout.print(\"Err\")
         return
     written = found.iso()
     stdout.print(\"Ok\", found.nanos, written)
-    again: Time? = Time.parse(written) except ParseError(): None
+    again: Time? = Time.parse(written) except InvalidValue(): None
     if again is None:
         stdout.print(\"again Err\")
     else:

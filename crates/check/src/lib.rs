@@ -385,6 +385,18 @@ pub fn builtin_method_changes(ty: &Type, name: &str) -> Option<bool> {
     builtins::method(ty, name).map(|method| method.changes)
 }
 
+/// The signature of a method written in Rust, of a built-in type or one of the standard
+/// library's, as a hover shows it: `def split(self, str) -> list[str]`. `None` when the type has
+/// no such method: one written in Fennec has a declaration to show instead.
+#[must_use]
+pub fn builtin_method_shown(ty: &Type, name: &str) -> Option<String> {
+    let method = builtins::method(ty, name).or_else(|| match ty {
+        Type::Named(owner) | Type::Generic(owner, _) => stdlib::method(owner, name),
+        _ => None,
+    })?;
+    Some(method.shown(name))
+}
+
 /// The types a method the engines provide on a type takes, after the value it's called on:
 /// `dict.get` on a `dict[int | str, int]` takes an `int | str`. `None` when the type has no
 /// such method.

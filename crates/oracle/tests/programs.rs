@@ -4522,6 +4522,44 @@ fn tasks_that_all_wait_stop_the_program_as_a_deadlock() {
 /// What the oracle says as a deadlock stops the program, after what it printed.
 const DEADLOCK: &str = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
 
+/// Naming one `shared` value twice in one `lock`, as two lookups of one key do, is a bug: the
+/// program stops with exit code 1, saying so, after what it printed, as compiled code does. Two
+/// keys are two values, locked together.
+#[test]
+fn a_lock_taking_one_shared_value_twice_stops_the_program() {
+    let (printed, ended) = ran("
+        error Short:
+            left: int
+
+        struct Account:
+            total: int
+
+        def moved(accounts: dict[str, shared Account], from_name: str, to_name: str, amount: int) fails Short:
+            lock accounts[from_name], accounts[to_name] as ref source, ref target:
+                source.total -= amount
+                target.total += amount
+                if source.total < 0:
+                    fail Short(left=source.total)
+
+        def main(stdout: Stdout):
+            shared a = Account(total=10)
+            shared b = Account(total=0)
+            accounts = {'a': a, 'b': b}
+            moved(accounts, from_name='a', to_name='b', amount=4) except why:
+                stdout.print('failed', why)
+            stdout.print('moved')
+            moved(accounts, from_name='a', to_name='a', amount=1) except why:
+                stdout.print('failed', why)
+            stdout.print('after')
+            return
+        ");
+    assert_eq!(printed, "moved\n");
+    assert!(
+        matches!(&ended, Ended::Stopped(said) if said.contains("this `lock` takes the same `shared` value twice")),
+        "{ended:?}"
+    );
+}
+
 /// A deadlock the runtime finds stops the program with exit code 1 after what it printed, as
 /// `docs/language.md` says: `main` receiving from a channel nothing sends to, sending to one
 /// that's full, waiting at a `with launch` block's end for a task that receives from one, and a

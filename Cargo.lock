@@ -296,6 +296,7 @@ dependencies = [
  "fennec-rt",
  "fennec-syntax",
  "fennec-temp",
+ "rustix",
 ]
 
 [[package]]

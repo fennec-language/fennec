@@ -71,6 +71,12 @@ pub fn keep_analyses_between_builds() {
     KEEPS.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether this process keeps what a build works out for the next (see
+/// [`keep_analyses_between_builds`]).
+pub(crate) fn keeps_between_builds() -> bool {
+    KEEPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The analyses one build keeps for the next, by function, with the build's number.
 pub(crate) struct KeptAnalyses {
     build: u64,

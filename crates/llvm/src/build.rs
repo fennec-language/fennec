@@ -1,5 +1,6 @@
 //! Compiling modules with `opt` and `llc`, a function at a time, through the cache.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -676,12 +677,54 @@ pub fn compile_again(tools: &Tools, unit: &Unit, work: &Path) -> Result<Vec<u8>,
 ///
 /// # Errors
 /// When `llc` can't be run to ask its version.
+///
+/// In the daemon, an object the last build found or made is known to be there still when no
+/// cleanup has taken anything since (`Cache::removals`), and isn't looked for. Should it be gone
+/// anyway, the link finds that, and the build writes every unit again (`USED_AGAIN_OBJECT_GONE`).
 pub fn has_object(cache: &Cache, tools: &Tools) -> Result<impl Fn(&fennec_blake3::Hash) -> bool, String> {
     let (version, pipeline) = (tools.version()?, pipeline());
     let cache = cache.clone();
+    let known = if crate::kept::keeps_between_builds() {
+        let now =
+            Objects { removals: cache.removals(), version: version.clone(), pipeline: pipeline.clone() };
+        let known = KNOWN.lock().ok().and_then(|mut known| known.take()).filter(|(then, _)| *then == now);
+        if let Ok(mut start) = STARTED.lock() {
+            *start = Some(now);
+        }
+        known.map(|(_, known)| known).unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
     Ok(move |text: &fennec_blake3::Hash| {
-        cache.held_object(KIND, &object_key(&version, &pipeline, text)).is_some()
+        known.contains(text.as_bytes())
+            || cache.held_object(KIND, &object_key(&version, &pipeline, text)).is_some()
     })
+}
+
+/// What the objects a build knows are there were known under: how many cleanups had taken
+/// anything from the cache as it started, and the LLVM and passes that name its objects.
+#[derive(Clone, PartialEq, Eq)]
+struct Objects {
+    removals: u64,
+    version: String,
+    pipeline: String,
+}
+
+/// The objects this process's last build found or made, by their units' texts' hashes, and what
+/// they were known under. Only the daemon keeps them (`kept::keeps_between_builds`).
+static KNOWN: Mutex<Option<(Objects, HashSet<[u8; 32]>)>> = Mutex::new(None);
+
+/// What the objects of the build now looking for them are known under, as it started.
+static STARTED: Mutex<Option<Objects>> = Mutex::new(None);
+
+/// Notes that every object of `units` is in the cache, as a build that has just linked them knows,
+/// for the next build in this process to find without looking (see [`has_object`]).
+pub fn objects_known(units: &[Unit]) {
+    let Some(started) = STARTED.lock().ok().and_then(|mut started| started.take()) else { return };
+    let known = units.iter().map(|unit| *unit.hash.as_bytes()).collect();
+    if let Ok(mut kept) = KNOWN.lock() {
+        *kept = Some((started, known));
+    }
 }
 
 /// Keeps the list of the objects `units` compile to as what the program `name` holds, so cleanup

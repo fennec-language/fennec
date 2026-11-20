@@ -395,6 +395,8 @@ fn built_and_linked(
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
     let linked = finish(&built, output, runtime_in, &units)?;
+    // Every object it linked is in the cache, for the daemon's next build to know without looking.
+    fennec_llvm::objects_known(&units);
     let root = built.stored.as_ref().map(|stored| stored.root.clone());
     Ok(Built { total: built.total, fresh: built.fresh, reused: built.reused, compiled, linked, root })
 }

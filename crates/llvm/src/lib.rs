@@ -84,7 +84,7 @@ use fennec_rt::embed::dicts::Word;
 
 pub use build::{
     Built, Object, STOPPED, Tools, USED_AGAIN_OBJECT_GONE, audited, compile, compile_again, compile_whole,
-    has_object, hold_objects, huge_functions, output_switches, sanitize_flag,
+    has_object, hold_objects, huge_functions, objects_known, output_switches, sanitize_flag,
 };
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use copies_made::{CopyMade, Why as CopyWhy, changed_in_place, copies_made};

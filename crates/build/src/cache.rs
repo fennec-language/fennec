@@ -66,6 +66,9 @@ pub const UNUSED_BUILD: Duration = Duration::from_hours(24);
 /// How long a command lets go by without a cleanup before it starts one.
 pub const CLEANUP_EVERY: Duration = Duration::from_hours(1);
 
+/// The file, in the cache's folder, counting the cleanups that took anything.
+const REMOVALS: &str = "removals";
+
 /// A cleanup lock older than this was left by a cleanup that died, and is taken over.
 const STALE_LOCK: Duration = Duration::from_secs(600);
 
@@ -439,11 +442,29 @@ impl Cache {
         self.cleanup_entries(entries, cap)
     }
 
+    /// How many cleanups have taken anything from the cache, as [`Self::removed`] counts them: a
+    /// build that knows an object was there when the count was this knows it's there still.
+    #[must_use]
+    pub fn removals(&self) -> u64 {
+        std::fs::read_to_string(self.root.join(REMOVALS))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Counts a cleanup that's about to take something, before it takes anything, under its lock:
+    /// a build that reads the count after anything has gone sees a new count.
+    fn removed(&self) -> std::io::Result<()> {
+        let next = self.removals().wrapping_add(1);
+        put(&self.root.join(REMOVALS), &[next.to_string().as_bytes()])
+    }
+
     /// Cleanup, from the entries as a walk of the cache found them. The walk can take seconds on a
     /// big cache, and a build can find and mark an entry meanwhile, to link it next, so each
     /// entry's time is looked at again just before it goes.
     fn cleanup_entries(&self, entries: Vec<Entry>, cap: u64) -> std::io::Result<Cleanup> {
         let mut cleanup = Cleanup::default();
+        let mut counted = false;
         let current = self.root.join(FOLDER);
         let mut last_used: HashMap<&Path, SystemTime> = HashMap::new();
         for entry in entries.iter().filter(|entry| entry.build != current) {
@@ -455,6 +476,10 @@ impl Cache {
             .filter(|(_, used)| used.elapsed().is_ok_and(|age| age > UNUSED_BUILD))
             .map(|(build, _)| build.to_path_buf())
             .collect();
+        if !unused.is_empty() {
+            self.removed()?;
+            counted = true;
+        }
         for build in &unused {
             std::fs::remove_dir_all(build)?;
         }
@@ -474,6 +499,10 @@ impl Cache {
                 // Used since the walk saw it: a build found it, and may be about to link it.
                 if entry.used_since() {
                     continue;
+                }
+                if !counted {
+                    self.removed()?;
+                    counted = true;
                 }
                 // The entry's file first, so no entry ever names a program that's gone.
                 if let Some(sum) = &entry.sum {
@@ -947,6 +976,28 @@ mod tests {
         super::set_time(&cache.path(super::HOLDS, "program"), long_ago).unwrap();
         let cleanup = cache.cleanup(0).unwrap();
         assert!(!held.exists(), "an object only an old list holds stayed: {cleanup:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A cleanup that takes anything is counted before it takes it, and one that takes nothing
+    /// isn't: a build that knew an object was there under the count it reads now knows it's there.
+    #[test]
+    fn a_cleanup_that_takes_anything_is_counted() {
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-removals-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        assert_eq!(cache.removals(), 0);
+        let kept = cache.keep_object("llvm", "kept", b"an object").unwrap().unwrap();
+        let cleanup = cache.cleanup(1 << 30).unwrap();
+        assert_eq!((cleanup.removed, cache.removals()), (0, 0), "a cleanup that took nothing was counted");
+        let long_ago = std::time::SystemTime::now() - super::KEPT_RECENT - Duration::from_secs(600);
+        super::set_time(&kept, long_ago).unwrap();
+        let cleanup = cache.cleanup(0).unwrap();
+        assert!(!kept.exists(), "{cleanup:?}");
+        assert_eq!(cache.removals(), 1, "a cleanup that took an object wasn't counted");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -58,7 +58,7 @@ test "long text from outside is quoted by its start and its length"():
     assert invalid(() => base64.decode(letters() + "!")?).startswith(
         "`abcdefghijabcdefghij…` (5,001 characters)",
     )
-    assert parse_error(() => Time.parse(letters())?).startswith(head)
+    assert invalid(() => Time.parse(letters())?).startswith(head)
 
 test "a long key from outside is cut in what a message says of it"():
     key = "k" * 5000

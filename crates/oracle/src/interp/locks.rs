@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 
 use fennec_syntax::{Expr, ExprKind, Span, Stmt, WithName};
 
-use super::{Binding, Flow, Interp, Run, unsupported};
+use super::{Binding, Flow, Interp, Run, crash, unsupported};
 use crate::value::{Cell, Value};
 
 impl Interp {
@@ -46,8 +46,9 @@ impl Interp {
             }
         }
         for (at, cell) in cells.iter().enumerate() {
+            // Naming one value twice is a bug, as an index that isn't there is: the program stops.
             if cells.iter().take(at).any(|earlier| earlier.id == cell.id) {
-                return unsupported("one `shared` value locked twice in one `lock`");
+                return crash("this `lock` takes the same `shared` value twice", value.span);
             }
         }
         for (cell, name) in cells.iter().zip(names) {

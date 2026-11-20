@@ -5136,8 +5136,14 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
         "{}",
         status()
     );
-    // The one snapshot is a few hundred bytes, under a tenth of a megabyte.
-    assert!(status().ends_with("\ncache: 0.0 MB of 1073.7 MB\n"), "{}", status());
+    // The one snapshot is a few hundred bytes, under a tenth of a megabyte. The cap is 20 GiB, or a
+    // tenth of the space free on the disk if that's less, so it's read rather than pinned.
+    let said = status();
+    let cap = said
+        .strip_suffix(" MB\n")
+        .and_then(|rest| rest.rsplit_once("\ncache: 0.0 MB of "))
+        .and_then(|(_, cap)| cap.parse::<f64>().ok());
+    assert!(cap.is_some_and(|cap| cap > 0.0 && cap <= 21_474.9), "{said}");
 
     let again = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
     assert_eq!(text(&again.stdout), "0 files parsed, 1 unchanged and not parsed again\nnothing changed\n");

@@ -768,6 +768,8 @@ mod unix {
                 std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).map(|()| listener)
             });
         let Ok(listener) = listener else { return ExitCode::FAILURE };
+        // The daemon keeps each kit's check, for its build after an edit to carry over from.
+        crate::kept::keep_checks();
         // Noted among the user's daemons, past whose cap the one used longest ago stops.
         let noted = note_daemon(home, &socket);
         let gone = |noted: &Option<PathBuf>| {
@@ -1045,6 +1047,15 @@ mod unix {
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         state.sessions = state.sessions.saturating_sub(1);
         state.worked();
+        drop(state);
+        // A build that carried over what the kit's last check found is checked all again, off the
+        // build's way, once it's answered.
+        if crate::kept::pending() {
+            let home = home.clone();
+            let _ = std::thread::Builder::new()
+                .stack_size(crate::STACK_BYTES)
+                .spawn(move || crate::kept::verify_pending(&home));
+        }
         outcome
     }
 
@@ -1155,7 +1166,7 @@ mod unix {
                     },
                     megabytes(Cache::new(&state.home).size()),
                     megabytes(Cache::cap()),
-                ),
+                ) + &crate::kept::status().unwrap_or_default(),
                 ..Outcome::default()
             },
             (Some("changes"), Some(path)) => {

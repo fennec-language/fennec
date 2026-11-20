@@ -381,6 +381,18 @@ pub(in crate::embed) fn served_call(
             }
             Err(wrong) => return Some(Err(wrong)),
         },
+        ("_room_for_body", [Value::Int(size)]) => {
+            return Some(
+                bytes_asked(*size, at)
+                    .map(|size| Value::Bool(conn.body_held.take(size, crate::stdlib::net::MOST_BODIES_HELD))),
+            );
+        }
+        ("_body", [Value::Int(size)]) => match bytes_asked(*size, at) {
+            Ok(size) => {
+                on_conn(handle, |conn| conn.body(size, timeout)).map(|data| Value::Bytes(Rc::from(data)))
+            }
+            Err(wrong) => return Some(Err(wrong)),
+        },
         ("read_line", []) => {
             on_conn(handle, |conn| conn.read_line(timeout)).map(|line| trimmed_line_value(line.as_deref()))
         }

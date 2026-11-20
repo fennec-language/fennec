@@ -721,7 +721,7 @@ fn emitted_as_written(
         // What the run's check found, which checking it again here would find: a dev build of
         // `fennec` checks it again anyway, to say so if it ever isn't.
         Some(checked) => {
-            if cfg!(debug_assertions) {
+            if cfg!(debug_assertions) && !fennec_check::leaves_out_a_kept_rule() {
                 let again = fennec_check::check_to_emit(reached).ok();
                 assert!(
                     again.as_ref().is_some_and(|again| again.agree_within(&checked)),

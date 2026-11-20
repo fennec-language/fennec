@@ -31,6 +31,7 @@ use super::ast::{InOrder, OrderStep};
 use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{RuleStep, RuleWay, Ruling};
 use super::ast::{Sticking, StuckWay};
 use super::source::LONG_PIECE;
 
@@ -2033,6 +2034,7 @@ impl Machine {
             Stmt::LockedTogether(locking) => self.locked_together(locking)?,
             Stmt::Arrayed(arraying) => self.arrayed(arraying)?,
             Stmt::Generated(generating) => self.generated(generating),
+            Stmt::Ruled(ruling) => self.ruled(ruling)?,
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
@@ -3320,6 +3322,111 @@ impl Machine {
                 .collect();
             let _ = writeln!(self.out, "{}", shown.join(" "));
         }
+        Ok(())
+    }
+
+    /// What `ruled{id}` prints: each step's write, which stops the program where it breaks a
+    /// `where` rule, as the field comes back for a field lent alone by `ref`, so a dip put right
+    /// before then is fine; a value made from a number worked out as it runs is refused instead.
+    fn ruled(&mut self, ruling: &Ruling) -> Ran<()> {
+        #[derive(Clone)]
+        struct Gauge {
+            level: i64,
+            tags: Vec<String>,
+            name: String,
+            counts: [i64; 2],
+        }
+        let id = ruling.id;
+        let made = |level: i64| Gauge { level, tags: Vec::new(), name: "g".to_owned(), counts: [1, 2] };
+        let shown = |gauge: &Gauge| {
+            let tags: Vec<String> = gauge.tags.iter().map(|tag| format!("\"{tag}\"")).collect();
+            let [first, second] = gauge.counts;
+            format!(
+                "Gauge{id}(level={}, tags=[{}], name=\"{}\", counts=[{first}, {second}])",
+                gauge.level,
+                tags.join(", "),
+                gauge.name
+            )
+        };
+        let (mut gauge, mut gauges, mut by_name) = (made(5), [made(3), made(8)], made(4));
+        for step in &ruling.steps {
+            let RuleStep { way, value: v, breaks } = *step;
+            let broken = |field: &str| format!("this breaks the `where` rule on `Gauge{id}.{field}`");
+            // What's taken from a level: no more than it holds, or one more when it breaks.
+            let amount = |level: i64| if breaks { level + v + 1 } else { level.min(v) };
+            let picked = if breaks { -(v + 1) } else { v };
+            let mut stopped = None;
+            match way {
+                RuleWay::Set => gauge.level = picked,
+                RuleWay::Raised => gauge.level += v,
+                RuleWay::Taken | RuleWay::Lowered | RuleWay::Drained | RuleWay::Shrunk => {
+                    gauge.level -= amount(gauge.level);
+                }
+                RuleWay::Dipped => {}
+                RuleWay::InList => {
+                    let held = gauges.get_mut(usize::try_from(v % 2).unwrap_or(0)).ok_or(Stop::Unsure)?;
+                    held.level -= amount(held.level);
+                }
+                RuleWay::ForRef => {
+                    for each in &mut gauges {
+                        each.level = if breaks { -(v + 1) } else { each.level + v };
+                        if each.level < 0 {
+                            break;
+                        }
+                    }
+                }
+                RuleWay::Counted if breaks => {
+                    let [first, _] = gauge.counts;
+                    let _ = writeln!(self.out, "counted {}", first + 20);
+                    stopped = Some(broken("counts"));
+                }
+                RuleWay::Counted => {
+                    for each in gauge.counts {
+                        let _ = writeln!(self.out, "counted {each}");
+                    }
+                }
+                RuleWay::Tagged | RuleWay::TaggedByRef if breaks => {
+                    if way == RuleWay::TaggedByRef {
+                        let _ = writeln!(self.out, "flooded {}", gauge.tags.len() + 4);
+                    }
+                    stopped = Some(broken("tags"));
+                }
+                RuleWay::Tagged | RuleWay::TaggedByRef => {
+                    if gauge.tags.len() < 3 {
+                        gauge.tags.push(format!("{}{v}", if way == RuleWay::Tagged { "t" } else { "r" }));
+                    }
+                }
+                RuleWay::Named if breaks => stopped = Some(broken("name")),
+                RuleWay::Named => gauge.name = format!("n{v}"),
+                RuleWay::Copied => {
+                    if breaks {
+                        stopped = Some(broken("level"));
+                    } else {
+                        let _ = writeln!(self.out, "{}", shown(&Gauge { level: v, ..gauge.clone() }));
+                    }
+                }
+                RuleWay::Made => {
+                    if breaks {
+                        let _ = writeln!(
+                            self.out,
+                            "refused InvalidValue(message=\"Gauge{id}.level breaks its `where` rule\")"
+                        );
+                    } else {
+                        let _ = writeln!(self.out, "made {}", shown(&made(v)));
+                    }
+                }
+                RuleWay::InDict => by_name.level -= amount(by_name.level),
+            }
+            let below = gauge.level < 0 || gauges.iter().any(|held| held.level < 0) || by_name.level < 0;
+            if let Some(said) = stopped.or_else(|| below.then(|| broken("level"))) {
+                self.said = Some(said);
+                return Err(Stop::Failed);
+            }
+        }
+        let _ = writeln!(self.out, "{}", shown(&gauge));
+        let listed: Vec<String> = gauges.iter().map(shown).collect();
+        let _ = writeln!(self.out, "[{}]", listed.join(", "));
+        let _ = writeln!(self.out, "{{\"k\": {}}}", shown(&by_name));
         Ok(())
     }
 

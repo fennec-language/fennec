@@ -74,7 +74,7 @@ pub extern "C" fn channel_new_every(size: i64) -> i64 {
 /// skips what's gone instead of failing. Of a work-queue channel, it gives back the channel's own.
 pub extern "C" fn channel_listen(channel: i64, drop_oldest: i64) -> i64 {
     let Some(found) = find(channel) else { return channel };
-    if let super::Turn::Gives(_) = super::replayed(&found, "listen") {
+    if let super::Turn::Gives(_) = super::replayed(&found, "listen", false) {
         return channel;
     }
     let mut queue = found.queue();
@@ -124,7 +124,7 @@ pub(super) fn push(
 
 /// The next message for `listener`, as `channel_receive` gives back.
 pub(super) fn receive(channel: &Arc<Channel>, listener: i64, timeout_ns: i64, value: &mut i64) -> i64 {
-    let timeout_ns = match super::replayed(channel, "receive") {
+    let timeout_ns = match super::replayed(channel, "receive", false) {
         super::Turn::Live => timeout_ns,
         super::Turn::Goes => -1,
         super::Turn::Gives(code) => return code,

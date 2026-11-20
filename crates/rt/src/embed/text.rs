@@ -93,7 +93,7 @@ pub(super) fn inline(bytes: &[u8]) -> [u64; 3] {
 /// Inlined, so each caller keeps what it knows of `length`. Called from one place, it ran without
 /// its `min`, since every caller then passed 23 or fewer; once a dict's key lookup called it with
 /// any length too, `split`'s parts each paid for the `min` and the registers it took, and
-/// log_crunch took 0.4% more instructions (#2124). Inlined, it takes 1.4% fewer than before that.
+/// `log_crunch` took 0.4% more instructions (#2124). Inlined, it takes 1.4% fewer than before that.
 #[inline]
 pub(super) fn inline_from_words(words: &[u64], start: usize, length: usize) -> [u64; 3] {
     let length = length.min(INLINE_BYTES);

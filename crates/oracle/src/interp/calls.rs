@@ -163,16 +163,16 @@ impl Interp {
         match self.prepare(expr, callee, args) {
             Ok((target, given)) => {
                 let lent = lent_here(args, &given);
-                let called = self.invoke_settled(mark, target, given, expr);
+                let ended = self.invoke_settled(mark, target, given, expr);
                 // What a `ref` lent out of a struct here comes back when the call ends, however it
                 // ends but by a crash, and that struct's `where` rules run on it then: a broken one
                 // stops the program before a failure passes up.
-                if matches!(called, Ok(_) | Err(Flow::Fail(..))) {
+                if matches!(ended, Ok(_) | Err(Flow::Fail(..))) {
                     for place in &lent {
                         self.rules_along(place, expr.span)?;
                     }
                 }
-                called
+                ended
             }
             Err(failed) => self.settled(mark, Err(failed), expr.span),
         }

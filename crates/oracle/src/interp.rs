@@ -1200,7 +1200,7 @@ impl Interp {
                         self.restore(mark);
                         continue;
                     }
-                    let Some(item) = self.indexed_place(place.clone(), position, false, span)? else {
+                    let Some(item) = self.indexed_place(place.clone(), position.clone(), false, span)? else {
                         return unsupported("a position its type's `def []` gives no place for");
                     };
                     self.bind_ref(item_name, item)?;

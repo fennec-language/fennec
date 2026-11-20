@@ -136,16 +136,20 @@ fn compare(path: &str, fennec: Option<&str>) -> ExitCode {
     agree &= judged("debug", &outcome, code, debug, sorted);
     let built = std::env::temp_dir().join(format!("fennec-oracle-{}", std::process::id()));
     let shown_built = built.to_string_lossy().into_owned();
-    let release = limited(
-        Command::new(&fennec).env("FENNEC_NO_DAEMON", "1").args(["build", "--release", path, "-o", &shown_built]),
-    )
-        .and_then(|build| {
-            if build.code == Some(0) {
-                in_fresh(&work, &mut Command::new(&built))
-            } else {
-                Err(format!("the release build failed:\n{}", String::from_utf8_lossy(&build.stderr)))
-            }
-        });
+    let release = limited(Command::new(&fennec).env("FENNEC_NO_DAEMON", "1").args([
+        "build",
+        "--release",
+        path,
+        "-o",
+        &shown_built,
+    ]))
+    .and_then(|build| {
+        if build.code == Some(0) {
+            in_fresh(&work, &mut Command::new(&built))
+        } else {
+            Err(format!("the release build failed:\n{}", String::from_utf8_lossy(&build.stderr)))
+        }
+    });
     let _ = std::fs::remove_file(&built);
     let _ = std::fs::remove_dir_all(&work);
     agree &= judged("release", &outcome, code, release, sorted);

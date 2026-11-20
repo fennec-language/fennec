@@ -89,6 +89,12 @@ pub(super) fn inline(bytes: &[u8]) -> [u64; 3] {
 /// An inline header holding the `length` bytes, 23 or fewer, that start at byte `start` of
 /// `words`, a text's bytes packed eight to a word: each of its words is shifted out of theirs,
 /// with no byte copied on its own.
+///
+/// Inlined, so each caller keeps what it knows of `length`. Called from one place, it ran without
+/// its `min`, since every caller then passed 23 or fewer; once a dict's key lookup called it with
+/// any length too, `split`'s parts each paid for the `min` and the registers it took, and
+/// log_crunch took 0.4% more instructions (#2124). Inlined, it takes 1.4% fewer than before that.
+#[inline]
 pub(super) fn inline_from_words(words: &[u64], start: usize, length: usize) -> [u64; 3] {
     let length = length.min(INLINE_BYTES);
     // The bytes of the part that word `number` of the header holds, with zeros after them.

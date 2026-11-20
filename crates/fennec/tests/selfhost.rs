@@ -375,6 +375,13 @@ fn in_the_library(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("prelude_"))
 }
 
+/// The module a standard library source in the corpus is, from its name: `intrinsics` for
+/// `prelude_intrinsics.fen`.
+fn module_of(path: &Path) -> String {
+    let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+    stem.strip_prefix("prelude_").unwrap_or(&stem).to_owned()
+}
+
 /// Every file the two front ends are compared on. Sources that don't live in files, like the
 /// standard library's, are written into `work`.
 fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
@@ -387,9 +394,8 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
     if std::env::var_os("FENNEC_UNDER_MUTANTS").is_some() {
         paths = paths.into_iter().step_by(MUTANTS_SAMPLE).collect();
     }
-    let generated = fennec_syntax::prelude()
-        .enumerate()
-        .map(|(at, source)| (format!("prelude_{at}"), source))
+    let generated = fennec_syntax::prelude_files()
+        .map(|(name, source)| (format!("prelude_{name}"), source))
         .chain(LEX_CASES.iter().map(|(name, source)| (format!("lex_{name}"), *source)))
         .chain(PARSE_CASES.iter().map(|(name, source)| (format!("parse_{name}"), *source)))
         .chain(CHECK_CASES.iter().map(|(name, source)| (format!("check_{name}"), *source)));
@@ -453,17 +459,30 @@ fn selfhost(
     mode: &str,
     corpus: &[PathBuf],
     files: &[&PathBuf],
-    mut command: Command,
+    command: Command,
 ) -> Result<String, String> {
     let mut inputs = String::new();
     if mode == "check" {
-        for path in corpus.iter().filter(|path| in_the_library(path)) {
-            let _ = writeln!(inputs, "std {}", path.display());
-        }
+        inputs.push_str(&library_lines(corpus));
     }
     for path in files {
         let _ = writeln!(inputs, "{mode} {}", path.display());
     }
+    given(work, &inputs, command)
+}
+
+/// The lines naming the standard library's sources in `corpus` to the self-hosted front end, each
+/// with its module, which says what it keeps.
+fn library_lines(corpus: &[PathBuf]) -> String {
+    let mut lines = String::new();
+    for path in corpus.iter().filter(|path| in_the_library(path)) {
+        let _ = writeln!(lines, "std {} {}", module_of(path), path.display());
+    }
+    lines
+}
+
+/// What the self-hosted front end prints given `inputs`, the lines of its work, in `work`.
+fn given(work: &Path, inputs: &str, mut command: Command) -> Result<String, String> {
     let mut child = command
         .current_dir(work)
         .stdin(Stdio::piped())
@@ -710,6 +729,54 @@ fn checked(source: &str) -> String {
         },
         Err(diagnostic) => fennec_syntax::dump::error(&diagnostic),
     }
+}
+
+/// The standard library as the Rust checker reads it, as the self-hosted front end's `library`
+/// line dumps its own: under each module's name, its functions, and each method of a type or an
+/// `extend`.
+fn library_read_by_rust() -> Result<String, String> {
+    let modules = fennec_syntax::prelude_modules().map_err(|problem| problem.message)?;
+    let mut out = String::new();
+    for ((name, _), module) in fennec_syntax::prelude_files().zip(modules) {
+        let _ = writeln!(out, "-- {name}");
+        for item in &module.items {
+            match item {
+                // Rust's parse names a module's function by its module too, as `base64.encode`,
+                // where the self-hosted front end keeps the name as written.
+                fennec_syntax::Item::Function(def) => {
+                    let _ = writeln!(out, "{}", def.name.rsplit('.').next().unwrap_or(&def.name));
+                }
+                fennec_syntax::Item::Extend(extension) => {
+                    for method in &extension.methods {
+                        let _ = writeln!(out, "{}.{}", extension.name, method.name);
+                    }
+                }
+                fennec_syntax::Item::Struct(def)
+                | fennec_syntax::Item::Enum(def)
+                | fennec_syntax::Item::Error(def) => {
+                    for method in &def.methods {
+                        let _ = writeln!(out, "{}.{}", def.name, method.name);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Both front ends read the same standard library: `std.intrinsics`' own functions kept, every
+/// other module's engine declarations left out, and the rest as written. They once didn't, when
+/// the self-hosted one looked for the intrinsics by a file name the corpus never used.
+#[test]
+fn both_front_ends_read_the_same_standard_library() {
+    let read = corpus_for("library")
+        .and_then(|(work, corpus)| given(&work, &format!("{}library\n", library_lines(&corpus)), on_llvm()?));
+    let theirs = read.map_or_else(|problem| panic!("{problem}"), |output| dumps(&output));
+    let ours = library_read_by_rust().unwrap_or_else(|problem| panic!("{problem}"));
+    let theirs = theirs.iter().find(|(name, _)| name == "library").map_or("", |(_, dump)| dump.as_str());
+    assert!(ours.contains("\n-- intrinsics\n"), "{ours}");
+    assert_eq!(theirs, ours);
 }
 
 #[test]

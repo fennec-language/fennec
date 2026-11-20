@@ -3779,17 +3779,96 @@ fn with_daemon(dir: &Path, home: &Path, idle: &str, args: &[&str]) -> std::io::R
         .env("FENNEC_HOME", home)
         .env("FENNEC_DAEMON_IDLE", idle)
         .env_remove("FENNEC_NO_DAEMON")
+        .env("FENNEC_DAEMONS", crate::executables::daemons_of(home))
         .output()
 }
 
-/// Waits up to 5 seconds for the daemon to be gone.
+/// Waits up to 5 seconds for the daemon to be gone, with nothing of it left noted.
 #[cfg(unix)]
 fn stops(dir: &Path, home: &Path) -> bool {
+    let noted = || {
+        std::fs::read_dir(crate::executables::daemons_of(home)).map_or(0, |listing| {
+            listing
+                .flatten()
+                .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "daemon"))
+                .count()
+        })
+    };
     (0..250).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        with_daemon(dir, home, "30", &["daemon", "status"])
-            .is_ok_and(|output| text(&output.stdout) == "not running\n")
+        noted() == 0
+            && with_daemon(dir, home, "30", &["daemon", "status"])
+                .is_ok_and(|output| text(&output.stdout) == "not running\n")
     })
+}
+
+/// A command for Fennec's folder in the temp folder, as a fuzzer's or a script's is, never starts a
+/// build daemon, which would wait half an hour for a folder nothing builds in again: it does its
+/// work itself. A test's own (`FENNEC_DAEMONS`) does start.
+#[cfg(unix)]
+#[test]
+fn a_fennec_folder_in_the_temp_folder_starts_no_daemon() {
+    let (_folder, kit, home) = small_kit("temp-no-daemon").unwrap();
+    let changes = crate::executables::fennec_command()
+        .args(["dev", "changes"])
+        .current_dir(&kit)
+        .env("FENNEC_HOME", &home)
+        .env("FENNEC_DAEMON_IDLE", "30")
+        .env_remove("FENNEC_NO_DAEMON")
+        .env_remove("FENNEC_DAEMONS")
+        .output()
+        .unwrap();
+    assert!(changes.status.success(), "{}", text(&changes.stderr));
+    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert_eq!(status, "not running\n");
+    let started = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
+    assert!(started.status.success(), "{}", text(&started.stderr));
+    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert!(status.starts_with("running:"), "{status}");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
+/// A user runs at most four build daemons: starting a fifth stops the one used longest ago, and
+/// what's noted of each goes with it.
+#[cfg(unix)]
+#[test]
+fn past_four_daemons_the_one_used_longest_ago_stops() {
+    let (_folder, kit, home) = small_kit("daemon-cap").unwrap();
+    let in_environment = |side: &str, args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_DAEMON_IDLE", "30")
+            .env("DAEMON_TEST_SIDE", side)
+            .env_remove("FENNEC_NO_DAEMON")
+            .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
+            .output()
+            .unwrap()
+    };
+    let running = || {
+        text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout)
+            .lines()
+            .filter(|line| line.starts_with("running:"))
+            .count()
+    };
+    for side in ["first", "second", "third", "fourth"] {
+        assert!(in_environment(side, &["dev", "changes"]).status.success());
+        // Each used after the last, as the notes' times tell.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(running(), 4);
+    assert!(in_environment("fifth", &["dev", "changes"]).status.success());
+    let four = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        running() == 4
+    });
+    assert!(four, "{} daemons run", running());
+    let noted = std::fs::read_dir(crate::executables::daemons_of(&home)).unwrap().count();
+    assert_eq!(noted, 4);
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemons didn't stop");
 }
 
 /// Makes a folder a git repository with everything in it committed, giving back the commit.
@@ -5290,6 +5369,7 @@ fn a_daemon_serves_a_fennec_folder_too_deep_for_a_socket() {
             .env("TMPDIR", &home)
             .env("FENNEC_DAEMON_IDLE", "30")
             .env_remove("FENNEC_NO_DAEMON")
+            .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
             .env_remove("XDG_RUNTIME_DIR")
             .output()
             .unwrap()
@@ -5362,6 +5442,7 @@ fn status_and_stop_reach_the_daemon_of_every_environment() {
             .env("FENNEC_DAEMON_IDLE", "30")
             .env("DAEMON_TEST_SIDE", environment)
             .env_remove("FENNEC_NO_DAEMON")
+            .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
             .output()
             .unwrap()
     };
@@ -5384,7 +5465,7 @@ fn build_in(kit: &Path, home: &Path, daemon: bool, ci: bool) -> std::io::Result<
     command.args(["build", ".", "-o", "prog"]).current_dir(kit).env("FENNEC_HOME", home);
     command.env("FENNEC_DAEMON_IDLE", "30").env_remove("CI");
     if daemon {
-        command.env_remove("FENNEC_NO_DAEMON");
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
     }
     if ci {
         command.env("CI", "true");
@@ -5565,7 +5646,7 @@ fn fennec_in_kit(
     command.args(args).current_dir(kit).env("FENNEC_HOME", home).env("FENNEC_DAEMON_IDLE", "30");
     command.env_remove("CI").stdin(Stdio::piped());
     if daemon {
-        command.env_remove("FENNEC_NO_DAEMON");
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
     }
     let printed = kit.with_file_name(format!("printed-{daemon}"));
     if one_file {
@@ -5697,7 +5778,11 @@ fn a_test_command_gone_stops_its_tests_in_the_daemon() {
     let said = kit.with_file_name("said");
     let mut command = crate::executables::fennec_command();
     command.args(["test"]).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", "30");
-    command.env_remove("CI").env_remove("FENNEC_NO_DAEMON").stdout(Stdio::null());
+    command
+        .env_remove("CI")
+        .env_remove("FENNEC_NO_DAEMON")
+        .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
+        .stdout(Stdio::null());
     let mut testing = command.stderr(std::fs::File::create(&said).unwrap()).spawn().unwrap();
     // The tests' executable is in the Fennec folder's `work` while they run, and goes once
     // they're done.
@@ -5754,6 +5839,7 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
         .env("FENNEC_DAEMON_IDLE", "30")
         .env("FENNEC_CACHE_CAP", "5000")
         .env_remove("FENNEC_NO_DAEMON")
+        .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
         .output()
         .unwrap();
     // The daemon cleans when nothing else is going on, which on a busy machine can take a while.

@@ -17,8 +17,8 @@ use crate::emit::Emit;
 use crate::kinds::Kind;
 use crate::lists::FIELDS_OFFSET;
 
-/// The prefix of the `shared` types `lock` is lowered onto.
-const LOCKED: &str = "Shared__";
+/// The prefix of every `shared` value's hidden type, `Shared__T`, which `lock` is lowered onto.
+pub(crate) const LOCKED: &str = "Shared__";
 
 /// What a word of a lock's own cell holds, for the runtime to know what it's putting back.
 #[derive(Clone, Copy)]

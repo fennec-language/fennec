@@ -11,14 +11,26 @@ set -u
 out=$1
 crate=$2
 slice=$3
-count() { [ -f "$out/$1.txt" ] && grep -c . "$out/$1.txt" || echo 0; }
+# One count, from what cargo-mutants listed: 0 for a list that's empty or not there. `grep -c`
+# prints its 0 and fails then, so `|| echo 0` once made it "0" twice, and the line below was never
+# written.
+count() {
+  local n
+  n=$(grep -c . "$out/$1.txt" 2> /dev/null) || true
+  echo "${n:-0}"
+}
 missed=$(count missed)
 caught=$(count caught)
 timeout=$(count timeout)
 unviable=$(count unviable)
 echo "## $crate, slice $slice"
 echo
-echo "$((missed + caught + timeout + unviable)) mutants tried: $missed missed, $caught caught, $timeout hung (which counts as caught), $unviable didn't build."
+echo "$((missed + caught + timeout + unviable)) mutants tried: $caught caught, $missed missed, $timeout timed out, $unviable didn't build."
+# A timeout is neither: the tests ran past the limit before saying either way.
+if [ $((2 * timeout)) -gt $((caught + missed + timeout)) ]; then
+  echo
+  echo "**Most of those that built timed out, so this slice checked next to nothing.**"
+fi
 [ "$missed" -eq 0 ] && exit 0
 echo
 echo "Missed, by file, most first:"

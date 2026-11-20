@@ -744,14 +744,6 @@ mod unix {
         None
     }
 
-    /// What the daemon keeps from one build to the next, as it builds one program after another:
-    /// what each loaded, and each function's analysis.
-    fn keep_between_builds() {
-        *crate::aot::KEPT_LOAD.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(fennec_kit::KeptLoad::default());
-        fennec_llvm::keep_analyses_between_builds();
-    }
-
     /// Serves requests until stopped or idle for too long.
     pub(super) fn serve(home: &Path) -> ExitCode {
         // Its owner is whom the socket's folder has to belong to.
@@ -791,8 +783,11 @@ mod unix {
             std::fs::symlink_metadata(&socket).map(|found| std::os::unix::fs::MetadataExt::ino(&found)).ok()
                 != bound
         };
-        let mut ticks: u32 = 0;
-        keep_between_builds();
+        // Each build keeps what it loaded for the next.
+        *crate::aot::KEPT_LOAD.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(fennec_kit::KeptLoad::default());
+        // And each function's analysis.
+        fennec_llvm::keep_analyses_between_builds();
         let state = Arc::new(Mutex::new(State {
             home: home.to_path_buf(),
             snapshots: HashMap::new(),
@@ -803,13 +798,44 @@ mod unix {
             stopping: false,
             noted: noted.clone(),
         }));
+        if listen(&listener, home, &state, &replaced) == Ended::Replaced {
+            gone(&noted);
+            return ExitCode::SUCCESS;
+        }
+        let _ = std::fs::remove_file(&socket);
+        gone(&noted);
+        // The short folder under `/tmp`, once no daemon of another build is listening in it.
+        if let Some(folder) = socket.parent().filter(|folder| folder.parent() == Some(Path::new("/tmp"))) {
+            let _ = std::fs::remove_dir(folder);
+        }
+        ExitCode::SUCCESS
+    }
+
+    /// How a daemon's serving ended: another daemon took its socket's path, and the socket is
+    /// that one's now, or it stopped or had nothing to do for long enough, and its socket goes.
+    #[derive(PartialEq, Eq)]
+    enum Ended {
+        Replaced,
+        Done,
+    }
+
+    /// Answers each connection on a thread of its own, until the daemon is told to stop, has had
+    /// nothing to do for long enough, or another daemon has taken its socket's path (`replaced`).
+    /// While nothing else is going on, it keeps the cache under its cap.
+    fn listen(
+        listener: &UnixListener,
+        home: &Path,
+        state: &Arc<Mutex<State>>,
+        replaced: &dyn Fn() -> bool,
+    ) -> Ended {
+        let mut ticks: u32 = 0;
         let idle = idle_limit();
         let cache = Cache::new(home);
         let mut last_cleanup: Option<Instant> = None;
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let state = Arc::clone(&state);
+                    let state = Arc::clone(state);
                     std::thread::spawn(move || answer(stream, &state, REQUEST_WAIT));
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -819,14 +845,13 @@ mod unix {
                         state.stopping || (state.sessions == 0 && state.last_work.elapsed() > idle)
                     };
                     if done {
-                        break;
+                        return Ended::Done;
                     }
                     // Once a second: whether another daemon took the path, leaving this one
                     // unreachable. It leaves the other's socket where it is.
                     ticks = ticks.wrapping_add(1);
                     if ticks.is_multiple_of(50) && replaced() {
-                        gone(&noted);
-                        return ExitCode::SUCCESS;
+                        return Ended::Replaced;
                     }
                     // The daemon owns the cache, so it keeps it under its cap, in time when
                     // nothing else is going on.
@@ -837,16 +862,9 @@ mod unix {
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                Err(_) => break,
+                Err(_) => return Ended::Done,
             }
         }
-        let _ = std::fs::remove_file(&socket);
-        gone(&noted);
-        // The short folder under `/tmp`, once no daemon of another build is listening in it.
-        if let Some(folder) = socket.parent().filter(|folder| folder.parent() == Some(Path::new("/tmp"))) {
-            let _ = std::fs::remove_dir(folder);
-        }
-        ExitCode::SUCCESS
     }
 
     /// Answers one connection, whose request has `wait` to arrive whole.

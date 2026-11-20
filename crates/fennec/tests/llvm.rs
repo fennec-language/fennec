@@ -9542,6 +9542,80 @@ fn deadlock_fixture_runs_with(
     Ok(())
 }
 
+/// A deadlock recorded replays to the same report: each program that deadlocks in the tests below,
+/// recorded at 4 threads, says its deadlock and ends with 1, and its recording ends with the
+/// deadlock's lines. Replayed, at 1, 4 and 16 threads, each task's waits past its recording's end
+/// are the ones it was in, so the check finds the same deadlock, prints the same, and ends with 1.
+#[test]
+fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let deadlocking = [
+        "receive_alone",
+        "each_other",
+        "block_end",
+        "send_full",
+        "last_ends",
+        "inside_a_task",
+        "stuck_ranges",
+        "stuck_ranges_in_task",
+        "nested_call",
+        "ring",
+        "sibling_fails",
+        "two_fail",
+        "sibling_crashes",
+        // Ranges a failure kept from starting, logged as they're kept, since the call's end, where
+        // they were logged, never comes; and tasks whose numbers depend on which range launched
+        // first, which a replay says as its recording did (Fable 5.2's review, 2026-11-20).
+        "skipped_would_wait",
+        "range_at_block_end",
+    ];
+    for name in deadlocking {
+        let dir = folder(&format!("deadlock-replays-{name}"))?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/deadlocks/{name}.fen")),
+            &program,
+        )?;
+        let log = dir.join("run.log");
+        // What it printed, and what it said from the deadlock on: a build that isn't cached says
+        // hints of its own first, which only the recording, building it, may have.
+        let said = |ran: &Output| {
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            let deadlock =
+                errors.find("error: ").and_then(|at| errors.get(at..)).unwrap_or(&errors).to_owned();
+            (String::from_utf8_lossy(&ran.stdout).into_owned(), deadlock, ran.status.code())
+        };
+        let recorded = said(
+            &crate::executables::fennec_command()
+                .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+                .arg(&program)
+                .current_dir(&dir)
+                .env("FENNEC_THREADS", "4")
+                .output_within()?,
+        );
+        assert!(
+            recorded.1.starts_with("error: a deadlock") && recorded.2 == Some(1),
+            "{name} recorded: {recorded:?}"
+        );
+        // Many times where which task got which number is the run's own.
+        let times = if name == "range_at_block_end" { 24 } else { 1 };
+        for threads in ["1", "4", "16"] {
+            for _ in 0..times {
+                let replayed = crate::executables::fennec_command()
+                    .args(["replay", &log.to_string_lossy()])
+                    .current_dir(&dir)
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                assert_eq!(said(&replayed), recorded, "{name} replayed at {threads} threads");
+            }
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
 /// When `main` and every task wait on each other for good, in channel sends and receives and at
 /// blocks' ends with no time limit, the program stops with exit code 1, after what it printed,
 /// saying who waits for what, as Go's "all goroutines are asleep" does. Without threads, `main`

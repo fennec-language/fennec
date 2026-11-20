@@ -86,3 +86,59 @@ fn the_fennec_command_never_imports_what_std_keeps_for_itself() -> std::io::Resu
     assert!(checked.status.success(), "fennec-std-tests refused the import: {said}");
     Ok(())
 }
+
+/// `fennec-std-tests` works in its own process, with the build daemon allowed: it never starts one.
+/// One it started would share `fennec`'s, keyed by the same build, and what a daemon keeps from
+/// one command to the next would then reach `fennec`. `fennec` itself, run the same way, does start
+/// one, so a start would be seen.
+#[cfg(unix)]
+#[test]
+fn fennec_std_tests_starts_no_daemon() -> std::io::Result<()> {
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-std-tests-daemon-{}", std::process::id())),
+    );
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home)?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hi\")\n    return\n")?;
+    let shown = program.to_string_lossy();
+    // As a test's own daemons are allowed to start, in a home in the temp folder.
+    let allowed = |mut command: Command| {
+        command
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
+            .env("FENNEC_DAEMON_IDLE", "30")
+            .env_remove("FENNEC_NO_DAEMON")
+            .env_remove("CI");
+        command
+    };
+    let status = || -> std::io::Result<String> {
+        let said =
+            allowed(crate::executables::fennec_command()).args(["daemon", "status"]).output_within()?;
+        Ok(String::from_utf8_lossy(&said.stdout).into_owned())
+    };
+    let ran = allowed(crate::executables::fennec_command())
+        .args(["run", "--no-test", &shown])
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(ran.status.success() && ran.stdout == b"hi\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    let running = status()?;
+    assert!(running.starts_with("running:"), "fennec started no daemon, so none would be seen: {running}");
+    allowed(crate::executables::fennec_command()).args(["daemon", "stop"]).output_within()?;
+    let mut stopped = status()?;
+    for _ in 0..50 {
+        if stopped == "not running\n" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        stopped = status()?;
+    }
+    assert_eq!(stopped, "not running\n", "fennec's daemon didn't stop");
+    let ran =
+        allowed(std_tests_command()).args(["run", "--no-test", &shown]).output_before(FENNEC_DEADLINE)?;
+    assert!(ran.status.success() && ran.stdout == b"hi\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(status()?, "not running\n", "fennec-std-tests started a daemon");
+    Ok(())
+}

@@ -300,6 +300,8 @@ pub(crate) fn named_arguments(ty: &Type, name: &str) -> &'static [&'static str] 
         Some("Connection") if name == "read_line" => &["crlf", "timeout"],
         Some(owner) if waits_on_network(owner, name) => &["timeout"],
         Some("Net") if name == "_udp" => &["port"],
+        // `durable=False` puts a whole file in its path's place without waiting for the disk.
+        Some("Fs") if matches!(name, "write_text" | "write_bytes") => &["durable"],
         Some("Process") if name == "run" => &["cwd", "env", "input", "most_output", "timeout"],
         Some("Net") if matches!(name, "get" | "post" | "request") => {
             &["body", "headers", "json", "most_body", "params", "timeout"]
@@ -580,9 +582,9 @@ impl FnCx<'_> {
                     }
                 }
                 Some("tls") if named.contains(&"tls") => self.tls_option(name, &ty, arg.value.span),
-                Some("crlf") if named.contains(&"crlf") => {
+                Some(option @ ("crlf" | "durable")) if named.contains(&option) => {
                     if !self.checker.fits(&Type::Bool, &ty) {
-                        self.error(mismatch("`crlf`", &Type::Bool, &ty, arg.value.span));
+                        self.error(mismatch(&format!("`{option}`"), &Type::Bool, &ty, arg.value.span));
                     }
                 }
                 Some(option @ ("indent" | "level" | "port" | "most_output" | "most_body" | "most"))

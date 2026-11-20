@@ -9,7 +9,7 @@ impl Checker {
     /// Checks each program type's protocol methods, as declared.
     pub(crate) fn check_protocols(&mut self) {
         let mut problems = Vec::new();
-        for info in self.program.types.values().filter(|info| !info.prelude) {
+        for info in self.program.types.values().filter(|info| self.reports(info.prelude)) {
             for method in &info.def.methods {
                 problems.extend(protocol_problem(&info.def.name, method));
             }

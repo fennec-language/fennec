@@ -542,15 +542,64 @@ fn run_workers(work: &std::path::Path, tests: usize) -> Vec<String> {
             .iter()
             .map(|share| {
                 scope.spawn(move || {
-                    test_command(work)
-                        .args(share)
-                        .output()
+                    let mut command = test_command(work);
+                    command.args(share);
+                    stoppable_output(command)
                         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
                 })
             })
             .collect();
         running.into_iter().filter_map(|worker| worker.join().ok()?.ok()).collect()
     })
+}
+
+/// The test executables running, each by a number of its own, for `stop_workers`.
+static RUNNING: std::sync::Mutex<Vec<(u64, std::process::Child)>> = std::sync::Mutex::new(Vec::new());
+
+/// Kills every test executable running. The build daemon calls it when the command it runs tests
+/// for has gone, as on Ctrl-C, since a test may never end by itself. Each is still this process's
+/// to wait for while it's listed, so what's killed is never another process by then.
+pub(crate) fn stop_workers() {
+    for (_, child) in RUNNING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter_mut() {
+        let _ = child.kill();
+    }
+}
+
+/// What `command` wrote and how it ended, as `Command::output` gives them, with no input. It's
+/// killed if `stop_workers` is called while it runs, or was before it was listed: a build asked
+/// to stop (`fennec_build::cancelled`) calls that.
+fn stoppable_output(mut command: Command) -> std::io::Result<std::process::Output> {
+    use std::io::Read as _;
+    use std::process::Stdio;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other("a test executable's output couldn't be read"));
+    };
+    let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    RUNNING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((number, child));
+    if fennec_build::cancelled() {
+        stop_workers();
+    }
+    let (out, err) = std::thread::scope(|scope| {
+        let err = scope.spawn(move || {
+            let mut said = Vec::new();
+            let _ = stderr.read_to_end(&mut said);
+            said
+        });
+        let mut wrote = Vec::new();
+        let _ = stdout.read_to_end(&mut wrote);
+        (wrote, err.join().unwrap_or_default())
+    });
+    let child = {
+        let mut running = RUNNING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = running.iter().position(|(listed, _)| *listed == number);
+        at.map(|at| running.swap_remove(at).1)
+    };
+    let status = child.ok_or_else(|| std::io::Error::other("a test executable went missing"))?.wait()?;
+    Ok(std::process::Output { status, stdout: out, stderr: err })
 }
 
 /// Runs the tests of a checked `module` named in `wanted` that LLVM can take. `defines` says
@@ -643,7 +692,12 @@ fn rerun_crashed(work: &std::path::Path, taken: &[&TestDef], seen: &[bool], resu
         if seen.get(number).copied().unwrap_or(true) {
             continue;
         }
-        let (output, crash) = run_alone(work, number);
+        // A test stopped with the command that wanted it didn't pass, and isn't run again.
+        let (output, crash) = if fennec_build::cancelled() {
+            (String::new(), "the command that ran it was stopped".to_owned())
+        } else {
+            run_alone(work, number)
+        };
         let line = output.lines().filter_map(read_line).find(|(at, _, _)| *at == number);
         let failure = match line {
             Some((_, failure, _)) => failure,
@@ -666,7 +720,9 @@ fn rerun_crashed(work: &std::path::Path, taken: &[&TestDef], seen: &[bool], resu
 /// Runs test `number` of a tests executable alone, giving what it wrote, and how it ended, in words,
 /// with the first thing it said on standard error.
 fn run_alone(work: &std::path::Path, number: usize) -> (String, String) {
-    match test_command(work).arg(number.to_string()).output() {
+    let mut command = test_command(work);
+    command.arg(number.to_string());
+    match stoppable_output(command) {
         Ok(output) => {
             let said = String::from_utf8_lossy(&output.stderr);
             let first = said.lines().next().unwrap_or_default();

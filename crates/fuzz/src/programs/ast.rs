@@ -1470,6 +1470,141 @@ pub(crate) enum LockWay {
 pub(crate) const LOCK_WAYS: [LockWay; 4] =
     [LockWay::Moved, LockWay::Crashed, LockWay::Summed, LockWay::HalfRef];
 
+/// An `Arrayed` statement: `arrayed{id}(stdout)`, a `Grid{id}` of fixed-size arrays, of ints, of
+/// structs holding a list, of optional structs, of texts and of arrays, held in a list, a Table and
+/// a dict too, beside a loose array, then a step at a time, then what each holds. An array is held
+/// inline, so a plain `=` copies it and each copy changes apart, and an index past either end stops
+/// the program however it's reached.
+#[derive(Clone, Debug)]
+pub(crate) struct Arraying {
+    pub(crate) id: usize,
+    pub(crate) steps: Vec<ArrayStep>,
+}
+
+/// A step of an `Arrayed` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArrayStep {
+    pub(crate) way: ArrayWay,
+    /// The place it picks, from 0 to 3, taken modulo the length of the array it indexes.
+    pub(crate) at: usize,
+    /// What it writes or adds, from -9 to 9.
+    pub(crate) value: i64,
+    /// Whether a `Looped` or `Picked` index goes past the array's end, which stops the program.
+    pub(crate) past: bool,
+}
+
+impl ArrayStep {
+    /// The bound a `Looped` step's loop reaches: from 1 to 4, or 5 past the end of `counts`.
+    pub(crate) fn bound(self) -> i64 {
+        if self.past { 5 } else { 1 + i64::try_from(self.at % 4).unwrap_or(0) }
+    }
+
+    /// The index a `Picked` step writes at: from -4 to 3, counting from the end when it's
+    /// negative, or 4 or -5, one past either end of `counts`.
+    pub(crate) fn picked(self) -> i64 {
+        let at = i64::try_from(self.at % 4).unwrap_or(0);
+        match (self.past, at % 2 == 0) {
+            (true, true) => 4,
+            (true, false) => -5,
+            (false, _) if self.value < 0 => at - 4,
+            (false, _) => at,
+        }
+    }
+}
+
+/// How an `Arrayed` step goes. `counts` is an `array[int, 4]`, `cells` an `array[Cell{id}, 3]` of
+/// structs holding a list, `slots` an `array[Cell{id}?, 2]`, `names` an `array[str, 2]` and `rows`
+/// an `array[array[int, 2], 2]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArrayWay {
+    /// `grid.counts[at] = value`.
+    Set,
+    /// `grid.counts[at] += value`.
+    Added,
+    /// `grid.counts[-1 - at] += value`: counted from the end.
+    FromEnd,
+    /// `copy = grid.counts`, `copy[at] = value`, both printed: the copy changes apart.
+    Copied,
+    /// `grid.counts = loose`, then `loose[at] = value`: the grid keeps what it was given.
+    Replaced,
+    /// `for ref each in grid.counts: each += value`.
+    ForRef,
+    /// `for ref cell in grid.cells`, each one's `hp` added to and a tag appended.
+    ForRefCells,
+    /// `grid.cells[at].hp = value`.
+    CellSet,
+    /// `grid.cells[at].tags.append(...)`: a list in a struct in an array.
+    CellTagged,
+    /// `grid.slots[at] = Cell{id}(hp=value)`.
+    SlotFilled,
+    /// `grid.slots[at] = None`.
+    SlotCleared,
+    /// `for ref slot in grid.slots`, each one there added to.
+    ForRefSlots,
+    /// `grid.slots[at] is None`, printed, and the `hp` of what's there or else of `Cell{id}()`.
+    SlotRead,
+    /// `grids[at].counts[at] += value`: an array in a struct in a list.
+    InList,
+    /// `for ref each in grids: each.counts[at] += value`.
+    ForRefList,
+    /// `table[first].counts[at] = value`: an array in a struct in a Table.
+    InTable,
+    /// `by_name["k"].counts[at] += value`: an array in a struct in a dict.
+    InDict,
+    /// `bumped{id}(ref grid.counts, by=value)`: an array given by `ref`.
+    ByRef,
+    /// `summed{id}(grid.counts)`, printed: an array given as a value and copied inside, the copy
+    /// changed, which the caller's must not see.
+    ByValue,
+    /// `value in grid.counts`, `len` of each array, `grid.counts == other.counts` and `list(...)`,
+    /// printed.
+    Read,
+    /// `grid.rows[at][at + 1] += value`: an array of arrays.
+    Rows,
+    /// `row = grid.rows[at]`, `row[1] = value`, both printed.
+    RowCopied,
+    /// `grid.names[at] += ...`: a text in an array.
+    Named,
+    /// `whole = grid`, its counts and its first cell's tags changed, both printed: a struct's
+    /// arrays copied with it, lists inside them too.
+    WholeCopied,
+    /// `for k in range(at{id}(n)): grid.counts[k] += value`, with `n` from 1 to 4, or 5 when it's
+    /// `past`: a bound the proofs can't see, so each index keeps its check.
+    Looped,
+    /// `grid.counts[at{id}(i)] = value`, with `i` from -4 to 3, or 4 or -5 when it's `past`.
+    Picked,
+}
+
+/// Every `ArrayWay`, for the generator to pick from.
+pub(crate) const ARRAY_WAYS: [ArrayWay; 26] = [
+    ArrayWay::Set,
+    ArrayWay::Added,
+    ArrayWay::FromEnd,
+    ArrayWay::Copied,
+    ArrayWay::Replaced,
+    ArrayWay::ForRef,
+    ArrayWay::ForRefCells,
+    ArrayWay::CellSet,
+    ArrayWay::CellTagged,
+    ArrayWay::SlotFilled,
+    ArrayWay::SlotCleared,
+    ArrayWay::ForRefSlots,
+    ArrayWay::SlotRead,
+    ArrayWay::InList,
+    ArrayWay::ForRefList,
+    ArrayWay::InTable,
+    ArrayWay::InDict,
+    ArrayWay::ByRef,
+    ArrayWay::ByValue,
+    ArrayWay::Read,
+    ArrayWay::Rows,
+    ArrayWay::RowCopied,
+    ArrayWay::Named,
+    ArrayWay::WholeCopied,
+    ArrayWay::Looped,
+    ArrayWay::Picked,
+];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1742,6 +1877,8 @@ pub(crate) enum Stmt {
     Ordered(InOrder),
     /// `locked_together{id}(stdout)`: two `shared` values taken in one `lock`, changed and put back.
     LockedTogether(LockingTogether),
+    /// `arrayed{id}(stdout)`: fixed-size arrays held inline, copied by `=` and changed apart.
+    Arrayed(Arraying),
     /// `interfaced{id}(stdout)`: two types with one interface, through generic functions bounded by it.
     Interfaced(Interfacing),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.

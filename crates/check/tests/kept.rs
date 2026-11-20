@@ -2,7 +2,8 @@
 //! What the edit build finds is what a build that keeps nothing finds, and each check that
 //! carried anything over is compared with checking it all again, as a dev build's sample is.
 
-use fennec_check::{KeptCheck, check_to_build_keeping, check_to_build_saying};
+use fennec_check::{Edit, KeptCheck, check_to_build_keeping, check_to_build_saying};
+use fennec_syntax::Span;
 
 /// What a build gives back: its signatures, shown with each open type variable's number taken
 /// out, since two checks that agree can number theirs apart, and whether they're of the module as
@@ -41,11 +42,20 @@ fn parsed(source: &str) -> Result<fennec_syntax::Module, Vec<String>> {
 /// A build of `source` that keeps what its check finds, carrying over from `kept`, with each check
 /// that carried anything over compared with checking it all again.
 fn kept_build(source: &str, kept: Option<KeptCheck>) -> (Built, Option<KeptCheck>) {
+    kept_build_after(source, kept, None)
+}
+
+/// `kept_build`, told what the edit since the kept check changed, as a build reads the texts.
+fn kept_build_after(
+    source: &str,
+    kept: Option<KeptCheck>,
+    edit: Option<&Edit>,
+) -> (Built, Option<KeptCheck>) {
     let mut module = match parsed(source) {
         Ok(module) => module,
         Err(problems) => return (Err(problems), None),
     };
-    match check_to_build_keeping(&mut module, kept, true) {
+    match check_to_build_keeping(&mut module, (kept, edit), true) {
         Ok((signatures, as_left, kept)) => (built(Ok((signatures, as_left))), Some(kept)),
         Err(problems) => (built(Err(problems)), None),
     }
@@ -66,6 +76,117 @@ fn edited(before: &str, after: &str) -> (Option<usize>, Vec<String>) {
     let (found, kept) = kept_build(after, kept);
     assert_eq!(found, cold_build(after));
     (kept.map(|kept| kept.carried_over()), found.err().unwrap_or_default())
+}
+
+/// The text of a one-file program that an edit from `before` to `after` changed or moved, as a
+/// build reads it: from the first byte that differs to the last, when the length is the same, or
+/// else to the file's end.
+fn dirty_between(before: &str, after: &str) -> Vec<Span> {
+    let prefix = before.bytes().zip(after.bytes()).take_while(|(was, is)| was == is).count();
+    if prefix == before.len() && prefix == after.len() {
+        return Vec::new();
+    }
+    let room = before.len().min(after.len()) - prefix;
+    let suffix =
+        before.bytes().rev().zip(after.bytes().rev()).take_while(|(was, is)| was == is).count().min(room);
+    let end = if before.len() == after.len() { before.len() - suffix } else { slot_end(before, after) };
+    vec![Span { start: at(prefix), end: at(end) }]
+}
+
+/// An offset as a span's.
+fn at(offset: usize) -> u32 {
+    u32::try_from(offset).unwrap_or(u32::MAX)
+}
+
+/// Where a one-file program's slot ends, before an edit and after: its slots are 256 KiB each.
+fn slot_end(before: &str, after: &str) -> usize {
+    (before.len().max(after.len()) + 1).next_multiple_of(1 << 18)
+}
+
+/// What an edit from `before` to `after` of a one-file program changed, as a build tells a check.
+fn edit_between(before: &str, after: &str) -> Edit {
+    Edit {
+        dirty: dirty_between(before, after),
+        files: vec![Span { start: 0, end: at(slot_end(before, after)) }],
+    }
+}
+
+/// Builds `before`, keeping its check, then `after`, carrying over from it as a build told what the
+/// edit changed or moved does. The edit build finds just what a build of `after` that keeps nothing
+/// finds. Gives back how many functions it could carry over, when it passes, and what it finds
+/// wrong.
+fn edited_moving(before: &str, after: &str) -> (Option<usize>, Vec<String>) {
+    let (first, kept) = kept_build(before, None);
+    assert!(first.is_ok(), "{first:?}");
+    let (found, kept) = kept_build_after(after, kept, Some(&edit_between(before, after)));
+    assert_eq!(found, cold_build(after));
+    (kept.map(|kept| kept.carried_over()), found.err().unwrap_or_default())
+}
+
+/// An edit that makes a function longer moves everything after it in its file. What's before it is
+/// carried over, a type after it whose text is the same is still the same type, and what's after it
+/// is checked again.
+#[test]
+fn an_edit_that_moves_the_rest_of_its_file_carries_over_what_comes_before() {
+    let before = "def main(stdout: Stdout):\n    stdout.print(first(1) + edited(2) + later(3))\n\n\
+                  def first(n: int) -> int:\n    return n + 1\n\n\
+                  def edited(n: int) -> int:\n    return n * 2\n\n\
+                  struct Point:\n    x = 1\n\n\
+                  def later(n: int) -> int:\n    return Point().x + n\n";
+    let after = before.replace("    return n * 2\n", "    total = n * 2\n    return total\n");
+    let (carried, problems) = edited_moving(before, &after);
+    assert!(problems.is_empty(), "{problems:?}");
+    assert!(carried.is_some_and(|carried| carried >= 2), "{carried:?}");
+}
+
+/// A function before an edit that took a default from a type the edit moved, as `Point()` takes
+/// `x = 1`, is checked again: what it found holds where the default was. Each check that carried
+/// anything over agrees with checking it all again, which it wouldn't if this were carried over.
+#[test]
+fn what_took_a_default_from_text_the_edit_moved_is_checked_again() {
+    let before = "def main(stdout: Stdout):\n    stdout.print(Point().x + edited(1))\n\n\
+                  def edited(n: int) -> int:\n    return n * 2\n\n\
+                  struct Point:\n    x = 1\n";
+    let after = before.replace("    return n * 2\n", "    total = n * 2\n    return total\n");
+    let (_, problems) = edited_moving(before, &after);
+    assert!(problems.is_empty(), "{problems:?}");
+    // And one calling a function whose parameter's default the edit moved.
+    let before = "def main(stdout: Stdout):\n    stdout.print(scaled(1) + edited(1))\n\n\
+                  def edited(n: int) -> int:\n    return n * 2\n\n\
+                  def scaled(n: int, by = 3) -> int:\n    return n * by\n";
+    let after = before.replace("    return n * 2\n", "    total = n * 2\n    return total\n");
+    let (_, problems) = edited_moving(before, &after);
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
+/// A declaration whose text changed, a field's default here, carries nothing over; one whose method
+/// changed carries over the rest, since a method is a function.
+#[test]
+fn a_declarations_text_decides_whether_anything_is_carried_over() {
+    let before = "struct Point:\n    x = 1\n\n    def doubled(self) -> int:\n        return self.x * 2\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(Point().doubled() + other(1))\n\n\
+                  def other(n: int) -> int:\n    return n + 1\n";
+    let changed = before.replace("    x = 1\n", "    x = 2\n");
+    assert_eq!(edited_moving(before, &changed), (Some(0), Vec::new()));
+    let method =
+        before.replace("        return self.x * 2\n", "        twice = self.x * 2\n        return twice\n");
+    let (carried, problems) = edited_moving(before, &method);
+    assert!(problems.is_empty(), "{problems:?}");
+    assert!(carried.is_some_and(|carried| carried >= 1), "{carried:?}");
+}
+
+/// A field's type changed under an edit that moved the type: its first line reads the same, but
+/// the type isn't the same, so nothing's carried over and what reads the field is refused, as a
+/// whole check refuses it.
+#[test]
+fn a_field_whose_type_changed_carries_nothing_over() {
+    let before = "def main(stdout: Stdout):\n    stdout.print(1)\n\n\
+                  def next(dot: Dot) -> int:\n    return dot.x + 1\n\n\
+                  struct Dot:\n    x: int\n";
+    let after =
+        before.replace("    return dot.x + 1\n", "    return dot.x + 1\n\n").replace("x: int", "x: str");
+    let (carried, problems) = edited_moving(before, &after);
+    assert_eq!((carried, problems.len()), (None, 1), "{problems:?}");
 }
 
 /// A change to one function's body that leaves what it gives back as it was carries over every
@@ -246,10 +367,19 @@ fn with_a_number_changed(source: &str) -> Option<String> {
     Some(format!("{}{bumped}{}", source.get(..at)?, source.get(at + 1..)?))
 }
 
+/// The program with a comment put in as the second line of its first function written at the top,
+/// which moves everything after it. Nothing when it has none.
+fn with_a_line_put_in(source: &str) -> Option<String> {
+    let first = source.find("\ndef ").map(|at| at + 1).or_else(|| source.starts_with("def ").then_some(0))?;
+    let line_end = first + source.get(first..)?.find('\n')? + 1;
+    Some(format!("{}    # an edit\n{}", source.get(..line_end)?, source.get(line_end..)?))
+}
+
 /// Every kernel, the eight real programs among them, every example and every real-world program
 /// that builds is built again as it is, carrying everything over, then with a number in its last
-/// function changed: each build finds what a build that keeps nothing finds, and each check that
-/// carries anything over agrees with checking it all again.
+/// function changed, then with a line put in near its top, told what that moved: each build finds
+/// what a build that keeps nothing finds, and each check that carries anything over agrees with
+/// checking it all again.
 #[test]
 fn every_program_built_again_after_an_edit_finds_what_a_whole_check_finds() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -263,7 +393,7 @@ fn every_program_built_again_after_an_edit_finds_what_a_whole_check_finds() {
         }
     }
     files.sort();
-    let (mut programs, mut edits) = (0, 0);
+    let (mut programs, mut edits, mut moves) = (0, 0, 0);
     for path in files {
         let source = std::fs::read_to_string(&path).unwrap();
         if fennec_syntax::parse(&source).is_err() {
@@ -276,17 +406,70 @@ fn every_program_built_again_after_an_edit_finds_what_a_whole_check_finds() {
         assert_eq!(again, first, "{shown}, built again as it is");
         let kept = kept.unwrap_or_else(|| panic!("{shown}: built again as it is, nothing was kept"));
         assert!(kept.carried_over() > 0, "{shown}: built again as it is, nothing was carried over");
+        // Checked all again later, as the build daemon does, it agrees as it is, with nothing
+        // copied or written out to compare.
+        let mut module = parsed(&source).unwrap();
+        let (_, _, mut kept) = check_to_build_keeping(&mut module, (Some(kept), None), false).unwrap();
+        let module = kept.take_module().unwrap_or_else(|| panic!("{shown}: no module kept to check again"));
+        let whole = fennec_check::check_whole(&module);
+        assert!(kept.agrees_quickly(&whole), "{shown}: checked all again, it agrees only the slow way");
+        assert_eq!(kept.differs_from(&whole), None, "{shown}: checked all again");
         programs += 1;
         let Some(edited) = with_a_number_changed(&source) else { continue };
         if fennec_syntax::parse(&edited).is_err() {
             continue;
         }
-        let (found, _) = kept_build(&edited, Some(kept));
+        let (found, kept) = kept_build(&edited, Some(kept));
         assert_eq!(found, cold_build(&edited), "{shown}, with a number changed");
         edits += 1;
+        // Then a line put in near the top, which moves most of the file.
+        let Some(kept) = kept else { continue };
+        let Some(lined) = with_a_line_put_in(&edited) else { continue };
+        let (found, _) = kept_build_after(&lined, Some(kept), Some(&edit_between(&edited, &lined)));
+        assert_eq!(found, cold_build(&lined), "{shown}, with a line put in");
+        moves += 1;
     }
     assert!(programs >= 100, "only {programs} programs were built");
     assert!(edits >= 50, "only {edits} programs were edited");
+    assert!(moves >= 50, "only {moves} programs had a line put in");
+}
+
+/// Files as a load lays them out, each in a slot of its own.
+fn sources_of(files: &[(&str, &str)]) -> fennec_syntax::Sources {
+    let mut sources = fennec_syntax::Sources::default();
+    for (path, text) in files {
+        sources.add(*path, *text);
+    }
+    sources
+}
+
+/// An edit of the same length is its changed bytes alone; one that changes the length runs to the
+/// end of the file's slots: where the next file starts. An unchanged file has none.
+#[test]
+fn an_edits_text_is_its_changed_bytes_or_to_the_end_of_its_slots() {
+    const SLOT: u32 = 1 << 18;
+    let before = sources_of(&[("a.fen", "def f():\n    pass\n"), ("b.fen", "x = 1\n")]);
+    let dirty = |after: &[(&str, &str)]| Edit::between(&before, &sources_of(after)).map(|edit| edit.dirty);
+    let same_length = dirty(&[("a.fen", "def g():\n    pass\n"), ("b.fen", "x = 1\n")]);
+    assert_eq!(same_length, Some(vec![Span { start: 4, end: 5 }]));
+    let longer = dirty(&[("a.fen", "def f():\n    return\n"), ("b.fen", "x = 1\n")]);
+    assert_eq!(longer, Some(vec![Span { start: 13, end: SLOT }]));
+    assert_eq!(dirty(&[("a.fen", "def f():\n    pass\n"), ("b.fen", "x = 1\n")]), Some(Vec::new()));
+    let last_longer = dirty(&[("a.fen", "def f():\n    pass\n"), ("b.fen", "x = 12\n")]);
+    assert_eq!(last_longer, Some(vec![Span { start: SLOT + 5, end: 2 * SLOT }]));
+    let files = Edit::between(&before, &before).map(|edit| edit.files);
+    assert_eq!(files, Some(vec![Span { start: 0, end: SLOT }, Span { start: SLOT, end: 2 * SLOT }]));
+}
+
+/// Files moved, added or taken away, or one grown past its slot so the next starts elsewhere,
+/// give no edit: nothing kept is carried over.
+#[test]
+fn a_program_with_other_files_or_moved_ones_gives_no_edit() {
+    let before = sources_of(&[("a.fen", "x = 1\n"), ("b.fen", "y = 2\n")]);
+    assert!(Edit::between(&before, &sources_of(&[("a.fen", "x = 1\n")])).is_none());
+    assert!(Edit::between(&before, &sources_of(&[("a.fen", "x = 1\n"), ("c.fen", "y = 2\n")])).is_none());
+    let grown = format!("x = 1\n{}", "#".repeat(1 << 18));
+    assert!(Edit::between(&before, &sources_of(&[("a.fen", &grown), ("b.fen", "y = 2\n")])).is_none());
 }
 
 /// One dev build in 8 compares, picked by what it's built from; a release compiler compares only

@@ -62,13 +62,14 @@ jobs:
           # Tasks and a server's rounds that print and make way, wait with timeouts, take jobs
           # from one queue and run `parallel` calls cut short, each recorded on 1 and 4 threads
           # and replayed on 1, 4 and 16, which have to print what the recording printed. And a
-          # program putting a new file in place of an old one, killed partway, which has to leave
-          # the old file or the new one, never a torn one.
+          # program putting a new file in place of an old one, killed partway, or failed partway by
+          # the runtime's fault hook, which has to leave the old file or the new one, never a torn
+          # one.
           - name: Replay
             toolchain: ""
             flags: ""
             target: ""
-            only: replay killed-writes
+            only: replay killed-writes fault-writes
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -100,6 +101,17 @@ jobs:
             cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
             cp target/release/fennec-fuzz fennec-fuzz
             echo "FENNEC=$PWD/target/release/fennec" >> "$GITHUB_ENV"
+            if [[ " $ONLY " == *" fault-writes "* ]]; then
+              # A runtime that fails std.fs's work where FENNEC_FAULTS says, in a folder of its own
+              # beside a copy of `fennec`, with no bitcode, so a --release build links it too.
+              cargo build --release --locked -p fennec-runtime --features faults --target-dir target/faults
+              cargo build --release --locked -p fennec-runtime --features threads,faults --target-dir target/threads-faults
+              mkdir -p faulted
+              cp target/release/fennec faulted/fennec
+              cp target/faults/release/libfennec_runtime.a faulted/libfennec_runtime.a
+              cp target/threads-faults/release/libfennec_runtime.a faulted/libfennec_runtime_threads.a
+              echo "FENNEC_FAULTED=$PWD/faulted/fennec" >> "$GITHUB_ENV"
+            fi
           elif [ -n "$BUILD_FOR" ]; then
             cargo build --release --locked -p fennec-fuzz -Zbuild-std --target "$BUILD_FOR"
             cp "target/$BUILD_FOR/release/fennec-fuzz" fennec-fuzz

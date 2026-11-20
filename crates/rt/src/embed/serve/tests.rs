@@ -1099,7 +1099,8 @@ fn connection_numbers_are_never_shared_between_workers() {
 }
 
 /// Running out of file descriptors leaves connections waiting that the poll won't announce again,
-/// and a connection that gave up before it was accepted leaves the rest waiting too.
+/// so it ends a connection waiting for its next message to make room, and running out of memory
+/// looks again soon. A connection that gave up before it was accepted leaves the rest waiting too.
 #[test]
 fn a_failure_to_accept_doesnt_strand_what_waits_behind_it() {
     use std::io::{Error, ErrorKind};
@@ -1107,7 +1108,9 @@ fn a_failure_to_accept_doesnt_strand_what_waits_behind_it() {
     use super::{AfterAccept, accept_failed};
     assert_eq!(accept_failed(&Error::from(ErrorKind::ConnectionAborted)), AfterAccept::Next);
     assert_eq!(accept_failed(&Error::from(ErrorKind::Interrupted)), AfterAccept::Next);
-    assert_eq!(accept_failed(&Error::from_raw_os_error(24)), AfterAccept::Later);
+    assert_eq!(accept_failed(&Error::from_raw_os_error(24)), AfterAccept::EndIdle);
+    assert_eq!(accept_failed(&Error::from_raw_os_error(23)), AfterAccept::EndIdle);
+    assert_eq!(accept_failed(&Error::from(ErrorKind::OutOfMemory)), AfterAccept::Later);
     assert_eq!(accept_failed(&Error::from(ErrorKind::WouldBlock)), AfterAccept::Stop);
 }
 
@@ -1176,7 +1179,7 @@ fn waits_that_time_out_together_wake_by_deadline_then_in_the_order_they_parked()
             2 => Some(later),
             _ => None,
         };
-        waiting.insert(token, (u64::try_from(token).unwrap(), mio::Interest::READABLE, deadline, None));
+        waiting.insert(token, (u64::try_from(token).unwrap(), mio::Interest::READABLE, deadline, None, None));
     }
     let woken = super::timed_out(&waiting, now);
     let wanted: Vec<usize> =

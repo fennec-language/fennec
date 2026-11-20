@@ -18,6 +18,7 @@ mod fallbacks;
 mod fix;
 mod fmt;
 mod image;
+mod kept;
 mod lint;
 mod llvm_tests;
 mod lsp;

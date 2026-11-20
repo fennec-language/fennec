@@ -101,9 +101,13 @@ thread_local! {
     /// it doesn't wait for would, like a socket that keeps saying it's writable.
     #[cfg(test)]
     static WAKE_ALL: Cell<bool> = const { Cell::new(false) };
-    /// The tokens of connections parked in a read with nothing of a next message in hand, on a
-    /// server that stops when the program's asked to: what its drain wakes, to end them.
-    static IDLE_READS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    /// Whether the wait about to park is a connection's read with nothing of a next message in hand:
+    /// what a server's drain wakes, to end it, and what running out of files ends the longest
+    /// parked of (`Io::end_longest_idle`). The park takes it (`parking`), as it takes `PARKING`.
+    static PARKS_IDLE: Cell<bool> = const { Cell::new(false) };
+    /// The tokens of idle connections ended to make room for one waiting to be accepted, when the
+    /// process ran out of files: each one's read ends, as at the end of what was sent.
+    static ENDED_IDLE: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
     /// When the task running on this worker was last resumed.
     static SLICE: Cell<Option<Instant>> = const { Cell::new(None) };
     /// The task this worker is running, for a server it starts to know where it was started.
@@ -228,6 +232,10 @@ pub struct Conn {
     /// Whether anything's been read since it last wrote: a read before anything has is waiting
     /// for a next message, not partway through one.
     read_since_write: AtomicBool,
+    /// Whether it was ended, waiting for a next message, to make room for a new connection when
+    /// the process ran out of files: it closes at once, as nothing's on the way to linger for, and
+    /// its file is wanted now.
+    made_room: AtomicBool,
     /// The label it prints as, given as its server took it.
     label: i64,
     /// When every read has to be done by, and how long that was, once `reads_within` is called.
@@ -271,6 +279,7 @@ impl Conn {
             tls: Mutex::new(None),
             draining: None,
             read_since_write: AtomicBool::new(false),
+            made_room: AtomicBool::new(false),
             label: 0,
             reads_by: Mutex::new(None),
             body_held: crate::stdlib::net::BodyHeld::default(),
@@ -308,24 +317,39 @@ impl Conn {
     }
 
     /// Waits to read, or gives true when the read should end instead: when nothing's been read
-    /// since it last wrote, and its server's draining. While such a read waits, its server's drain
-    /// wakes it, so it ends at once rather than when the other side next sends.
+    /// since it last wrote, and its server's draining, or it was ended to make room for another
+    /// connection. While such a read waits, its server's drain, or running out of files, wakes it,
+    /// so it ends at once rather than when the other side next sends.
     fn wait_to_read(&self, until: Until, call: &'static str) -> Result<bool, Failure> {
-        let idle = self.draining.is_some()
-            && !self.read_since_write.load(Ordering::Relaxed)
-            && locked(&self.ahead).is_empty();
+        let idle = !self.read_since_write.load(Ordering::Relaxed) && locked(&self.ahead).is_empty();
         if !idle {
             self.wait(self.read_interest(), until, call)?;
             return Ok(false);
         }
-        if self.draining() {
+        if self.draining() || self.ended_idle() {
             return Ok(true);
         }
-        IDLE_READS.with_borrow_mut(|idle| idle.insert(self.token.0));
+        PARKS_IDLE.set(true);
         let waited = self.wait(self.read_interest(), until, call);
-        IDLE_READS.with_borrow_mut(|idle| idle.remove(&self.token.0));
+        // A wait that blocked its thread, rather than parking, didn't take it.
+        PARKS_IDLE.set(false);
+        if self.ended_idle() {
+            return Ok(true);
+        }
         // Woken, it reads again: what came may be the next message, which is read whole.
         waited.map(|()| false)
+    }
+
+    /// Whether it was ended to make room for another connection, as it waited for a next message.
+    /// Nearly always none has been, which is looked at first.
+    fn ended_idle(&self) -> bool {
+        let ended = !ENDED_IDLE.with_borrow(HashSet::is_empty)
+            && self.is_home()
+            && ENDED_IDLE.with_borrow_mut(|ended| ended.remove(&self.token.0));
+        if ended {
+            self.made_room.store(true, Ordering::Relaxed);
+        }
+        ended
     }
 
     /// Does the server's half of a TLS handshake, parking while it waits.
@@ -510,6 +534,9 @@ impl Conn {
     pub fn linger(&self) {
         // Closed by its round, so its body's let go of before it waits out what's still coming.
         self.body_held.give_back();
+        if self.made_room.load(Ordering::Relaxed) {
+            return;
+        }
         let _ = locked(&self.stream).shutdown(std::net::Shutdown::Write);
         let until = Until::after(Some(LINGER));
         let mut sink = [0_u8; READ_BYTES];
@@ -789,6 +816,12 @@ struct Here {
 pub(in crate::embed) struct Io {
     /// When to try accepting again, after running out of something: sockets, say.
     accept_later: Option<Instant>,
+    /// How many connections' reads waiting for a next message have parked here, which numbers each
+    /// in its `Waiting`: the lowest waiting has waited longest.
+    idle_parks: u64,
+    /// The worker last asked to end a connection waiting for a next message, when accepting ran out
+    /// of files and this one had none (`end_idle_elsewhere`).
+    ended_at: usize,
     poll: Poll,
     events: Events,
     pool: &'static Pool,
@@ -834,6 +867,8 @@ impl Io {
             at,
             scheduler: Scheduler::new(STACK),
             accept_later: None,
+            idle_parks: 0,
+            ended_at: at,
             waiting: HashMap::new(),
             stuck_waits: 0,
             ready: VecDeque::new(),
@@ -1280,14 +1315,22 @@ impl Io {
     /// for a stuck one, its note.
     fn parked(&mut self, task: TaskId, token: u64) {
         let token = usize::try_from(token).unwrap_or(usize::MAX);
-        let Parking { interest, deadline, stuck } =
-            PARKING.take().unwrap_or(Parking { interest: Interest::READABLE, deadline: None, stuck: None });
+        let Parking { interest, deadline, stuck, idle } = PARKING.take().unwrap_or(Parking {
+            interest: Interest::READABLE,
+            deadline: None,
+            stuck: None,
+            idle: false,
+        });
+        let idle = idle.then(|| {
+            self.idle_parks += 1;
+            self.idle_parks
+        });
         self.stuck_waits += usize::from(stuck.is_some());
         let stuck = stuck.map(|mut note| {
             note.parked_by(std::ptr::from_ref(self.pool).addr(), self.at, task);
             note
         });
-        if let Some(was) = self.waiting.insert(token, (task, interest, deadline, stuck)) {
+        if let Some(was) = self.waiting.insert(token, (task, interest, deadline, stuck, idle)) {
             self.stuck_waits -= usize::from(was.3.is_some());
         }
     }
@@ -1426,18 +1469,18 @@ impl Io {
     /// what a stop the program was asked for does, and what closing the server does.
     fn drain_waking(&mut self, id: u64) {
         let mut woken = Vec::new();
-        if let Some(here) = self.servers.get(&id) {
-            let mut idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
-            // In the order they parked, not the set's.
-            idle.sort_unstable();
-            for token in idle {
-                let parked = self.waiting.get(&token).map(|(task, ..)| *task);
-                if let Some(task) = parked.filter(|task| here.tasks.contains(task)) {
-                    woken.push((token, task));
-                }
-            }
+        // Only a server that stops when the program's asked to has its reads end as it drains.
+        if let Some(here) = self.servers.get(&id).filter(|here| here.server.stop.is_some()) {
+            woken = self
+                .waiting
+                .iter()
+                .filter(|(_, (task, ..))| here.tasks.contains(task))
+                .filter_map(|(token, (task, .., idle))| idle.map(|order| (order, *token, *task)))
+                .collect();
+            // In the order they parked, not the map's.
+            woken.sort_unstable();
         }
-        for (token, task) in woken {
+        for (_, token, task) in woken {
             self.unwait(token);
             self.ready.push_back((task, Wake::Ready(READY)));
         }
@@ -1460,7 +1503,7 @@ impl Io {
         let soonest = self
             .waiting
             .values()
-            .filter_map(|(_, _, deadline, _)| *deadline)
+            .filter_map(|(_, _, deadline, ..)| *deadline)
             .chain(self.accept_later)
             .min()?;
         Some(soonest.saturating_duration_since(Instant::now()))
@@ -1503,6 +1546,40 @@ impl Io {
         self.wake();
     }
 
+    /// Ends the connection here that's waited longest for its next message, its read ending as at
+    /// the end of what was sent, to make room for one waiting to be accepted: the process ran out of
+    /// files. Gives whether there was one.
+    fn end_longest_idle(&mut self) -> bool {
+        let longest =
+            self.waiting.iter().filter_map(|(token, (.., idle))| idle.map(|order| (order, *token))).min();
+        let Some((_, token)) = longest else { return false };
+        ENDED_IDLE.with_borrow_mut(|ended| ended.insert(token));
+        if let Some((task, ..)) = self.unwait(token) {
+            self.ready.push_back((task, Wake::Ready(READY)));
+        }
+        true
+    }
+
+    /// Asks the next worker in turn but this one to end its connection that's waited longest for its
+    /// next message (`end_longest_idle`): this one had none, and every worker serves the server's
+    /// connections in turn.
+    fn end_idle_elsewhere(&mut self) {
+        let workers = self.pool.threads();
+        if workers < 2 {
+            return;
+        }
+        self.ended_at = (self.ended_at + 1) % workers;
+        if self.ended_at == self.at {
+            self.ended_at = (self.ended_at + 1) % workers;
+        }
+        self.pool.run_on(
+            self.ended_at,
+            Box::new(|io: &mut Io| {
+                io.end_longest_idle();
+            }),
+        );
+    }
+
     /// Takes every connection waiting on the server `id`'s listener, handing them out in turn
     /// to the pool's workers, this one among them.
     fn accept(&mut self, id: u64) {
@@ -1516,6 +1593,18 @@ impl Io {
                     AfterAccept::Next => continue,
                     AfterAccept::Later => {
                         self.accept_later = Some(Instant::now() + ACCEPT_AGAIN);
+                        return;
+                    }
+                    AfterAccept::EndIdle => {
+                        // Accepted again once the connection ended here has closed, as the next
+                        // turn runs its round to its end; one another worker ends, a moment later.
+                        let again = if self.end_longest_idle() {
+                            Duration::ZERO
+                        } else {
+                            self.end_idle_elsewhere();
+                            ENDED_ELSEWHERE
+                        };
+                        self.accept_later = Some(Instant::now() + again);
                         return;
                     }
                 },
@@ -1569,7 +1658,9 @@ impl Io {
 
 /// A parked task's wait: the task, what it waits for, when it gives up, and, for a stuck wait, its
 /// note for the deadlock check.
-type Waiting = (TaskId, Interest, Option<Instant>, Option<super::deadlock::Note>);
+/// A parked task, what it waits for, when it gives up, its note if it's a stuck wait, and, for a
+/// connection's read waiting for a next message, its place in the order those parked here.
+type Waiting = (TaskId, Interest, Option<Instant>, Option<super::deadlock::Note>, Option<u64>);
 
 /// `Io::unwait`, on its fields.
 fn unwait(waiting: &mut HashMap<usize, Waiting>, stuck_waits: &mut usize, token: usize) -> Option<Waiting> {
@@ -1583,7 +1674,7 @@ fn unwait(waiting: &mut HashMap<usize, Waiting>, stuck_waits: &mut usize, token:
 fn timed_out(waiting: &HashMap<usize, Waiting>, now: Instant) -> Vec<usize> {
     let mut due: Vec<(Instant, usize)> = waiting
         .iter()
-        .filter_map(|(token, (_, _, deadline, _))| {
+        .filter_map(|(token, (_, _, deadline, ..))| {
             deadline.filter(|deadline| *deadline <= now).map(|at| (at, *token))
         })
         .collect();
@@ -1624,6 +1715,10 @@ const SERVER_END_LOOKS: Duration = Duration::from_millis(2);
 /// How long to wait before accepting again, having run out of something.
 const ACCEPT_AGAIN: Duration = Duration::from_millis(100);
 
+/// How long to wait before accepting again, having asked another worker to end a connection waiting
+/// for its next message: long enough for it to run that round to its end.
+const ENDED_ELSEWHERE: Duration = Duration::from_millis(10);
+
 /// What to do about a listener's failure to accept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfterAccept {
@@ -1634,13 +1729,16 @@ enum AfterAccept {
     /// The process ran out of something. What's waiting stays waiting, and the poll won't announce
     /// it again, so it's looked at again soon.
     Later,
+    /// The process, or the system, ran out of files: the connection that's waited longest for its
+    /// next message is ended to make room, and what's waiting is looked at again once it's closed.
+    EndIdle,
 }
 
 fn accept_failed(error: &std::io::Error) -> AfterAccept {
     match error.kind() {
         _ if crate::stdlib::net::gone_before_taken(error) => AfterAccept::Next,
         ErrorKind::WouldBlock => AfterAccept::Stop,
-        _ if matches!(error.raw_os_error(), Some(23 | 24)) => AfterAccept::Later,
+        _ if matches!(error.raw_os_error(), Some(23 | 24)) => AfterAccept::EndIdle,
         ErrorKind::OutOfMemory => AfterAccept::Later,
         _ => AfterAccept::Stop,
     }
@@ -1829,12 +1927,15 @@ struct Parking {
     interest: Interest,
     deadline: Option<Instant>,
     stuck: Option<super::deadlock::Note>,
+    /// Whether it's a connection's read waiting for a next message (`PARKS_IDLE`).
+    idle: bool,
 }
 
 /// Says what the wait this task is about to park in waits for, when it gives up, and, for a stuck
 /// one, its note: what every park does just before it parks.
 fn parking(interest: Interest, deadline: Option<Instant>, stuck: Option<super::deadlock::Note>) {
-    PARKING.set(Some(Parking { interest, deadline, stuck }));
+    let idle = PARKS_IDLE.replace(false);
+    PARKING.set(Some(Parking { interest, deadline, stuck, idle }));
 }
 
 /// A token for a wait on this thread that no other has.

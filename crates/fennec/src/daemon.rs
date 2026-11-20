@@ -16,11 +16,17 @@
 //! `fennec lsp` sends `lsp` and then keeps the connection open: the daemon serves the
 //! language server's session over it until the editor is done.
 //!
-//! `fennec build` sends `build` with its folder and arguments, and keeps the connection open while
-//! the daemon builds: one build at a time, in the command's folder, with what it prints sent back.
-//! The environment is part of the socket's name, so the build runs in the command's own, as
-//! `cc` and the linker see it. A command that goes before the answer, as with Ctrl-C, stops the
-//! build. Under CI it's built in the command's own process, as a first build is.
+//! `fennec build`, `fennec run` and `fennec test` send `build`, `run` or `test` with their folder
+//! and arguments, and keep the connection open while the daemon works: one command's work at a
+//! time, in the command's folder, with what it prints sent back. The environment is part of the
+//! socket's name, so the work runs in the command's own, as `cc` and the linker see it. A command
+//! that goes before the answer, as with Ctrl-C, stops the work. Under CI it's done in the
+//! command's own process, as a first build is.
+//!
+//! For `fennec run`, the daemon does what comes before the program starts: the tests a change
+//! affects, the check and the build, to a file the command names. The command starts the
+//! program itself, so it has the command's input, output, signals and exit, as before.
+//! `fennec test --real` runs in the command's own process, since its tests reach the terminal.
 //!
 //! `fennec daemon status` and `fennec daemon stop` manage every daemon of this build the user has
 //! running, one for each environment commands ran in. Each exits by itself after thirty
@@ -118,23 +124,88 @@ pub(crate) fn ask(home: &Path, request: &[&str]) -> Option<Outcome> {
     unix::ask_within(home, request, unix::REPLY_WAIT)
 }
 
-/// `fennec build` made by the daemon, which starts first if it isn't running: how it ended, once
-/// what it printed is printed here. None means it's to be built here: under CI, where what's
-/// measured is a build on its own, with `FENNEC_NO_DAEMON`, or when no daemon answers.
-pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> Option<ExitCode> {
+/// A command whose work the daemon does for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Build,
+    Run,
+    Test,
+}
+
+impl Kind {
+    /// How a request names it.
+    #[cfg(unix)]
+    fn word(self) -> &'static str {
+        match self {
+            Kind::Build => "build",
+            Kind::Run => "run",
+            Kind::Test => "test",
+        }
+    }
+
+    #[cfg(unix)]
+    fn of(word: &str) -> Option<Kind> {
+        [Kind::Build, Kind::Run, Kind::Test].into_iter().find(|kind| kind.word() == word)
+    }
+
+    /// What a command that gets no answer does, as it says.
+    #[cfg(unix)]
+    fn done_here(self) -> &'static str {
+        match self {
+            Kind::Build | Kind::Run => "this was built here",
+            Kind::Test => "the tests ran here",
+        }
+    }
+}
+
+/// What a `build` request says for a build with no output named.
+const NO_OUTPUT: &str = "-";
+
+/// A command's work, with its three arguments, done by the daemon, which starts first if it isn't
+/// running: what it printed and how it ended. None means it's to be done here: under CI, where
+/// what's measured is a command on its own, with `FENNEC_NO_DAEMON`, or when no daemon answers.
+fn served(kind: Kind, arguments: [&str; 3]) -> Option<Outcome> {
     if std::env::var_os("FENNEC_NO_DAEMON").is_some() || std::env::var_os("CI").is_some() {
         return None;
     }
     #[cfg(unix)]
     {
         let home = fennec_build::fennec_home()?;
-        unix::build(&home, path, output, release)
+        unix::served(&home, kind, arguments)
     }
     #[cfg(not(unix))]
     {
-        let _ = (path, output, release);
+        let _ = (kind, arguments);
         None
     }
+}
+
+/// `fennec build` made by the daemon: how it ended, once what it printed is printed here. None
+/// means it's to be built here (`served`).
+pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> Option<ExitCode> {
+    let mode = if release { "release" } else { "dev" };
+    served(Kind::Build, [path, output.unwrap_or(NO_OUTPUT), mode]).map(Outcome::print)
+}
+
+/// The program `fennec run` starts, made by the daemon as `run::prepared` makes it, at
+/// `executable`, after the tests a change affects if `tested`. Ok once it's there to start; or
+/// else how the command ends, once what was printed is printed here. None means it's to be made
+/// here (`served`).
+pub(crate) fn run(path: &str, executable: &Path, tested: bool) -> Option<Result<(), ExitCode>> {
+    let tests = if tested { "tested" } else { "untested" };
+    let outcome = served(Kind::Run, [path, executable.to_str()?, tests])?;
+    // A run that stopped short made nothing to start.
+    let made = outcome.code == 0 && executable.is_file();
+    let code = outcome.print();
+    Some(if made { Ok(()) } else { Err(code) })
+}
+
+/// `fennec test` run by the daemon: how it ended, once what it printed is printed here. None means
+/// they're to run here: with `--real`, whose tests reach this terminal and its input, or as
+/// `served` says.
+pub(crate) fn test(path: &str, options: crate::test::Options) -> Option<ExitCode> {
+    let [run, shown] = options.words()?;
+    served(Kind::Test, [path, run, shown]).map(Outcome::print)
 }
 
 /// A connection to the daemon serving a language server session, starting the daemon first
@@ -163,7 +234,7 @@ mod unix {
 
     use fennec_build::Cache;
 
-    use super::{BUILD, Outcome, VERSION};
+    use super::{BUILD, Kind, NO_OUTPUT, Outcome, VERSION};
     use crate::changes::Snapshots;
 
     /// How long a socket's path may be: a little under the 104 bytes macOS takes, and the 108
@@ -494,18 +565,19 @@ mod unix {
         Some(stream)
     }
 
-    /// `fennec build`, asked of the daemon, started first if none is running: how it ended, once what
-    /// it printed is printed here. None when it's to be built here: a request that can't be sent as
-    /// lines, no daemon, or one that went without a whole answer, which says so in a line.
-    pub(super) fn build(home: &Path, path: &str, output: Option<&str>, release: bool) -> Option<ExitCode> {
+    /// A command's work, asked of the daemon, started first if none is running: what it printed
+    /// and how it ended. None when it's to be done here: a request that can't be sent as lines, no
+    /// daemon, or one that went without a whole answer, which says so in a line.
+    pub(super) fn served(home: &Path, kind: Kind, arguments: [&str; 3]) -> Option<Outcome> {
         let folder = std::env::current_dir().ok()?;
         let folder = folder.to_str()?;
-        let output = output.unwrap_or(NO_OUTPUT);
-        if [folder, path, output].iter().any(|line| line.contains('\n') || line.contains('\r')) {
+        let [first, second, third] = arguments;
+        let streams = if one_stream() { ONE_STREAM } else { TWO_STREAMS };
+        let lines = [folder, first, second, third, streams];
+        if lines.iter().any(|line| line.contains('\n') || line.contains('\r')) {
             return None;
         }
-        let mode = if release { "release" } else { "dev" };
-        let request = format!("{}\nbuild\n{folder}\n{path}\n{output}\n{mode}\nend\n", header());
+        let request = format!("{}\n{}\n{}\nend\n", header(), kind.word(), lines.join("\n"));
         let socket = socket_path(home, false)?;
         let mut stream = if let Some(stream) = connect(&socket, home) {
             stream
@@ -513,20 +585,32 @@ mod unix {
             start(home)?;
             connect(&socket, home)?
         };
-        // The connection stays open while the daemon builds: closing it stops the build.
+        // The connection stays open while the daemon works: closing it stops the work.
         let mut reply = String::new();
         let answered =
             stream.write_all(request.as_bytes()).is_ok() && stream.read_to_string(&mut reply).is_ok();
-        if let Some(outcome) = Outcome::decode(&reply).filter(|_| answered) {
-            Some(outcome.print())
-        } else {
-            eprintln!("note: the build daemon gave no answer, so this was built here");
-            None
+        let outcome = Outcome::decode(&reply).filter(|_| answered);
+        if outcome.is_none() {
+            eprintln!("note: the build daemon gave no answer, so {}", kind.done_here());
         }
+        outcome
     }
 
-    /// What a `build` request says for a build with no output named.
-    const NO_OUTPUT: &str = "-";
+    /// What a request says when the command's standard output and error are one file, and when
+    /// they're two.
+    const ONE_STREAM: &str = "one stream";
+    const TWO_STREAMS: &str = "two streams";
+
+    /// Whether this command's standard output and error are one file, as a terminal or `2>&1`
+    /// makes them. The daemon then prints both into one, so what's printed reads in the order it
+    /// was, as it does from the command's own process.
+    fn one_stream() -> bool {
+        let (Ok(out), Ok(err)) = (rustix::fs::fstat(std::io::stdout()), rustix::fs::fstat(std::io::stderr()))
+        else {
+            return false;
+        };
+        (out.st_dev, out.st_ino) == (err.st_dev, err.st_ino)
+    }
 
     /// Starts the daemon in the background and waits until it answers, for up to 2 seconds.
     pub(super) fn start(home: &Path) -> Option<()> {
@@ -649,31 +733,36 @@ mod unix {
         if lines.read_line(&mut header).is_err() || lines.read_line(&mut kind).is_err() {
             return;
         }
-        if kind.trim_end() == "build" {
-            // A daemon of other source says nothing, so the command builds it itself.
+        if let Some(kind) = Kind::of(kind.trim_end()) {
+            // A daemon of other source says nothing, so the command does its work itself.
             if header.trim_end() != self::header() {
                 return;
             }
             let mut fields = Vec::new();
-            for _ in 0..5 {
+            for _ in 0..6 {
                 let mut line = String::new();
                 if (&mut reader).take(LONGEST_LINE).read_line(&mut line).is_err() || !line.ends_with('\n') {
                     return;
                 }
                 fields.push(line.trim_end_matches('\n').to_owned());
             }
-            let [folder, path, output, mode, end] = fields.as_slice() else { return };
-            if end != "end" || !matches!(mode.as_str(), "release" | "dev") {
+            let [folder, first, second, third, streams, end] = fields.as_slice() else { return };
+            let one_stream = match streams.as_str() {
+                ONE_STREAM => true,
+                TWO_STREAMS => false,
+                _ => return,
+            };
+            if end != "end" {
                 return;
             }
-            let output = (output != NO_OUTPUT).then_some(output.as_str());
-            // A build takes as long as it takes, and what watches for the command going reads
-            // the same connection, so it has no deadline from here.
+            let Some(job) = Job::of(kind, [first, second, third]) else { return };
+            // Work takes as long as it takes, and what watches for the command going reads the
+            // same connection, so it has no deadline from here.
             reader.get_mut().until = None;
             if reader.get_ref().stream.set_read_timeout(None).is_err() {
                 return;
             }
-            let Some(outcome) = built(state, &writer, (folder, path, output), mode == "release") else {
+            let Some(outcome) = done(state, &writer, (folder, &job), one_stream) else {
                 return;
             };
             let _ = writer.write_all(outcome.encode().as_bytes());
@@ -701,16 +790,70 @@ mod unix {
         let _ = writer.write_all(outcome.encode().as_bytes());
     }
 
-    /// Builds for a command, as `fennec build` would in the command's own process: in its folder,
-    /// with what it prints taken into files to send back. One build at a time, which is also what
-    /// a process's one working folder and one standard output and error allow. The command going
-    /// before the answer, as on Ctrl-C, stops the build. None when the printing can't be taken, so
-    /// nothing is sent and the command builds it itself.
-    fn built(
+    /// A command's work, as its request says it.
+    enum Job<'a> {
+        Build { path: &'a str, output: Option<&'a str>, release: bool },
+        Run { path: &'a str, executable: &'a Path, tested: bool },
+        Test { path: &'a str, options: crate::test::Options },
+    }
+
+    impl<'a> Job<'a> {
+        /// The work a `kind` of request asks for with these three lines. None for lines it doesn't
+        /// take.
+        fn of(kind: Kind, [first, second, third]: [&'a String; 3]) -> Option<Self> {
+            let either = |yes: &str, no: &str| match third.as_str() {
+                said if said == yes => Some(true),
+                said if said == no => Some(false),
+                _ => None,
+            };
+            Some(match kind {
+                Kind::Build => Job::Build {
+                    path: first,
+                    output: (second != NO_OUTPUT).then_some(second.as_str()),
+                    release: either("release", "dev")?,
+                },
+                Kind::Run => Job::Run {
+                    path: first,
+                    executable: Path::new(second),
+                    tested: either("tested", "untested")?,
+                },
+                Kind::Test => Job::Test {
+                    path: first,
+                    options: crate::test::Options::of_words([second.as_str(), third.as_str()])?,
+                },
+            })
+        }
+
+        /// Does the work here, as the command would in its own process, giving back how it ends.
+        fn done(&self) -> ExitCode {
+            match *self {
+                Job::Build { path, output, release } => crate::built::build_here(path, output, release),
+                Job::Run { path, executable, tested } => {
+                    crate::run::prepared(path, tested, executable).err().unwrap_or(ExitCode::SUCCESS)
+                }
+                Job::Test { path, options } => crate::test::test_here(path, options),
+            }
+        }
+    }
+
+    /// Asks the work in progress to stop, when the command that wanted it has gone: the build, and
+    /// any tests running, which may never end by themselves.
+    fn stop_the_work() {
+        fennec_build::cancel();
+        crate::llvm_tests::stop_workers();
+    }
+
+    /// Does a command's work, as the command would in its own process: in its folder, with what it
+    /// prints taken into files to send back, or into one when the command's two are one. One
+    /// command's work at a time, which is also what a process's one working folder and one
+    /// standard output and error allow. The command going before the answer, as on Ctrl-C, stops
+    /// the work. None when the printing can't be taken, so nothing is sent and the command does
+    /// the work itself.
+    fn done(
         state: &Mutex<State>,
         client: &UnixStream,
-        (folder, path, output): (&str, &str, Option<&str>),
-        release: bool,
+        (folder, job): (&str, &Job<'_>),
+        one_stream: bool,
     ) -> Option<Outcome> {
         static BUILDING: Mutex<u64> = Mutex::new(0);
         let mut building = BUILDING.lock().unwrap_or_else(PoisonError::into_inner);
@@ -723,19 +866,27 @@ mod unix {
             state.served += 1;
             state.sessions += 1;
         }
-        let printed = home.join("daemon").join(format!("build-{}-{}", std::process::id(), *building));
-        let outcome = taking_printing(&printed, || {
+        let printed = home.join("daemon").join(format!("work-{}-{}", std::process::id(), *building));
+        let outcome = taking_printing(&printed, one_stream, || {
             fennec_build::clear_cancel();
             let running = Arc::new(AtomicBool::new(true));
-            let _watching = stop_when_gone(client, &running, fennec_build::cancel);
+            let _watching = stop_when_gone(client, &running, stop_the_work);
             let before = std::env::current_dir().ok();
             let code = if std::env::set_current_dir(folder).is_ok() {
                 let made = std::thread::scope(|scope| {
+                    let work = || {
+                        let code = job.done();
+                        // Lint errors a run was finding and didn't show, as when it stopped
+                        // before loading, are let go of as the command's own process would, but
+                        // only once they're found: they're found in this folder.
+                        crate::lint::forget_errors_found();
+                        code_of(code)
+                    };
                     std::thread::Builder::new()
                         .stack_size(crate::STACK_BYTES)
-                        .spawn_scoped(scope, || code_of(crate::built::build_here(path, output, release)))
+                        .spawn_scoped(scope, work)
                         .ok()
-                        .and_then(|building| building.join().ok())
+                        .and_then(|working| working.join().ok())
                 });
                 made.unwrap_or(1)
             } else {
@@ -775,14 +926,18 @@ mod unix {
         Some(watching)
     }
 
-    /// Runs `run` with standard output and error going to files beside `printed`, and gives back
-    /// what it printed with the code it gave. None when they can't be put in place.
-    fn taking_printing(printed: &Path, run: impl FnOnce() -> u8) -> Option<Outcome> {
+    /// Runs `run` with standard output and error going to files beside `printed`, or both to one
+    /// if `one_stream`, and gives back what it printed with the code it gave: all of it as standard
+    /// output when it went to one. None when they can't be put in place.
+    fn taking_printing(printed: &Path, one_stream: bool, run: impl FnOnce() -> u8) -> Option<Outcome> {
         let (out_path, err_path) = (printed.with_extension("out"), printed.with_extension("err"));
-        let (out, err) = (std::fs::File::create(&out_path).ok()?, std::fs::File::create(&err_path).ok()?);
+        let out = std::fs::File::create(&out_path).ok()?;
+        let err = if one_stream { None } else { Some(std::fs::File::create(&err_path).ok()?) };
         let _ = (std::io::stdout().flush(), std::io::stderr().flush());
         let saved = (rustix::io::dup(std::io::stdout()).ok()?, rustix::io::dup(std::io::stderr()).ok()?);
-        if rustix::stdio::dup2_stdout(&out).is_err() || rustix::stdio::dup2_stderr(&err).is_err() {
+        if rustix::stdio::dup2_stdout(&out).is_err()
+            || rustix::stdio::dup2_stderr(err.as_ref().unwrap_or(&out)).is_err()
+        {
             let _ = (rustix::stdio::dup2_stdout(&saved.0), rustix::stdio::dup2_stderr(&saved.1));
             return None;
         }
@@ -791,8 +946,12 @@ mod unix {
         let _ = (rustix::stdio::dup2_stdout(&saved.0), rustix::stdio::dup2_stderr(&saved.1));
         let read =
             |path: &Path| String::from_utf8_lossy(&std::fs::read(path).unwrap_or_default()).into_owned();
-        let outcome = Outcome { stdout: read(&out_path), stderr: read(&err_path), code };
-        let _ = (std::fs::remove_file(&out_path), std::fs::remove_file(&err_path));
+        let stderr = if one_stream { String::new() } else { read(&err_path) };
+        let outcome = Outcome { stdout: read(&out_path), stderr, code };
+        let _ = std::fs::remove_file(&out_path);
+        if !one_stream {
+            let _ = std::fs::remove_file(&err_path);
+        }
         Some(outcome)
     }
 

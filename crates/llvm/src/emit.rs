@@ -5325,18 +5325,23 @@ def main(stdout: Stdout):
 
     /// In a program with a generator that closes something when it's let go partway, only what
     /// may be or hold one is freed with `fennec_free`, and the flag is read after each such free:
-    /// a string's free is plain, and the generator's is checked, so nothing goes unchecked (#2127).
+    /// a string's free is plain, and the generator's is checked, so nothing goes unchecked in any
+    /// function of the program, the standard library's and the blocks a call into the runtime
+    /// carries its arguments in included (#2127).
     #[test]
     fn only_what_may_hold_a_generator_that_closes_is_freed_checked() -> Result<(), String> {
-        let source = "error Shut:\n    Stuck(name: str)\n\nstruct Door:\n    name: str\n\ndef opened(name: str) -> with Door fails Shut:\n    door = Door(name=name)\n    lend door\n    fail .Stuck(name=name)\n\ndef held(name: str) -> Iterator[int] fails Shut:\n    with opened(name)? as door:\n        yield 1\n        yield 2\n\ndef kept(name: str) -> int fails Shut:\n    walk = held(name)?\n    for n in walk:\n        break\n    said = f\"{name}, said with more text than a header holds\"\n    return len(said)\n\ndef main(stdout: Stdout):\n    n = kept(\"kept\") except why:\n        stdout.print(why)\n        return\n    stdout.print(n)\n";
-        let text = text_of(source, "kept")?;
-        assert!(text.contains("@fennec_free("), "{text}");
-        assert!(text.contains("@fennec_free_plain"), "{text}");
-        let unchecked: Vec<_> = crate::failure_checks::unchecked_failures(&text, &[])
-            .into_iter()
-            .filter(|missed| missed.callee == "fennec_free")
-            .collect();
-        assert!(unchecked.is_empty(), "{unchecked:?}\n{text}");
+        let source = "from std import crypto\n\nerror Shut:\n    Stuck(name: str)\n\nstruct Door:\n    name: str\n\ndef opened(name: str) -> with Door fails Shut:\n    door = Door(name=name)\n    lend door\n    fail .Stuck(name=name)\n\ndef held(name: str) -> Iterator[int] fails Shut:\n    with opened(name)? as door:\n        yield 1\n        yield 2\n\ndef kept(name: str) -> int fails Shut:\n    walk = held(name)?\n    for n in walk:\n        break\n    said = f\"{name}, said with more text than a header holds\"\n    return len(crypto.sha256(said))\n\ndef main(stdout: Stdout):\n    n = kept(\"kept\") except why:\n        stdout.print(why)\n        return\n    stdout.print(n)\n";
+        let (units, _, _) = emit(&lowered(source)?)?;
+        let kept = units.iter().find(|unit| unit.function == "kept").map_or("", |unit| unit.text.as_str());
+        assert!(kept.contains("@fennec_free("), "{kept}");
+        assert!(kept.contains("@fennec_free_plain"), "{kept}");
+        for unit in &units {
+            let unchecked: Vec<_> = crate::failure_checks::unchecked_failures(&unit.text, &[])
+                .into_iter()
+                .filter(|missed| missed.callee == "fennec_free")
+                .collect();
+            assert!(unchecked.is_empty(), "{}: {unchecked:?}\n{}", unit.function, unit.text);
+        }
         Ok(())
     }
 

@@ -43,30 +43,47 @@ pub(crate) fn run_logged(
     logged: Option<&Logged>,
 ) -> ExitCode {
     let replaying = matches!(logged, Some(Logged::Replaying(_)));
-    if engine == Engine::Native
-        && !replaying
-        && let Some(failed) = crate::test::before_a_run(path)
-    {
-        return failed;
+    let tested = engine == Engine::Native && !replaying;
+    let executable = crate::own_temp("run").with_extension(std::env::consts::EXE_EXTENSION);
+    // Made by the build daemon when there's one to be had, as `fennec build` is, and started here,
+    // so the program has this process's input, output, signals and exit.
+    let made =
+        crate::daemon::run(path, &executable, tested).unwrap_or_else(|| prepared(path, tested, &executable));
+    if let Err(code) = made {
+        return code;
+    }
+    match started(&executable, path, arguments, logged) {
+        Ok(code) => code,
+        Err(why) => {
+            eprintln!("error: {why}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Makes the program at `path` at `executable`, ready to start, after the tests a change affects
+/// if `tested`, and shows the lint errors it has. Or else how the command ends, once it's said why:
+/// a test failed, or the program doesn't check or can't be built.
+pub(crate) fn prepared(path: &str, tested: bool, executable: &std::path::Path) -> Result<(), ExitCode> {
+    if tested && let Some(failed) = crate::test::before_a_run(path) {
+        return Err(failed);
     }
     // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
     // standard error. It's found while the program is built, which takes as long or longer.
     crate::lint::find_errors_beside(path);
-    let (program, checked, kept) = match reached(path) {
-        Ok(prepared) => prepared,
-        Err(code) => {
-            crate::lint::show_errors_found();
-            return code;
-        }
-    };
+    let (program, checked, kept) = reached(path).inspect_err(|_| crate::lint::show_errors_found())?;
     // What LLVM can't take yet, or a tool or library that isn't there, is said as `fennec build`
     // says it.
-    match built_and_run((program, checked, kept.as_deref()), path, arguments, logged) {
-        Ok(code) => code,
+    match built((program, checked, kept.as_deref()), path, executable) {
+        Ok(None) => {
+            crate::lint::show_errors_found();
+            Ok(())
+        }
+        Ok(Some(stopped)) => Err(stopped),
         Err(why) => {
             crate::lint::show_errors_found();
             eprintln!("error: {why}");
-            ExitCode::FAILURE
+            Err(ExitCode::FAILURE)
         }
     }
 }
@@ -81,15 +98,13 @@ enum Checked {
     Kept,
 }
 
-/// Builds the program through LLVM's cached dev build and runs it, handing it the arguments,
-/// this process's input and output, and its exit code.
-fn built_and_run(
+/// Builds the program to `executable` through LLVM's cached dev build. Some code when it's to stop
+/// instead, having said why.
+fn built(
     (mut program, checked, kept): (fennec_kit::Program, Checked, Option<&str>),
     path: &str,
-    arguments: &[String],
-    logged: Option<&Logged>,
-) -> Result<ExitCode, String> {
-    let executable = crate::own_temp("run").with_extension(std::env::consts::EXE_EXTENSION);
+    executable: &std::path::Path,
+) -> Result<Option<ExitCode>, String> {
     // A program the same as a run before had, kept as an image, starts from what that run built,
     // with nothing lowered or compiled to find it again.
     let started_from = kept.zip(cache()).map(|(kept, cache)| {
@@ -106,7 +121,7 @@ fn built_and_run(
         cache
             .read(RUN_ROOTS, name)
             .and_then(|root| String::from_utf8(root).ok())
-            .is_some_and(|root| crate::aot::stored_executable(cache, &root, &executable).is_some())
+            .is_some_and(|root| crate::aot::stored_executable(cache, &root, executable).is_some())
     });
     if !ready {
         let checked = match checked {
@@ -119,12 +134,12 @@ fn built_and_run(
                         program = loaded;
                         signatures.map(|signatures| *signatures)
                     }
-                    Some(Err(code)) => return Ok(code),
+                    Some(Err(code)) => return Ok(Some(code)),
                     _ => return Err("its kept image couldn't be checked again".to_owned()),
                 },
             },
         };
-        let built = build_for_run((&program, checked), path, &executable)?;
+        let built = build_for_run((&program, checked), path, executable)?;
         if let (Some((cache, name)), Some(root)) = (&started_from, &built.root) {
             // A store that can't be written only means building it again next time.
             fennec_build::kept(
@@ -133,8 +148,7 @@ fn built_and_run(
             );
         }
     }
-    crate::lint::show_errors_found();
-    started(&executable, path, arguments, logged)
+    Ok(None)
 }
 
 /// Where the root of what a kept image built is kept, by the image and what else the build read.

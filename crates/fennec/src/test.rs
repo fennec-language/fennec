@@ -63,6 +63,34 @@ impl Options {
         }
         Some((path.unwrap_or(".").to_owned(), options))
     }
+
+    /// The options, as the build daemon is asked to run the tests with them: which tests, and
+    /// what's listed. None for `--real`, whose tests reach the terminal and this process's input,
+    /// so they run here.
+    pub(crate) fn words(self) -> Option<[&'static str; 2]> {
+        let run = match self.run {
+            Run::Affected => "affected",
+            Run::All => "all",
+            Run::Real => return None,
+        };
+        Some([run, if self.verbose { "verbose" } else { "quiet" }])
+    }
+
+    /// The options `words` gave.
+    #[cfg(unix)]
+    pub(crate) fn of_words([run, shown]: [&str; 2]) -> Option<Self> {
+        let run = match run {
+            "affected" => Run::Affected,
+            "all" => Run::All,
+            _ => return None,
+        };
+        let verbose = match shown {
+            "verbose" => true,
+            "quiet" => false,
+            _ => return None,
+        };
+        Some(Options { run, verbose, before_a_run: false })
+    }
 }
 
 /// Runs the tests a change affects before a program runs, giving back how to stop if one fails.
@@ -92,7 +120,7 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
     {
         return None;
     }
-    let code = test(path, Options { before_a_run: true, ..Options::default() });
+    let code = test_here(path, Options { before_a_run: true, ..Options::default() });
     if code != ExitCode::SUCCESS {
         return Some(code);
     }
@@ -103,7 +131,14 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
     None
 }
 
+/// `fennec test`: run by the build daemon when there's one to be had, as `fennec build` is, or
+/// else here.
 pub(crate) fn test(path: &str, options: Options) -> ExitCode {
+    crate::daemon::test(path, options).unwrap_or_else(|| test_here(path, options))
+}
+
+/// `fennec test` in this process.
+pub(crate) fn test_here(path: &str, options: Options) -> ExitCode {
     let results = Results::open(path, options.run != Run::Affected);
     let cached = results.cache.as_ref().map(|(cache, name)| (cache, name.as_str()));
     let state = cached.and_then(crate::verdict::last_state);

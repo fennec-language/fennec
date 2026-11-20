@@ -464,8 +464,42 @@ fn a_cache_that_cant_be_written_says_so() {
     std::fs::remove_dir_all(&home).unwrap();
 }
 
-/// What a command stopped before it tidied up leaves in `work` goes once it's old, and what a
-/// command working now has there stays.
+/// What a command stopped before it tidied up leaves in `work` goes, and what a command running
+/// now has there stays, however long its folder has gone without changing, as when the machine
+/// slept through its build. An entry named otherwise goes once it's old.
+#[cfg(unix)]
+#[test]
+fn old_scratch_work_is_swept_and_current_work_stays() -> std::io::Result<()> {
+    let home = home("sweep")?;
+    // This process is running; one that's been waited for isn't.
+    let running = std::process::id();
+    let mut child = std::process::Command::new("true").spawn()?;
+    let gone = child.id();
+    child.wait()?;
+    let current = home.join(format!("work/fennec-llvm-{running}-a-0"));
+    entry(&current.join("f0.ll"), 10, 7200)?;
+    age_folder(&current, 7200)?;
+    let fresh = home.join(format!("work/fennec-llvm-again-{running}-b-1"));
+    entry(&fresh.join("f0.ll"), 10, 0)?;
+    let left = home.join(format!("work/fennec-llvm-again-{gone}-c-0"));
+    entry(&left.join("f0.ll"), 10, 0)?;
+    let named_otherwise = home.join("work/scratch");
+    entry(&named_otherwise, 10, 7200)?;
+    let named_otherwise_new = home.join("work/scratch-new");
+    entry(&named_otherwise_new, 10, 0)?;
+    assert_eq!(fennec_build::sweep_work(&home, fennec_build::WORK_KEPT), 2);
+    assert!(current.join("f0.ll").is_file(), "work of a running command went for its age");
+    assert!(fresh.join("f0.ll").is_file());
+    assert!(named_otherwise_new.is_file());
+    assert!(!left.exists(), "what a command that's gone left stayed");
+    assert!(!named_otherwise.exists());
+    assert_eq!(fennec_build::sweep_work(&home.join("nowhere"), Duration::ZERO), 0);
+    std::fs::remove_dir_all(&home)
+}
+
+/// Where a process can't be asked after, what's in `work` goes once it's old, whoever named it,
+/// and what's newer stays.
+#[cfg(not(unix))]
 #[test]
 fn old_scratch_work_is_swept_and_current_work_stays() -> std::io::Result<()> {
     let home = home("sweep")?;

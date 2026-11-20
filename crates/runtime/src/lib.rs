@@ -4,10 +4,11 @@
 //!
 //! The functions are `fennec_rt::embed`'s; this crate gives them names a linker can find,
 //! and asks the system for what only it can give: Windows's fine timer, and a process's end.
-//! Those are the things here Rust calls unsafe.
+//! It also has mimalloc call it when it runs out of memory. Those are the things here Rust calls
+//! unsafe.
 #![expect(
     unsafe_code,
-    reason = "exporting the runtime's functions under fixed names, and calling the system to end the process"
+    reason = "exporting the runtime's functions under fixed names, calling the system to end the process, and giving mimalloc its error handler"
 )]
 
 use fennec_rt::embed::guarded::rollback;
@@ -199,51 +200,52 @@ const fn same(a: &[u8], b: &[u8]) -> bool {
 /// for an address sanitizer to watch.
 #[cfg(not(feature = "sanitize"))]
 #[global_allocator]
-static ALLOCATOR: Allocator = Allocator;
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// mimalloc, saying when it runs out of memory in Fennec's words. Rust's own way, for an allocation
-/// that comes back null, is "memory allocation of N bytes failed", a note about `RUST_BACKTRACE`,
-/// and an abort that dumps core, with what the program printed lost (runtime exhaustion audit,
-/// 2026-11-20). Stable Rust has no hook for that but the allocator itself.
 #[cfg(not(feature = "sanitize"))]
-struct Allocator;
+unsafe extern "C" {
+    /// mimalloc's: sets the function it calls on an error, as just before it gives back null for an
+    /// allocation it couldn't make, with the error's code and `argument`.
+    fn mi_register_error(
+        handler: Option<extern "C" fn(std::ffi::c_int, *mut std::ffi::c_void)>,
+        argument: *mut std::ffi::c_void,
+    );
+}
 
-// SAFETY: each method passes its arguments to mimalloc's, which keeps `GlobalAlloc`'s contract,
-// and gives back what it gave, never null: a null ends the program before it's given back.
+/// Has running out of memory said in Fennec's words. Rust's own way, for an allocation that comes
+/// back null, is "memory allocation of N bytes failed", a note about `RUST_BACKTRACE`, and an abort
+/// that dumps core, with what the program printed lost (runtime exhaustion audit, 2026-11-20).
+/// mimalloc calls its error handler just before it gives back null, so the program ends there and
+/// nothing is added to the allocations that succeed: a wrapper checking each for null cost
+/// `grep_tool` 2% of its instructions.
 #[cfg(not(feature = "sanitize"))]
-unsafe impl std::alloc::GlobalAlloc for Allocator {
-    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        // SAFETY: as `GlobalAlloc::alloc`'s caller promises.
-        let block = unsafe { mimalloc::MiMalloc.alloc(layout) };
-        if block.is_null() {
-            aot::out_of_memory(layout.size());
-        }
-        block
-    }
+fn say_when_out_of_memory() {
+    // SAFETY: `ran_out` is a function of the type mimalloc calls, and reads nothing through its
+    // argument, which is null.
+    unsafe { mi_register_error(Some(ran_out), std::ptr::null_mut()) }
+}
 
-    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
-        // SAFETY: as `GlobalAlloc::alloc_zeroed`'s caller promises.
-        let block = unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) };
-        if block.is_null() {
-            aot::out_of_memory(layout.size());
-        }
-        block
-    }
-
-    unsafe fn dealloc(&self, block: *mut u8, layout: std::alloc::Layout) {
-        // SAFETY: as `GlobalAlloc::dealloc`'s caller promises: `block` came from this allocator.
-        unsafe { mimalloc::MiMalloc.dealloc(block, layout) }
-    }
-
-    unsafe fn realloc(&self, block: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
-        // SAFETY: as `GlobalAlloc::realloc`'s caller promises: `block` came from this allocator.
-        let grown = unsafe { mimalloc::MiMalloc.realloc(block, layout, size) };
-        if grown.is_null() {
-            aot::out_of_memory(size);
-        }
-        grown
+/// mimalloc's error handler. Out of memory, or asked for more than it could ever give, ends the
+/// program saying so (`aot::out_of_memory`). Anything else, as freeing what it never gave, is left
+/// to mimalloc, which goes on.
+#[cfg(not(feature = "sanitize"))]
+extern "C" fn ran_out(code: std::ffi::c_int, _: *mut std::ffi::c_void) {
+    if code == ENOMEM || code == EOVERFLOW {
+        aot::out_of_memory();
     }
 }
+
+/// The C library's code for running out of memory, the same on every system Fennec runs on.
+#[cfg(not(feature = "sanitize"))]
+const ENOMEM: std::ffi::c_int = 12;
+
+/// The C library's code for a request too large to ever give, which differs between systems.
+#[cfg(all(not(feature = "sanitize"), target_vendor = "apple"))]
+const EOVERFLOW: std::ffi::c_int = 84;
+#[cfg(all(not(feature = "sanitize"), windows))]
+const EOVERFLOW: std::ffi::c_int = 132;
+#[cfg(all(not(feature = "sanitize"), not(target_vendor = "apple"), not(windows)))]
+const EOVERFLOW: std::ffi::c_int = 75;
 
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {
@@ -581,6 +583,8 @@ export! {
 pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 {
     #[cfg(windows)]
     fine_timer();
+    #[cfg(not(feature = "sanitize"))]
+    say_when_out_of_memory();
     let code = aot::run(entry, length, stop);
     #[cfg(windows)]
     end_process(code);

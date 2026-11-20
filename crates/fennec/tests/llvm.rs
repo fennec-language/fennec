@@ -31550,8 +31550,7 @@ def main(stdout: Stdout, args: Args) fails Crashed:
             .output_within()?;
         let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
         assert_eq!((printed.as_ref(), ran.status.code()), ("started\n", Some(1)), "{how}: {said}");
-        assert!(said.starts_with("error: out of memory: couldn't get "), "{how}: {said}");
-        assert!(said.ends_with(" bytes\n") && !said.contains("RUST_BACKTRACE"), "{how}: {said}");
+        assert_eq!(said, "error: out of memory\n", "{how}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

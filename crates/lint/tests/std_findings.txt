@@ -16,7 +16,6 @@ collections.fen: [assert-outside-tests] `assert` is for tests
 collections.fen: [assert-outside-tests] `assert` is for tests
 collections.fen: [assert-outside-tests] `assert` is for tests
 collections.fen: [assert-outside-tests] `assert` is for tests
-collections.fen: [assert-outside-tests] `assert` is for tests
 collections.fen: [chained-compare] write this as `0 <= at < len(self)`
 collections.fen: [chained-compare] write this as `0 <= at < len(self)`
 collections.fen: [chained-compare] write this as `0 <= at < self.count`

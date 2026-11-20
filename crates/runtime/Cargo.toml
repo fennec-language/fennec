@@ -58,3 +58,6 @@ threads = ["fennec-rt/threads"]
 sanitize = ["fennec-rt/sanitize"]
 # For audited test builds only: the heap's audit (see `fennec-rt`'s feature of the same name).
 audit = ["fennec-rt/audit"]
+# For tests only: `std.fs`'s work fails where `FENNEC_FAULTS` says (see `fennec-rt`'s feature of
+# the same name).
+faults = ["fennec-rt/faults"]

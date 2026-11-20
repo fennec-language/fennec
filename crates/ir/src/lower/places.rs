@@ -1,6 +1,7 @@
-//! Places a program can change: a local, or what's reached from it by fields and items.
-//! Values are copies, so changing an item's insides reads the item, changes that, and writes
-//! it back. A backend or the optimizer can do that in place.
+//! Places a program can change: a local, or what's reached from it by fields, items, and the
+//! value inside an optional the checker knows isn't `None`. Values are copies, so changing an
+//! item's insides reads the item, changes that, and writes it back, and so does changing what's
+//! inside an optional. A backend or the optimizer can do that in place.
 
 use fennec_check::Type;
 use fennec_syntax::{BinOp, Expr, ExprKind, Span, WithName};
@@ -13,6 +14,9 @@ use crate::{InstKind, LocalId, Operand, Terminator};
 pub(super) enum Step {
     Field(String),
     Index(Operand),
+    /// Into an optional the checker narrowed, as `slot` is in `slot.health += 1` under
+    /// `if slot is not None:`.
+    Inside,
 }
 
 #[derive(Clone)]
@@ -46,11 +50,13 @@ impl Lowering<'_> {
             }
             ExprKind::Attr { object, name, optional: false } => {
                 let mut place = self.place_of(object)?;
+                self.step_inside_if_narrowed(&mut place, object)?;
                 place.steps.push(Step::Field(name.clone()));
                 Ok(place)
             }
             ExprKind::Index { object, index } => {
                 let mut place = self.place_of(object)?;
+                self.step_inside_if_narrowed(&mut place, object)?;
                 let ty = self.steps_type(&place)?;
                 if let Type::Named(owner) = &ty
                     && self.has_mut_form(owner)
@@ -66,6 +72,18 @@ impl Lowering<'_> {
             }
             _ => Err(other.to_owned()),
         }
+    }
+
+    /// Steps into the optional `place` holds when the checker narrowed `object`, the expression
+    /// naming it, to what's inside: a field or an item is changed there.
+    fn step_inside_if_narrowed(&self, place: &mut Place, object: &Expr) -> Lowered<()> {
+        let held = self.steps_type(place)?;
+        if let Type::Optional(inside) = &held
+            && self.type_at(object.span).as_ref() == Some(&**inside)
+        {
+            place.steps.push(Step::Inside);
+        }
+        Ok(())
     }
 
     /// A place to come back to after other code runs, so its indexes are held apart from
@@ -133,6 +151,10 @@ impl Lowering<'_> {
             Step::Index(_) => {
                 self.item_type(ty).ok_or_else(|| "it changes an item of something that has none".to_owned())
             }
+            Step::Inside => match ty {
+                Type::Optional(inside) => Ok((**inside).clone()),
+                _ => Err(format!("it changes inside {ty} as if it were optional")),
+            },
         }
     }
 
@@ -161,6 +183,11 @@ impl Lowering<'_> {
                     Operand::Local(dest)
                 }
                 Step::Index(index) => Operand::Local(self.read_item(&ty, read, index.clone(), &held, span)),
+                Step::Inside => {
+                    let dest = self.temporary(held.clone());
+                    self.emit(InstKind::GetSome { dest, value: read }, span);
+                    Operand::Local(dest)
+                }
             };
             ty = held;
         }
@@ -259,7 +286,7 @@ impl Lowering<'_> {
         value: Operand,
         span: Span,
     ) -> Lowered<()> {
-        let first_index = steps.iter().position(|step| matches!(step, Step::Index(_)));
+        let first_index = steps.iter().position(|step| matches!(step, Step::Index(_) | Step::Inside));
         let Some(at) = first_index else {
             if steps.is_empty() {
                 self.emit(InstKind::Copy { dest: local, value }, span);
@@ -270,13 +297,31 @@ impl Lowering<'_> {
             return Ok(());
         };
         let (prefix, rest) = steps.split_at(at);
-        let Some((Step::Index(index), rest)) = rest.split_first() else {
-            return Err("a place lost its index".to_owned());
-        };
         let mut ty = self.local_type(local);
         for step in prefix {
             ty = self.step_type(&ty, step)?;
         }
+        let index = match rest.split_first() {
+            Some((Step::Index(index), _)) => index,
+            // What's inside an optional is read out, changed and put back in.
+            Some((Step::Inside, rest)) => {
+                let inside = self.step_type(&ty, &Step::Inside)?;
+                let value = if rest.is_empty() {
+                    value
+                } else {
+                    let optional = self.read_steps(local, prefix, span)?;
+                    let held = self.temporary(inside);
+                    self.emit(InstKind::GetSome { dest: held, value: optional }, span);
+                    self.write_place(held, rest, value, span)?;
+                    Operand::Local(held)
+                };
+                let wrapped = self.temporary(ty);
+                self.emit(InstKind::MakeSome { dest: wrapped, value }, span);
+                return self.write_place(local, prefix, Operand::Local(wrapped), span);
+            }
+            _ => return Err("a place lost its index".to_owned()),
+        };
+        let rest = rest.get(1..).unwrap_or_default();
         let value = if rest.is_empty() {
             value
         } else {
@@ -643,7 +688,7 @@ fn field_path(steps: &[Step]) -> Vec<String> {
         .iter()
         .filter_map(|step| match step {
             Step::Field(field) => Some(field.clone()),
-            Step::Index(_) => None,
+            Step::Index(_) | Step::Inside => None,
         })
         .collect()
 }

@@ -253,7 +253,7 @@ impl FnCx<'_> {
     /// `except why:`. The standard library's own code may still call it.
     fn test_only_function(&self, name: &str, span: Span) -> Option<Diagnostic> {
         let entry = self.checker.program.functions.get(name)?;
-        if name != "failure_of" || !entry.prelude || self.in_a_test() || span.in_prelude() {
+        if name != "failure_of" || !entry.prelude || self.in_a_test() || self.checker.lets_off(span) {
             return None;
         }
         let help = "outside a test, name a failure where it happens with `x = f() except why:`; a test checks one with `assert f() fails Oops()`";

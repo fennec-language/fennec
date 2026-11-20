@@ -1,0 +1,10 @@
+struct Player:
+    name: str
+    score: int
+
+def main(stdout: Stdout):
+    ana = Player(name="Ana", score=3)
+    # `copy(ana, name="Bo")` is on the language page, but isn't built yet.
+    mut bo = ana
+    bo.name = "Bo"
+    stdout.print(ana.name, ana.score, bo.name, bo.score)

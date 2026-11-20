@@ -3658,6 +3658,45 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     )
 }
 
+/// A crash in a `lock` of two values puts both back whatever order they're named in. They're taken
+/// in order of address, and named against it a crash gave each back with the other's table: their
+/// ints went back, but their lists and dicts read as `None` after, or kept what the block did to
+/// them (#2223). In a task, both orders, a failure, two from a dict by key, values whose lists the
+/// block left alone, and one held only to read, each with lists, a list of lists and a dict of
+/// lists changed; each value is then read under a lock of its own. CI's workers jobs run it at 1,
+/// 4 and 8 threads.
+#[test]
+fn a_crash_in_a_lock_of_two_values_puts_both_back_whatever_their_order() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "crash_in_a_lock_named_against_its_order",
+        include_str!("fixtures/workers/crash_in_a_lock_named_against_its_order.fen"),
+        include_str!("fixtures/workers/crash_in_a_lock_named_against_its_order.out"),
+    )
+}
+
+/// A function that makes a value and never uses it builds in a program that launches a task and
+/// has a `parallel` call, so runs on the runtime's threads. There a `shared` value is made a table
+/// of its own, which can fail, so a function making one can fail even when nothing else in it can:
+/// the analysis said it couldn't, and the build stopped with the backend's own error that it fails
+/// where it worked out it can't (#2231). A `shared` int, struct, and struct holding a list, and a
+/// list, dict, `Table`, text and struct, each made in a function of its own and let go of. It
+/// prints what the reference evaluator prints, built either way. CI's workers jobs run it at 1, 4
+/// and 8 threads.
+#[test]
+fn a_value_made_and_never_used_builds_beside_tasks() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "unused_values_made_beside_tasks",
+        include_str!("fixtures/workers/unused_values_made_beside_tasks.fen"),
+        include_str!("fixtures/workers/unused_values_made_beside_tasks.out"),
+    )
+}
+
 /// A value that's out of the list or dict holding it goes back when a crash leaves the function,
 /// before anything looks at what it came out of. Taken out by a method on it or by hand, in the
 /// function that made the list or dict, in one handed it by `ref`, in a struct through `ref self`,
@@ -7958,7 +7997,7 @@ def main(args: Args, stdout: Stdout):
     kept = ints
     ints.discard(2)
     ints.discard(9)
-    ints.remove(3)
+    _ = ints.remove(3)
     stdout.print(ints, kept)
     ints.clear()
     ints.add(7)
@@ -7966,12 +8005,12 @@ def main(args: Args, stdout: Stdout):
     mut words = {"a", "b", "a long string that is held in a block"}
     words.discard("a")
     words.discard("nope")
-    words.remove("a long string that is held in a block")
+    _ = words.remove("a long string that is held in a block")
     stdout.print(words)
     mut keys = {Key(x=1, y=2), Key(x=3, y=4)}
     keys.discard(Key(x=1, y=2))
     keys.discard(Key(x=9, y=9))
-    keys.remove(Key(x=3, y=4))
+    _ = keys.remove(Key(x=3, y=4))
     stdout.print(keys, len(keys))
 "#,
     )
@@ -8025,27 +8064,30 @@ def main(stdout: Stdout):
     return
 "#;
 
-/// `set.remove` of a key that isn't there fails as pinned.
+/// `set.remove` of an item that isn't there gives `None` and leaves the set as it was, and of
+/// one that is gives it back, whatever the item is: an int, text held inline, or text in a block of
+/// its own.
 #[test]
-fn removing_what_a_set_lacks_fails_as_pinned() -> std::io::Result<()> {
+fn removing_what_a_set_lacks_gives_none() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    for (name, set, key) in [
-        ("remove_int", "{1, 2}", "3"),
-        ("remove_str", "{\"a\"}", "\"b\""),
-        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\""),
+    for (name, set, key, kept, left) in [
+        ("remove_int", "{1, 2}", "3", "1", 1),
+        ("remove_str", "{\"a\"}", "\"b\"", "\"a\"", 0),
+        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\"", "\"a\"", 0),
     ] {
-        same_message_as_pinned(
-            name,
-            &format!(
-                "def main(stdout: Stdout):
+        let program = format!(
+            "def main(stdout: Stdout):
     mut held = {set}
-    held.remove({key})
-    stdout.print(held)
+    stdout.print(held.remove({key}), held)
+    stdout.print(held.remove({kept}), len(held))
 "
-            ),
-        )?;
+        );
+        // The item it gives back prints as itself, text without its quotes.
+        let given = kept.trim_matches('"');
+        let wanted = format!("None {set}\n{given} {left}\n");
+        assert_eq!(printed_by(name, &program)?, wanted, "{name}");
     }
     Ok(())
 }
@@ -8562,12 +8604,7 @@ def main(stdout: Stdout):
 ";
 
 /// Each way a `lock` can come to take one value twice, all after printing something.
-const TAKEN_TWICE: [(&str, &str); 5] = [
-    ("spelled", "    lock one, one as ref x, ref y:\n        x.total = y.total + 1\n"),
-    (
-        "reading",
-        "    mut seen = 0\n    lock one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
-    ),
+const TAKEN_TWICE: [(&str, &str); 3] = [
     ("named", "    other = one\n    lock one, other as ref x, y:\n        x.total = y.total + 1\n"),
     ("passed", "    both(one, b=one)\n"),
     ("held", "    lock Holder(box=one).box, one as ref x, y:\n        x.total = y.total + 1\n"),
@@ -8670,7 +8707,18 @@ fn two_values_in_a_lock_each_change_through_their_own_name() -> std::io::Result<
     same_as_expected_in_both_builds("two_cells", TWO_CELLS)
 }
 
-/// One value taken twice ends the program, after what it printed, however it came about.
+/// One value named twice in one `lock`, by the same name, which the checker sees, is refused before
+/// it's built (#2230).
+const SPELLED_TWICE: [(&str, &str); 2] = [
+    ("spelled", "    lock one, one as ref x, ref y:\n        x.total = y.total + 1\n"),
+    (
+        "reading",
+        "    mut seen = 0\n    lock one, one as x, y:\n        seen = x.total + y.total\n    stdout.print(seen)\n",
+    ),
+];
+
+/// One value taken twice ends the program, after what it printed, however it came about where the
+/// checker can't see it's one value; where it can, by the same name, it's refused before it's built.
 #[test]
 fn a_lock_taking_one_value_twice_ends_the_program() -> std::io::Result<()> {
     if !ready() {
@@ -8678,6 +8726,17 @@ fn a_lock_taking_one_value_twice_ends_the_program() -> std::io::Result<()> {
     }
     let dir = folder("taken-twice")?;
     let path = |file: &Path| file.display().to_string();
+    for (name, shape) in SPELLED_TWICE {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
+        let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&dir.join(name))], &dir)?;
+        let said = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{name}: built");
+        assert!(
+            said.contains("this `lock` takes `one` twice, but it's one `shared` value"),
+            "{name}: {said}"
+        );
+    }
     for (name, shape) in TAKEN_TWICE {
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, format!("{TAKING}{shape}    stdout.print(\"not here\")\n"))?;
@@ -9350,7 +9409,7 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
     Ok(())
 }
 
-/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
+/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4, 8 and 16
 /// threads, wanting what it prints, what it says and its exit code every time.
 fn deadlock_fixture_runs_as(name: &str, runs: usize, wanted: (&str, &str, i32)) -> std::io::Result<()> {
     deadlock_fixture_runs_with(name, runs, &[], wanted)
@@ -9373,7 +9432,7 @@ fn deadlock_fixture_runs_with(
     let (source, built_as) = (program.to_string_lossy(), executable.to_string_lossy());
     let built = fennec(&["build", "--llvm", &source, "-o", &built_as], &dir)?;
     assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-    for threads in ["1", "4", "16"] {
+    for threads in ["1", "4", "8", "16"] {
         for _ in 0..runs {
             let ran = Command::new(&executable)
                 .env("FENNEC_THREADS", threads)
@@ -13356,30 +13415,31 @@ def main(stdout: Stdout):
     return
 "#;
 
-/// A `pop` of a key that isn't there and a `remove` of an item that isn't there fail and change
-/// nothing. Generated code stored the failed `pop`'s result, nothing, over the dict before it
-/// looked at whether the call had failed, and the runtime had already copied a dict or set with
-/// two owners and moved the caller's owner to the copy. So a task that crashed on one left the
-/// dict and what it held behind: 5 blocks here. Now the dict is written only once the call has
-/// worked, and a shared one without the key is left alone. Alone and with two owners, each fails
-/// in a task that crashes and then works on a key that's there, and the counts are pinned: nothing
-/// left, and no copy for a take that fails or a `discard` that finds nothing.
+/// A `pop` of a key that isn't there fails and changes nothing, and a set's `remove` of an item
+/// that isn't there gives `None` and changes nothing. Generated code stored the failed `pop`'s
+/// result, nothing, over the dict before it looked at whether the call had failed, and the runtime
+/// had already copied a dict with two owners and moved the caller's owner to the copy. So a task
+/// that crashed on one left the dict and what it held behind: 5 blocks here. Now the dict is
+/// written only once the call has worked, and a shared one without the key is left alone. Alone
+/// and with two owners, each `pop` fails in a task that crashes, each `remove` finds nothing, and
+/// then each works on a key that's there. The counts are pinned: nothing left, and no copy for a
+/// take that fails or a `remove` or `discard` that finds nothing.
 #[test]
-fn a_pop_or_remove_that_fails_changes_nothing_and_leaves_nothing() -> std::io::Result<()> {
+fn a_pop_that_fails_or_a_remove_of_nothing_changes_nothing_and_leaves_nothing() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
     prints_in_both_builds("failed_takes", FAILED_TAKES, FAILED_TAKES_PRINTS)?;
     assert_eq!(
         counts_of("failed_takes_counts", FAILED_TAKES)?,
-        "copies 20 copied_bytes 1104 largest_copy 80 allocations 87 allocated_bytes 10776 live 0"
+        "copies 20 copied_bytes 1104 largest_copy 80 allocations 82 allocated_bytes 10328 live 0"
     );
     Ok(())
 }
 
-const FAILED_TAKES: &str = r#"# A `pop` of a key that isn't there, and a `remove` of an item that isn't there, fail and change
-# nothing: the dict or set is as it was, alone or with another owner, and a task that crashes on
-# one leaves nothing behind. Each then works on a key that is there.
+const FAILED_TAKES: &str = r#"# A `pop` of a key that isn't there fails and changes nothing: the dict is as it was, alone or
+# with another owner, and a task that crashes on one leaves nothing behind. A `remove` of an item
+# that isn't there gives `None` and changes nothing. Each then works on a key that is there.
 
 from std.concurrent import Crashed
 
@@ -13392,7 +13452,7 @@ def popped(key: int, two_owners: bool) -> int:
 def removed(key: str, two_owners: bool) -> int:
     mut local = {"one, long enough for a block of its own", "two"}
     other = local if two_owners else {"nine"}
-    local.remove(key)
+    _ = local.remove(key)
     return len(local) * 10 + len(other)
 
 def discarded(key: str, two_owners: bool) -> int:
@@ -13436,12 +13496,10 @@ def main(stdout: Stdout):
 "#;
 
 const FAILED_TAKES_PRINTS: &str = r"pop(5) crashed, two owners: False
-remove(missing) crashed, two owners: False
 21 11
 pop(5) crashed, two owners: True
-remove(missing) crashed, two owners: True
 22 12
-[11, 11, 12, 12]
+[11, 21, 11, 12, 22, 12]
 ";
 
 /// A key a dict of blocks doesn't have fails as pinned.
@@ -16885,7 +16943,7 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
     let dir = folder("keys_let_go")?;
     let program = dir.join("keys_let_go.fen");
     std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keys_let_go.fen"), &program)?;
-    prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n8\n", &["1", "4"])
+    prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n6\n", &["1", "4"])
 }
 
 /// A task stopped while it waits in a call to the runtime leaves nothing behind. The call here is a
@@ -16899,8 +16957,8 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
 /// they held reached nothing. A pool's reset of a Postgres connection, cut short as its pool
 /// ended, left the `Duration` this way.
 ///
-/// `list.remove` had the same order: an item that isn't there stops its task, which left the block
-/// made to pass the item. It's taken out in a task here, whose crash its launcher handles.
+/// A dict's read of a key it doesn't have had the same order: it stops its task, which left the
+/// block made to pass the key. It's read in a task here, whose crash its launcher handles.
 #[test]
 fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -31267,10 +31325,11 @@ fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Resul
     Ok(())
 }
 
-/// A key 20,000 deep that isn't there, in a launched task, whose own stack is small: the dict's
-/// lookup, a set's `remove` and a list's `remove` each say what's missing and crash only the task,
-/// as on the main thread. The key is read for the message with room for its depth, where it was
-/// read on the task's own stack, and stopped the whole program from about 8,000 deep.
+/// A key 20,000 deep that isn't there, in a launched task, whose own stack is small. The dict's
+/// lookup says what's missing and crashes only the task, as on the main thread: the key is read
+/// for the message with room for its depth, where it was read on the task's own stack, and stopped
+/// the whole program from about 8,000 deep. A set's `remove` and a list's `remove` compare it all
+/// the way down on that stack and give `None`.
 #[test]
 fn a_deep_key_missing_in_a_task_crashes_only_the_task_saying_what_is_missing() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -31289,19 +31348,12 @@ fn a_deep_key_missing_in_a_task_crashes_only_the_task_saying_what_is_missing() -
     let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
     let start: String = said.chars().take(300).collect();
     assert!(ran.status.success(), "{start}");
-    assert_eq!(printed, "dict: its task crashed\nset: its task crashed\nlist: its task crashed\nafter\n");
-    // Each failure names what's missing, all 20,000 levels of it.
+    // A set's and a list's `remove` compare the key all the way down and give `None`.
+    assert_eq!(printed, "dict: its task crashed\nTrue\nTrue\nafter\n");
+    // The dict's failure names what's missing, all 20,000 levels of it.
     let failures: Vec<&str> = said.lines().filter(|line| line.starts_with("error: ")).collect();
-    let [dict, set, list] = failures[..] else { panic!("{start}") };
+    let [dict] = failures[..] else { panic!("{start}") };
     assert!(dict.starts_with("error: the dict has no key Node(n=20000, kids=[Node(n=19999"), "{start}");
-    assert!(
-        set.starts_with("error: Node(n=20000, kids=[Node(n=19999") && set.ends_with("isn't in the set"),
-        "{start}"
-    );
-    assert!(
-        list.starts_with("error: Link(n=20000, next=Link(n=19999") && list.ends_with("isn't in the list"),
-        "{start}"
-    );
     assert!(dict.contains("Node(n=-1, kids=[])"), "the key's last level is named too");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -34914,16 +34966,16 @@ def main(stdout: Stdout):
     stdout.print((1, 2) in [(1, 2)], Spot(x=1, y=2) in [Spot(x=1, y=2)], Spot(x=2, y=2) in [Spot(x=1, y=2)], (1, "a") in [(1, "a")], [1] in [[1], [2]])
     mut numbers = [1, 2, 3, 2]
     shared = numbers
-    numbers.remove(2)
+    _ = numbers.remove(2)
     stdout.print(numbers, shared)
     mut words = ["a", "a string long enough to be a block of its own", "c"]
-    words.remove("a string long enough to be a block of its own")
+    _ = words.remove("a string long enough to be a block of its own")
     stdout.print(words)
     mut spots = [Spot(x=1, y=2), Spot(x=3, y=4)]
-    spots.remove(Spot(x=1, y=2))
+    _ = spots.remove(Spot(x=1, y=2))
     stdout.print(spots)
     mut pairs = [(1, "a"), (2, "b")]
-    pairs.remove((2, "b"))
+    _ = pairs.remove((2, "b"))
     stdout.print(pairs)
     stdout.print(sin(0.5), cos(0.5), sin(1), cos(0))
     stdout.print(int(5), float(2.5), str(True), str(False), str([1, 2]), str(Spot(x=1, y=2)), str((1, "a")))
@@ -34933,7 +34985,7 @@ def main(stdout: Stdout):
 
 /// A function whose only way to fail is one of these still says it can, so it builds.
 #[test]
-fn a_function_failing_only_in_max_min_or_remove_builds() -> std::io::Result<()> {
+fn a_function_failing_only_in_max_min_or_pop_builds() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -34951,22 +35003,23 @@ def longest(words: list[str]) -> str:
 def shortest(words: list[str]) -> str:
     return min(words, key=word => len(word))
 
-def gone(ref values: list[int]):
-    values.remove(9)
+def gone(ref ages: dict[str, int]):
+    _ = ages.pop("nine")
 
 def main(stdout: Stdout):
-    mut values = [1, 9, 2]
+    values = [1, 9, 2]
+    mut ages = {"nine": 9}
     stdout.print(top(values), smallest(values))
     stdout.print(longest(["a", "bcd"]), shortest(["a", "bcd"]))
-    gone(ref values)
-    stdout.print(values)
-    gone(ref values)
+    gone(ref ages)
+    stdout.print(ages)
+    gone(ref ages)
     stdout.print("never")
 "#,
     )
 }
 
-/// `max` of nothing, and removing what isn't there, fail as pinned.
+/// `max` of nothing, and popping where nothing is, fail as pinned.
 #[test]
 fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -34981,10 +35034,10 @@ fn small_calls_fail_as_pinned() -> std::io::Result<()> {
 ",
     )?;
     same_message_as_pinned(
-        "remove_missing",
+        "pop_missing",
         "def main(stdout: Stdout):
     mut some = [1]
-    some.remove(2)
+    _ = some.pop(2)
     stdout.print(some)
 ",
     )

@@ -1,0 +1,6 @@
+def report(stdout: Stdout, name: str, score: int):
+    stdout.print(f"{name}: {score}")
+
+def main(stdout: Stdout):
+    report(stdout, "Ana", 3)
+    report(stdout, "Bo", 5)

@@ -1,0 +1,7 @@
+error: this `lock` takes `account` twice, but it's one `shared` value
+ --> examples/errors/lock_one_value_twice.fen:7:19
+  |
+7 |     lock account, account as ref paying, ref paid:
+  |                   ^^^^^^^
+  |
+  = help: take it once, as `lock account as ref paying:`, and use `paying` for both

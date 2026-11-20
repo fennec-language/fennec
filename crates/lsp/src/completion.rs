@@ -3,8 +3,10 @@
 //! scope there, the program's top-level names, the builtins and the keywords.
 //!
 //! While someone types, the program seldom parses: `point.` is half an expression. So the text
-//! is mended first. After a dot, the dot and what's typed after it are taken out, which leaves
-//! the object on its own; anywhere else, what's typed becomes a placeholder name. The mended
+//! is mended first. After a dot, the dot, what's typed after it and a call or index right after
+//! that are taken out, which leaves the object on its own; an object that starts its statement is
+//! given to `_`, since a value left unused doesn't check. Anywhere else, what's typed becomes a
+//! placeholder name. The mended
 //! program is loaded like any other, and the walk go to definition makes finds the names in
 //! scope at the placeholder, or the expression that ends at the dot. When the mended program
 //! checks, that expression's type says which members it has; when it doesn't, every member of
@@ -100,19 +102,19 @@ const KEYWORDS: [&str; 40] = [
 /// written in Fennec come from the standard library's `extend` blocks instead.
 fn engine_methods(ty: &Type) -> &'static [&'static str] {
     match ty {
+        // `len(x)` and `abs(x)` are builtins: `x.len()` and `x.abs()` are refused, so they're
+        // never offered.
         Type::Str => &[
-            "len", "upper", "lower", "strip", "lstrip", "rstrip", "split", "replace", "find", "join",
-            "encode", "code", "codes",
+            "upper", "lower", "strip", "lstrip", "rstrip", "split", "replace", "find", "join", "encode",
+            "code", "codes",
         ],
-        Type::List(_) => &["len", "append", "remove", "insert", "clear", "remove_where", "sort", "pop"],
-        Type::Set(_) => &["len", "add", "discard", "remove", "clear"],
-        Type::Dict(..) => &["len", "pop", "get", "keys", "values", "items", "clear"],
+        Type::List(_) => &["append", "remove", "insert", "clear", "remove_where", "sort", "pop"],
+        Type::Set(_) => &["add", "discard", "remove", "clear"],
+        Type::Dict(..) => &["pop", "get", "keys", "values", "items", "clear"],
         Type::Table(_) => {
-            &["len", "add", "remove", "get", "modify", "remove_where", "values", "ids", "items", "clear"]
+            &["add", "remove", "get", "modify", "remove_where", "values", "ids", "items", "clear"]
         }
-        Type::Bytes => &["len", "decode"],
-        Type::Tuple(_) => &["len"],
-        Type::Int | Type::Float => &["abs"],
+        Type::Bytes => &["decode"],
         _ => &[],
     }
 }
@@ -142,6 +144,27 @@ enum Completing {
     Name,
 }
 
+/// The serialization hooks, `Serializable.serialize` and `Deserializable.deserialize`, which code
+/// the compiler writes calls by name and a program hardly ever does, so they'd only crowd what's
+/// offered after a dot, as on every `str`. They're offered once three letters or more of one are
+/// typed.
+const HOOKS: [&str; 2] = ["serialize", "deserialize"];
+
+/// What's offered at byte `offset` of `text`, without the serialization hooks after a dot until
+/// three letters or more of one are typed, and whether the editor should ask again as more is
+/// typed: only while what's typed could still become a hook's first three letters, so typing
+/// anything else doesn't ask again for each letter.
+pub(crate) fn without_hooks(items: Vec<Json>, text: &str, offset: usize) -> (Vec<Json>, bool) {
+    let Some((start, _, Completing::Member { .. })) = completing(text, offset) else { return (items, false) };
+    let typed = text.get(start..offset).unwrap_or("");
+    let shown = |label: &str| !HOOKS.contains(&label) || (typed.len() >= 3 && label.starts_with(typed));
+    let before = items.len();
+    let kept: Vec<Json> =
+        items.into_iter().filter(|item| item.get("label").and_then(Json::as_str).is_none_or(shown)).collect();
+    let more = kept.len() < before && HOOKS.iter().any(|hook| hook.starts_with(typed));
+    (kept, more)
+}
+
 /// The word being typed at `offset`, as where it starts and ends, and what it is. None in a
 /// comment.
 fn completing(text: &str, offset: usize) -> Option<(usize, usize, Completing)> {
@@ -163,13 +186,135 @@ fn completing(text: &str, offset: usize) -> Option<(usize, usize, Completing)> {
     Some((start, offset + rest, kind))
 }
 
-/// The text with the word being typed mended, so it parses.
-fn mended(text: &str, start: usize, end: usize, kind: Completing) -> Option<String> {
-    let after = text.get(end..)?;
-    Some(match kind {
-        Completing::Member { dot } => format!("{}{after}", text.get(..dot)?),
-        Completing::Case | Completing::Name => format!("{}{PLACEHOLDER}{after}", text.get(..start)?),
-    })
+/// The text with the word being typed mended, so it parses and checks, and how far that moved
+/// the dot. After a dot, the word and a call or index right after it come out with the dot, so
+/// `x = text.sp|lit(",")` reads `x = text`; an object that starts its statement is given to `_`,
+/// as `_ = names`. A line still being written, a block's head with no `:` yet or one with a
+/// bracket open, as `if text.` or `stdout.print(text.`, can't parse however the word is mended, so
+/// the line becomes the object given to `_`. Gives back the mended text and where its dot is.
+fn mended(text: &str, start: usize, end: usize, kind: Completing) -> Option<(String, usize)> {
+    match kind {
+        Completing::Member { dot } => {
+            let after = past_group(text, end);
+            let object = object_start(text, dot);
+            let line = text.get(..object)?.rfind('\n').map_or(0, |newline| newline + 1);
+            let line_end = text.get(dot..)?.find('\n').map_or(text.len(), |newline| dot + newline);
+            let head = text.get(line..object)?;
+            let written = text.get(object..dot)?;
+            if head.trim().is_empty() && depth(text, object) == 0 {
+                let mended = format!("{}_ = {written}{}", text.get(..object)?, text.get(after..)?);
+                return Some((mended, dot + "_ = ".len()));
+            }
+            if unfinished(text.get(line..line_end)?) {
+                let indent = head.get(..head.len() - head.trim_start().len()).unwrap_or("");
+                let mended = format!("{}{indent}_ = {written}{}", text.get(..line)?, text.get(line_end..)?);
+                return Some((mended, line + indent.len() + "_ = ".len() + written.len()));
+            }
+            Some((format!("{}{written}{}", text.get(..object)?, text.get(after..)?), dot))
+        }
+        Completing::Case | Completing::Name => {
+            Some((format!("{}{PLACEHOLDER}{}", text.get(..start)?, text.get(end..)?), start))
+        }
+    }
+}
+
+/// Whether a line is still being written: a block's head with no `:` at its end yet, or one
+/// with a bracket it doesn't close.
+fn unfinished(line: &str) -> bool {
+    let words = line.trim_start();
+    let head =
+        ["if ", "elif ", "while ", "for ", "with ", "match "].iter().any(|word| words.starts_with(word));
+    head && !words.trim_end().ends_with(':') || depth(line, line.len()) > 0
+}
+
+/// Where the object that ends at the dot at byte `dot` starts: back over names, dots, and
+/// brackets or a string each taken whole, as in `units[at].pos` or `f"{a}".upper`.
+fn object_start(text: &str, dot: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut at = dot;
+    loop {
+        let before = at;
+        match at.checked_sub(1).and_then(|last| bytes.get(last)) {
+            Some(b')' | b']' | b'}') => {
+                let mut nested = 0_usize;
+                while let Some(last) = at.checked_sub(1) {
+                    at = last;
+                    match bytes.get(at) {
+                        Some(b')' | b']' | b'}') => nested += 1,
+                        Some(b'(' | b'[' | b'{') => {
+                            nested -= 1;
+                            if nested == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some(b'"') => {
+                at -= 1;
+                while at > 0 && bytes.get(at - 1) != Some(&b'"') {
+                    at -= 1;
+                }
+                at = at.saturating_sub(1);
+            }
+            _ => {}
+        }
+        while at > 0 && bytes.get(at - 1).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') {
+            at -= 1;
+        }
+        // A chain goes on through a dot before it: `a.b.c`.
+        if at > 0 && bytes.get(at - 1) == Some(&b'.') && at != before {
+            at -= 1;
+            continue;
+        }
+        return at;
+    }
+}
+
+/// The end of a call's or index's brackets right at byte `at`, or `at` when none starts there.
+fn past_group(text: &str, at: usize) -> usize {
+    let bytes = text.as_bytes();
+    if !matches!(bytes.get(at), Some(b'(' | b'[')) {
+        return at;
+    }
+    let mut nested = 0_usize;
+    let mut in_text = false;
+    for (offset, byte) in bytes.iter().enumerate().skip(at) {
+        match byte {
+            b'"' => in_text = !in_text,
+            b'(' | b'[' | b'{' if !in_text => nested += 1,
+            b')' | b']' | b'}' if !in_text => {
+                nested -= 1;
+                if nested == 0 {
+                    return offset + 1;
+                }
+            }
+            b'\n' if !in_text && nested == 0 => return at,
+            _ => {}
+        }
+    }
+    at
+}
+
+/// How many brackets are open at byte `at`, outside strings and comments, so a line inside a
+/// call's arguments isn't taken for a statement of its own.
+fn depth(text: &str, at: usize) -> usize {
+    let mut nested = 0_usize;
+    let mut in_text = false;
+    let mut in_comment = false;
+    for byte in text.as_bytes().iter().take(at) {
+        match byte {
+            b'\n' => in_comment = false,
+            _ if in_comment => {}
+            b'#' if !in_text => in_comment = true,
+            b'"' => in_text = !in_text,
+            b'(' | b'[' | b'{' if !in_text => nested += 1,
+            b')' | b']' | b'}' if !in_text => nested = nested.saturating_sub(1),
+            _ => {}
+        }
+    }
+    nested
 }
 
 /// One thing to offer.
@@ -234,6 +379,9 @@ pub(crate) enum Written {
 pub(crate) struct Known<'a> {
     pub(crate) module: &'a Module,
     pub(crate) sources: &'a Sources,
+    /// The module's types, when they're worked out already, as a quick analysis has them: `None`
+    /// checks the whole module to find an object's type.
+    pub(crate) checked: Option<&'a fennec_check::Checked>,
 }
 
 impl<'a> Known<'a> {
@@ -302,7 +450,29 @@ impl<'a> Known<'a> {
     }
 }
 
-/// What can be written at byte `offset` of `text`, the open document `file` of `program`.
+/// The text mended for completing at a place, as `mend` makes it.
+pub(crate) struct Mend {
+    /// What the word at the cursor is.
+    kind: Completing,
+    /// Where the word being typed starts, in the text as written.
+    start: usize,
+    /// The text with the word mended, so it parses.
+    pub(crate) text: String,
+    /// Where the dot before a member is, in the mended text.
+    dot: usize,
+}
+
+/// The text at byte `offset` mended for completing there, or `None` where nothing's offered,
+/// as in a comment.
+pub(crate) fn mend(text: &str, offset: usize) -> Option<Mend> {
+    let (start, end, kind) = completing(text, offset)?;
+    let (mended, dot) = mended(text, start, end, kind)?;
+    Some(Mend { kind, start, text: mended, dot })
+}
+
+/// What can be written at byte `offset` of `text`, the open document `file` of `program`,
+/// loading and checking all of the program as mended. A session answers from a quick analysis
+/// of the edited file instead when it can, with `offer`.
 pub(crate) fn complete(
     program: &Path,
     file: &Path,
@@ -310,33 +480,37 @@ pub(crate) fn complete(
     offset: usize,
     mut overlay: Overlay,
 ) -> Vec<Json> {
-    let Some((start, end, kind)) = completing(text, offset) else { return Vec::new() };
-    let Some(mended) = mended(text, start, end, kind) else { return Vec::new() };
-    overlay.insert(file.to_path_buf(), mended);
+    let Some(mend) = mend(text, offset) else { return Vec::new() };
+    overlay.insert(file.to_path_buf(), mend.text.clone());
     let loaded = fennec_kit::load_with(program, &text::shown(program), Entry::Everything, &overlay).ok();
-    let path = text::shown(file);
-    let mut offered = Offered::default();
     let Some(loaded) = loaded else {
-        if let Completing::Name = kind {
+        let mut offered = Offered::default();
+        if let Completing::Name = mend.kind {
             builtins_and_keywords(&mut offered);
         }
         return offered.items();
     };
-    let known = Known { module: &loaded.module, sources: &loaded.sources };
+    let known = Known { module: &loaded.module, sources: &loaded.sources, checked: None };
+    offer(&mend, &text::shown(file), &known)
+}
+
+/// What can be written where `mend` was made, in the file at `path`, from what `known` declares.
+pub(crate) fn offer(mend: &Mend, path: &str, known: &Known<'_>) -> Vec<Json> {
+    let mut offered = Offered::default();
     let at = |offset: usize| {
-        let (_, base) = loaded.sources.by_path(&path)?;
+        let (_, base) = known.sources.by_path(path)?;
         base.checked_add(u32::try_from(offset).ok()?)
     };
-    match kind {
-        Completing::Member { dot } => {
-            if let Some(at) = at(dot) {
-                members(&mut offered, &known, at);
+    match mend.kind {
+        Completing::Member { .. } => {
+            if let Some(at) = at(mend.dot) {
+                members(&mut offered, known, at);
             }
         }
-        Completing::Case => cases(&mut offered, &known),
+        Completing::Case => cases(&mut offered, known),
         Completing::Name => {
-            if let Some(at) = at(start + 1) {
-                names(&mut offered, &known, &path, at);
+            if let Some(at) = at(mend.start + 1) {
+                names(&mut offered, known, path, at);
             }
         }
     }
@@ -364,6 +538,8 @@ pub(crate) enum Object<'a> {
     Value(Type),
     /// The type with this name itself, as in `Type.`.
     Type(&'a str),
+    /// A standard library module, as in `json.`, which the file imports.
+    Module(&'static str),
     /// A value whose type isn't known, since the program doesn't check.
     Unknown,
 }
@@ -378,9 +554,16 @@ pub(crate) fn object<'a>(known: &Known<'a>, at: u32) -> Option<Object<'a>> {
     if let Some(name) = written.filter(|name| !local(name) && is_type(name)) {
         return Some(Object::Type(name));
     }
-    let ty = fennec_check::check_typed(known.module)
-        .ok()
-        .and_then(|checked| checked.types.body(&function)?.expr(object).cloned());
+    // A module isn't a value, so the mended program doesn't check: it's known by its name.
+    if let Some(module) = written.filter(|name| !local(name)).and_then(fennec_syntax::std_module) {
+        return Some(Object::Module(module));
+    }
+    let ty = match known.checked {
+        Some(checked) => checked.types.body(&function).and_then(|body| body.expr(object)).cloned(),
+        None => fennec_check::check_typed(known.module)
+            .ok()
+            .and_then(|checked| checked.types.body(&function)?.expr(object).cloned()),
+    };
     Some(ty.map_or(Object::Unknown, Object::Value))
 }
 
@@ -389,6 +572,12 @@ pub(crate) fn object<'a>(known: &Known<'a>, at: u32) -> Option<Object<'a>> {
 fn members(offered: &mut Offered, known: &Known<'_>, at: u32) {
     match object(known, at) {
         Some(Object::Type(name)) => type_members(offered, known, name),
+        Some(Object::Module(module)) => {
+            for name in fennec_syntax::std_exports(module) {
+                let kind = if name.starts_with(char::is_uppercase) { CLASS } else { FUNCTION };
+                offered.add(name, kind, Some(format!("std.{module}")), None);
+            }
+        }
         Some(Object::Value(ty)) => {
             if let Some(owner) = owner(&ty) {
                 value_members(offered, known, owner);
@@ -534,11 +723,28 @@ mod tests {
         let text = "x = point.na\n";
         let Some((start, end, kind)) = completing(text, 12) else { panic!("nothing to complete") };
         assert!(matches!(kind, Completing::Member { dot: 9 }));
-        assert_eq!(mended(text, start, end, kind).as_deref(), Some("x = point\n"));
+        assert_eq!(mended(text, start, end, kind), Some(("x = point\n".to_owned(), 9)));
         let text = "x = .Re\n";
         let Some((start, end, kind)) = completing(text, 7) else { panic!("nothing to complete") };
         assert!(matches!(kind, Completing::Case));
-        assert_eq!(mended(text, start, end, kind).as_deref(), Some("x = .completing_here_\n"));
+        assert_eq!(mended(text, start, end, kind), Some(("x = .completing_here_\n".to_owned(), 5)));
+        // An object that starts its statement is given to `_`, and the dot moves with it.
+        let text = "def f(names: list[str]):\n    names.ap\n";
+        let Some((start, end, kind)) = completing(text, text.len() - 1) else {
+            panic!("nothing to complete")
+        };
+        let Some((statement, dot)) = mended(text, start, end, kind) else { panic!("nothing mended") };
+        assert_eq!(statement, "def f(names: list[str]):\n    _ = names\n");
+        assert_eq!(statement.get(dot - 5..dot), Some("names"));
+        // A line still being written becomes the object given to `_`.
+        let text = "def f(text: str):\n    if text.\n";
+        let Some((start, end, kind)) = completing(text, text.len() - 1) else {
+            panic!("nothing to complete")
+        };
+        assert_eq!(
+            mended(text, start, end, kind).map(|(text, _)| text).as_deref(),
+            Some("def f(text: str):\n    _ = text\n")
+        );
         let Some((_, _, kind)) = completing("x = f(", 6) else { panic!("nothing to complete") };
         assert!(matches!(kind, Completing::Name));
         assert!(completing("x = 1  # po", 11).is_none());

@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use fennec_check::{Checked, Type};
-use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Item, Module, Pattern, Span, Stmt, StmtKind};
+use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, FnDef, Item, Module, Pattern, Span, Stmt, StmtKind};
 
 use crate::{dedent, list, named, optional};
 
@@ -345,6 +345,41 @@ fn the_standard_library_writes_every_return_type() {
             }
         }
     }
+}
+
+/// The checker doesn't report problems in the standard library, so this holds it to the rule it
+/// holds programs to: a `def` that can fail says so with `fails`, which hover and the docs show. A
+/// function that failed without saying so made a caller's mistake show where the result was used.
+#[test]
+fn the_standard_library_says_how_each_function_fails() {
+    let (_, checked) = checked("def main(stdout: Stdout):\n    pass\n").unwrap();
+    let mut unsaid = Vec::new();
+    for (file, source) in fennec_syntax::prelude_files() {
+        let module = fennec_syntax::parse_prelude(source).unwrap();
+        for item in &module.items {
+            let (owner, defs) = match item {
+                Item::Function(def) => (None, std::slice::from_ref(def)),
+                Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                    (Some(&def.name), def.methods.as_slice())
+                }
+                Item::Extend(extension) => (Some(&extension.name), extension.methods.as_slice()),
+                _ => continue,
+            };
+            // One that says it gives back a `Result` gives back a value, as a program's does.
+            let quiet =
+                |def: &&FnDef| def.fails.is_none() && def.ret.as_ref().is_none_or(|ret| ret.name != "Result");
+            for def in defs.iter().filter(quiet) {
+                let key = owner.map_or_else(|| def.name.clone(), |owner| format!("{owner}.{}", def.name));
+                // A module's function is known by the module's name, as `csv.loads`.
+                let found =
+                    checked.signatures.get(&format!("{file}.{key}")).or_else(|| checked.signatures.get(&key));
+                if found.is_some_and(|signature| matches!(signature.returns, Type::Result(..))) {
+                    unsaid.push(format!("{file}: {key}"));
+                }
+            }
+        }
+    }
+    assert_eq!(unsaid, Vec::<String>::new(), "these can fail, so their signatures say `fails`");
 }
 
 #[test]

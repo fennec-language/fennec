@@ -90,6 +90,29 @@ fn changes(params: &[Type], returns: Type) -> Method {
 }
 
 impl Method {
+    /// Its signature as a person reads it, for a hover: `def split(self, str) -> list[str]`, with
+    /// `ref self` when it changes the value, and the arguments that can be left out in `[...]`.
+    /// The engines know only the arguments' types, not their names.
+    pub(crate) fn shown(&self, name: &str) -> String {
+        let receiver = if self.changes { "ref self" } else { "self" };
+        let mut takes = vec![receiver.to_owned()];
+        for (at, param) in self.params.iter().enumerate() {
+            takes.push(if at >= self.arity.0 { format!("[{param}]") } else { param.to_string() });
+        }
+        // One that takes any number, as `print`.
+        if self.arity.1 > self.params.len() {
+            takes.push("...".to_owned());
+        }
+        // What can fail is written as a signature says it: `-> str fails IoError`.
+        let (gives, fails) = match &self.returns {
+            Type::Result(value, error) => (value.as_ref(), Some(error.as_ref())),
+            other => (other, None),
+        };
+        let gives = if *gives == Type::Unit { String::new() } else { format!(" -> {gives}") };
+        let fails = fails.map_or_else(String::new, |error| format!(" fails {error}"));
+        format!("def {name}({}){gives}{fails}", takes.join(", "))
+    }
+
     /// An arrow function passed to this method receives an item.
     fn receiving(self, item: &Type) -> Method {
         Method { receives: vec![item.clone()], ..self }
@@ -169,7 +192,7 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
 fn list_method(item: &Type, name: &str) -> Option<Method> {
     let item = item.clone();
     Some(match name {
-        "append" | "remove" => changes(&[item], Type::Unit),
+        "append" => changes(&[item], Type::Unit),
         "insert" => changes(&[Type::Int, item], Type::Unit),
         "clear" => changes(&[], Type::Unit),
         "remove_where" => changes(&[], Type::Unit).receiving(&item).any_args(),
@@ -197,7 +220,7 @@ fn buffer_method(item: &Type, name: &str) -> Option<Method> {
 
 fn set_method(item: &Type, name: &str) -> Option<Method> {
     Some(match name {
-        "add" | "discard" | "remove" => changes(std::slice::from_ref(item), Type::Unit),
+        "add" | "discard" => changes(std::slice::from_ref(item), Type::Unit),
         "clear" => changes(&[], Type::Unit),
         _ => return None,
     })

@@ -37,6 +37,18 @@ extend dict[K: Hashable, V]:
         if key not in self: return None
         return self.pop(key)
 
+    ## Takes out `key`, if it's there, and does nothing if not: `remove` for a line that only takes
+    ## it out.
+    ##
+    ## ```fennec
+    ## mut ages = {"ana": 31, "bo": 40}
+    ## ages.discard("ana")
+    ## ages.discard("cy")
+    ## assert ages == {"bo": 40}
+    ## ```
+    def discard(ref self, key: K):
+        _ = self.remove(key)
+
 extend dict[K: Hashable & Serializable, V: Serializable]:
     ## Writes the dict for `json.dumps`, `pack.dumps` and the rest, which call it.
     ## ```fennec

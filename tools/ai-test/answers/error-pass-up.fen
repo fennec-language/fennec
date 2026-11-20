@@ -1,0 +1,15 @@
+error BadAge:
+    text: str
+
+def parse_age(text: str) -> int fails BadAge:
+    return int(text) except InvalidValue(): fail BadAge(text=text)
+
+def next_age(text: str) -> int fails BadAge:
+    return parse_age(text)? + 1
+
+def main(stdout: Stdout):
+    for text in ["41", "old"]:
+        age = next_age(text) except error:
+            stdout.print("bad", error.text)
+            continue
+        stdout.print(age)

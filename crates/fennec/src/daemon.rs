@@ -9,8 +9,9 @@
 //! to a daemon built from other source, even of the same version, which would answer with what an
 //! older compiler does.
 //!
-//! The daemon owns the cache in `~/.fennec/cache`: it keeps it under its cap (1 GiB, or
-//! `FENNEC_CACHE_CAP` bytes) when it starts and every five minutes after, while it's idle.
+//! The daemon owns the cache in `~/.fennec/cache`: it keeps it under its cap (20 GiB, or a tenth of
+//! the space free on its disk if that's less, or `FENNEC_CACHE_CAP` bytes) when it starts and
+//! every five minutes after, while it's idle.
 //!
 //! `fennec lsp` sends `lsp` and then keeps the connection open: the daemon serves the
 //! language server's session over it until the editor is done.
@@ -687,7 +688,7 @@ mod unix {
             if reader.get_ref().stream.set_read_timeout(None).is_err() {
                 return;
             }
-            language_server(&mut reader, &mut writer, state);
+            language_server(reader, &mut writer, state);
             return;
         }
         let mut rest = String::new();
@@ -801,20 +802,24 @@ mod unix {
     }
 
     /// Serves a language server session over a connection, on a thread with room for the
-    /// checker to recurse, until the editor is done.
-    fn language_server(reader: &mut BufReader<Within>, writer: &mut UnixStream, state: &Mutex<State>) {
+    /// checker to recurse, until the editor is done. The session reads the connection on a thread
+    /// of its own, so it's shut once the session ends, which ends that thread and tells the
+    /// editor's side the session is over.
+    fn language_server(reader: BufReader<Within>, writer: &mut UnixStream, state: &Mutex<State>) {
         let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
         {
             let mut state = lock();
             state.sessions += 1;
             state.served += 1;
         }
+        let output = &mut *writer;
         std::thread::scope(|scope| {
             let session = std::thread::Builder::new()
                 .stack_size(crate::STACK_BYTES)
-                .spawn_scoped(scope, || fennec_lsp::serve(reader, writer));
+                .spawn_scoped(scope, move || fennec_lsp::serve(reader, output));
             let _ = session.map(std::thread::ScopedJoinHandle::join);
         });
+        let _ = writer.shutdown(std::net::Shutdown::Both);
         let mut state = lock();
         state.sessions = state.sessions.saturating_sub(1);
         state.last_work = Instant::now();

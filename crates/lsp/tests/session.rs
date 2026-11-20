@@ -78,17 +78,7 @@ impl Editor {
             ("method", Json::string(method)),
             ("params", params),
         ]);
-        self.session
-            .handle(&message)
-            .iter()
-            .map(|published| {
-                let uri = published.at(&["params", "uri"]).and_then(Json::as_str).unwrap_or("");
-                let name = uri.rsplit('/').next().unwrap_or(uri).to_owned();
-                let diagnostics =
-                    published.at(&["params", "diagnostics"]).and_then(Json::as_array).unwrap_or(&[]);
-                (name, diagnostics.to_vec())
-            })
-            .collect()
+        by_file(&self.session.handle(&message))
     }
 
     fn open(&mut self, file: &str, text: &str) -> Vec<(String, Vec<Json>)> {
@@ -118,6 +108,21 @@ impl Editor {
         ]);
         self.request(method, params)
     }
+}
+
+/// The diagnostics in what a session published, by file name.
+fn by_file(published: &[Json]) -> Vec<(String, Vec<Json>)> {
+    published
+        .iter()
+        .filter(|published| published.get("method") == Some(&Json::string("textDocument/publishDiagnostics")))
+        .map(|published| {
+            let uri = published.at(&["params", "uri"]).and_then(Json::as_str).unwrap_or("");
+            let name = uri.rsplit('/').next().unwrap_or(uri).to_owned();
+            let diagnostics =
+                published.at(&["params", "diagnostics"]).and_then(Json::as_array).unwrap_or(&[]);
+            (name, diagnostics.to_vec())
+        })
+        .collect()
 }
 
 impl Drop for Editor {
@@ -321,6 +326,46 @@ fn lints_and_copies_show_with_their_rules_and_fixes() {
     assert_eq!(edits.as_array().unwrap()[0].get("newText"), Some(&Json::string("")));
 }
 
+/// The server's session publishes a program's mistakes as soon as the checker has found them, and
+/// what the linter finds and what may copy, which take longer, once it's done: a program with a
+/// mistake has nothing more to show. A code action, which may be a lint's fix, waits for them.
+#[test]
+fn a_staged_session_publishes_mistakes_first_then_lints_and_copies() {
+    let mut editor = Editor::new("staged").unwrap();
+    editor.session = Session::staged();
+    let text = "def one() -> int:\n    pass\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
+                held = items\n    items.append(2)\n    stdout.print(len(held), len(items), one())\n";
+    let published = editor.open("src/main.fen", text);
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]), "no mistakes, and the rest to come");
+    assert!(editor.session.pending());
+    let finished = by_file(&editor.session.finish());
+    assert_eq!(codes(for_file(&finished, "main.fen").unwrap()), ["needless-pass", "copies"]);
+    assert!(!editor.session.pending());
+    assert!(editor.session.finish().is_empty(), "nothing is left to do");
+
+    let broken = text.replace("return 1", "return \"one\"");
+    let published = editor.change("src/main.fen", &broken);
+    assert_eq!(for_file(&published, "main.fen").map(<[Json]>::len), Some(1), "{published:?}");
+    assert!(!editor.session.pending(), "a program with a mistake has no lints to show");
+
+    editor.change("src/main.fen", text);
+    let saved = Json::object([("uri", Json::string(editor.uri("src/main.fen")))]);
+    editor.notify("textDocument/didSave", Json::object([("textDocument", saved)]));
+    assert!(editor.session.pending(), "a save checks all of the program again");
+    let params = Json::object([
+        ("textDocument", Json::object([("uri", Json::string(editor.uri("src/main.fen")))])),
+        ("range", Json::object([("start", position(text, "pass", 0)), ("end", position(text, "pass", 4))])),
+        ("context", Json::object([("diagnostics", Json::Array(Vec::new()))])),
+    ]);
+    let actions = editor.request("textDocument/codeAction", params);
+    let fix = actions.as_array().and_then(|actions| actions.first());
+    let edits =
+        fix.and_then(|fix| fix.at(&["edit", "changes"])?.get(&editor.uri("src/main.fen"))?.as_array());
+    let removed = edits.and_then(|edits| edits.first()?.get("newText"));
+    assert_eq!(removed, Some(&Json::string("")), "the lint's fix, which takes the `pass` out: {actions:?}");
+    assert!(!editor.session.pending());
+}
+
 #[test]
 fn a_quick_edit_keeps_what_other_files_show_and_lints_the_edited_one() {
     let mut editor = Editor::new("quick_lints").unwrap();
@@ -425,6 +470,34 @@ fn hovers_show_signatures_docs_and_what_names_hold() {
     assert_eq!(shown(&field), "```fennec\nhealth = 100\n```");
     let size = editor.at("textDocument/hover", "src/main.fen", MAIN, "SIZE)", 0);
     assert_eq!(shown(&size), "```fennec\nSIZE = 10\n```\n\nThe arena's size.");
+}
+
+/// A method the engines give a built-in type, or one of std's types written in Rust, has no
+/// declaration, so a hover shows the signature the checker knows, with what can fail said as a
+/// signature says it, and a `Table`'s method is its own, not every type's of the same name.
+#[test]
+fn hovers_on_methods_written_in_rust_show_their_signatures() {
+    let mut editor = Editor::new("hovers-built-in").unwrap();
+    let text = "from std.collections import Table\n\nstruct Spot:\n    x = 0\n\nstruct Counter:\n    count = 0\n\n    def add(ref self, more: int):\n        self.count += more\n\ndef main(stdout: Stdout, fs: Fs):\n    parts = \"a,b\".split(\",\")\n    mut spots = Table[Spot]()\n    _ = spots.add(Spot())\n    saved = fs.read_text(\"notes.txt\") except why:\n        stdout.print(f\"couldn't read it: {why}\")\n        return\n    stdout.print(parts, saved)\n";
+    editor.open("src/main.fen", text);
+    let shown = |editor: &mut Editor, needle: &str| {
+        let hover = editor.at("textDocument/hover", "src/main.fen", text, needle, 1);
+        hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap_or("nothing").to_owned()
+    };
+    assert_eq!(
+        shown(&mut editor, "split"),
+        "```fennec\ndef split(self, [str]) -> list[str]\n```\n\nbuilt into `str`"
+    );
+    assert_eq!(
+        shown(&mut editor, "read_text"),
+        "```fennec\ndef read_text(self, str) -> str fails IoError\n```\n\nbuilt into `Fs`"
+    );
+    assert_eq!(
+        shown(&mut editor, "print(parts"),
+        "```fennec\ndef print(self, ...)\n```\n\nbuilt into `Stdout`"
+    );
+    let add = shown(&mut editor, "add(Spot");
+    assert_eq!(add, "```fennec\ndef add(ref self, Spot) -> Id[Spot]\n```\n\nbuilt into `Table[Spot]`");
 }
 
 #[test]
@@ -748,10 +821,71 @@ fn completion_after_a_dot_offers_what_the_objects_type_has() {
     let typing = MAIN.replace("    damage = hit", "    shown = fighter.name.st\n    damage = hit");
     editor.change("src/main.fen", &typing);
     let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "name.st", 7));
-    for method in ["startswith", "upper", "split", "len"] {
+    for method in ["startswith", "upper", "split", "lower"] {
         assert!(offered.contains(&method.to_owned()), "text has {method}: {offered:?}");
     }
     assert!(!offered.contains(&"health".to_owned()), "{offered:?}");
+}
+
+/// Completion after a dot finds the object's type however the line it's on is written: at the
+/// start of a statement, inside code already written, in an `if` with no `:` yet, inside a call's
+/// open brackets, and after a module's name. `len` isn't a method, since `x.len()` is refused.
+#[test]
+fn completion_after_a_dot_works_however_the_line_is_written() {
+    let mut editor = Editor::new("complete-lines").unwrap();
+    let typed = |line: &str| {
+        MAIN.replace("    damage = hit(fighter, 3)", &format!("{line}\n    damage = hit(fighter, 3)"))
+    };
+    let fighter = ["name", "health", "describe"];
+    for (line, cursor) in [
+        ("    fighter.", "fighter.\n"),
+        ("    if fighter.", "fighter.\n"),
+        ("    stdout.print(fighter.", "fighter.\n"),
+        ("    shown = fighter.describe()", "fighter.describe()"),
+    ] {
+        let text = typed(line);
+        editor.change("src/main.fen", &text);
+        let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &text, cursor, 8));
+        assert_eq!(offered, fighter, "{line}");
+    }
+    let text = format!("from std import json\n\n{}", typed("    shown = json."));
+    editor.change("src/main.fen", &text);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &text, "json.\n", 5));
+    assert!(offered.contains(&"dumps".to_owned()) && offered.contains(&"loads".to_owned()), "{offered:?}");
+    let text = typed("    shown = fighter.name.");
+    editor.change("src/main.fen", &text);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &text, "name.\n", 5));
+    assert!(offered.contains(&"split".to_owned()), "{offered:?}");
+    assert!(!offered.contains(&"len".to_owned()), "`x.len()` is refused: {offered:?}");
+}
+
+/// `serialize` and `deserialize` are hooks the compiler's own code calls, so after a dot they wait
+/// until three letters of one are typed, and the editor is told to ask again until then.
+#[test]
+fn the_serialization_hooks_are_offered_once_three_letters_are_typed() {
+    let mut editor = Editor::new("complete-hooks").unwrap();
+    for (typed, hooks, more) in [
+        ("", false, true),
+        ("se", false, true),
+        ("ser", true, false),
+        ("de", false, true),
+        ("st", false, false),
+    ] {
+        let line = format!("    shown = fighter.name.{typed}");
+        let text =
+            MAIN.replace("    damage = hit(fighter, 3)", &format!("{line}\n    damage = hit(fighter, 3)"));
+        editor.change("src/main.fen", &text);
+        let cursor = format!("name.{typed}\n");
+        let completion =
+            editor.at("textDocument/completion", "src/main.fen", &text, &cursor, 5 + typed.len());
+        let offered = labels(&completion);
+        assert_eq!(offered.contains(&"serialize".to_owned()), hooks, "after `{typed}`: {offered:?}");
+        assert_eq!(completion.get("isIncomplete"), Some(&Json::Bool(more)), "after `{typed}`");
+        if typed.is_empty() {
+            assert!(offered.contains(&"split".to_owned()), "{offered:?}");
+            assert!(!offered.contains(&"deserialize".to_owned()), "{offered:?}");
+        }
+    }
 }
 
 #[test]

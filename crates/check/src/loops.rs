@@ -449,13 +449,14 @@ impl Loops<'_, '_> {
     }
 
     /// What a method call changes under what it's called on: everything, for a built-in
-    /// method that changes its value, and what the method's summary says for a `mut self` one.
+    /// method that changes its value, and what the method's summary says for a `mut self` one,
+    /// std's own for a built-in type included, as a list's `extend` and `remove`.
     fn method_changes(&mut self, object: &Expr, method: &str, body: Option<&Body>) -> Vec<Vec<Step>> {
         let Some(ty) = body.and_then(|body| body.expr(object.span)) else { return Vec::new() };
         if let Some(found) = builtins::method(ty, method) {
             return if found.changes { vec![Vec::new()] } else { Vec::new() };
         }
-        let Some(owner) = ty.type_name() else { return Vec::new() };
+        let Some(owner) = ty.method_owner() else { return Vec::new() };
         let Some((key, entry)) = self.checker.program.method(owner, method) else { return Vec::new() };
         if !entry.def.params.first().is_some_and(|param| param.is_self && param.is_mut) {
             return Vec::new();

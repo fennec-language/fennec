@@ -556,7 +556,7 @@ export struct PackReader:
     _field = 0
     _exact = False
     ## Each `Id` and `Table` read, checked once everything has been.
-    _ids = IdsSeen(_whole="the data")
+    _ids = IdsSeen.called("the data")
     ## The tag each `Table` of a type gets, new for each load.
     _tags = dict[str, int]()
     ## Whether to keep track of where it is, for a message, and where.

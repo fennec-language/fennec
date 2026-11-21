@@ -7,8 +7,6 @@
 //! are (`fine_together`). Where a
 //! place is named it's left alone too, as `needless-conversion` leaves it.
 
-use std::collections::HashMap;
-
 use fennec_check::Type;
 use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Module, Sources, Span};
 
@@ -16,6 +14,7 @@ use crate::Lint;
 use crate::conversions::fine_together;
 use crate::copies::places;
 use crate::rewrites::{replaceable, written};
+use crate::typed::Types;
 
 /// Whether reading an expression twice gives the same thing and does nothing else.
 pub(crate) fn pure(expr: &Expr) -> bool {
@@ -92,7 +91,7 @@ fn rewritten(sources: &Sources, whole: &Expr, table: &Expr, key: &Expr, default:
     Some(format!("{call} else {rest}"))
 }
 
-pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
+pub(crate) fn of(module: &Module, sources: &Sources, types: &Types<'_>) -> Vec<Lint> {
     let mut candidates: Vec<(Expr, Span, String, String)> = Vec::new();
     fennec_syntax::read::exprs(module, &mut |expr| {
         if !expr.span.in_prelude()
@@ -106,13 +105,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     if candidates.is_empty() {
         return Vec::new();
     }
-    let Ok(checked) = fennec_check::check_typed(module) else { return Vec::new() };
-    let types: HashMap<(u32, u32), &Type> = checked
-        .types
-        .iter()
-        .flat_map(|(_, body)| body.exprs())
-        .map(|(span, ty)| ((span.start, span.end), ty))
-        .collect();
+    let Some(types) = types.by_span() else { return Vec::new() };
     let places = places(module);
     let dicts: Vec<(Span, String, String)> = candidates
         .into_iter()

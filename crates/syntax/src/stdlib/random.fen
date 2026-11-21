@@ -1,5 +1,20 @@
 from std.random import random_choice, random_float, random_int
 
+## The int in `low` to `high`, both included, at `drawn` numbers into `seed`'s run, and how many
+## have been drawn after it. `Random.randint` draws through it.
+@intrinsic
+def random_int(seed: int, drawn: int, low: int, high: int) -> (int, int)
+
+## The float from 0.0 up to 1.0 at `drawn` numbers into `seed`'s run, and how many have been
+## drawn after it. `Random.random` draws through it.
+@intrinsic
+def random_float(seed: int, drawn: int) -> (float, int)
+
+## An item of `items` at `drawn` numbers into `seed`'s run, and how many have been drawn after it.
+## `Random.choice` draws through it.
+@intrinsic
+def random_choice[T](seed: int, drawn: int, items: list[T]) -> (T, int)
+
 ## A seeded random number generator. The same seed gives the same numbers in the same order
 ## on every machine, so games replay and tests repeat exactly. It's SplitMix64: fast, and
 ## good enough for games, but not for secrets.

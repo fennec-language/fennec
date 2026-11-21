@@ -235,7 +235,11 @@ impl Reads<'_, '_> {
                 .get(name)
                 .copied()
                 .or_else(|| whole.functions.get(name).map(|function| ir_key(function))),
-            What::Analysis => whole.analyses.get(name).map(|analysis| keyed(&|state| analysis.stable(state))),
+            What::Analysis => {
+                whole.analysis_keys.get(name).copied().or_else(|| {
+                    whole.analyses.get(name).map(|analysis| keyed(&|state| analysis.stable(state)))
+                })
+            }
             What::CanFail => member(&whole.can_fail),
             What::Generator => whole.generators.get(name).map(|def| key_of("generator", def)),
             What::Settles => whole.settles.get(name).map(|summary| key_of("settles", summary)),

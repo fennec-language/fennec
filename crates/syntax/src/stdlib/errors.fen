@@ -69,6 +69,6 @@ export error ParseError:
 ## assert failure_of(() => int.parse("7")?) is None
 ## ```
 export def failure_of[T, E](run: () -> T fails E) -> E?:
-    run() except why:
+    _ = run() except why:
         return why
     return None

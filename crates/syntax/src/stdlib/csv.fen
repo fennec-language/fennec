@@ -72,7 +72,7 @@ export def dumps_records(
     mut rows = [names]
     for record in entries:
         rows.append([(record.get(name) else "") for name in names])
-    return dumps(rows, delimiter)?
+    return dumps(rows, delimiter=delimiter)?
 
 ## One row and the newline after it. A row of one empty field is written in quotes,
 ## since a blank line isn't a row.
@@ -207,7 +207,7 @@ export def dump[W: Writer](
     ref out: W,
     delimiter = ",",
 ) fails InvalidValue | IoError:
-    out.write_text(dumps(rows, delimiter)?)?
+    out.write_text(dumps(rows, delimiter=delimiter)?)?
 
 ## The rows of what's left in `src`, any `Reader` from `std.io`, as `loads` reads them.
 ##
@@ -227,4 +227,4 @@ export def load[R: Reader](ref src: R, delimiter = ",") -> list[
         line=1,
         column=1,
     )
-    return loads(text, delimiter)?
+    return loads(text, delimiter=delimiter)?

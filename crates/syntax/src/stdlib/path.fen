@@ -151,7 +151,7 @@ export struct Path:
             if part != "..":
                 kept.append(part)
             elif len(kept) > 0 and kept[-1] != "..":
-                kept.pop()
+                _ = kept.pop()
             elif not self.is_absolute():
                 kept.append("..")
         return self.rebuild(kept)

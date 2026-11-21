@@ -20,7 +20,8 @@ check() {
 # The report and `main-ci.sh` beside workflows of their own: two nightly ones, one with its name
 # quoted, a weekly one, and one only pushes start, which mustn't be read.
 mkdir -p "$work/repo/.github/scripts" "$work/repo/.github/workflows" "$work/bin" "$work/gh" "$work/notes"
-cp "$here/.github/scripts/nightly-report.sh" "$here/.github/scripts/main-ci.sh" "$work/repo/.github/scripts/"
+cp "$here/.github/scripts/nightly-report.sh" "$here/.github/scripts/main-ci.sh" "$here/.github/scripts/mutants-verdict.sh" \
+  "$work/repo/.github/scripts/"
 workflow() {
   printf 'name: %s\n\non:\n%s  workflow_dispatch:\n' "$2" "$3" > "$work/repo/.github/workflows/$1"
 }
@@ -41,10 +42,11 @@ workflow pushed.yml Pushed '  push:
 cat > "$work/bin/gh" << 'GH'
 #!/usr/bin/env bash
 words=("$@")
-jq_expression="" workflow="" event=""
+jq_expression="" workflow="" event="" dir=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --jq) jq_expression=$2; shift ;;
+    --dir) dir=$2; shift ;;
     --workflow) workflow=$2; shift ;;
     --event) event=$2; shift ;;
   esac
@@ -63,7 +65,9 @@ case "${words[0]} $path" in
     answer "$FAKE_GH/workflow-${path##*/}.json" ;;
   "run list") answer "$FAKE_GH/runs-$workflow${event:+-$event}.json" ;;
   "run view") answer "$FAKE_GH/jobs-${words[2]}.json" '{"jobs": []}' ;;
-  "run download") exit 1 ;;
+  "run download")
+    [ -d "$FAKE_GH/download-${words[2]}" ] || exit 1
+    mkdir -p "$dir" && cp -R "$FAKE_GH/download-${words[2]}/." "$dir/" ;;
   *) echo "fake gh: nothing to answer $* with" >&2; exit 1 ;;
 esac
 GH
@@ -163,6 +167,33 @@ check "Proofs' failed night behind a run by hand still going fails the report" 1
 green
 runs CI "$(run 12 completed failure 600)"
 check "main's CI red fails the report" 1 "$(report)"
+
+green
+check "with no night of mutants yet, the report says so" yes "$(said 'mutants: no nightly run yet')"
+
+# A night's mutants, each crate's lists as cargo-mutants writes them, `<list>=<count>`.
+slice() {
+  local folder=$work/gh/download-50/mutants-nightly-$1
+  shift
+  mkdir -p "$folder/mutants.out"
+  echo "## ${folder##*-nightly-}, slice 14/60" > "$folder/ranked.md"
+  for list in "$@"; do
+    : > "$folder/mutants.out/${list%=*}.txt"
+    local i=0
+    while [ "$i" -lt "${list#*=}" ]; do
+      i=$((i + 1))
+      echo "crates/ir/src/lower.rs:$i:9: replace && with ||" >> "$folder/mutants.out/${list%=*}.txt"
+    done
+  done
+}
+green
+runs mutants.yml-schedule "$(run 50 completed success $((day / 2)))"
+slice fennec-ir caught=3 missed=2 timeout=1 unviable=0
+slice fennec-llvm caught=7 missed=0 timeout=0 unviable=2
+check "a night of mutants passes the report" 0 "$(report)"
+check "it says one crate's counts" yes "$(said "fennec-ir: 3 caught, 2 missed, 1 timed out, 0 didn't build")"
+check "and another's" yes "$(said "fennec-llvm: 7 caught, 0 missed, 0 timed out, 2 didn't build")"
+check "and what no test caught, all told" yes "$(said ": 2 no test caught, ranked by file")"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed"

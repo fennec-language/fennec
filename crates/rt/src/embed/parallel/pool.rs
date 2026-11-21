@@ -144,12 +144,47 @@ fn threads_wanted() -> usize {
     crate::replay::workers().filter(|workers| *workers > 0).unwrap_or_else(workers_wanted)
 }
 
-/// How many workers `FENNEC_THREADS` asks for, or as many as there are cores.
+/// The most workers the runtime makes, whatever `FENNEC_THREADS` asks for. Each is a thread and a
+/// poll of its own, and more than this many run no more of a program at once on any machine it
+/// runs on: 20,000 took a minute and over a gigabyte just to start, and then went past what the
+/// system lets a process have (runtime exhaustion audit, 2026-11-20).
+const MOST_WORKERS: usize = 256;
+
+/// How many workers `FENNEC_THREADS` asks for, or as many as there are cores, at most
+/// `MOST_WORKERS`. Asking for more says so on standard error, once.
 pub(crate) fn workers_wanted() -> usize {
     let asked = std::env::var("FENNEC_THREADS").ok().and_then(|threads| threads.trim().parse().ok());
-    asked
-        .filter(|threads: &usize| *threads > 0)
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let (workers, said) = workers_for(asked, cores);
+    if let Some(said) = said {
+        warn_once(&said);
+    }
+    workers
+}
+
+/// How many workers to make for `asked`, from `FENNEC_THREADS`, on a machine with `cores`, and
+/// what to say when that's fewer than was asked for.
+fn workers_for(asked: Option<usize>, cores: usize) -> (usize, Option<String>) {
+    match asked.filter(|asked| *asked > 0) {
+        Some(asked) if asked > MOST_WORKERS => (
+            MOST_WORKERS,
+            Some(format!(
+                "warning: FENNEC_THREADS asks for {asked} workers, more than the {MOST_WORKERS} the runtime makes, \
+                 so it makes {MOST_WORKERS}\n"
+            )),
+        ),
+        Some(asked) => (asked, None),
+        None => (cores.clamp(1, MOST_WORKERS), None),
+    }
+}
+
+/// Says `said` on standard error, the first time anything is said this way: each says why the
+/// runtime has fewer workers than it was asked for, which the program can't do anything about.
+fn warn_once(said: &str) {
+    static SAID: AtomicBool = AtomicBool::new(false);
+    if !SAID.swap(true, Ordering::SeqCst) {
+        let _ = std::io::stderr().write_all(said.as_bytes());
+    }
 }
 
 impl Pool {
@@ -160,9 +195,17 @@ impl Pool {
         let stealers = deques.iter().map(Worker::stealer).collect();
         let mut polls = Vec::with_capacity(threads);
         let mut mail = Vec::with_capacity(threads);
+        // Without a poll for every worker there's no pool, which is said, once: `parallel` then runs
+        // its ranges one after another, and `launch` has nothing to run a task on.
+        let refused = |error: std::io::Error| {
+            warn_once(&format!(
+                "warning: couldn't start the runtime's {threads} workers: {error}; `parallel` runs its ranges \
+                 one after another, and `launch` has nothing to run a task on\n"
+            ));
+        };
         for _ in 0..threads {
-            let poll = mio::Poll::new().ok()?;
-            let waker = mio::Waker::new(poll.registry(), super::super::serve::WAKER).ok()?;
+            let poll = mio::Poll::new().map_err(refused).ok()?;
+            let waker = mio::Waker::new(poll.registry(), super::super::serve::WAKER).map_err(refused).ok()?;
             polls.push(poll);
             let (any, asleep) = (AtomicBool::new(false), AtomicBool::new(false));
             mail.push(Mail { jobs: Mutex::new(Vec::new()), any, asleep, waker });
@@ -479,6 +522,27 @@ pub(super) fn streams_run_ahead() -> bool {
 /// Whether this thread is one of the pool's workers.
 pub(super) fn on_worker() -> bool {
     WORKER.get()
+}
+
+/// As many workers as `FENNEC_THREADS` asks for, up to the most, saying so past it; and as many
+/// as there are cores, up to the most, when it doesn't say, which then says nothing.
+#[cfg(test)]
+#[test]
+fn the_workers_asked_for_are_held_to_the_most() {
+    assert_eq!(workers_for(Some(4), 8), (4, None));
+    assert_eq!(workers_for(Some(MOST_WORKERS), 8), (MOST_WORKERS, None));
+    let (workers, said) = workers_for(Some(20_000), 8);
+    assert_eq!(workers, MOST_WORKERS);
+    assert_eq!(
+        said.as_deref(),
+        Some(
+            "warning: FENNEC_THREADS asks for 20000 workers, more than the 256 the runtime makes, so it makes \
+             256\n"
+        )
+    );
+    assert_eq!(workers_for(None, 12), (12, None));
+    assert_eq!(workers_for(Some(0), 12), (12, None), "0 asks for none, so the cores are taken");
+    assert_eq!(workers_for(None, 1024), (MOST_WORKERS, None));
 }
 
 /// A pool of its own with `threads` workers, set up as the shared pool's are, for tests.

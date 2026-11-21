@@ -4,7 +4,7 @@ from std.intrinsics import id_at, id_key, id_of_key, id_tag, table_of_slots, tab
 ## For breadth-first searches, event queues and undo histories.
 export struct Deque[T]:
     ## The items sit in a ring that starts at `head`. Slots outside it hold stale items.
-    slots: list[T] = []
+    slots = list[T]()
     head = 0
     count = 0
 
@@ -19,12 +19,6 @@ export struct Deque[T]:
     def [](ref self, at: int) -> T:
         assert 0 <= at and at < self.count
         return self.slots[(self.head + at) % len(self.slots)]
-
-    ## `item in deque`, looking from the front.
-    def in(self, item: T) -> bool:
-        for at in range(self.count):
-            if self.slots[(self.head + at) % len(self.slots)] == item: return True
-        return False
 
     ## Prints its items: `Deque([1, 2])`.
     def str(self, ref out: StrWriter):
@@ -95,6 +89,12 @@ export struct Deque[T]:
 ## Deques of items that can be compared are equal when they hold equal items in the same
 ## order, whatever room each has spare.
 extend Deque[T: Eq]:
+    ## `item in deque`, looking from the front.
+    def in(self, item: T) -> bool:
+        for at in range(self.count):
+            if self.slots[(self.head + at) % len(self.slots)] == item: return True
+        return False
+
     def ==(self, other: Deque[T]) -> bool:
         return self.items() == other.items()
 
@@ -102,7 +102,7 @@ extend Deque[T: Eq]:
 ## they can be numbers, strings, tuples, or structs with `def <`. For the largest first,
 ## push negated numbers, or use a `PriorityQueue` with negated priorities.
 export struct Heap[T: Ordered]:
-    items: list[T] = []
+    items = list[T]()
 
     ## A heap holding `items`.
     def of(items: list[T]) -> Heap[T]:
@@ -186,7 +186,7 @@ export struct PriorityQueue[T, P: Ordered]:
     ## Each item's priority and the order it was pushed in, smallest first. Items wait in
     ## `waiting` by that order, so they needn't have an order themselves.
     heap: Heap[(P, int)] = Heap()
-    waiting: dict[int, T] = {}
+    waiting = dict[int, T]()
     pushed = 0
 
     def len(self) -> int:
@@ -214,7 +214,7 @@ export struct PriorityQueue[T, P: Ordered]:
 
 ## Counts how many times each item appears. Items keep the order they were first counted in.
 export struct Counter[T: Hashable]:
-    counts: dict[T, int] = {}
+    counts = dict[T, int]()
 
     ## A counter of `items`.
     def of(items: list[T]) -> Counter[T]:
@@ -279,7 +279,7 @@ export struct Counter[T: Hashable]:
 ## and read back by position. They can't grow in the middle, which is the price of being
 ## dense.
 export struct Packed[T]:
-    _items: list[T] = []
+    _items = list[T]()
     ## Where each list starts in `_items`, and one more for where the last one ends.
     _starts: list[int] = [0]
 
@@ -353,14 +353,14 @@ export error TreeCycle:
 export struct TreeNode[T]:
     value: T
     parent: Id[TreeNode[T]]? = None
-    children: list[Id[TreeNode[T]]] = []
+    children = list[Id[TreeNode[T]]]()
 
 ## Values with parents and children, kept in sync. Nodes are reached by the IDs `add` gives
 ## back, so a tree holds no references, and copying one gives an independent tree. An ID of
 ## a removed node stops the program, like an index out of range.
 export struct Tree[T]:
     _nodes: Table[TreeNode[T]] = Table[TreeNode[T]]()
-    _roots: list[Id[TreeNode[T]]] = []
+    _roots = list[Id[TreeNode[T]]]()
 
     ## How many nodes the tree has.
     def len(self) -> int:
@@ -447,9 +447,9 @@ export struct Tree[T]:
     def remove(ref self, id: Id[TreeNode[T]]):
         doomed = self.descendants(id)
         self._unlink(id)
-        self._nodes.remove(id)
+        _ = self._nodes.remove(id)
         for at in doomed:
-            self._nodes.remove(at)
+            _ = self._nodes.remove(at)
 
     ## Takes a node out of its parent's children, or out of the roots.
     def _unlink(ref self, id: Id[TreeNode[T]]):
@@ -463,20 +463,20 @@ export struct Tree[T]:
 ## One node of a `SortedMap`'s B-tree: keys in order, their values, and for a node that isn't
 ## a leaf, the children between and around them.
 struct SortedNode[K, V]:
-    keys: list[K] = []
-    values: list[V] = []
-    children: list[int] = []
+    keys = list[K]()
+    values = list[V]()
+    children = list[int]()
 
 ## Keys kept in order, each with a value: a B-tree, so finding, adding and removing a key
 ## take time that grows with the log of the size, and walking the keys gives them in order.
 ## Keys are compared with `<`. Its nodes live in a list, reached by position, so the map is
 ## a plain value: copying one gives an independent map.
 export struct SortedMap[K: Ordered, V]:
-    _nodes: list[SortedNode[K, V]] = []
+    _nodes = list[SortedNode[K, V]]()
     _root = -1
     _count = 0
     ## Nodes that were merged away, to be used again.
-    _free: list[int] = []
+    _free = list[int]()
 
     ## A map of `items`, each a key and its value. A key given twice keeps its last value.
     def of(items: list[(K, V)]) -> SortedMap[K, V]:
@@ -560,8 +560,8 @@ export struct SortedMap[K: Ordered, V]:
             if found and leaf:
                 if len(taken) == 0:
                     taken.append(self._nodes[at].values[i])
-                self._nodes[at].keys.pop(i)
-                self._nodes[at].values.pop(i)
+                _ = self._nodes[at].keys.pop(i)
+                _ = self._nodes[at].values.pop(i)
                 break
             if found:
                 # The key moves down to a child that can spare one, or into a merged child.
@@ -665,7 +665,7 @@ export struct SortedMap[K: Ordered, V]:
                 if len(node.children) == 0:
                     for key in node.keys:
                         yield key
-                trail.pop()
+                _ = trail.pop()
                 continue
             trail[-1] = (at, spot + 1)
             yield node.keys[spot]
@@ -745,12 +745,14 @@ export struct SortedMap[K: Ordered, V]:
         left = self._nodes[parent].children[i]
         right = self._nodes[parent].children[i + 1]
         moved = self._nodes[right]
-        self._nodes[left].keys.append(self._nodes[parent].keys.pop(i))
-        self._nodes[left].values.append(self._nodes[parent].values.pop(i))
+        key = self._nodes[parent].keys.pop(i)
+        value = self._nodes[parent].values.pop(i)
+        self._nodes[left].keys.append(key)
+        self._nodes[left].values.append(value)
         self._nodes[left].keys.extend(moved.keys)
         self._nodes[left].values.extend(moved.values)
         self._nodes[left].children.extend(moved.children)
-        self._nodes[parent].children.pop(i + 1)
+        _ = self._nodes[parent].children.pop(i + 1)
         self._release(right)
 
     ## When merging emptied the root, the merged child takes its place.
@@ -774,7 +776,8 @@ export struct SortedMap[K: Ordered, V]:
             self._nodes[at].keys[i - 1] = self._nodes[left].keys.pop(-1)
             self._nodes[at].values[i - 1] = self._nodes[left].values.pop(-1)
             if len(self._nodes[left].children) > 0:
-                self._nodes[child].children.insert(0, self._nodes[left].children.pop(-1))
+                grandchild = self._nodes[left].children.pop(-1)
+                self._nodes[child].children.insert(0, grandchild)
             return child
         if i + 1 < siblings and len(self._nodes[self._nodes[at].children[i + 1]].keys) > fewest:
             right = self._nodes[at].children[i + 1]
@@ -783,7 +786,8 @@ export struct SortedMap[K: Ordered, V]:
             self._nodes[at].keys[i] = self._nodes[right].keys.pop(0)
             self._nodes[at].values[i] = self._nodes[right].values.pop(0)
             if len(self._nodes[right].children) > 0:
-                self._nodes[child].children.append(self._nodes[right].children.pop(0))
+                grandchild = self._nodes[right].children.pop(0)
+                self._nodes[child].children.append(grandchild)
             return child
         if i + 1 < siblings:
             self._merge(at, i)
@@ -952,7 +956,7 @@ export struct SortedSet[T: Ordered]:
 export struct Grid[T]:
     width: int
     height: int
-    _cells: list[T] = []
+    _cells = list[T]()
 
     ## A grid with every cell set to `value`.
     def filled(width: int, height: int, value: T) -> Grid[T]:
@@ -1083,19 +1087,19 @@ export struct Edge[N, E]:
 ## an index out of range.
 export struct Graph[N, E]:
     _nodes: Table[N] = Table[N]()
-    _ids: list[Id[N]] = []
+    _ids = list[Id[N]]()
     ## For each edge: where it starts and ends, its value, and the next edge out of and into the
     ## same nodes, or -1.
-    _starts: list[int] = []
-    _ends: list[int] = []
-    _values: list[E] = []
-    _next_out: list[int] = []
-    _next_in: list[int] = []
+    _starts = list[int]()
+    _ends = list[int]()
+    _values = list[E]()
+    _next_out = list[int]()
+    _next_in = list[int]()
     ## For each node: its first and last edges out and in, or -1.
-    _first_out: list[int] = []
-    _last_out: list[int] = []
-    _first_in: list[int] = []
-    _last_in: list[int] = []
+    _first_out = list[int]()
+    _last_out = list[int]()
+    _first_in = list[int]()
+    _last_in = list[int]()
 
     ## How many nodes it has.
     def len(self) -> int:

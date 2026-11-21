@@ -705,6 +705,8 @@ def main(stdout: Stdout, fs: Fs):
 
 A function reaches outside itself only through what's in its signature, so there's no global `print`. The error message has to teach this, since it's the first thing newcomers hit: calling `print`, or reading `stdout` or `fs` in a function that wasn't given it, says how to give it one, or what it's called there. Built.
 
+What `stdout.print` prints goes out a line at a time to a terminal. To a pipe or a file it goes out in batches: the first line at once, then whenever 8 KB has been kept or the program is about to wait, and, once 100 ms has gone since the last write, at the next line the clock is read for. That's the 1st, 2nd, 4th, 8th and so on since the write: a program printing fast reads the clock a few times in 8 KB rather than at every line, and one printing a line now and then has each go out as it's printed. So a program killed partway loses only its last moment's lines. One case is left: lines printed just before a long stretch of work with no prints or waits stay kept until the next one, and a program killed during that stretch loses them. A recording and its replay write only at waits and at 8 KB, as both break the output in the same places whatever the clock says. Built.
+
 ## A whole program
 
 A chat server, not built yet: rooms that every connection shares, a database transaction for each message, and an autosave task.

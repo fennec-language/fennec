@@ -73,7 +73,7 @@ def capital(word: str) -> str:
 ## A float as JSON writes it: an exponent has no `+` and no leading zeros.
 def float_text(value: float) -> str:
     text = str(value)
-    if value != value or value - value != 0.0: return text
+    if value.is_nan() or value - value != 0.0: return text
     if (
         value != 0.0
         and not (value >= 0.0001 and value < 10000000000000000.0)
@@ -259,7 +259,7 @@ struct JsonWriter:
             if b == 194 and (text_byte(value, at + 1) < 128 or text_byte(value, at + 1) > 159):
                 at = text_escape_at(value, at + 2)
             else:
-                piece = text_part(value, start, at)
+                mut piece = text_part(value, start, at)
                 self._text += piece
                 if b == 194:
                     piece = escape_of(text_byte(value, at + 1))
@@ -1692,15 +1692,13 @@ struct JsonReader:
     def _bad_at(self, message: str, place: int) -> ParseError:
         mut line = 1
         mut column = 1
-        mut at = 0
-        while at < place:
+        for at in range(place):
             b = text_byte(self._source, at)
             if b == 10:
                 line += 1
                 column = 1
             elif b < 128 or b >= 192:
                 column += 1
-            at += 1
         return ParseError(
             message=f"{message}, at line {line}, column {column}",
             line=line,

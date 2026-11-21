@@ -265,6 +265,7 @@ name = "fennec"
 version = "0.0.1"
 dependencies = [
  "ctrlc",
+ "fennec",
  "fennec-blake3",
  "fennec-build",
  "fennec-check",
@@ -367,6 +368,7 @@ dependencies = [
  "fennec-ir",
  "fennec-kit",
  "fennec-lint",
+ "fennec-llvm",
  "fennec-oracle",
  "fennec-parked",
  "fennec-re",

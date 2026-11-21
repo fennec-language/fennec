@@ -1884,7 +1884,8 @@ impl Checker {
         // Looked up by key, not searched for in a list of the library's functions: that made this
         // check about a function's typed body against each of thousands of keys.
         let functions = &self.program.functions;
-        let prelude = |key: &str| functions.get(key).is_some_and(|entry| entry.prelude);
+        let library = self.in_library();
+        let prelude = |key: &str| !library && functions.get(key).is_some_and(|entry| entry.prelude);
         let mut unknown: Vec<(u32, u32)> = self
             .typed
             .iter()

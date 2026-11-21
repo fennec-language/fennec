@@ -33,7 +33,9 @@ use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 use super::ast::{LOCK_WAYS, LockStep, LockWay, LockingTogether};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
+use super::ast::{POP_TYS, POP_WAYS, PopTy, PopWay, Popping};
 use super::ast::{RULE_WAYS, RuleStep, RuleWay, Ruling};
+use super::ast::{SIZE_NUMS, SIZED_WAYS, SizeNum, SizedWay, Sizing, sized_choice, sized_step};
 use super::ast::{STUCK_WAYS, Sticking, StuckWay};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
@@ -110,6 +112,23 @@ const WHERE_RULES: bool = true;
 /// generator kept for later, a tuple, a list and a generic struct, each looped over where it's
 /// made. Map row 7: nothing wrote `? from` before, and the oracle runs `zip` wrapped two ways now.
 const FAILING_GENERATORS: bool = true;
+
+/// Whether random programs put optionals of a heap type in a list and take them out every way
+/// (`Popped`): `pop()`, `pop(at)`, `remove`, `discard` and through `ref`, kept, inline and
+/// dropped, from a local and a struct's field. On since popping a present `str?` out of a
+/// `list[str?]` stopped crashing native code (#2282, fixed by #2292).
+const POPPED_OPTIONALS: bool = true;
+
+/// Whether random programs change a number of each of the eight integer sizes every way
+/// (`Sized`): checked arithmetic, `wrapping_` and `saturating_`, shifts past the top and at the
+/// width, bits, `sum`, widening, `parse`, and a loop whose bound the proofs can't see past. A
+/// risky program now and then overflows, shifts at the width or divides by zero, which stops
+/// it. Map row 10: only `u8`, `i32` and `u64` were written before, and `<<` never.
+const SIZED_NUMBERS: bool = true;
+
+/// Whether `int` has `wrapping_` and `saturating_` methods, which every other size has. Not yet
+/// (#2307): an `i64` statement writes a checked one in their place.
+const INT_WRAPPING_METHODS: bool = false;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
@@ -784,8 +803,10 @@ impl Writer<'_> {
             27 if INTERFACES && self.choice(4) == 0 => self.interfaces(body),
             27 if LOCKED_TOGETHER && self.choice(4) == 0 => self.locked_together(body),
             27 if ARRAYS && self.choice(4) == 0 => self.arrays(body),
+            27 if SIZED_NUMBERS && self.choice(4) == 0 => self.sized_numbers(body),
             27 if FAILING_GENERATORS && self.choice(4) == 0 => self.failing_generators(body),
             27 if WHERE_RULES && self.choice(4) == 0 => self.where_rules(body),
+            27 if POPPED_OPTIONALS && self.choice(4) == 0 => self.popped_optionals(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1603,6 +1624,56 @@ impl Writer<'_> {
             steps.push(RuleStep { way, value, breaks });
         }
         body.push(Stmt::Ruled(Ruling { id, steps }));
+    }
+
+    /// A `Popped` statement: one type, in a local or a field, then 3 to 12 steps, each with a
+    /// value from 0 to 2.
+    fn popped_optionals(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let ty = POP_TYS.get(self.choice(POP_TYS.len())).copied().unwrap_or(PopTy::Short);
+        let in_field = self.choice(2) == 0;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(10) {
+            let way = POP_WAYS.get(self.choice(POP_WAYS.len())).copied().unwrap_or(PopWay::Kept);
+            steps.push((way, self.choice(3)));
+        }
+        body.push(Stmt::Popped(Popping { id, ty, in_field, steps }));
+    }
+
+    /// A `Sized` statement: one size, a start near its middle or either end, then 3 to 12 steps,
+    /// each one's value worked out from the number as it is then, so only a risky program's
+    /// steps stop the program, and then one in five.
+    fn sized_numbers(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let num = SIZE_NUMS.get(self.choice(SIZE_NUMS.len())).copied().unwrap_or(SizeNum::U8);
+        let (least, most) = num.range();
+        let low = if num.unsigned() { 3 } else { least + 4 };
+        // A start past the largest int can't be written yet, so a `u64` starts below it.
+        let start = [7, most - 4, low].get(self.choice(3)).copied().unwrap_or(7).min(i128::from(i64::MAX));
+        let mut x = start;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(10) {
+            let breaks = self.risky && self.choice(5) == 0;
+            let mut way = SIZED_WAYS.get(self.choice(SIZED_WAYS.len())).copied().unwrap_or(SizedWay::Added);
+            if num == SizeNum::I64 && !INT_WRAPPING_METHODS {
+                way = match way {
+                    SizedWay::WrappingAdd | SizedWay::SaturatingAdd => SizedWay::Added,
+                    SizedWay::WrappingSub | SizedWay::SaturatingSub => SizedWay::Taken,
+                    SizedWay::WrappingMul | SizedWay::SaturatingMul => SizedWay::Times,
+                    other => other,
+                };
+            }
+            let step = sized_choice(num, x, way, breaks, self.choice(4));
+            steps.push(step);
+            match sized_step(num, x, step.way, step.operand) {
+                Ok(_) if matches!(step.way, SizedWay::Summed | SizedWay::Widened | SizedWay::Parsed) => {}
+                Ok(after) => x = after,
+                Err(_) => break,
+            }
+        }
+        body.push(Stmt::Sized(Sizing { id, num, start, steps }));
     }
 
     /// An `Arrayed` statement: 3 to 10 steps, each with a place from 0 to 3 and a value from -9 to

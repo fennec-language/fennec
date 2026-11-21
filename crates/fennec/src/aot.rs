@@ -967,7 +967,7 @@ fn emitted_reusing(
     checked: Option<fennec_check::Signatures>,
 ) -> Result<Emitted, String> {
     let cache = fennec_build::fennec_home()
-        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
+        .filter(|_| !crate::no_cache())
         .map(|home| fennec_build::Cache::new(&home));
     let first = program.sources.files().next().map(|(shown, _)| shown.to_owned());
     let named = first.and_then(|shown| std::fs::canonicalize(shown).ok());
@@ -990,6 +990,14 @@ fn emitted_reusing(
         fennec_llvm::emit_reusing(lowered, cpu, &mut reuse.borrow_mut())
     };
     let emitted = emitted_with(reached, &emit, false, checked)?;
+    // Asked to check what's kept, a build says how much of it it used, each checked against
+    // working it out again.
+    if std::env::var("FENNEC_CHECK_WHOLE").as_deref() == Ok("1") {
+        let (used, of) = fennec_llvm::analyses_used_again();
+        eprintln!(
+            "note: used {used} of {of} functions' analyses again, each checked against analyzing it again"
+        );
+    }
     if let Some(index) = reuse.borrow_mut().keep.take() {
         fennec_build::kept("keep what the build's units read", cache.write(UNITS, &key, &index));
         // Every unit's object, as the next build may use any of them again: those compiled this
@@ -1051,10 +1059,7 @@ fn compile_emitted(
     let statically = links_statically();
     let runtime = Runtime::for_program(lowered, statically)?;
     let home = fennec_build::fennec_home();
-    let cache = home
-        .as_deref()
-        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
-        .map(fennec_build::Cache::new);
+    let cache = home.as_deref().filter(|_| !crate::no_cache()).map(fennec_build::Cache::new);
     // A build that's been made before is in the store whole, under its root hash.
     let llvm = tools.version()?;
     let stored = cache.clone().map(|cache| {

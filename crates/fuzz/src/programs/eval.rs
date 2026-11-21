@@ -31,7 +31,9 @@ use super::ast::{InOrder, OrderStep};
 use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{PopWay, Popping};
 use super::ast::{RuleStep, RuleWay, Ruling};
+use super::ast::{SizedStep, SizedWay, Sizing, sized_step};
 use super::ast::{Sticking, StuckWay};
 use super::source::LONG_PIECE;
 
@@ -2033,6 +2035,8 @@ impl Machine {
             Stmt::Interfaced(interfacing) => self.interfaced(interfacing)?,
             Stmt::LockedTogether(locking) => self.locked_together(locking)?,
             Stmt::Arrayed(arraying) => self.arrayed(arraying)?,
+            Stmt::Popped(popping) => self.popped(popping),
+            Stmt::Sized(sizing) => self.sized(sizing)?,
             Stmt::Generated(generating) => self.generated(generating),
             Stmt::Ruled(ruling) => self.ruled(ruling)?,
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
@@ -3427,6 +3431,104 @@ impl Machine {
         let listed: Vec<String> = gauges.iter().map(shown).collect();
         let _ = writeln!(self.out, "[{}]", listed.join(", "));
         let _ = writeln!(self.out, "{{\"k\": {}}}", shown(&by_name));
+        Ok(())
+    }
+
+    /// What `popped{id}` prints: each value its text, alone and inside a list, and a missing one
+    /// what `else` gives in its place, as an item that's `None` gives too.
+    fn popped(&mut self, popping: &Popping) {
+        let id = popping.id;
+        let values = popping.ty.values(id);
+        let alone = |at: usize| values.get(at).map_or(String::new(), |(_, shown, _)| shown.clone());
+        let inside = |item: &Option<usize>| match item {
+            Some(at) => values.get(*at).map_or(String::new(), |(_, _, shown)| shown.clone()),
+            None => "None".to_owned(),
+        };
+        let missing = alone(3);
+        let taken = |item: Option<Option<usize>>| item.flatten().map_or_else(|| missing.clone(), alone);
+        let mut list: Vec<Option<usize>> = vec![Some(0), None, Some(1)];
+        let mut lines = Vec::new();
+        for &(way, which) in &popping.steps {
+            let position = |list: &Vec<Option<usize>>, wanted: Option<usize>| {
+                list.iter().position(|item| *item == wanted)
+            };
+            match way {
+                PopWay::Pushed => list.push(Some(which)),
+                PopWay::PushedNone => list.push(None),
+                PopWay::Kept | PopWay::Inline | PopWay::ByRef => lines.push(taken(list.pop())),
+                PopWay::Dropped => {
+                    let _ = list.pop();
+                }
+                PopWay::First | PopWay::Middle | PopWay::Last if !list.is_empty() => {
+                    let at = match way {
+                        PopWay::First => 0,
+                        PopWay::Middle => list.len() / 2,
+                        _ => list.len() - 1,
+                    };
+                    lines.push(taken(Some(list.remove(at))));
+                }
+                PopWay::First | PopWay::Middle | PopWay::Last => {}
+                PopWay::Removed => {
+                    let found = position(&list, Some(which)).map(|at| list.remove(at));
+                    lines.push(taken(found));
+                }
+                PopWay::Discarded | PopWay::DiscardedNone => {
+                    let wanted = if way == PopWay::Discarded { Some(which) } else { None };
+                    if let Some(at) = position(&list, wanted) {
+                        list.remove(at);
+                    }
+                }
+                PopWay::Empty => lines.push(missing.clone()),
+            }
+        }
+        for line in lines {
+            let _ = writeln!(self.out, "{line}");
+        }
+        let (held, empty) =
+            (format!("[{}]", list.iter().map(inside).collect::<Vec<_>>().join(", ")), "[]".to_owned());
+        let (local, field) = if popping.in_field { (empty, held) } else { (held, empty) };
+        let _ = writeln!(self.out, "{local}");
+        let _ = writeln!(self.out, "Holder{id}(items={field})");
+    }
+
+    /// What `sized{id}` prints: each step's number as compiled code works it out, or what stops
+    /// the program, in its words. A sum, a widening and a parse print what they give and leave
+    /// the number as it was.
+    fn sized(&mut self, sizing: &Sizing) -> Ran<()> {
+        let Sizing { num, start, .. } = sizing;
+        let (least, most) = num.range();
+        let mut x = *start;
+        for step in &sizing.steps {
+            let SizedStep { way, operand: k } = *step;
+            let after = match sized_step(*num, x, way, k) {
+                Ok(after) => after,
+                Err(said) => {
+                    self.said = Some(said);
+                    return Err(Stop::Failed);
+                }
+            };
+            match way {
+                SizedWay::Widened => {
+                    // `//` by a number above 0 rounds down, as `div_euclid` does.
+                    let _ = writeln!(self.out, "widened {}", x.div_euclid(3));
+                }
+                SizedWay::Summed => {
+                    let _ = writeln!(self.out, "summed {after}");
+                }
+                SizedWay::Parsed if (least..=most).contains(&k) => {
+                    let _ = writeln!(self.out, "parsed {k}");
+                }
+                SizedWay::Parsed => {
+                    let _ = writeln!(
+                        self.out,
+                        "refused InvalidValue(message=\"{k} doesn't fit in {}, which holds {least} to {most}\")",
+                        num.name()
+                    );
+                }
+                _ => x = after,
+            }
+            let _ = writeln!(self.out, "{x}");
+        }
         Ok(())
     }
 

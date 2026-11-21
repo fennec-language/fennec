@@ -27,6 +27,12 @@
 //!   number at the end. Which worker took a job is the recording's, but each job is taken once.
 //! - **`parallel` cut short,** by a `break` in a loop's range or a failure in a list's, which `main`
 //!   handles. Which ranges started is the recording's, but the one that ended it always did.
+//! - **Several senders on one channel,** which `main` takes every number from once its steps are
+//!   done. Which arrived first is the recording's, but each number arrives once.
+//! - **A deadlock:** `main` stuck on a channel only it holds, receiving from it empty or sending
+//!   to it full, while tasks wait on it too. The recording ends with 1 and the report of who waits
+//!   for what, and a replay has to come to the same deadlock and say it the same way. A program
+//!   with a server's rounds gets none: they wait on the network, which isn't a deadlock.
 //! - **Locks,** on two `shared` accounts `main` makes, taken by tasks, by `main` and by each of the
 //!   `parallel` call's ranges: one account, or both in one `lock`, named in either order. A lock
 //!   adds to an account's total and appends to its moves, and prints the total it left. Some are
@@ -140,6 +146,17 @@ enum MainStep {
     Pieces,
     /// Takes the plan's lock with this number.
     Lock(usize),
+    /// Waits on a channel of its own for good, so the program deadlocks there.
+    Stuck(Stuck),
+}
+
+/// How `main` gets stuck: on a channel only it holds, which no task sends to or takes from.
+#[derive(Clone, Copy)]
+enum Stuck {
+    /// Receives from it, empty.
+    Receiving,
+    /// Sends to it a second time, full.
+    Sending,
 }
 
 /// The most workers on the work queue, and the most jobs `main` sends them.
@@ -149,6 +166,9 @@ const MOST_JOBS: usize = 6;
 const MOST_RANGES: usize = 8;
 /// The most locks tasks and `main` take between them, so a step's number stays one digit.
 const MOST_LOCKS: usize = 4;
+/// The most tasks sending into one channel `main` gathers from, and the most each sends.
+const MOST_SENDERS: usize = 3;
+const MOST_SENT: usize = 3;
 
 /// The program an input asks for.
 struct Plan {
@@ -162,6 +182,31 @@ struct Plan {
     locks: Vec<Lock>,
     /// Whether each of the `parallel` call's ranges takes `a`'s lock and adds 1.
     pieces_lock: bool,
+    gather: Option<Gather>,
+}
+
+/// Tasks sending numbers into one channel, which `main` takes them all from once its steps are
+/// done: the order they arrive in is the recording's.
+struct Gather {
+    /// How many numbers each sender sends, and its wait after each, if it makes way.
+    senders: Vec<(usize, Option<Wait>)>,
+    /// The channel's size.
+    size: usize,
+}
+
+impl Gather {
+    /// What sender `sender` sends as its `nth`: each number is one sender's, once.
+    fn number(sender: usize, nth: usize) -> usize {
+        1000 + 10 * sender + nth
+    }
+
+    /// Every number sent, by any sender.
+    fn numbers(&self) -> impl Iterator<Item = usize> + '_ {
+        self.senders
+            .iter()
+            .enumerate()
+            .flat_map(|(sender, (count, _))| (0..*count).map(move |nth| Self::number(sender, nth)))
+    }
 }
 
 /// Workers taking jobs from one channel, each looping until it takes a stop number.
@@ -227,7 +272,7 @@ fn plan(input: &[u8]) -> Plan {
     let tasks: Vec<Vec<Step>> = (0..bytes.below(MOST_TASKS + 1)).map(|_| bytes.steps(true)).collect();
     // A program with no task has a round, so there's always someone besides `main`.
     let rounds = (bytes.below(MOST_ROUNDS + 1)).max(usize::from(tasks.is_empty()));
-    let rounds = (0..rounds).map(|_| bytes.steps(false)).collect();
+    let rounds: Vec<Vec<Step>> = (0..rounds).map(|_| bytes.steps(false)).collect();
     let count = 1 + bytes.below(MOST_STEPS);
     let mut main: Vec<MainStep> = (0..count)
         .map(|_| match bytes.below(2) {
@@ -287,7 +332,24 @@ fn plan(input: &[u8]) -> Plan {
         })
         .collect();
     let pieces_lock = pieces.is_some() && bytes.below(2) == 1;
-    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock }
+    let senders = bytes.below(MOST_SENDERS + 1);
+    let gather = (senders > 0).then(|| {
+        let senders = (0..senders)
+            .map(|_| (1 + bytes.below(MOST_SENT), bytes.below(2).eq(&1).then(|| bytes.wait())))
+            .collect();
+        Gather { senders, size: 1 + bytes.below(2) }
+    });
+    // A server's rounds wait on the network, which isn't a wait on the program's own tasks, so a
+    // program with them never deadlocks: it would wait for good, so it gets no stuck step.
+    let stuck = match bytes.below(3) {
+        1 => Some(Stuck::Receiving),
+        2 => Some(Stuck::Sending),
+        _ => None,
+    };
+    if let Some(stuck) = stuck.filter(|_| rounds.is_empty()) {
+        main.insert(bytes.below(main.len() + 1), MainStep::Stuck(stuck));
+    }
+    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather }
 }
 
 impl Plan {
@@ -302,6 +364,11 @@ impl Plan {
     /// Whether any task takes its numbers within a time.
     fn any_timed(&self) -> bool {
         (0..self.tasks.len()).any(|task| self.is_timed(task) && self.has_inbox(task))
+    }
+
+    /// Whether `main` gets stuck, so the program ends in a deadlock, with what it printed so far.
+    fn deadlocks(&self) -> bool {
+        self.main.iter().any(|step| matches!(step, MainStep::Stuck(_)))
     }
 
     fn jobs(&self) -> usize {
@@ -415,6 +482,9 @@ impl Plan {
             }
         }
         printed.extend((0..self.rounds.len()).map(|round| format!("done r{round}\n")));
+        printed.extend(
+            self.gather.iter().flat_map(Gather::numbers).map(|number| format!("gathered {number}\n")),
+        );
         if let Some(pieces) = &self.pieces {
             printed.push(format!("p {}\n", pieces.at));
         }
@@ -461,6 +531,7 @@ impl Plan {
         }
         lines.extend((0..self.rounds.len()).map(|round| format!("done r{round}")));
         lines.extend((0..self.jobs()).map(|job| format!("w? took {job}")));
+        lines.extend(self.gather.iter().flat_map(Gather::numbers).map(|number| format!("gathered {number}")));
         lines.extend(self.pieces_over().map(str::to_owned));
         lines.push("over".to_owned());
         lines
@@ -542,6 +613,24 @@ impl Plan {
             && lines
                 .iter()
                 .all(|line| line.strip_prefix(CRASHED).is_some_and(|length| length.parse::<usize>().is_ok()))
+    }
+
+    /// Checks a recording of a program that deadlocks: it ended with 1, saying its deadlock once,
+    /// after anything its locks' crashes said, and never printed what comes after `main` got stuck.
+    fn deadlocked(&self, (printed, said, code): &Ran) -> Result<(), String> {
+        let text = String::from_utf8_lossy(printed);
+        let at = said.find(DEADLOCKED);
+        let before = at.and_then(|at| said.get(..at)).unwrap_or(said);
+        let crashed = self.locks.iter().filter(|lock| lock.ending == Ending::Crashed).count();
+        let crashes_before =
+            before.lines().all(|line| line.starts_with(CRASHED)) && before.lines().count() <= crashed;
+        if *code != Some(1) || at.is_none() || said.matches(DEADLOCKED).count() != 1 || !crashes_before {
+            return Err(format!("where it deadlocks, it ended with {code:?}, saying:\n{said}"));
+        }
+        if text.contains("never ") {
+            return Err(format!("it went on past where it was stuck:\n{text}"));
+        }
+        Ok(())
     }
 
     /// Each task's and round's name and steps.
@@ -707,18 +796,23 @@ fn given((inbox, clock, stdout): (bool, bool, bool), parameters: bool) -> String
 /// Whether `main` sends a task a number with `send`, which fails with `Closed`, rather than with
 /// `handed`, which gives up.
 fn sends_plainly(plan: &Plan) -> bool {
-    plan.main.iter().any(|step| match step {
-        MainStep::Send(task) => !plan.is_timed(*task),
-        MainStep::Job => true,
-        MainStep::Print | MainStep::Wait(_) | MainStep::Pieces | MainStep::Lock(_) => false,
-    })
+    plan.gather.is_some()
+        || plan.main.iter().any(|step| match step {
+            MainStep::Send(task) => !plan.is_timed(*task),
+            MainStep::Job | MainStep::Stuck(Stuck::Sending) => true,
+            MainStep::Print
+            | MainStep::Wait(_)
+            | MainStep::Pieces
+            | MainStep::Lock(_)
+            | MainStep::Stuck(Stuck::Receiving) => false,
+        })
 }
 
 /// What the program imports, the error it fails with if any, and the helpers it calls.
 fn heading(plan: &Plan) -> String {
     let inbox = (0..plan.tasks.len()).any(|task| plan.has_inbox(task));
     let mut imported = Vec::new();
-    if plan.queue.is_some() {
+    if plan.queue.is_some() || plan.gather.is_some() {
         imported.push("Channel");
     }
     if sends_plainly(plan) || plan.any_timed() {
@@ -731,7 +825,7 @@ fn heading(plan: &Plan) -> String {
     if plan.any_timed() {
         imported.extend(["Sender", "Timeout"]);
     }
-    if plan.queue.is_some() {
+    if plan.queue.is_some() || plan.gather.is_some() || plan.deadlocks() {
         imported.push("channel");
     }
     let mut out = format!("from std.concurrent import {}\n", imported.join(", "));
@@ -785,6 +879,16 @@ fn source(plan: &Plan) -> String {
             joined(accounts_given(locked, true), given((plan.has_inbox(task), clock, stdout), true));
         let _ = write!(out, "\ndef task_{task}({parameters}):\n");
         out.push_str(&body(plan, &format!("t{task}"), steps, plan.is_timed(task)));
+    }
+    for (sender, (count, wait)) in plan.gather.iter().flat_map(|gather| gather.senders.iter().enumerate()) {
+        let clock = wait.as_ref().is_some_and(sleeps);
+        main_clock |= clock;
+        let parameters = if clock { ", clock: Clock" } else { "" };
+        let _ = write!(out, "\ndef sender_{sender}(gathered: Channel[int]{parameters}) fails Closed:\n");
+        for nth in 0..*count {
+            let _ = writeln!(out, "    gathered.send({})?", Gather::number(sender, nth));
+            out.extend(wait.map(|wait| waited(wait, "    ")));
+        }
     }
     if let Some(queue) = &plan.queue {
         for (worker, wait) in queue.workers.iter().enumerate() {
@@ -917,15 +1021,7 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
         let _ = writeln!(out, "{indent}with launch(() => serving(server, {handed}), stop_after=100ms)?:");
         indent.push_str("    ");
     }
-    if let Some(queue) = &plan.queue {
-        let _ = writeln!(out, "{indent}with channel[int](size={}) as jobs:", queue.size);
-        indent.push_str("    ");
-        for (worker, wait) in queue.workers.iter().enumerate() {
-            let arguments = given((false, matches!(wait, Some(Wait::Sleep(_))), true), false);
-            let _ = writeln!(out, "{indent}with launch(() => worker_{worker}(jobs, {arguments}))?:");
-            indent.push_str("    ");
-        }
-    }
+    out.push_str(&channels(plan, &mut indent));
     for (task, steps) in plan.tasks.iter().enumerate() {
         let (clock, stdout) = needs(steps);
         let locked = plan.locked_by(steps.iter().filter_map(|step| match step {
@@ -1011,11 +1107,58 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
                 }
             }
             MainStep::Lock(lock) => out.push_str(&locking(plan, *lock, "main", indent)),
+            MainStep::Stuck(stuck) => {
+                let _ = writeln!(out, "{indent}with channel[int](size=1) as stuck:");
+                match stuck {
+                    Stuck::Receiving => {
+                        let _ = writeln!(out, "{indent}    got_stuck = stuck.receive() else -1");
+                        let _ = writeln!(out, "{indent}    stdout.print(\"never got\", got_stuck)");
+                    }
+                    Stuck::Sending => {
+                        let _ = writeln!(out, "{indent}    stuck.send(1)?\n{indent}    stuck.send(2)?");
+                        let _ = writeln!(out, "{indent}    stdout.print(\"never sent\")");
+                    }
+                }
+            }
         }
     }
     // One stop for each worker, which each takes one of, once every job's been taken.
     for _ in plan.queue.iter().flat_map(|queue| &queue.workers) {
         let _ = writeln!(out, "{indent}jobs.send(-1)?");
+    }
+    // Every number the senders send, in the order they arrive.
+    if let Some(gather) = &plan.gather {
+        let _ = writeln!(
+            out,
+            "{indent}for nth in range({}):\n{indent}    got = gathered.receive() else -1 - nth\n{indent}    \
+             stdout.print(\"gathered\", got)",
+            gather.numbers().count()
+        );
+    }
+    out
+}
+
+/// The work queue's and the gathered channel's blocks, each with its workers or senders launched in
+/// it, one block inside another from `indent`, which ends inside the last.
+fn channels(plan: &Plan, indent: &mut String) -> String {
+    let mut out = String::new();
+    if let Some(queue) = &plan.queue {
+        let _ = writeln!(out, "{indent}with channel[int](size={}) as jobs:", queue.size);
+        indent.push_str("    ");
+        for (worker, wait) in queue.workers.iter().enumerate() {
+            let arguments = given((false, matches!(wait, Some(Wait::Sleep(_))), true), false);
+            let _ = writeln!(out, "{indent}with launch(() => worker_{worker}(jobs, {arguments}))?:");
+            indent.push_str("    ");
+        }
+    }
+    if let Some(gather) = &plan.gather {
+        let _ = writeln!(out, "{indent}with channel[int](size={}) as gathered:", gather.size);
+        indent.push_str("    ");
+        for (sender, (_, wait)) in gather.senders.iter().enumerate() {
+            let clock = if matches!(wait, Some(Wait::Sleep(_))) { ", clock=clock" } else { "" };
+            let _ = writeln!(out, "{indent}with launch(() => sender_{sender}(gathered{clock})?)?:");
+            indent.push_str("    ");
+        }
     }
     out
 }
@@ -1024,6 +1167,9 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
 pub(crate) fn written(input: &[u8]) -> String {
     source(&plan(input))
 }
+
+/// What a program says on standard error when its tasks wait only on each other.
+const DEADLOCKED: &str = "error: a deadlock";
 
 /// What a lock that crashes says on standard error, before the length of the moves it read past.
 const CRASHED: &str = "error: index 99 is out of range for length ";
@@ -1093,7 +1239,9 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
         fennec_rt::replay::start_log(&log, b"native\0program.fen")
             .map_err(|err| format!("{}: {err}", log.display()))?;
         let recorded = ran(&executable, &work, recorded_on, "FENNEC_RECORD", &log)?;
-        if recorded.2 != Some(0) || !plan.crashes_said(&recorded.1) {
+        if plan.deadlocks() {
+            plan.deadlocked(&recorded).map_err(|why| format!("recorded on {recorded_on} threads, {why}"))?;
+        } else if recorded.2 != Some(0) || !plan.crashes_said(&recorded.1) {
             return Err(format!(
                 "recorded on {recorded_on} threads, it ended with {:?}, saying:\n{}",
                 recorded.2, recorded.1
@@ -1102,15 +1250,20 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
         let text = String::from_utf8_lossy(&recorded.0);
         let mut counted = printed.clone();
         counted.dedup();
-        if let Some(print) = counted.iter().find(|print| {
-            text.matches(print.as_str()).count() != printed.iter().filter(|each| each == print).count()
-        }) {
+        // Where it deadlocks, it doesn't print what comes after: only its replays are held to it.
+        if !plan.deadlocks()
+            && let Some(print) = counted.iter().find(|print| {
+                text.matches(print.as_str()).count() != printed.iter().filter(|each| each == print).count()
+            })
+        {
             return Err(format!(
                 "recorded on {recorded_on} threads, it didn't print {print:?} as often as the program does:\n{text}"
             ));
         }
-        plan.vague(&text).map_err(|why| format!("recorded on {recorded_on} threads, {why}:\n{text}"))?;
-        if !plan.in_pieces() && plain_lines(&plan, &recorded.0) != expected {
+        if !plan.deadlocks() {
+            plan.vague(&text).map_err(|why| format!("recorded on {recorded_on} threads, {why}:\n{text}"))?;
+        }
+        if !plan.in_pieces() && !plan.deadlocks() && plain_lines(&plan, &recorded.0) != expected {
             return Err(format!(
                 "recorded on {recorded_on} threads, it printed lines it doesn't print, or not as often:\n{}",
                 String::from_utf8_lossy(&recorded.0)

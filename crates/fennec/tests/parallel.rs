@@ -269,8 +269,12 @@ fn a_launched_task_nests_100_000_calls_and_one_too_deep_crashes_only_it() -> std
     // Too deep in a task is a failure at the call, not a crash of the process.
     assert_eq!(code, Some(0), "{stderr}");
     assert_eq!(stdout, "the task reached 100000\nthe task crashed\nafter\n");
-    // A failure in a task doesn't yet say where it happened, as one in a range does: #2045.
-    assert_eq!(stderr, "error: calls nested too deeply\n");
+    // It says where it happened, as one in a range does (#2045).
+    assert_eq!(
+        stderr,
+        "error: calls nested too deeply\n --> <dir>/deep.fen:6:16\n  |\n6 |     return 1 + depth(n - 1)\n  \
+         |                ^^^^^^^^^^^^\n  |\n  = help: check for recursion that never stops\n"
+    );
     Ok(())
 }
 
@@ -1665,12 +1669,24 @@ fn a_native_server_runs_each_connection_as_its_own_task() -> std::io::Result<()>
     assert_eq!(talk(port, &["divide"])?, [greeting, "dividing"]);
     assert_eq!(talk(port, &["too deep"])?, [greeting, "going deep"]);
     assert_eq!(talk(port, &["after"])?, [greeting, "after!"]);
-    // Each says why, once it gets there.
+    // Each says why, and where in the server's source, once it gets there (#2045).
     let (says, said) = std::sync::mpsc::channel();
     let errors = BufReader::new(server.0.stderr.take().ok_or(std::io::ErrorKind::BrokenPipe)?);
     std::thread::spawn(move || errors.lines().map_while(Result::ok).try_for_each(|line| says.send(line)));
     let wait = crate::executables::WALL_DEADLINE;
-    let mut lines = vec![said.recv_timeout(wait), said.recv_timeout(wait)];
+    let (mut lines, mut places) = (Vec::new(), 0);
+    while lines.len() < 2 || places < 2 {
+        match said.recv_timeout(wait) {
+            Ok(line) if line.starts_with("error: ") => lines.push(Ok(line)),
+            Ok(line) => {
+                places += usize::from(line.trim_start().starts_with("--> ") && line.contains("server.fen:"));
+            }
+            Err(error) => {
+                lines.push(Err(error));
+                places += 1;
+            }
+        }
+    }
     drop(server);
     std::fs::remove_dir_all(&dir)?;
     lines.sort_by_key(|line| line.as_ref().is_ok_and(|line| line.contains("nested")));

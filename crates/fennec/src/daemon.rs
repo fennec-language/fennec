@@ -128,7 +128,7 @@ pub(crate) fn command(action: &str) -> ExitCode {
 /// Sends a request to the daemon, starting it first if it isn't running. None if it can't be
 /// reached, or takes the request and gives no answer in time, so the caller does the work itself.
 pub(crate) fn ask(home: &Path, request: &[&str]) -> Option<Outcome> {
-    if std::env::var_os("FENNEC_NO_DAEMON").is_some() {
+    if crate::no_daemon() {
         return None;
     }
     unix::ask_within(home, request, unix::REPLY_WAIT)
@@ -175,7 +175,7 @@ const NO_OUTPUT: &str = "-";
 /// running: what it printed and how it ended. None means it's to be done here: under CI, where
 /// what's measured is a command on its own, with `FENNEC_NO_DAEMON`, or when no daemon answers.
 fn served(kind: Kind, arguments: [&str; 3]) -> Option<Outcome> {
-    if std::env::var_os("FENNEC_NO_DAEMON").is_some() || std::env::var_os("CI").is_some() {
+    if crate::no_daemon() || std::env::var_os("CI").is_some() {
         return None;
     }
     #[cfg(unix)]
@@ -222,7 +222,7 @@ pub(crate) fn test(path: &str, options: crate::test::Options) -> Option<ExitCode
 /// if it isn't running. None if it can't be reached, so the session runs in-process.
 #[cfg(unix)]
 pub(crate) fn language_server(home: &Path) -> Option<std::os::unix::net::UnixStream> {
-    if std::env::var_os("FENNEC_NO_DAEMON").is_some() {
+    if crate::no_daemon() {
         return None;
     }
     unix::open_session(home).or_else(|| {
@@ -788,6 +788,8 @@ mod unix {
         // Each build keeps what it loaded for the next.
         *crate::aot::KEPT_LOAD.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(fennec_kit::KeptLoad::default());
+        // And each function's analysis.
+        fennec_llvm::keep_analyses_between_builds();
         let state = Arc::new(Mutex::new(State {
             home: home.to_path_buf(),
             snapshots: HashMap::new(),

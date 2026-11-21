@@ -1,5 +1,3 @@
-from std.intrinsics import bytes_builder, bytes_push_bytes
-
 ## What `fs.metadata(path)` finds out about a file or folder: its size in bytes, and whether
 ## it's a file or a folder. A folder's size depends on the system.
 ##

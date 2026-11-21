@@ -127,15 +127,16 @@ impl Copies {
 /// Each generic function of a program's or a kit's that comes back to itself, through its own
 /// calls, with a bigger type each time, as `grow[T]` calling `grow([value])` does: lowering would
 /// need a copy for every size, so the check refuses it where it's written, at the call that makes
-/// the type bigger, once for each function that does it. The standard library's own code isn't
-/// looked at: it's not the program's to change.
+/// the type bigger, once for each function that does it. The standard library's own code is looked
+/// at only in its own check, `Scope::Library`: it's not the program's to change.
 pub(crate) fn growing(checker: &crate::checker::Checker) -> Vec<fennec_syntax::Diagnostic> {
     let mut graph = Graph::default();
     // Calls to generic functions, and to methods whose type, or which themselves, have type
     // parameters.
     let calls = checker.generic_calls.iter().chain(&checker.generic_method_calls);
     for (&(start, end), call) in calls {
-        let written = checker.program.functions.get(&call.caller).is_some_and(|entry| !entry.prelude);
+        let written =
+            checker.program.functions.get(&call.caller).is_some_and(|entry| checker.reports(entry.prelude));
         if !written {
             continue;
         }

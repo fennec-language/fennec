@@ -229,9 +229,30 @@ impl Tables {
     }
 }
 
-/// Collects what the program prints.
+/// Collects what the program prints: what's kept, how it's written (`Writes`), and since when.
 #[derive(Clone, Default)]
-struct Output(Rc<RefCell<Vec<u8>>>, bool);
+struct Output(Rc<RefCell<Vec<u8>>>, Writes, Rc<Cell<Since>>);
+
+/// How a run writes what it prints, settled as it starts.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum Writes {
+    /// It's kept for the run's host, as a test's is, or a `parallel` range's, to come out whole.
+    #[default]
+    Kept,
+    /// A line at a time, to a terminal, where a person waits on each.
+    Lines,
+    /// To a pipe or a file: at 8 KB, or at a line once `OUTPUT_AGE` has gone since the last write.
+    InTime,
+    /// At 8 KB only, in a recording or a replay: see `Output::due`.
+    Sized,
+}
+
+/// When a run last wrote what it printed, if it has, and how many lines it has kept since.
+#[derive(Clone, Copy, Default)]
+struct Since {
+    written: Option<std::time::Instant>,
+    lines: u32,
+}
 
 thread_local! {
     /// Whether what's running here is a launched task of a program that writes as it goes. A
@@ -246,7 +267,8 @@ thread_local! {
 /// would see.
 #[cfg(any(test, feature = "threads"))]
 pub(in crate::embed) fn program_writes() -> bool {
-    TASK_WRITES.get() || OUTPUT.with_borrow(|output| output.as_ref().is_some_and(|output| output.1))
+    TASK_WRITES.get()
+        || OUTPUT.with_borrow(|output| output.as_ref().is_some_and(|output| output.1 != Writes::Kept))
 }
 
 /// Says whether what's about to run here writes as it goes, giving back what was.
@@ -258,6 +280,60 @@ pub(in crate::embed) fn swap_task_writes(writes: bool) -> bool {
 /// How much output is kept before a live run writes it.
 const LIVE_OUTPUT: usize = 1 << 13;
 
+/// How long after a live run last wrote its output a line printed to a pipe or a file is written,
+/// however little is kept, so a program killed loses only its last moment's lines.
+const OUTPUT_AGE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How a run that writes as it goes writes: a line at a time to a terminal, and in time to a pipe or
+/// a file. A recording and its replay break their output only at waits and at 8 KB, as before lines
+/// went out in time, whatever the clock or the terminal: a replay writes the bursts its recording
+/// logged, and one the clock broke off there would wait for bytes the replay keeps.
+fn live_writes() -> Writes {
+    if crate::replay::active() {
+        Writes::Sized
+    } else if to_terminal() {
+        Writes::Lines
+    } else {
+        Writes::InTime
+    }
+}
+
+/// Whether standard output is a terminal.
+#[cfg(not(test))]
+fn to_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
+}
+
+/// Tests write to `WRITTEN`, not to a terminal.
+#[cfg(test)]
+const fn to_terminal() -> bool {
+    false
+}
+
+/// Whether a run that `writes` so writes the lines it has kept, now that a piece ending one has
+/// come, the `lines`th since the last write. To a pipe or a file, that's once `LIVE_OUTPUT` bytes
+/// are kept, or once `OUTPUT_AGE` has gone since the last write. The clock is read only when 8 KB
+/// hasn't said yes, and only at the 1st, 2nd, 4th, 8th and so on line since the last write: read at
+/// every line, it cost a program printing a million short lines a fifth more instructions on macOS,
+/// and this way one printing fast reads it about ten times in 8 KB.
+fn due(
+    writes: Writes,
+    kept: usize,
+    lines: u32,
+    since_written: impl FnOnce() -> Option<std::time::Duration>,
+) -> bool {
+    match writes {
+        Writes::Kept => false,
+        Writes::Lines => true,
+        Writes::Sized => kept >= LIVE_OUTPUT,
+        Writes::InTime => {
+            kept >= LIVE_OUTPUT
+                || (lines.is_power_of_two() && since_written().is_none_or(|since| since >= OUTPUT_AGE))
+        }
+    }
+}
+
 impl Output {
     /// Writes the first `length` bytes kept, in one go, so nothing another thread writes lands
     /// among them.
@@ -265,7 +341,21 @@ impl Output {
         let mut kept = self.0.borrow_mut();
         write_whole(kept.get(..length).unwrap_or_default())?;
         kept.drain(..length);
+        self.2.set(Since { written: Some(std::time::Instant::now()), lines: 0 });
         Ok(())
+    }
+
+    /// Whether this run writes the `kept` bytes' lines now (`due`). A launched task of a run that
+    /// writes as it goes writes as the run does, but as before in a recording: only at waits.
+    fn due(&self, kept: usize) -> bool {
+        let writes = match self.1 {
+            Writes::Kept if TASK_WRITES.get() && !crate::replay::active() => live_writes(),
+            writes => writes,
+        };
+        let mut since = self.2.get();
+        since.lines = since.lines.saturating_add(1);
+        self.2.set(since);
+        due(writes, kept, since.lines, || since.written.map(|written| written.elapsed()))
     }
 }
 
@@ -308,11 +398,15 @@ fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
 }
 
 impl Write for Output {
-    /// Keeps what's printed, and once a live run has kept enough, writes it up to the last whole
-    /// line, as one print comes here in pieces and threads share the output.
+    /// Keeps what's printed, and once a run that writes as it goes is due to (`due`), writes it up
+    /// to the last whole line, as one print comes here in pieces and threads share the output.
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0.borrow_mut().extend_from_slice(bytes);
-        if self.1 && self.0.borrow().len() >= LIVE_OUTPUT {
+        let kept = self.0.borrow().len();
+        // A print's last piece ends its line, so whether to write is asked once a line, not once a
+        // piece, and only of its last byte. 8 KB kept writes the lines before it as well.
+        let may_write = kept >= LIVE_OUTPUT || bytes.last() == Some(&b'\n');
+        if may_write && self.due(kept) {
             let lines = self.0.borrow().iter().rposition(|byte| *byte == b'\n');
             if let Some(last) = lines {
                 self.write_out(last + 1)?;
@@ -323,7 +417,7 @@ impl Write for Output {
 
     /// Writes what a live run has kept. Any other run's output stays for its host.
     fn flush(&mut self) -> std::io::Result<()> {
-        if !self.1 && !TASK_WRITES.get() {
+        if self.1 == Writes::Kept && !TASK_WRITES.get() {
             return Ok(());
         }
         let length = self.0.borrow().len();
@@ -342,7 +436,7 @@ thread_local! {
     static OUTPUT: RefCell<Option<Output>> = const { RefCell::new(None) };
 }
 
-/// Lets others run for a moment, for a replay's task waiting its turn: a task makes way for the
+/// Lets others run for a moment, for a replay's task waiting for a lock's readers to give it back: a task makes way for the
 /// others on its thread, and a thread that isn't one sleeps briefly.
 pub(crate) fn make_way() {
     #[cfg(any(test, feature = "threads"))]
@@ -601,7 +695,8 @@ fn capability(kind: i64) -> Capability {
 /// Sets up the runtime to run a program with `tables` and `inputs`, replacing any earlier run's.
 pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     let crate::Inputs { program, arguments, live, .. } = inputs;
-    let output = Output(Rc::default(), live);
+    let writes = if live { live_writes() } else { Writes::Kept };
+    let output = Output(Rc::default(), writes, Rc::default());
     OUTPUT.set(Some(output.clone()));
     #[cfg(any(test, feature = "threads"))]
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
@@ -787,7 +882,9 @@ fn report_failure() {
     let followed = crate::replay::divergence().is_none();
     if let Some(failure) = failure.filter(|_| followed) {
         write_kept_output();
-        let _ = writeln!(std::io::stderr(), "error: {}", failure.message);
+        // Where it happened, as `main`'s failure and a range's say it (#2045).
+        let said = aot::rendered_here(&failure).unwrap_or_else(|| format!("error: {}\n", failure.message));
+        let _ = std::io::stderr().write_all(said.as_bytes());
     }
 }
 

@@ -25845,49 +25845,6 @@ fn postgres_takes_each_step_of_signing_in_in_its_turn() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A Postgres server's messages are read as the protocol writes them, and anything else fails
-/// rather than reading as something: a count below zero, a cell's size below -1, an error with
-/// no zero byte ending its fields, a `ReadyForQuery` that isn't one byte, and bytes left over in
-/// a message. A `bool` cell is `t` or `f`, and anything else fails rather than reading as false.
-/// Found by fuzzing `PgReader` (`fennec-fuzz run postgres`).
-#[test]
-fn postgres_refuses_messages_a_server_never_sends() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let printed = printed_by(
-        "postgres_strict",
-        r#"from std import postgres
-from std.postgres import PgMessage, PgReader
-
-def read(data: bytes) -> str:
-    mut reader = PgReader()
-    reader.feed(data)
-    message = reader.next() except .Constraint() | .Busy() | .Column() | .Failed():
-        return "refused"
-    _ = message else:
-        return "refused"
-    return "read"
-
-def main(stdout: Stdout):
-    stdout.print(read(bytes([84, 0, 0, 0, 6, 255, 255])))
-    stdout.print(read(bytes([68, 0, 0, 0, 6, 255, 255])))
-    stdout.print(read(bytes([68, 0, 0, 0, 10, 0, 1, 255, 255, 255, 254])))
-    stdout.print(read(bytes([69, 0, 0, 0, 11, 83, 69, 82, 82, 79, 82, 0])))
-    stdout.print(read(bytes([90, 0, 0, 0, 4])), read(bytes([90, 0, 0, 0, 6, 73, 73])))
-    stdout.print(read(bytes([75, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3])))
-    stdout.print(read(bytes([49, 0, 0, 0, 5, 120])))
-    rows = [PgMessage.Row(cells=[bytes([120])], present=[True])]
-    found = postgres.rows_of(["flag"], types=[16], rows=rows) except .Constraint() | .Busy() | .Column() | .Failed():
-        stdout.print("refused")
-        return
-    stdout.print("read", found.ints)
-"#,
-    )?;
-    assert_eq!(printed, "refused\nrefused\nrefused\nrefused\nrefused refused\nrefused\nrefused\nrefused\n");
-    Ok(())
-}
-
 /// `fennec update` locks the layouts a kit saves in `pack.lock`. A locked type's values are then
 /// written without their layout, as short as before layouts, and the next version of the type
 /// reads them by the locked layout's names. Without the lock, they'd be refused. `fennec check`

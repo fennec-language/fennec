@@ -1142,7 +1142,7 @@ struct TomlReader:
         _ = self._path.pop()
 
 ## `text` read as a `T`, through its own `def deserialize`.
-export def native_loads[T: Deserializable](text: str) -> T fails ParseError:
+def native_loads[T: Deserializable](text: str) -> T fails ParseError:
     mut parser = TomlParser(source=text)
     root = parser.document()?
     mut src = TomlReader(_here=.Table(table=root))
@@ -1423,7 +1423,7 @@ def write_table(text: str, path: list[str], table: TomlTable, array: bool) -> st
     return out
 
 ## `value` as TOML text, through its own `def serialize`.
-export def native_dumps[T: Serializable](value: T) -> str:
+def native_dumps[T: Serializable](value: T) -> str:
     mut out = TomlWriter()
     value.serialize(ref out)
     if out._wants_tables:

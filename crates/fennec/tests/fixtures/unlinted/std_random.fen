@@ -1,6 +1,6 @@
 # decision: `Random` is a seeded value.
 
-from std.random import Random, random_int
+from std.random import Random
 
 struct Enemy:
     name: str
@@ -47,8 +47,9 @@ def main(stdout: Stdout):
     mut replay = Random(seed=42)
     stdout.print([replay.randint(1, high=6) for _ in range(10)])
 
-    # Without keeping a generator: the 3rd number of seed 7's sequence, from 0 to 9.
-    value, drawn = random_int(7, 3, 0, 9)
-    stdout.print(value, drawn)
+    # Picked up partway: the number after seed 7's first three, from 0 to 9.
+    mut later = Random(seed=7, drawn=3)
+    value = later.randint(0, high=9)
+    stdout.print(value, later.drawn)
     mut wide = Random(seed=-1)
     stdout.print(wide.randint(-9_223_372_036_854_775_807, high=9_223_372_036_854_775_807))

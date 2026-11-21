@@ -109,6 +109,7 @@ pub(super) fn push(
 ) -> Option<Message> {
     let message = message.map(|message| match message {
         Message::Block(address, table) => Message::Shared(address, Arc::new(*table)),
+        Message::Words(words) => Message::SharedWords(Arc::new(*words)),
         message => message,
     });
     queue.messages.extend(message);
@@ -122,20 +123,21 @@ pub(super) fn push(
     oldest
 }
 
-/// The next message for `listener`, as `channel_receive` gives back.
-pub(super) fn receive(channel: &Arc<Channel>, listener: i64, timeout_ns: i64, value: &mut i64) -> i64 {
+/// The next message for `listener`, its own to take, or what a receive gives back instead, as
+/// `channels::next` says.
+pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Result<Message, i64> {
     let timeout_ns = match super::replayed(channel, "receive", false) {
         super::Turn::Live => timeout_ns,
         super::Turn::Goes => -1,
-        super::Turn::Gives(code) => return code,
+        super::Turn::Gives(code) => return Err(code),
     };
     let deadline = deadline(timeout_ns);
     loop {
         let mut queue = channel.queue();
         let kept = u64::try_from(queue.messages.len()).unwrap_or(0);
-        let Some(every) = &mut queue.every else { return CLOSED };
+        let Some(every) = &mut queue.every else { return Err(CLOSED) };
         let first = every.first;
-        let Some(this) = every.by_number.get_mut(&listener) else { return CLOSED };
+        let Some(this) = every.by_number.get_mut(&listener) else { return Err(CLOSED) };
         if this.next < first {
             let missed = first - this.next;
             if !this.drop_oldest {
@@ -148,7 +150,7 @@ pub(super) fn receive(channel: &Arc<Channel>, listener: i64, timeout_ns: i64, va
                     ),
                     Span::default(),
                 ));
-                return DONE;
+                return Err(DONE);
             }
             this.next = first;
         }
@@ -158,27 +160,27 @@ pub(super) fn receive(channel: &Arc<Channel>, listener: i64, timeout_ns: i64, va
             let message = match queue.messages.get(at) {
                 Some(Message::Word(word)) => Message::Word(*word),
                 Some(Message::Shared(address, table)) => Message::Shared(*address, Arc::clone(table)),
-                Some(Message::Block(..)) | None => return CLOSED,
+                Some(Message::SharedWords(words)) => Message::SharedWords(Arc::clone(words)),
+                Some(Message::Block(..) | Message::Words(_)) | None => return Err(CLOSED),
             };
             super::met(channel, "receive", DONE);
             drop(queue);
-            *value = i64::from_ne_bytes(super::taken(message).to_ne_bytes());
-            return DONE;
+            return Ok(message);
         }
         if queue.closed {
             super::met(channel, "receive", CLOSED);
-            return CLOSED;
+            return Err(CLOSED);
         }
         match wait(channel, queue, deadline, Side::Receiving) {
             Waited::Again => {}
             Waited::TimedOut => {
                 super::met(channel, "receive", TIMED_OUT);
-                return TIMED_OUT;
+                return Err(TIMED_OUT);
             }
-            Waited::Stopped => return super::stopped(channel, "receive"),
+            Waited::Stopped => return Err(super::stopped(channel, "receive")),
             Waited::CutShort => {
                 super::met(channel, "receive", CLOSED);
-                return CLOSED;
+                return Err(CLOSED);
             }
         }
     }

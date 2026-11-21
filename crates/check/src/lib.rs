@@ -21,6 +21,7 @@ mod annotations;
 mod builtins;
 mod call;
 mod checker;
+mod codec;
 mod constants;
 pub mod copies;
 mod crossing;

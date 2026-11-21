@@ -36,7 +36,8 @@ fn point_or_text() -> Element {
 }
 
 /// The kinds of item a run here has: a `Point`, a tuple of a number and a string, an optional
-/// `Point`, a result of a `Point` or a string, and a `Visit` of two numbers: numbers 0 to 4.
+/// `Point`, a result of a `Point` or a string, a `Visit` of two numbers, and a string held as its
+/// header: numbers 0 to 5.
 fn elements() -> Vec<Rc<Element>> {
     let pair = named("(int, str)", vec![("0", Element::Int), ("1", Element::Text)]);
     let none: Vec<(Rc<str>, Element)> = Vec::new();
@@ -46,7 +47,14 @@ fn elements() -> Vec<Rc<Element>> {
         words: 6,
     };
     let visit = named("Visit", vec![("cost", Element::Int), ("from", Element::Int)]);
-    vec![Rc::new(point()), Rc::new(pair), Rc::new(maybe), Rc::new(point_or_text()), Rc::new(visit)]
+    vec![
+        Rc::new(point()),
+        Rc::new(pair),
+        Rc::new(maybe),
+        Rc::new(point_or_text()),
+        Rc::new(visit),
+        Rc::new(Element::Text),
+    ]
 }
 
 /// Starts a run with those kinds of item.
@@ -166,15 +174,19 @@ fn an_entry_is_as_wide_as_its_key_and_its_values_kind() {
         let shape = shape(0, key, Word::InPlace(element)).unwrap();
         with(|state| super::shape_layout(state, shape).map(|layout| (layout.width(), layout.value_at())))
     };
-    // A hash, the key, then a `Point`'s five words, a tuple's four or an optional `Point`'s six.
+    // A hash, the key, then a `Point`'s five words, a tuple's four, an optional `Point`'s six or a
+    // string's header's three.
     assert_eq!(width(Word::Int, 0), Some((7, 2)));
     assert_eq!(width(Word::Text, 0), Some((9, 4)));
     assert_eq!(width(Word::Int, 1), Some((6, 2)));
     assert_eq!(width(Word::Str, 2), Some((8, 2)));
     assert_eq!(width(Word::Int, 3), Some((8, 2)));
     assert_eq!(width(Word::Int, 4), Some((4, 2)));
+    // A string's header as the value: three words, after a number's key or a header's.
+    assert_eq!(width(Word::Int, 5), Some((5, 2)));
+    assert_eq!(width(Word::Text, 5), Some((7, 4)));
     // A kind the run doesn't have is no dict's.
-    assert_eq!(width(Word::Int, 5), None);
+    assert_eq!(width(Word::Int, 6), None);
     finish();
 }
 
@@ -865,6 +877,86 @@ fn a_value_taken_out_under_a_locks_log_goes_back_on_a_crash_and_stays_out_at_an_
         assert_eq!(now, if crashed { points() } else { without }, "crashed: {crashed}");
         assert_eq!(count, 1, "crashed: {crashed}");
     }
+    finish();
+}
+
+/// A string as its header, the kind a `dict[str, str]`'s values would be held in place as.
+const TEXT: u32 = 5;
+
+/// Puts a string's header in this thread's buffer as native code would, holding its block's owner
+/// when it has one.
+fn buffer_text(text: &str) {
+    with(|state| {
+        let header = super::super::text::header(state, text);
+        super::value_buffer_of(state, |buffer| {
+            for (kept, word) in buffer.iter().zip(&header) {
+                kept.set(*word);
+            }
+        });
+        Some(())
+    })
+    .unwrap();
+}
+
+/// A string's header as native code would hand one over as a key, its block's owner its own.
+fn key_header(text: &str) -> [u64; 3] {
+    with(|state| Some(super::super::text::header(state, text))).unwrap()
+}
+
+/// What a `dict[str, str]` would hold if its values were headers in place, as its keys are: set
+/// from the buffer, short and long, read back, one replaced, compared, shown, popped into the
+/// buffer, and freed, the audit finding every owner right at each step. Nothing native code
+/// makes holds one yet: this is the runtime's half, ready for the compiler's.
+#[test]
+fn a_dict_of_strings_holds_its_values_as_headers_in_place() {
+    started();
+    let before = live();
+    let mut dict = made(Word::Text, TEXT, &dict_of(Vec::new()));
+    let mut wanted = Vec::new();
+    for at in 0..20 {
+        let key = if at % 4 == 0 { format!("{LONG}, key {at}") } else { format!("key {at}") };
+        let value = if at % 3 == 0 { format!("{LONG}, value {at}") } else { format!("v{at}") };
+        buffer_text(&value);
+        let [a, b, c] = key_header(&key);
+        dict = unsigned(super::set_in_place_header(signed(dict), a, b, c));
+        wanted.push((Value::str(&key), Value::str(&value)));
+    }
+    assert_eq!(read(dict), dict_of(wanted.clone()));
+    audited(&[dict]);
+    // One that's there is replaced, and the block its old value held let go of.
+    buffer_text("a replacement value long enough for a block of its own");
+    let [a, b, c] = key_header("key 1");
+    assert_eq!(unsigned(super::set_in_place_header(signed(dict), a, b, c)), dict);
+    wanted[1].1 = Value::str("a replacement value long enough for a block of its own");
+    assert_eq!(read(dict), dict_of(wanted.clone()));
+    audited(&[dict]);
+    // Equal to one made from the same pairs, and not to one with a value changed.
+    let same = made(Word::Text, TEXT, &dict_of(wanted.clone()));
+    let mut changed_pairs = wanted.clone();
+    changed_pairs[2].1 = Value::str("v2, but changed");
+    let changed = made(Word::Text, TEXT, &dict_of(changed_pairs));
+    assert_eq!(heap::equal(signed(dict), signed(same)), 1);
+    assert_eq!(heap::equal(signed(dict), signed(changed)), 0);
+    // Shown as any dict of strings is.
+    assert_eq!(shown(dict), shown(same));
+    assert!(shown(dict).starts_with("{\"a name long enough"), "{}", shown(dict));
+    assert!(shown(dict).contains("\"key 2\": \"v2\""), "{}", shown(dict));
+    // Popped, the value's header is in the buffer, its block's owner the caller's.
+    let [a, b, c] = key_header("key 3");
+    assert_eq!(unsigned(super::pop_in_place_header(signed(dict), a, b, c, 0, 0)), dict);
+    let words = with(|state| super::buffered(state, 3)).unwrap();
+    let header: [u64; 3] = words.as_slice().try_into().unwrap();
+    assert_eq!(
+        with(|state| Some(super::super::text::text_of(state, &header))).unwrap(),
+        format!("{LONG}, value 3")
+    );
+    let_go_of_buffered(&Element::Text, 3);
+    audited(&[dict, same, changed]);
+    for at in [dict, same, changed] {
+        let_go(at);
+    }
+    // The keys handed over as headers for the replace and the pop stay the caller's.
+    assert_eq!(live(), before);
     finish();
 }
 

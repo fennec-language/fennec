@@ -1377,9 +1377,15 @@ def all_tables(items: list[TomlValue]) -> list[TomlTable]?:
     return tables
 
 ## A table's plain keys under its header, then its tables and arrays of tables.
-## `text`, followed by a table, and the tables it holds, as TOML text under the header `path`.
-def write_table(text: str, path: list[str], table: TomlTable, array: bool) -> str:
-    mut out = text
+## The TOML text being written, which `write_table` adds to where it is.
+struct TomlOut:
+    text = ""
+
+## Writes a table, and the tables it holds, onto `out` as TOML text under the header `path`. It
+## keeps the one text and the one path, a key added for each table below and taken off after: each
+## level once took the text so far and gave back a longer copy, and copied the path for each table
+## below, so 800 levels deep took half a gigabyte to write 1.6 MB (#2318).
+def write_table(ref out: TomlOut, ref path: list[str], table: TomlTable, array: bool):
     mut plain = list[int]()
     mut nested = list[int]()
     mut at = 0
@@ -1398,44 +1404,54 @@ def write_table(text: str, path: list[str], table: TomlTable, array: bool) -> st
                 plain.append(at)
         at += 1
     if len(path) > 0 and (array or len(plain) > 0 or len(nested) == 0):
-        if out != "":
-            out += "\n"
-        name = ".".join([table_key(key) for key in path])
-        out += f"[[{name}]]\n" if array else f"[{name}]\n"
-    for place in plain:
-        out += f"{table_key(table.keys[place])} = {one_line(table.values[place])}\n"
-    for place in nested:
-        mut under = list[str]()
+        if out.text != "":
+            out.text += "\n"
+        # The header goes straight into the text, a key at a time: made whole, then copied in,
+        # each level's was a new block a little longer than the last, and none could be used again.
+        out.text += "[[" if array else "["
+        mut first = True
         for key in path:
-            under.append(key)
-        under.append(table.keys[place])
+            if not first:
+                out.text += "."
+            out.text += table_key(key)
+            first = False
+        out.text += "]]\n" if array else "]\n"
+    for place in plain:
+        out.text += f"{table_key(table.keys[place])} = {one_line(table.values[place])}\n"
+    for place in nested:
+        path.append(table.keys[place])
         match table.values[place]:
             case .Table(inner):
-                out = write_table(out, under, inner, False)
+                write_table(ref out, ref path, inner, False)
             case .Tables(tables):
                 for inner in tables:
-                    out = write_table(out, under, inner, True)
+                    write_table(ref out, ref path, inner, True)
             case .List(items):
                 for inner in all_tables(items) else list[TomlTable]():
-                    out = write_table(out, under, inner, True)
+                    write_table(ref out, ref path, inner, True)
             case _:
                 pass
-    return out
+        _ = path.pop()
 
-## `value` as TOML text, through its own `def serialize`.
+## `value` as TOML text, through its own `def serialize`. Each table's header names its whole path,
+## so a value nested deep writes text that grows with the square of its depth: 800 levels write
+## 1.6 MB, and about 27,000 in `main` write 2 GB, near where memory runs out. In a launched task,
+## about 4,000 levels stop the program at the call, saying calls nested too deeply, as `json.dumps`
+## does deeper: a value that deep, made in the program's own memory, is a bug in the program.
 export def native_dumps[T: Serializable](value: T) -> str:
     mut out = TomlWriter()
     value.serialize(ref out)
     if out._wants_tables:
         out = TomlWriter(_id_tables=tables_in(value), _found=True)
         value.serialize(ref out)
-    mut text = ""
+    mut written = TomlOut()
     match out._done:
         case .Table(table):
-            text = write_table(text, list[str](), table, False)
+            mut path = list[str]()
+            write_table(ref written, ref path, table, False)
         case _:
             assert False
-    return text
+    return written.text
 
 ## Whether a `YYYY-MM-DD` that's in range is a day its month really has.
 def real_day(date: str) -> bool:

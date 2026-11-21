@@ -57,8 +57,9 @@ pub(crate) struct Kept {
     key: Key,
     /// The build that last worked it out or used it, by its number.
     built: u64,
-    /// How many builds have used it again since it was worked out or last checked after a build:
-    /// it's checked by the [`TURNS`]th (see [`to_check_after`]).
+    /// How many builds have used it again since it was worked out or last checked after a build,
+    /// from where its count starts ([`first_count`]): it's checked by the [`TURNS`]th (see
+    /// [`to_check_after`]).
     unchecked: u32,
 }
 
@@ -239,7 +240,7 @@ impl Keeping {
             analysis: Arc::clone(analysis),
             key,
             built: self.build,
-            unchecked: 0,
+            unchecked: first_count(&function.name),
         };
         if let Ok(mut kept_now) = self.kept_now.lock() {
             kept_now.insert(function.name.clone(), kept);
@@ -408,8 +409,9 @@ const TURNS: u32 = 16;
 /// - every function a call away from one analyzed afresh, a caller or a callee, as a stale
 ///   analysis almost always comes of a dependency near the edit that the rule missed (a function
 ///   asks only of its callees, so its callers cover what it was asked);
-/// - every other whose [`TURNS`]th use since it was last checked this is, so each analysis is
-///   checked by its sixteenth use, counted by its own uses, not the builds around them.
+/// - every other whose count of uses has come to [`TURNS`], so each analysis is checked by its
+///   sixteenth use since it was worked out or last checked, counted by its own uses, not the builds
+///   around them.
 pub(crate) fn to_check_after(program: &fennec_ir::Program, used: Vec<(String, Key, u32)>) -> (Used, usize) {
     let reused: std::collections::HashSet<String> = used.iter().map(|(name, ..)| name.clone()).collect();
     let mut near: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -434,6 +436,15 @@ pub(crate) fn to_check_after(program: &fennec_ir::Program, used: Vec<(String, Ke
 /// Each analysis a build used again, by function, with its key.
 type Used = Vec<(String, Key)>;
 
+/// Where an analysis's count of uses starts, when it's worked out or checked: its function's place
+/// in the [`TURNS`], by a hash of its name. So what one build works out comes due over the next
+/// sixteen, about a sixteenth each, rather than all in one, and each is still checked by its
+/// sixteenth use.
+fn first_count(name: &str) -> u32 {
+    let hash = crate::keys::key_of("fennec analysis checked in turn", &name);
+    u32::from(hash.first().copied().unwrap_or(0)) % TURNS
+}
+
 /// What's waiting to be checked of what builds used again, taken to check: no build takes the
 /// store till it's done, and dropped, the check is ended.
 pub struct AnalysesCheck {
@@ -457,7 +468,7 @@ impl AnalysesCheck {
     /// sorted. Any is the compiler's mistake: every kept analysis goes, and the next build works
     /// each out. Where none differs, each analysis checked starts its count of uses again.
     #[must_use]
-    pub fn run(self) -> Vec<String> {
+    pub fn run(&self) -> Vec<String> {
         let mut differ: Vec<String> = self.packs.iter().flat_map(CheckPack::differ).collect();
         differ.sort();
         differ.dedup();
@@ -469,7 +480,7 @@ impl AnalysesCheck {
                     if let Some(entry) = kept.by_function.get_mut(name)
                         && entry.key == key
                     {
-                        entry.unchecked = 0;
+                        entry.unchecked = first_count(name);
                     }
                 }
             }
@@ -521,8 +532,8 @@ mod tests {
     }
 
     /// An analysis used again build after build, with nothing near it edited, is picked to be
-    /// checked at its sixteenth use since it was worked out, counted by its own uses: never
-    /// before, whatever else is built between.
+    /// checked by its sixteenth use since it was worked out, at its own place in the sixteen, and
+    /// at every use after till it's checked.
     #[test]
     fn an_analysis_used_again_is_checked_by_its_sixteenth_use() -> Result<(), String> {
         let text = "def doubled(count: int) -> int:\n    return count * 2\n\ndef main(stdout: Stdout):\n    stdout.print(doubled(2))\n    return\n";
@@ -531,13 +542,14 @@ mod tests {
         let program = fennec_ir::lower(&module, &checked);
         let mut keeping = Keeping::from(None);
         let _ = crate::analysis::whole_keeping(&program, &keeping);
+        let due = TURNS - first_count("doubled");
         for uses in 1..=TURNS {
             keeping = Keeping::from(Some(keeping.into_kept()));
             let _ = crate::analysis::whole_keeping(&program, &keeping);
             let (picked, near) = to_check_after(&program, keeping.take_used());
             assert_eq!(near, 0);
             let doubled = picked.iter().any(|(name, _)| name == "doubled");
-            assert_eq!(doubled, uses == TURNS, "use {uses}: {picked:?}");
+            assert_eq!(doubled, uses >= due, "use {uses}, due at {due}: {picked:?}");
         }
         Ok(())
     }
@@ -546,6 +558,8 @@ mod tests {
     #[test]
     fn a_build_waits_for_a_running_check() {
         CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = true;
+        // Ended however the test goes, so no later test that takes the store waits for it.
+        let check = AnalysesCheck { packs: Vec::new() };
         let waited = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let waiting = {
             let waited = Arc::clone(&waited);
@@ -556,7 +570,7 @@ mod tests {
         };
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(!waited.load(std::sync::atomic::Ordering::SeqCst), "it didn't wait for the check");
-        drop(AnalysesCheck { packs: Vec::new() });
+        drop(check);
         assert!(waiting.join().is_ok());
         assert!(waited.load(std::sync::atomic::Ordering::SeqCst));
     }

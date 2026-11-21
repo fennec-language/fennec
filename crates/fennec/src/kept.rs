@@ -129,22 +129,19 @@ pub(crate) fn built_while_keeping(built: TakenBack) {
     BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner).insert(built);
 }
 
-/// Where the daemon notes how many times checking the analyses builds used again has disagreed,
-/// and the note the next build says: in the Fennec folder's `daemon`, so another daemon, or a
-/// build with none, finds them too.
-fn found_wrong_at(home: &std::path::Path) -> (PathBuf, PathBuf) {
-    let folder = home.join("daemon");
-    (folder.join("kept-analyses-found-wrong"), folder.join("kept-analyses-note.txt"))
+/// Where the daemon keeps the note the next build says once checking the analyses builds used
+/// again has disagreed: in the Fennec folder's `daemon`, so another daemon, or a build with none,
+/// finds it too.
+fn note_at(home: &std::path::Path) -> PathBuf {
+    home.join("daemon").join("kept-analyses-note.txt")
 }
 
-/// How many times checking the analyses builds used again has disagreed, for this Fennec folder.
-/// It's part of what names a stored program (`built::key`), so a program stored before is never
-/// put out after: whatever its settings, it may have used the analysis found wrong.
+/// How many times checking the analyses builds used again has disagreed, for this cache
+/// (`Cache::analyses_found_wrong`). It's part of what names a stored program (`built::key`), so a
+/// program stored before is never put out after: whatever its settings, it may have used the
+/// analysis found wrong.
 pub(crate) fn analyses_found_wrong() -> u64 {
-    fennec_build::fennec_home()
-        .and_then(|home| std::fs::read_to_string(found_wrong_at(&home).0).ok())
-        .and_then(|count| count.trim().parse().ok())
-        .unwrap_or(0)
+    crate::run::cache().map_or(0, |cache| cache.analyses_found_wrong())
 }
 
 /// Checks what builds used again of the analyses the builds before kept, analyzing those functions
@@ -163,14 +160,17 @@ pub(crate) fn analyses_found_wrong() -> u64 {
 #[cfg(unix)]
 pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::AnalysesCheck) -> Option<PathBuf> {
     static REPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // The check counts as running till what it found is written down: a daemon that's ending, or
+    // a build that's starting, waits for all of it.
     let differ = check.run();
     if differ.is_empty() {
         return None;
     }
-    let (count_at, note_at) = found_wrong_at(home);
+    let note_at = note_at(home);
     let _ = std::fs::create_dir_all(home.join("daemon"));
-    let count = std::fs::read_to_string(&count_at).ok().and_then(|count| count.trim().parse::<u64>().ok());
-    let _ = std::fs::write(&count_at, format!("{}\n", count.unwrap_or(0) + 1));
+    if let Some(cache) = crate::run::cache() {
+        let _ = cache.count_analysis_found_wrong();
+    }
     let taken = std::mem::take(&mut *BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner));
     let mut named = Vec::new();
     for built in &taken {
@@ -203,6 +203,7 @@ pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::Analys
         "note: the build daemon analyzed again what builds used the analyses of, and it disagreed{said}: the programs they made may be wrong, so every stored program, run and test result made since is taken back, and the next build analyzes every function\n"
     );
     let _ = std::fs::write(&note_at, note);
+    drop(check);
     Some(report)
 }
 
@@ -220,7 +221,7 @@ pub(crate) fn finish_analyses_check(home: &std::path::Path) {
 /// disagreed, if it did since this was last said, in any daemon.
 pub(crate) fn say_analyses_notice() {
     let Some(home) = fennec_build::fennec_home() else { return };
-    let note_at = found_wrong_at(&home).1;
+    let note_at = note_at(&home);
     if let Ok(note) = std::fs::read_to_string(&note_at)
         && std::fs::remove_file(&note_at).is_ok()
     {

@@ -746,6 +746,8 @@ mod unix {
 
     /// Serves requests until stopped or idle for too long.
     pub(super) fn serve(home: &Path) -> ExitCode {
+        // Its builds go to processes of their own, whose memory goes when they end.
+        crate::child::serving();
         // Its owner is whom the socket's folder has to belong to.
         let _ = std::fs::create_dir_all(home);
         let Some(socket) = socket_path(home, true) else { return ExitCode::FAILURE };

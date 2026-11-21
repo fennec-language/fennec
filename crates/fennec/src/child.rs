@@ -236,6 +236,8 @@ mod unix {
                 *LAST.lock().unwrap_or_else(PoisonError::into_inner) = child.child.take().zip(kept);
                 Ok(result)
             }
+            // Stopped because the command went, as on Ctrl-C: the build stops, as one here does.
+            Err(_) if fennec_build::cancelled() => Ok(Err(fennec_llvm::STOPPED.to_owned())),
             Err(why) => Err(no_answer(why)),
         }
     }
@@ -582,10 +584,22 @@ fn test_failure() -> Option<String> {
     cfg!(debug_assertions).then(|| std::env::var("FENNEC_TEST_BUILD_CHILD").ok()).flatten()
 }
 
-/// Whether builds go to a child: asked for with `FENNEC_BUILD_CHILD=1`, until the daemon sends
-/// every build of its own to one.
+/// Set once this process is the daemon, every build of which goes to a child.
+static SERVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes this process's builds go to children from here on: it's the daemon.
+pub(crate) fn serving() {
+    SERVING.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether builds go to a child: the daemon's do, and any process's with `FENNEC_BUILD_CHILD=1`.
+/// `FENNEC_BUILD_CHILD=0` keeps the daemon's in the daemon.
 pub(crate) fn wanted() -> bool {
-    std::env::var("FENNEC_BUILD_CHILD").as_deref() == Ok("1")
+    match std::env::var("FENNEC_BUILD_CHILD").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => SERVING.load(std::sync::atomic::Ordering::Relaxed),
+    }
 }
 
 /// Says why a build in a child gave no answer, before it's built here.

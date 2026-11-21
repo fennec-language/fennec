@@ -105,15 +105,15 @@ impl Fault {
         }
     }
 
-    /// The failure as a program prints it.
+    /// The failure as a program prints it: an `IoError`'s words, its reason.
     fn printed(self) -> &'static str {
         match self {
-            Fault::NoSpace => "IoError.Other(reason=\"the disk is full\")",
-            Fault::Quota => "IoError.Other(reason=\"the disk space allowed is used up\")",
-            Fault::ReadOnly => "IoError.Other(reason=\"the disk can't be written to\")",
-            Fault::Denied => "IoError.PermissionDenied(reason=\"the system won't allow it\")",
-            Fault::TooLarge => "IoError.Other(reason=\"the file is too big for the system\")",
-            Fault::Io => "IoError.Other(reason=\"the system failed: other error\")",
+            Fault::NoSpace => "the disk is full",
+            Fault::Quota => "the disk space allowed is used up",
+            Fault::ReadOnly => "the disk can't be written to",
+            Fault::Denied => "the system won't allow it",
+            Fault::TooLarge => "the file is too big for the system",
+            Fault::Io => "the system failed: other error",
             Fault::Kill => "",
         }
     }
@@ -809,7 +809,7 @@ mod tests {
         let rule = [Rule { work: Work::Write, n: 4, fault: Fault::NoSpace, bytes: 0 }];
         let (left, work) = modelled(&plan, &rule);
         assert_eq!(left.files[0].as_deref(), Some(b"one\ntwothree\n".as_slice()));
-        assert!(left.printed.is_some_and(|printed| printed.starts_with("caught IoError.Other")));
+        assert!(left.printed.is_some_and(|printed| printed.starts_with("caught the disk is full")));
         assert_eq!(work.iter().filter(|(kind, _)| *kind == Work::Write).count(), 6);
     }
 }

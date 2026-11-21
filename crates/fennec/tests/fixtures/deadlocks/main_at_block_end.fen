@@ -1,0 +1,13 @@
+# Main waits at its block's end, with no time limit, for a task that naps and then prints.
+# Never a deadlock.
+from std.concurrent import Crashed
+from std.time import Duration
+
+def naps(stdout: Stdout, clock: Clock):
+    clock.sleep(Duration.millis(30))
+    stdout.print("the task woke")
+
+def main(stdout: Stdout, clock: Clock) fails Crashed:
+    with launch(() => naps(stdout, clock=clock))?:
+        pass
+    stdout.print("the block is over")

@@ -317,6 +317,9 @@ pub(crate) struct Interp {
     /// The `parallel` calls whose rounds this thread runs, the innermost last, each with whether
     /// the rounds after the one running now were handed to a thread of their own.
     pub(crate) handing: Vec<parallel::Handing>,
+    /// The failures `except name:` blocks running name, innermost last, with the frame each runs
+    /// in: a new failure raised in one carries that one's words as a note.
+    pub(crate) excepts: Vec<(usize, &'static str, Value)>,
     /// The local `Buffer` a `reserve(n)` was just called on, by its frame and name, and the room
     /// it promised: `n` more than it held. Any write anywhere forgets it, so it holds only until
     /// the buffer, or anything else, changes.
@@ -354,6 +357,7 @@ impl Interp {
             actor: 0,
             rounds_as: Vec::new(),
             handing: Vec::new(),
+            excepts: Vec::new(),
             reserved: None,
         }
     }
@@ -810,6 +814,16 @@ impl Interp {
         cleanup.replaces = Some(!noted);
     }
 
+    /// `fail raised`, each side of a condition raised on its own, as the compiled program does.
+    fn fail(&mut self, mut raised: &'static Expr, span: Span) -> Run<()> {
+        while let ExprKind::Cond { then, cond, otherwise } = &raised.kind {
+            raised = if self.truth(cond)? { then } else { otherwise };
+        }
+        let error = self.eval(raised)?;
+        let error = self.with_cause_noted(raised, error)?;
+        Err(Flow::Fail(error, span))
+    }
+
     fn stmt_ran(&mut self, stmt: &'static Stmt) -> Run<()> {
         self.tick()?;
         match &stmt.kind {
@@ -861,10 +875,7 @@ impl Interp {
                 };
                 Err(Flow::Return(value))
             }
-            StmtKind::Fail(error) => {
-                let error = self.eval(error)?;
-                Err(Flow::Fail(error, stmt.span))
-            }
+            StmtKind::Fail(raised) => self.fail(raised, stmt.span),
             StmtKind::Yield(value) => {
                 let value = self.eval(value)?;
                 self.yield_value(value)

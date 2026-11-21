@@ -1,0 +1,25 @@
+# Main sends more than a channel holds to a task that naps before it takes any: main waits at the
+# full channel each time until the task takes one. Never a deadlock.
+from std.concurrent import Channel, Closed, Crashed, Sender, channel
+from std.time import Duration
+
+def drains(numbers: Channel[int], totals: Sender[int], clock: Clock):
+    clock.sleep(Duration.millis(30))
+    mut total = 0
+    for number in numbers:
+        if number == 0: break
+        total += number
+    totals.send(total) except Closed():
+        return
+
+def main(stdout: Stdout, clock: Clock) fails Crashed:
+    with channel[int](size=1) as numbers:
+        with channel[int](size=1) as totals:
+            back = totals.sender()
+            with launch(() => drains(numbers, totals=back, clock=clock))?:
+                for number in range(1, 51):
+                    numbers.send(number) except Closed():
+                        return
+                numbers.send(0) except Closed():
+                    return
+                stdout.print(totals.receive() else -1)

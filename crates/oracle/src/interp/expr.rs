@@ -379,7 +379,12 @@ impl Interp {
         if let Some((name, body)) = default.else_block() {
             let mark = self.mark();
             let value = match (name, failure) {
-                (Some(name), Some(failure)) => self.bind(name, failure).and_then(|()| self.block_value(body)),
+                (Some(name), Some(failure)) => {
+                    self.excepts.push((self.cur, name, failure.clone()));
+                    let value = self.bind(name, failure).and_then(|()| self.block_value(body));
+                    self.excepts.pop();
+                    value
+                }
                 _ => self.block_value(body),
             };
             self.restore(mark);

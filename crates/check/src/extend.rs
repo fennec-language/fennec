@@ -59,7 +59,8 @@ impl Program {
         }
         for method in &extension.methods {
             // A protocol method takes what the protocol passes, as one in the type's body does.
-            if !prelude && let Some(problem) = crate::protocols::protocol_problem(name, method) {
+            let error = self.types.get(name).is_some_and(|info| info.kind == crate::program::TypeKind::Error);
+            if !prelude && let Some(problem) = crate::protocols::protocol_problem((name, error), method) {
                 self.problems.push(problem);
                 continue;
             }

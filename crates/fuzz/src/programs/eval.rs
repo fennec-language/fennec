@@ -2039,6 +2039,11 @@ impl Machine {
             Stmt::Sized(sizing) => self.sized(sizing)?,
             Stmt::Generated(generating) => self.generated(generating),
             Stmt::Ruled(ruling) => self.ruled(ruling)?,
+            Stmt::Saved(saving) => {
+                for line in super::saving::printed(saving) {
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
@@ -2986,10 +2991,8 @@ impl Machine {
                 }
                 FileWay::ReadOnly => {
                     let name = if step.second { "g" } else { "f" };
-                    lines.push(format!(
-                        "refused IoError.PermissionDenied(reason=\"this Fs only reads, so it can't change \
-                         `d{id}/{name}.txt`\")"
-                    ));
+                    // Printed, an `IoError` gives its words: its reason.
+                    lines.push(format!("refused this Fs only reads, so it can't change `d{id}/{name}.txt`"));
                 }
                 FileWay::Outside => lines.push("refused outside".to_owned()),
                 FileWay::Removed => match files.get_mut(at) {

@@ -9832,6 +9832,62 @@ fn a_wait_something_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `main` in each wait that only a task it launched can end comes out of it, at every thread count:
+/// sending to a full channel the task drains after a nap, taking a lock the task holds while it
+/// counts, and at its block's end while the task naps (with `sender_naps`' receive and
+/// `stopped_counting`'s block's end, above). At one thread `main` and its task are on two threads
+/// today. These are what `main` run as a task, on the one thread, would have to keep passing: each
+/// of these waits would have to park, not hold the thread. Each is also recorded at 4 threads and
+/// replays to the same at 1 and 4, `main` waiting for the task's turns.
+#[test]
+fn a_wait_only_a_task_can_end_in_main_ends_at_every_thread_count() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let cases = [
+        ("main_sends_drained", "1275\n"),
+        ("main_waits_for_a_lock", "seen 50821\n"),
+        ("main_at_block_end", "the task woke\nthe block is over\n"),
+    ];
+    for (name, printed) in cases {
+        deadlock_fixture_runs_as(name, 3, (printed, "", 0))?;
+        let dir = folder(&format!("main-waits-replays-{name}"))?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/deadlocks/{name}.fen")),
+            &program,
+        )?;
+        let log = dir.join("run.log");
+        let recorded = crate::executables::fennec_command()
+            .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .current_dir(&dir)
+            .env("FENNEC_THREADS", "4")
+            .output_within()?;
+        assert_eq!(
+            (String::from_utf8_lossy(&recorded.stdout).as_ref(), recorded.status.code()),
+            (printed, Some(0)),
+            "{name} recorded: {}",
+            String::from_utf8_lossy(&recorded.stderr)
+        );
+        for threads in ["1", "4"] {
+            let replayed = crate::executables::fennec_command()
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            assert_eq!(
+                (String::from_utf8_lossy(&replayed.stdout).as_ref(), replayed.status.code()),
+                (printed, Some(0)),
+                "{name} replayed at {threads} threads: {}",
+                String::from_utf8_lossy(&replayed.stderr)
+            );
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
 /// A crash in a `with` block runs its sources' `lend x except:` cleanups on the way out, innermost
 /// first, and only those whose blocks haven't ended. A cleanup's own calls run as normal while the
 /// crash waits, and a cleanup that crashes too is said, with the first crash the one that ends
@@ -11865,7 +11921,7 @@ fn a_function_ending_in_a_with_that_fails_builds_natively() -> std::io::Result<(
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 []\n0\n")?;
+    prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 [\"Refused(code=1)\"]\n0\n")?;
     prints_in_both_builds("with_fails_last_ways", WITH_FAILS_LAST_WAYS, "unguard 7\nunguard 2\n7 -2 8\n")?;
     // A function ending in a `match` whose `ref` case always fails, which ends failing too.
     prints_in_both_builds("ref_case_fails_last", REF_CASE_FAILS_LAST, "5 Kind.Slider(value=5)\n")
@@ -14642,7 +14698,8 @@ def main(stdout: Stdout):
     stdout.print(said(() => nested(5)?), said(() => nested(2)?))
     stdout.print(said(() => listed(5)?), said(() => listed(2)?))
 ";
-    let stop = "IoError.Other(reason=\"stop\")";
+    // Printed, an `IoError` gives its words: what it holds as its reason.
+    let stop = "stop";
     let wanted = format!("{stop} 1\n{stop} 3\n{stop} 5\n{stop} [0, 2]\n");
     let dir = folder("generator_failure")?;
     let program = dir.join("failing.fen");

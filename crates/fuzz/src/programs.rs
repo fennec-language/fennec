@@ -13,6 +13,7 @@
 mod ast;
 mod eval;
 mod generate;
+mod saving;
 mod source;
 
 /// Whether the dev build just made calls `fennec_native_made`, as code making a native block
@@ -1279,6 +1280,71 @@ mod tests {
         };
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
+    /// Every way of a `Saved` step checks, and the evaluator prints what the oracle prints: a box
+    /// through JSON, `std.pack` in order and exact, and TOML, with items taken out of both its
+    /// `Table`s before, so each format's `Id`s show, an item added after an exact load taking the
+    /// slot that was free, and every refused text and packed gauge.
+    #[test]
+    fn the_saved_value_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, Stmt};
+        use super::saving::{BROKEN_COUNT, PACKED, SaveFormat, SaveStep, Saving};
+        let mut steps = vec![
+            SaveStep::Hired(None),
+            SaveStep::Hired(Some(0)),
+            SaveStep::Hired(None),
+            SaveStep::Looked(1),
+            SaveStep::Fired(2),
+            SaveStep::Fired(2),
+            SaveStep::Picked(Some(1)),
+            SaveStep::Noted(Some(1)),
+            SaveStep::Marked(2),
+            SaveStep::Marks(1),
+            SaveStep::Marks(3),
+            SaveStep::Marks(4),
+            SaveStep::Moved(Some(2)),
+            SaveStep::Moved(None),
+            SaveStep::Gauged(4),
+            SaveStep::Tagged(Vec::new()),
+            SaveStep::Tagged(vec![0]),
+            SaveStep::Tagged(Vec::new()),
+            SaveStep::Untagged(2),
+            SaveStep::Best(1),
+            SaveStep::Shown,
+            SaveStep::Trip(SaveFormat::Exact),
+            SaveStep::Hired(Some(0)),
+            SaveStep::Looked(2),
+            SaveStep::Shown,
+            SaveStep::Fired(2),
+            SaveStep::Trip(SaveFormat::Json),
+            SaveStep::Trip(SaveFormat::Pack),
+            SaveStep::Tagged(vec![1]),
+            SaveStep::Trip(SaveFormat::Toml),
+            SaveStep::Shown,
+        ];
+        steps.extend((0..BROKEN_COUNT).map(SaveStep::Broken));
+        steps.extend((0..PACKED.len()).map(SaveStep::Packed));
+        steps.extend([
+            SaveStep::Noted(None),
+            SaveStep::Picked(None),
+            SaveStep::Noted(Some(2)),
+            SaveStep::Marked(0),
+            SaveStep::Trip(SaveFormat::Json),
+            SaveStep::Shown,
+        ]);
+        let program = Program { body: vec![Stmt::Saved(Saving { id: 1, steps })], threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 

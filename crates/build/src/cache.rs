@@ -442,8 +442,9 @@ impl Cache {
         self.cleanup_entries(entries, cap)
     }
 
-    /// How many cleanups have taken anything from the cache, as [`Self::removed`] counts them: a
-    /// build that knows an object was there when the count was this knows it's there still.
+    /// How many cleanups have taken anything from the cache, as cleanup counts them before it takes
+    /// anything: a build that knows an object was there when the count was this knows it's there
+    /// still.
     #[must_use]
     pub fn removals(&self) -> u64 {
         std::fs::read_to_string(self.root.join(REMOVALS))

@@ -5722,6 +5722,91 @@ fn a_parallel_loop_with_a_return_runs_as_a_plain_loop() {
     );
 }
 
+/// A `for ref` over `parallel` whose round reads the list it goes over runs as a plain loop, as
+/// the checker writes it in to go by position (#2356): each round sees the items as they are now,
+/// its own change included, prints in order, and a `return`, written as a statement, in an
+/// `except` block or in a loop inside the round, keeps the change the round made. A loop that
+/// reads another field of what holds its list still runs as rounds, so printing in it is
+/// refused. What's printed is what the compiled program printed.
+#[test]
+fn a_parallel_for_ref_that_reads_its_list_runs_as_a_plain_loop() {
+    prints(
+        "
+        error Odd:
+            number: int
+
+        struct Spot:
+            x: int
+
+        def halved(number: int) -> int fails Odd:
+            if number % 2 == 1:
+                fail Odd(number)
+            return number // 2
+
+        def returned(spots: list[Spot]) -> list[Spot]:
+            mut kept = spots
+            for ref spot in parallel(kept):
+                spot.x += 1
+                if spot.x > 2:
+                    return kept
+            return kept
+
+        def returned_from_except(spots: list[Spot]) -> list[Spot]:
+            mut kept = spots
+            for ref spot in parallel(kept):
+                spot.x += 1
+                _ = halved(spot.x) except why:
+                    spot.x += why.number * 100
+                    return kept
+            return kept
+
+        def returned_from_inner_loop(spots: list[Spot]) -> list[Spot]:
+            mut kept = spots
+            for ref spot in parallel(kept):
+                spot.x += 1
+                for step in range(2):
+                    if spot.x + step > 3:
+                        return kept
+            return kept
+
+        def read_in_round(spots: list[Spot], stdout: Stdout) -> list[Spot]:
+            mut kept = spots
+            for ref spot in parallel(kept):
+                spot.x = spot.x * 10 + 1
+                stdout.print('first is', kept[0].x, 'last is', kept[len(kept) - 1].x)
+            return kept
+
+        def main(stdout: Stdout):
+            stdout.print(returned([Spot(x=0), Spot(x=2), Spot(x=5)]))
+            stdout.print(returned_from_except([Spot(x=1), Spot(x=4), Spot(x=6)]))
+            stdout.print(returned_from_inner_loop([Spot(x=0), Spot(x=1), Spot(x=7)]))
+            stdout.print(read_in_round([Spot(x=1), Spot(x=2), Spot(x=3)], stdout))
+        ",
+        "[Spot(x=1), Spot(x=3), Spot(x=5)]\n[Spot(x=2), Spot(x=505), Spot(x=6)]\n[Spot(x=1), Spot(x=2), Spot(x=8)]\n\
+         first is 11 last is 3\nfirst is 11 last is 3\nfirst is 11 last is 31\n[Spot(x=11), Spot(x=21), Spot(x=31)]\n",
+    );
+    let (_, ended) = ran("
+        struct Spot:
+            x: int
+
+        struct World:
+            spots: list[Spot]
+            score: int
+
+        def main(stdout: Stdout):
+            mut world = World(spots=[Spot(x=1), Spot(x=2)], score=7)
+            for ref spot in parallel(world.spots):
+                spot.x += world.score
+            stdout.print(world.spots)
+            for ref spot in parallel(world.spots):
+                stdout.print(spot.x)
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported("printing inside a `parallel` round, whose order isn't promised".to_owned())
+    );
+}
+
 /// A set or dict comprehension over `parallel` takes its rounds' items in the list's order, as a
 /// plain one does: the first of equal items is kept where it came, and a key keeps its first place
 /// and its last value. What's printed is what the compiled program printed.

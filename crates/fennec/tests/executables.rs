@@ -378,6 +378,34 @@ pub(crate) fn daemons_of(home: &Path) -> PathBuf {
     home.join("noted-daemons")
 }
 
+/// How long a test's build daemon waits with nothing to do before it goes (`FENNEC_DAEMON_IDLE`):
+/// far past any gap between one test's commands, however loaded the machine. At 30 seconds, a
+/// daemon a test used for several commands went between two of them while two gates ran, and the
+/// next command started another: its count of requests served came out 2, not 8. A test stops its
+/// daemons itself when it ends, however it ends (`DaemonsStopped`).
+#[cfg(unix)]
+pub(crate) const DAEMON_IDLE: &str = "600";
+
+/// Stops every build daemon of the Fennec folder `home` when it's dropped: at the end of the test
+/// that holds it, however the test ends, so one that fails leaves none to wait out `DAEMON_IDLE`.
+#[cfg(unix)]
+pub(crate) struct DaemonsStopped<'a> {
+    pub(crate) home: &'a Path,
+}
+
+#[cfg(unix)]
+impl Drop for DaemonsStopped<'_> {
+    fn drop(&mut self) {
+        // One stopped already, or never started, leaves nothing to stop.
+        let _ = fennec_command()
+            .args(["daemon", "stop"])
+            .env("FENNEC_HOME", self.home)
+            .env_remove("FENNEC_NO_DAEMON")
+            .env("FENNEC_DAEMONS", daemons_of(self.home))
+            .output();
+    }
+}
+
 /// Cargo, to build a runtime library from inside a test as it's built outside one. `cargo test`
 /// gives a test the variables it gives the package it builds, `CARGO_MANIFEST_DIR` among them, and
 /// a crate whose code reads one is built again whenever its value changes. Inherited, it had

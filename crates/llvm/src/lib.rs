@@ -55,6 +55,8 @@ mod holding;
 mod idmaps;
 mod index;
 mod json;
+mod kept;
+pub use kept::{KeptForNext, analyses_kept_and_checked, analyses_used_again, keep_analyses_between_builds};
 mod keys;
 mod kinds;
 mod lists;

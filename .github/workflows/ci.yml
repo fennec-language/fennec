@@ -645,6 +645,8 @@ jobs:
         run: .github/scripts/test-flakes.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
         run: .github/scripts/test-nightly-report.sh
+      - name: A mutants run's counts, a timeout neither caught nor missed, and one where most timed out failing
+        run: .github/scripts/test-mutants.sh
       - name: Naming what failed, and the known failures' file, as the gate reads them
         run: |
           .github/scripts/known-failures.sh

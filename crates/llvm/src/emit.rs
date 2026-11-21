@@ -9,7 +9,7 @@ use fennec_layout::{Layouts, ListItem, Word};
 use fennec_rt::embed::layout::COUNT;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
-use crate::analysis::{Analysis, callees, visit, whole};
+use crate::analysis::{Analysis, callees, visit};
 use crate::holding::{Holding, filled, holding, step};
 use crate::index::{Record, Using};
 use crate::keys::Key;
@@ -381,7 +381,21 @@ pub(crate) fn emit_keeping(
     } else {
         crate::NativeBlocks::Watched
     };
-    let everything = whole(program);
+    // Only a build uses and keeps analyses across builds: what notes the checks left looks at a
+    // program beside one.
+    let (everything, differ) = if shared.noting_checks {
+        (crate::analysis::whole(program), Vec::new())
+    } else {
+        crate::analysis::whole_kept(program)
+    };
+    // An analysis used again from the build before that isn't what analyzing it again gives is
+    // this backend's mistake: the build stops rather than use it (see `kept`).
+    if !differ.is_empty() {
+        return Err(format!(
+            "the analysis kept from the build before of {} isn't what analyzing it again gives, which is a bug in the backend",
+            differ.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+        ));
+    }
     shared.can_fail = everything.can_fail.iter().map(|name| (*name).to_owned()).collect();
     let layouts = crate::layouts_of(program)?;
     let mut units = Vec::with_capacity(program.functions.len());
@@ -422,7 +436,13 @@ pub(crate) fn emit_keeping(
         if fennec_build::cancelled() {
             return Err(crate::STOPPED.to_owned());
         }
-        let ir = using.as_ref().map(|_| crate::keys::ir_key(function));
+        let ir = using.as_ref().map(|_| {
+            everything
+                .ir_keys
+                .get(function.name.as_str())
+                .copied()
+                .unwrap_or_else(|| crate::keys::ir_key(function))
+        });
         if let (Some(using), Some(ir)) = (&mut using, ir)
             && let Some(record) = using.usable(&function.name, &ir)
         {

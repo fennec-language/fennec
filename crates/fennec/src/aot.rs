@@ -990,6 +990,14 @@ fn emitted_reusing(
         fennec_llvm::emit_reusing(lowered, cpu, &mut reuse.borrow_mut())
     };
     let emitted = emitted_with(reached, &emit, false, checked)?;
+    // Asked to check what's kept, a build says how much of it it used, each checked against
+    // working it out again.
+    if std::env::var("FENNEC_CHECK_WHOLE").as_deref() == Ok("1") {
+        let (used, of) = fennec_llvm::analyses_used_again();
+        eprintln!(
+            "note: used {used} of {of} functions' analyses again, each checked against analyzing it again"
+        );
+    }
     if let Some(index) = reuse.borrow_mut().keep.take() {
         fennec_build::kept("keep what the build's units read", cache.write(UNITS, &key, &index));
         // Every unit's object, as the next build may use any of them again: those compiled this

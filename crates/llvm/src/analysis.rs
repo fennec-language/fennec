@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crate::keys::Key;
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
 use fennec_ir::{
@@ -266,7 +267,10 @@ impl Analysis {
 #[expect(clippy::struct_excessive_bools, reason = "each is a fact of its own about the whole program")]
 pub(crate) struct Whole<'p> {
     pub(crate) functions: HashMap<&'p str, &'p Function>,
-    pub(crate) analyses: HashMap<&'p str, Analysis>,
+    pub(crate) analyses: HashMap<&'p str, std::sync::Arc<Analysis>>,
+    /// Each function's IR key, where this build worked them out to keep its analyses (see
+    /// `kept`), so that its units use them rather than working each out again. Empty otherwise.
+    pub(crate) ir_keys: HashMap<&'p str, Key>,
     pub(crate) can_fail: HashSet<&'p str>,
     /// Each generator, by its name and by the names of its functions.
     pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
@@ -4800,7 +4804,32 @@ fn call_ranges<'p>(
     found
 }
 
+/// What's worked out of the whole program, for what looks at it beside a build, as `checks_left`
+/// and `copies_made` do: it uses no analysis kept from a build and keeps none (see `kept`).
 pub(crate) fn whole(program: &Program) -> Whole<'_> {
+    whole_keeping(program, &crate::kept::Keeping::off()).0
+}
+
+/// [`whole`] for a build, using again what the builds before in this process kept and keeping
+/// its own (see `kept`), with the names of the functions whose analysis used again isn't what
+/// analyzing them again gives, on a build that checks them: none on any other.
+pub(crate) fn whole_kept(program: &Program) -> (Whole<'_>, Vec<String>) {
+    let keeping = crate::kept::Keeping::start();
+    let found = whole_keeping(program, &keeping);
+    crate::kept::note_used_again(keeping.used_again(), found.0.analyses.len());
+    // A kept analysis that analyzing again doesn't give: nothing is handed on, the wrong one least
+    // of all, so the build after this one works every analysis out.
+    if found.1.is_empty() {
+        keeping.finish();
+    }
+    found
+}
+
+/// [`whole_kept`], using again what `keeping` found and keeping in it what's worked out.
+pub(crate) fn whole_keeping<'p>(
+    program: &'p Program,
+    keeping: &crate::kept::Keeping,
+) -> (Whole<'p>, Vec<String>) {
     let every = || program.functions.iter().chain(&program.constants);
     let functions: HashMap<&str, &Function> =
         every().map(|function| (function.name.as_str(), function)).collect();
@@ -4828,7 +4857,8 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
                 .find(|(ty, _)| *ty == dict)
                 .map_or_else(fennec_layout::dict_values_in_place, |(_, held)| *held)
         };
-        let analyses = analyzed(program, (&changes, &keeps), &params, &in_entries);
+        let (analyses, ir_keys, differ) =
+            analyzed(program, (&changes, &keeps), &params, &in_entries, keeping);
         let mut generators = HashMap::new();
         for def in &program.generators {
             generators.insert(def.name.as_str(), def);
@@ -4867,10 +4897,11 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
             })
             .collect();
         let on_workers = crate::parallel::run_on_workers(program);
-        Whole {
+        let made = Whole {
             // Put in below, once no thread borrows them.
             functions: HashMap::new(),
             analyses,
+            ir_keys,
             can_fail,
             generators,
             settles,
@@ -4886,10 +4917,17 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
             runtime_closures: crate::closures::runtime_holds_closures(program),
             tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
             abandons,
-        }
+        };
+        (made, differ)
     });
-    Whole { functions, ..whole }
+    let (made, differ) = whole;
+    (Whole { functions, ..made }, differ)
 }
+
+/// What [`analyzed`] gives: each function's analysis, each function's IR key where the build
+/// keeps its analyses, and the functions whose analysis used again isn't what analyzing it again
+/// gives.
+type Analyzed<'p> = (HashMap<&'p str, std::sync::Arc<Analysis>>, HashMap<&'p str, Key>, Vec<String>);
 
 /// What a thread of [`whole`]'s gave, or its panic, carried on in this thread.
 fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
@@ -4956,16 +4994,22 @@ type KeepsOn<'f> = &'f (dyn Fn(&str, usize) -> bool + Sync);
 
 /// Every function's [`analyze`], on as many threads as a build compiles with: each depends only
 /// on its function and what it's given here, so the order they run in changes nothing.
+/// Every function's own analysis, on as many threads as the build has, each used again from the
+/// build before when its function and everything it asked of the program are as they were (see
+/// `kept`), with the names of those used again that aren't what analyzing them again gives, on a
+/// build that checks.
 fn analyzed<'p>(
     program: &'p Program,
     (changes, keeps): (ChangesOn<'_>, KeepsOn<'_>),
     params: &HashMap<&str, Vec<Range>>,
     in_entries: &(dyn Fn(&Type) -> bool + Sync),
-) -> HashMap<&'p str, Analysis> {
+    keeping: &crate::kept::Keeping,
+) -> Analyzed<'p> {
+    use std::sync::Arc;
     let all: Vec<&Function> = program.functions.iter().chain(&program.constants).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = crate::build::workers().min(all.len()).max(1);
-    std::thread::scope(|scope| {
+    let found: Vec<(&'p str, Arc<Analysis>, Option<Key>, bool)> = std::thread::scope(|scope| {
         let parts: Vec<_> = (0..threads)
             .map(|_| {
                 scope.spawn(|| {
@@ -4974,17 +5018,83 @@ fn analyzed<'p>(
                         let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(function) = all.get(at) else { break };
                         let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
-                        mine.push((
-                            function.name.as_str(),
-                            analyze(function, changes, keeps, given, in_entries),
+                        // A build that keeps nothing analyzes each function as it always did.
+                        if !keeping.keeps() {
+                            let analysis = Arc::new(analyze(function, changes, keeps, given, in_entries));
+                            mine.push((function.name.as_str(), analysis, None, false));
+                            continue;
+                        }
+                        let ir = crate::keys::ir_key(function);
+                        let told: crate::kept::Told<'_> = (changes, keeps, in_entries);
+                        if let Some(analysis) = keeping.usable(function, (&ir, given), told) {
+                            keeping.keep_again(function);
+                            mine.push((function.name.as_str(), analysis, Some(ir), true));
+                            continue;
+                        }
+                        let asking = crate::kept::Asking::new();
+                        let noted_changes = |callee: &str| {
+                            let told = changes(callee);
+                            asking.changes(callee, &told);
+                            told
+                        };
+                        let noted_keeps = |callee: &str, at: usize| {
+                            let told = keeps(callee, at);
+                            asking.keeps(callee, at, told);
+                            told
+                        };
+                        let noted_in_entries = |dict: &Type| {
+                            let told = in_entries(dict);
+                            asking.in_entries(dict, told);
+                            told
+                        };
+                        let analysis = Arc::new(analyze(
+                            function,
+                            &noted_changes,
+                            &noted_keeps,
+                            given,
+                            &noted_in_entries,
                         ));
+                        keeping.keep(function, (ir, given), asking.into_asked(), &analysis);
+                        mine.push((function.name.as_str(), analysis, Some(ir), false));
                     }
                     mine
                 })
             })
             .collect();
         parts.into_iter().flat_map(joined).collect()
-    })
+    });
+    // Whether this build checks what it used again: picked by the program's functions as they are.
+    let inputs = found.iter().fold(0_u64, |inputs, (_, _, ir, _)| {
+        let Some(ir) = ir else { return inputs };
+        let mut word = [0_u8; 8];
+        word.copy_from_slice(ir.get(..8).unwrap_or(&[0; 8]));
+        inputs ^ u64::from_le_bytes(word)
+    });
+    let mut differ = Vec::new();
+    if found.iter().any(|(.., used_again)| *used_again)
+        && (keeping.checks_all() || crate::kept::compares(inputs))
+    {
+        let by_name: HashMap<&str, &Function> =
+            all.iter().map(|function| (function.name.as_str(), *function)).collect();
+        for (name, kept, _, used_again) in &found {
+            let Some(function) = by_name.get(name).filter(|_| *used_again) else { continue };
+            let given = params.get(*name).map_or(&[][..], Vec::as_slice);
+            let again = analyze(function, changes, keeps, given, in_entries);
+            if stable_key(&again) != stable_key(kept) {
+                differ.push((*name).to_owned());
+            }
+        }
+        differ.sort();
+    }
+    let ir_keys = found.iter().filter_map(|(name, _, ir, _)| ir.map(|ir| (*name, ir))).collect();
+    (found.into_iter().map(|(name, analysis, ..)| (name, analysis)).collect(), ir_keys, differ)
+}
+
+/// An analysis's key, as a read of it is compared (`Reads::value_of`).
+fn stable_key(analysis: &Analysis) -> Key {
+    let mut state = crate::keys::Stable::new("fennec kept analysis 2026-11-20");
+    analysis.stable(&mut state);
+    state.key()
 }
 
 #[cfg(all(test, not(windows)))]
@@ -5165,6 +5275,120 @@ mod tests {
             let body = format!("{go}held.rows[turn].items.append({appended})\n");
             assert_eq!(field_taken(&body)?, (false, false, true), "{body}");
         }
+        Ok(())
+    }
+
+    /// Each function's analysis is kept from one build to the next and used again when its
+    /// function and what it asked of the program are as they were, and only then: after a body's
+    /// edit, every other function's is used again, and after a callee stops changing what it's
+    /// handed by `ref`, its caller's isn't. Every analysis a build uses, kept or not, is what
+    /// analyzing its function afresh gives.
+    #[test]
+    fn an_analysis_is_used_again_only_when_its_function_and_what_it_asked_are_as_they_were()
+    -> Result<(), String> {
+        let source = |grow: &str, scale: &str| {
+            format!(
+                "def grow({grow}) -> int:\n    return len(items)\n\ndef caller() -> int:\n    mut items = [1, 2, 3]\n    return grow({})\n\ndef other(count: int) -> int:\n    scale = {scale}\n    return count * scale\n\ndef main(stdout: Stdout):\n    stdout.print(caller(), other(4))\n    return\n",
+                if grow.starts_with("ref") { "ref items" } else { "items" }
+            )
+        };
+        let lowered = |text: &str| -> Result<Program, String> {
+            let mut module = fennec_syntax::parse(text).map_err(|err| format!("{err:?}"))?;
+            let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+            Ok(fennec_ir::lower(&module, &checked))
+        };
+        // What a build of `program` uses, starting from `kept`: its analyses' keys, how many were
+        // used again, and what it keeps.
+        let built = |program: &Program, kept: Option<crate::kept::KeptAnalyses>| {
+            let keeping = crate::kept::Keeping::from(kept);
+            let (whole, differ) = whole_keeping(program, &keeping);
+            let keys: BTreeMap<String, Key> = whole
+                .analyses
+                .iter()
+                .map(|(name, analysis)| ((*name).to_owned(), stable_key(analysis)))
+                .collect();
+            (keys, differ, keeping.used_again(), keeping.into_kept())
+        };
+        let afresh = |program: &Program| -> BTreeMap<String, Key> {
+            whole_keeping(program, &crate::kept::Keeping::from(None))
+                .0
+                .analyses
+                .iter()
+                .map(|(name, analysis)| ((*name).to_owned(), stable_key(analysis)))
+                .collect()
+        };
+        let first = lowered(&source("ref items: list[int]", "3"))?;
+        let (keys, _, used, kept) = built(&first, None);
+        assert_eq!((used, keys.len()), (0, first.functions.len() + first.constants.len()));
+        assert_eq!(keys, afresh(&first));
+        // A body's edit: `other` is analyzed again, and every other function's is used again.
+        let edited = lowered(&source("ref items: list[int]", "4"))?;
+        let (keys, differ, used, kept) = built(&edited, Some(kept));
+        assert!(differ.is_empty(), "{differ:?}");
+        assert_eq!(used, keys.len() - 1, "a body's edit used again {used} of {}", keys.len());
+        assert_eq!(keys, afresh(&edited));
+        // `grow` no longer changes what it's handed: `caller`, which asked, is analyzed again too.
+        let plain = lowered(&source("items: list[int]", "4"))?;
+        let (keys, _, used, _) = built(&plain, Some(kept));
+        assert!(used <= keys.len() - 2, "a callee's change used again {used} of {}", keys.len());
+        assert_eq!(keys, afresh(&plain));
+        // What a function asks changes while its IR doesn't: `other`'s parameter can be negative
+        // now, and `kept` stops returning what it's handed, which `holder` asked about. Neither's
+        // analysis is the one kept, as using it would show.
+        let asked = |count: &str, kept: &str| {
+            format!(
+                "def kept(items: list[int]) -> list[int]:\n    return {kept}\n\ndef holder() -> int:\n    items = [1, 2, 3]\n    held = kept(items)\n    return len(held) + items[0]\n\ndef other(count: int) -> int:\n    return [5, 6, 7, 8, 9][count]\n\ndef main(stdout: Stdout):\n    stdout.print(holder(), other({count}))\n    return\n"
+            )
+        };
+        let mut kept = None;
+        for (count, returned) in [("2", "items"), ("-2", "items"), ("-2", "[4, 5]")] {
+            let program = lowered(&asked(count, returned))?;
+            let (keys, differ, _, now) = built(&program, kept.take());
+            assert!(differ.is_empty(), "{differ:?}");
+            assert_eq!(keys, afresh(&program), "other({count}), kept returning {returned}");
+            kept = Some(now);
+        }
+        Ok(())
+    }
+
+    /// A build keeps the build before's analyses of functions it doesn't have for one build more,
+    /// as `fennec run` building the tests and then the program needs, and lets older ones go.
+    #[test]
+    fn the_build_befores_analyses_are_kept_one_build_more_and_no_longer() -> Result<(), String> {
+        // `main` and `shared_part` are the same in every program; each has one function of its own.
+        let source = |own: &str| {
+            format!(
+                "def shared_part(count: int) -> int:\n    return count * 2\n\ndef {own}() -> int:\n    return shared_part(3)\n\ndef main(stdout: Stdout):\n    stdout.print(shared_part(4))\n    return\n"
+            )
+        };
+        let lowered = |text: &str| -> Result<Program, String> {
+            let mut module = fennec_syntax::parse(text).map_err(|err| format!("{err:?}"))?;
+            let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+            Ok(fennec_ir::lower(&module, &checked))
+        };
+        // How many analyses a build of `program` used again, starting from `kept`, and what it keeps.
+        let built = |program: &Program, kept: Option<crate::kept::KeptAnalyses>| {
+            let keeping = crate::kept::Keeping::from(kept);
+            let (whole, differ) = whole_keeping(program, &keeping);
+            assert!(differ.is_empty(), "{differ:?}");
+            (keeping.used_again(), whole.analyses.len(), keeping.into_kept())
+        };
+        let (tests, program, other) = (
+            lowered(&source("for_tests"))?,
+            lowered(&source("for_program"))?,
+            lowered(&source("elsewhere"))?,
+        );
+        let (_, _, kept) = built(&tests, None);
+        // The program, after the tests: all but its own function used again.
+        let (used, of, kept) = built(&program, Some(kept));
+        assert_eq!(used, of - 1, "the program after the tests");
+        // The tests again: every analysis used again, `for_tests`'s from two builds back.
+        let (used, of, kept) = built(&tests, Some(kept));
+        assert_eq!(used, of, "the tests again");
+        // Another program, then the program: `for_program`'s, three builds back, is gone.
+        let (_, _, kept) = built(&other, Some(kept));
+        let (used, of, _) = built(&program, Some(kept));
+        assert_eq!(used, of - 1, "the program after another");
         Ok(())
     }
 

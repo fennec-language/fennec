@@ -946,7 +946,7 @@ struct PackByName:
 
     def _read_layout(ref self) fails ParseError:
         # The first is an int, which the slots of a `Table` saved slot for slot are read as.
-        self._made(INT)
+        _ = self._made(INT)
         self._at = 0
         mut open = list[int]()
         self._expect = self._node(ref open, 0)?

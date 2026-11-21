@@ -206,7 +206,7 @@ def message(kind: int, body: bytes) -> PgMessage fails SqlError:
     found = known(kind, ref part)?
     # A message read as its fields says has nothing after them. An unknown one's body is skipped.
     if part._at != len(body) and part._known:
-        fail SqlError.Failed(reason="the server sent a message with bytes after its fields")
+        fail .Failed(reason="the server sent a message with bytes after its fields")
     return found
 
 ## The message of type `kind`, read from `part`.
@@ -222,14 +222,14 @@ def known(kind: int, ref part: PgBody) -> PgMessage fails SqlError:
         return .BackendKey(process=process, secret=part.int32()?)
     if kind == 90:
         if len(body) != 1:
-            fail SqlError.Failed(reason="the server sent a ready message that isn't one byte")
+            fail .Failed(reason="the server sent a ready message that isn't one byte")
         part._at = 1
         return .Ready(status=bytes_text(body, 0, 1))
     if kind == 69: return .Failed(fields=part.fields()?)
     if kind == 78: return .Notice(fields=part.fields()?)
     if kind == 84: return columns(ref part)?
     if kind == 68: return row(ref part)?
-    if kind == 67: return PgMessage.Done(tag=part.text()?)
+    if kind == 67: return .Done(tag=part.text()?)
     if kind == 49: return .ParseComplete
     if kind == 50: return .BindComplete
     if kind == 110: return .NoData
@@ -275,7 +275,7 @@ def row(ref part: PgBody) -> PgMessage fails SqlError:
     for _ in range(count):
         size = part.int32()?
         # -1 is null, and nothing else below zero means anything.
-        if size < -1: fail SqlError.Failed(reason=f"the server sent a cell {size} bytes long")
+        if size < -1: fail .Failed(reason=f"the server sent a cell {size} bytes long")
         present.append(size >= 0)
         cells.append(part.take(size)? if size >= 0 else bytes([]))
     return .Row(cells=cells, present=present)
@@ -288,7 +288,7 @@ struct PgBody:
     _known = True
 
     def _short(self) -> SqlError:
-        return SqlError.Failed(reason="the server sent a message that ends too soon")
+        return .Failed(reason="the server sent a message that ends too soon")
 
     def int16(ref self) -> int fails SqlError:
         if len(self._data) - self._at < 2: fail self._short()
@@ -305,7 +305,7 @@ struct PgBody:
     ## How many of something follow, which can't be below zero.
     def count(ref self) -> int fails SqlError:
         n = self.int16()?
-        if n < 0: fail SqlError.Failed(reason=f"the server sent a count of {n}")
+        if n < 0: fail .Failed(reason=f"the server sent a count of {n}")
         return n
 
     def take(ref self, size: int) -> bytes fails SqlError:
@@ -322,7 +322,7 @@ struct PgBody:
         if end >= len(self._data): fail self._short()
         text = bytes_text(self._data, self._at, end)
         if text == "" and end > self._at:
-            fail SqlError.Failed(reason="the server sent text that isn't UTF-8")
+            fail .Failed(reason="the server sent text that isn't UTF-8")
         self._at = end + 1
         return text
 
@@ -373,7 +373,7 @@ export struct PgScram:
     ## The client's last message, answering the server's first: the server's nonce, which has to
     ## start with ours, and the proof.
     def answer(ref self, server_first: bytes) -> bytes fails SqlError:
-        said = server_first.decode() except InvalidValue(): fail SqlError.Failed(
+        said = server_first.decode() except InvalidValue(): fail .Failed(
             reason="the server's SCRAM message isn't text",
         )
         mut nonce = ""
@@ -383,20 +383,20 @@ export struct PgScram:
             if part.startswith("r="):
                 nonce = part[2:len(part)]
             if part.startswith("s="):
-                salt = base64.decode(part[2:len(part)]) except InvalidValue(): fail SqlError.Failed(
+                salt = base64.decode(part[2:len(part)]) except InvalidValue(): fail .Failed(
                     reason="the server's SCRAM salt isn't base64",
                 )
             if part.startswith("i="):
-                rounds = int(part[2:len(part)]) except InvalidValue(): fail SqlError.Failed(
+                rounds = int(part[2:len(part)]) except InvalidValue(): fail .Failed(
                     reason="the server's SCRAM rounds aren't a number",
                 )
         if not nonce.startswith(self._nonce) or nonce == self._nonce:
-            fail SqlError.Failed(reason="the server's SCRAM nonce doesn't extend ours")
+            fail .Failed(reason="the server's SCRAM nonce doesn't extend ours")
         if len(salt) == 0 or rounds < 4096:
-            fail SqlError.Failed(reason="the server's SCRAM salt or rounds are too weak")
+            fail .Failed(reason="the server's SCRAM salt or rounds are too weak")
         # Each round is work done here, so a server can't ask for hours of it.
         if rounds > MOST_ROUNDS:
-            fail SqlError.Failed(
+            fail .Failed(
                 reason=f"the server asks for {rounds} SCRAM rounds, over the limit of {MOST_ROUNDS}",
             )
         salted = salted_password(self._password.expose_secret().encode(), salt, rounds)
@@ -415,22 +415,22 @@ export struct PgScram:
     def check(self, server_final: bytes) fails SqlError:
         # Before `answer`, there's no key to check it with, and an empty one anyone can sign with.
         if self._signed == "":
-            fail SqlError.Failed(reason="the server sent its SCRAM proof before the exchange")
+            fail .Failed(reason="the server sent its SCRAM proof before the exchange")
         said = server_final.decode() except InvalidValue(): ""
         wanted = base64.encode(mac(self._server_key, self._signed.encode()))
         if not crypto.equal(said, f"v={wanted}"):
-            fail SqlError.Failed(reason="the server couldn't prove it knows the password")
+            fail .Failed(reason="the server couldn't prove it knows the password")
 
 ## PBKDF2 with HMAC-SHA-256, for one 32-byte block: RFC 5802's `Hi`.
 def salted_password(key: bytes, salt: bytes, rounds: int) -> bytes:
-    mut round = mac(key, salt + bytes([0, 0, 0, 1]))
+    mut link = mac(key, salt + bytes([0, 0, 0, 1]))
     mut total = list[int]()
-    for each in round:
+    for each in link:
         total.append(each)
     for _ in range(rounds - 1):
-        round = mac(key, round)
+        link = mac(key, link)
         for at in range(len(total)):
-            total[at] = total[at] ^ round[at]
+            total[at] = total[at] ^ link[at]
     return bytes(total)
 
 ## HMAC-SHA-256 of `data` under `key`, as bytes.
@@ -537,7 +537,7 @@ export def rows_of(
         match each:
             case .Row(cells=cells, present=present):
                 if len(cells) != len(names):
-                    fail SqlError.Failed(
+                    fail .Failed(
                         reason=f"the server sent a row of {len(cells)} cells for {len(names)} columns",
                     )
                 for at, cell in enumerate(cells):
@@ -551,7 +551,7 @@ def add_cell(ref rows: SqlRows, kind: int, cell: bytes, there: bool) fails SqlEr
         rows.kinds.append(0)
         rows.at.append(0)
         return
-    text = cell.decode() except InvalidValue(): fail SqlError.Failed(
+    text = cell.decode() except InvalidValue(): fail .Failed(
         reason="the server sent a cell that isn't UTF-8",
     )
     # `bool`, then `int8`, `int2` and `int4`, `float4` and `float8`, and `bytea`.
@@ -560,15 +560,13 @@ def add_cell(ref rows: SqlRows, kind: int, cell: bytes, there: bool) fails SqlEr
         rows.at.append(len(rows.ints))
         # Postgres writes a bool as `t` or `f`, and anything else isn't one.
         if text != "t" and text != "f":
-            fail SqlError.Failed(reason=f"the server sent {quoted_input(text)} as a bool")
+            fail .Failed(reason=f"the server sent {quoted_input(text)} as a bool")
         rows.ints.append(1 if text == "t" else 0)
     elif kind == 20 or kind == 21 or kind == 23:
         rows.kinds.append(1)
         rows.at.append(len(rows.ints))
         rows.ints.append(
-            int(text) else fail SqlError.Failed(
-                reason=f"the server sent {quoted_input(text)} as an int",
-            ),
+            int(text) else fail .Failed(reason=f"the server sent {quoted_input(text)} as an int"),
         )
     elif kind == 700 or kind == 701:
         rows.kinds.append(2)
@@ -587,7 +585,7 @@ def float_of(text: str) -> float fails SqlError:
     if text == "NaN": return float("nan") except InvalidValue(): 0.0
     if text == "Infinity": return 1e308 * 10.0
     if text == "-Infinity": return -1e308 * 10.0
-    return float(text) except InvalidValue(): fail SqlError.Failed(
+    return float(text) except InvalidValue(): fail .Failed(
         reason=f"the server sent {quoted_input(text)} as a float",
     )
 
@@ -595,7 +593,7 @@ def float_of(text: str) -> float fails SqlError:
 def hex_bytes(text: str) -> bytes fails SqlError:
     digits = text.encode()
     if len(digits) < 2 or digits[0] != 92 or digits[1] != 120 or len(digits) % 2 != 0:
-        fail SqlError.Failed(reason="the server sent bytes that aren't in hex")
+        fail .Failed(reason="the server sent bytes that aren't in hex")
     mut out = list[int]()
     for at in range(1, len(digits) // 2):
         high = hex_digit(digits[2 * at])?
@@ -607,7 +605,7 @@ def hex_digit(digit: int) -> int fails SqlError:
     if digit >= 48 and digit <= 57: return digit - 48
     if digit >= 97 and digit <= 102: return digit - 87
     if digit >= 65 and digit <= 70: return digit - 55
-    fail SqlError.Failed(reason="the server sent bytes that aren't in hex")
+    fail .Failed(reason="the server sent bytes that aren't in hex")
 
 ## A failure the server sent, as the `SqlError` it is: class `23`, a broken rule, is `Constraint`,
 ## a serialization failure or a deadlock is `Busy`, and anything else is `Failed`, each with the
@@ -616,9 +614,9 @@ export def failure_from_fields(fields: dict[str, str]) -> SqlError:
     code = fields.get("C") else ""
     said = fields.get("M") else "the server failed with no message"
     reason = f"{said} ({code})" if code != "" else said
-    if code.startswith("23"): return SqlError.Constraint(reason=reason)
-    if code == "40001" or code == "40P01": return SqlError.Busy(reason=reason)
-    return SqlError.Failed(reason=reason)
+    if code.startswith("23"): return .Constraint(reason=reason)
+    if code == "40001" or code == "40P01": return .Busy(reason=reason)
+    return .Failed(reason=reason)
 
 ## What `postgres.connect` reads from its URL, `postgres://user@host:5432/database`, and the
 ## arguments beside it.
@@ -647,37 +645,37 @@ export def settings(
 ) -> PgSettings fails SqlError:
     written = url_text(url)
     text = written[0]
-    read = parse(text) except InvalidValue(): fail SqlError.Failed(
+    read = parse(text) except InvalidValue(): fail .Failed(
         reason=f"the database URL `{masked(text)}` isn't one, like `postgres://user@host:5432/database`",
     )
     if read.scheme != "postgres" and read.scheme != "postgresql":
-        fail SqlError.Failed(reason=f"a database URL starts `postgres://`, not `{read.scheme}://`")
+        fail .Failed(reason=f"a database URL starts `postgres://`, not `{read.scheme}://`")
     who = read.user.split(":")
     if len(who) > 1 and not written[1]:
-        fail SqlError.Failed(
+        fail .Failed(
             reason=f"the database URL `{masked(text)}` has a password in it, so it has to be a `Secret`, as `env.secret(\"DATABASE_URL\")?` reads one, and never a plain `str`, which could be printed",
         )
     user = unquote(who[0])
     if user == "":
-        fail SqlError.Failed(reason="the database URL needs a user, as in `postgres://user@host`")
-    if read.host == "": fail SqlError.Failed(reason="the database URL needs a host")
+        fail .Failed(reason="the database URL needs a user, as in `postgres://user@host`")
+    if read.host == "": fail .Failed(reason="the database URL needs a host")
     mut database = unquote(read.path[1:] if read.path.startswith("/") else read.path)
     if database == "":
         database = user
     for name in read.query.keys():
         if name != "pool_size" and name != "wait":
-            fail SqlError.Failed(
+            fail .Failed(
                 reason=f"the database URL's `{name}` isn't a setting: `pool_size` and `wait` are",
             )
     mut size = 10
     if "pool_size" in read.query:
         if pool_size is not None: fail set_twice("pool_size")
-        size = int(read.query["pool_size"]) except InvalidValue(): fail SqlError.Failed(
+        size = int(read.query["pool_size"]) except InvalidValue(): fail .Failed(
             reason="the database URL's `pool_size` isn't a whole number",
         )
     elif pool_size is not None:
         size = pool_size
-    if size < 1: fail SqlError.Failed(reason=f"a pool needs at least one connection, not {size}")
+    if size < 1: fail .Failed(reason=f"a pool needs at least one connection, not {size}")
     mut waiting = 30s
     if "wait" in read.query:
         if wait is not None: fail set_twice("wait")
@@ -723,9 +721,7 @@ def masked(text: str) -> str:
     return text[:start + 3] + authority[:colon + 1] + "****" + rest[at:]
 
 def set_twice(name: str) -> SqlError:
-    return SqlError.Failed(
-        reason=f"`{name}` is set in the database URL and as an argument: set it in one",
-    )
+    return .Failed(reason=f"`{name}` is set in the database URL and as an argument: set it in one")
 
 ## A wait written in a URL: whole milliseconds, seconds or minutes, like `500ms`, `5s` or `2m`.
 def duration_of(text: str) -> Duration fails SqlError:
@@ -779,7 +775,7 @@ export def connect(
         size=found.pool_size,
         wait=found.wait,
         first=first,
-    ) else fail SqlError.Failed(reason="the pool's tasks crashed") as connections:
+    ) else fail .Failed(reason="the pool's tasks crashed") as connections:
         lend PgPool(_pool=connections) except:
             pass
 
@@ -793,7 +789,7 @@ def signed_in(
 ) -> PgDatabase fails SqlError:
     conn = net._connect(found.host, found.port, tls=False, timeout=30s) except .NotFound(
     ) | .Refused() | .TimedOut() | .Closed | .Denied() | .Tls() | .Status() | .Other(
-    ): fail SqlError.Failed(reason=f"couldn't connect to {found.host}:{found.port}")
+    ): fail .Failed(reason=f"couldn't connect to {found.host}:{found.port}")
     db = PgDatabase(_conn=conn)
     db._opened(entropy, found, password, weak) except failure:
         conn.close()
@@ -849,7 +845,7 @@ export struct PgDatabase:
         kept = self._run(t"commit")?
         # A transaction that had a failure in it is rolled back by the commit, with no error.
         if kept.tag != "COMMIT":
-            fail SqlError.Failed(
+            fail .Failed(
                 reason=f"the transaction wasn't kept: the server answered the commit with `{kept.tag}`, as it does when something in it failed",
             )
 
@@ -907,14 +903,14 @@ export struct PgDatabase:
                 case .AuthOk:
                     if let_in: fail out_of_turn("let the client in twice")
                     if not proved and (signing or (secret is not None and not weak)):
-                        fail SqlError.Failed(
+                        fail .Failed(
                             reason="the server let us in without proving it knows the password: `allow_weak_sign_in=True` accepts that",
                         )
                     let_in = True
                 case .AuthCleartext:
                     if let_in or signing: fail out_of_turn("asked for the password as it is")
                     if not weak:
-                        fail SqlError.Failed(
+                        fail .Failed(
                             reason="the server asks for the password as it is, so it wasn't sent: `allow_weak_sign_in=True` sends it",
                         )
                     held = needed(secret)?
@@ -922,7 +918,7 @@ export struct PgDatabase:
                 case .AuthSasl(mechanisms=mechanisms):
                     if let_in or signing: fail out_of_turn("asked for SCRAM")
                     if not ("SCRAM-SHA-256" in mechanisms):
-                        fail SqlError.Failed(reason="the server doesn't offer SCRAM-SHA-256")
+                        fail .Failed(reason="the server doesn't offer SCRAM-SHA-256")
                     nonce = base64.encode(entropy.bytes(18))
                     scram = PgScram.started(needed(secret)?, nonce=nonce, user="")
                     signing = True
@@ -940,10 +936,10 @@ export struct PgDatabase:
                     # pass the server's salt on and the client's hash back, and be let in as the
                     # client. It isn't spoken, so it's never sent, weak sign-in or not.
                     if code == 5:
-                        fail SqlError.Failed(
+                        fail .Failed(
                             reason="the server asks for an MD5 hash of the password, which a server in the middle could pass on to sign in as us, so it wasn't sent: set the user's password with SCRAM-SHA-256",
                         )
-                    fail SqlError.Failed(
+                    fail .Failed(
                         reason=f"the server signs in a way this doesn't speak, number {code}: use SCRAM-SHA-256 or a password",
                     )
                 case .Failed(fields=fields):
@@ -959,13 +955,11 @@ export struct PgDatabase:
     def _start_tls(self, host: str) fails SqlError:
         send(self._conn, ssl_request())?
         answer = self._conn.read(1) except error:
-            fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
+            fail .Failed(reason=f"the connection to the server failed: {error.message()}")
         if len(answer) == 0 or answer[0] != 83:
-            fail SqlError.Failed(
-                reason="the server doesn't take TLS: `tls=False` connects without it",
-            )
+            fail .Failed(reason="the server doesn't take TLS: `tls=False` connects without it")
         self._conn.start_tls(host) except error:
-            fail SqlError.Failed(reason=f"TLS with the server failed: {error.message()}")
+            fail .Failed(reason=f"TLS with the server failed: {error.message()}")
 
     ## Tells the server this is the end.
     def _goodbye(self):
@@ -1047,13 +1041,11 @@ def ssl_request() -> bytes:
 
 ## A server sign-in step that came out of its turn, which a server that's what it says never sends.
 def out_of_turn(what: str) -> SqlError:
-    return SqlError.Failed(
-        reason=f"the server {what} out of its turn in signing in, so it isn't trusted",
-    )
+    return .Failed(reason=f"the server {what} out of its turn in signing in, so it isn't trusted")
 
 ## The password a server asked for, which has to have been given.
 def needed(secret: Secret[str]?) -> Secret[str] fails SqlError:
-    return secret else fail SqlError.Failed(
+    return secret else fail .Failed(
         reason="the server asks for a password, and `connect` wasn't given one",
     )
 
@@ -1082,7 +1074,7 @@ def simple_query(text: str) -> bytes:
 
 def send(conn: Connection, data: bytes) fails SqlError:
     conn.write(data) except error:
-        fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
+        fail .Failed(reason=f"the connection to the server failed: {error.message()}")
 
 ## What the server's sent next, waiting for at most `wait` when it's given.
 def more_from(conn: Connection, wait: Duration?) -> bytes fails NetError:
@@ -1099,7 +1091,7 @@ def next_message(
         found = reader.next()?
         if found is not None: return found
         more = more_from(conn, wait) except error:
-            fail SqlError.Failed(reason=f"the connection to the server failed: {error.message()}")
-        if len(more) == 0: fail SqlError.Failed(reason="the server closed the connection")
+            fail .Failed(reason=f"the connection to the server failed: {error.message()}")
+        if len(more) == 0: fail .Failed(reason="the server closed the connection")
         reader.feed(more)
-    fail SqlError.Failed(reason="the server closed the connection")
+    fail .Failed(reason="the server closed the connection")

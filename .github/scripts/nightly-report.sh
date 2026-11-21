@@ -145,9 +145,11 @@ for file in "$here"/../workflows/*.yml; do
   nightly "${name:-${file##*/}}" "${file##*/}"
 done
 # The night's mutants, from the latest scheduled Mutation tests run, as `mutants-<date>.md`: each
-# crate's slice, with what no test caught ranked by file. Survivors are reported, never a failed night.
+# crate's slice, with what no test caught ranked by file, and a line a crate here with how many
+# mutants were caught, missed and timed out. Survivors are reported, never a failed night. A slice
+# where most timed out fails its job, which fails the report above.
 read -r mutants finished started <<< "$(gh run list --repo "$repository" --workflow mutants.yml --event schedule \
-  --limit 1 --json databaseId,status,createdAt --jq '.[0] | "\(.databaseId) \(.status) \(.createdAt)"')"
+  --limit 1 --json databaseId,status,createdAt --jq '.[0] // empty | "\(.databaseId) \(.status) \(.createdAt)"')"
 if [ -z "${mutants:-}" ]; then
   echo "mutants: no nightly run yet"
 elif [ "$finished" != completed ]; then
@@ -165,6 +167,11 @@ elif gh run download "$mutants" --repo "$repository" --pattern 'mutants-nightly-
       cat "$ranked"
     done
   } > "$folder/mutants-$night.md"
+  for out in "$work"/mutants/mutants.out "$work"/mutants/*/mutants.out; do
+    [ -d "$out" ] || continue
+    crate=$(sed -n 's/^## \([^,]*\),.*/\1/p' "$(dirname "$out")/ranked.md" 2> /dev/null | head -n 1)
+    echo "mutants on $night, ${crate:-a crate}: $("$here"/mutants-verdict.sh "$out" 2> /dev/null)"
+  done
   missed=$(cat "$work"/mutants/mutants.out/missed.txt "$work"/mutants/*/mutants.out/missed.txt 2> /dev/null | grep -c . || true)
   echo "mutants on $night: $missed no test caught, ranked by file in $folder/mutants-$night.md"
 else

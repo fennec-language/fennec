@@ -1554,6 +1554,135 @@ pub(crate) const RULE_WAYS: [RuleWay; 16] = [
     RuleWay::InDict,
 ];
 
+/// A `Popped` statement: `popped{id}(stdout)`, a list of optionals of one heap type, held in a
+/// local or a struct's field, items put in and taken out a step at a time: `pop()`, `pop(at)` at
+/// either end and the middle, `remove`, `discard`, and through a `ref` parameter, each kept in a
+/// name, used inline with `else` or dropped. A list holds such an optional as an enum, where a
+/// name holds it as itself, so taking one out must turn the one into the other (#2282).
+#[derive(Clone, Debug)]
+pub(crate) struct Popping {
+    pub(crate) id: usize,
+    pub(crate) ty: PopTy,
+    /// Whether the list is a struct's field, rather than a local.
+    pub(crate) in_field: bool,
+    /// Each step, with the value it uses, from 0 to 2 in `PopTy::values`.
+    pub(crate) steps: Vec<(PopWay, usize)>,
+}
+
+/// What a `Popped` statement's list holds optionals of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PopTy {
+    /// A text short enough to be held in a word or two.
+    Short,
+    /// A text long enough to be held in a block of its own.
+    Long,
+    /// `list[int]`, an empty one among them.
+    Ints,
+    /// `Pt{id}`, a struct of one int.
+    Point,
+    /// `Bag{id}`, a struct holding a text and a list.
+    Bag,
+}
+
+impl PopTy {
+    /// The type as written, for statement `id`.
+    pub(crate) fn written(self, id: usize) -> String {
+        match self {
+            PopTy::Short | PopTy::Long => "str".to_owned(),
+            PopTy::Ints => "list[int]".to_owned(),
+            PopTy::Point => format!("Pt{id}"),
+            PopTy::Bag => format!("Bag{id}"),
+        }
+    }
+
+    /// Three values of the type for statement `id`, then what stands in for a missing one: each
+    /// as written, as printed alone, and as printed inside a list or a struct.
+    pub(crate) fn values(self, id: usize) -> [(String, String, String); 4] {
+        let text = |text: &str| (format!("\"{text}\""), text.to_owned(), format!("\"{text}\""));
+        let same = |text: &str| (text.to_owned(), text.to_owned(), text.to_owned());
+        let long = |at: usize| format!("a word long enough to be held in a block of its own, {at}");
+        match self {
+            PopTy::Short => [text("kit"), text("fox"), text("\u{e9}\u{1f98a}"), text("none")],
+            PopTy::Long => [text(&long(1)), text(&long(2)), text(&long(3)), text("none")],
+            PopTy::Ints => [
+                same("[1, 2]"),
+                ("list[int]()".to_owned(), "[]".to_owned(), "[]".to_owned()),
+                same("[3]"),
+                same("[9]"),
+            ],
+            PopTy::Point => [
+                same(&format!("Pt{id}(x=5)")),
+                same(&format!("Pt{id}(x=-2)")),
+                same(&format!("Pt{id}(x=7)")),
+                same(&format!("Pt{id}(x=0)")),
+            ],
+            PopTy::Bag => {
+                let bag = |written: String, shown: String| (written, shown.clone(), shown);
+                [
+                    bag(format!("Bag{id}(tag=\"t\", items=[1])"), format!("Bag{id}(tag=\"t\", items=[1])")),
+                    bag(format!("Bag{id}()"), format!("Bag{id}(tag=\"b\", items=[])")),
+                    bag(
+                        format!("Bag{id}(tag=\"\u{e9}\", items=[2, 3])"),
+                        format!("Bag{id}(tag=\"\u{e9}\", items=[2, 3])"),
+                    ),
+                    bag(format!("Bag{id}(tag=\"none\")"), format!("Bag{id}(tag=\"none\", items=[])")),
+                ]
+            }
+        }
+    }
+}
+
+/// Every `PopTy`, for the generator to pick from.
+pub(crate) const POP_TYS: [PopTy; 5] = [PopTy::Short, PopTy::Long, PopTy::Ints, PopTy::Point, PopTy::Bag];
+
+/// A step of a `Popped` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PopWay {
+    /// `items.append(value)`.
+    Pushed,
+    /// `items.append(None)`.
+    PushedNone,
+    /// `got = items.pop() else missing`, printed.
+    Kept,
+    /// `stdout.print(items.pop() else missing)`.
+    Inline,
+    /// `_ = items.pop()`.
+    Dropped,
+    /// `items.pop(0) else missing`, printed, where there's an item.
+    First,
+    /// `items.pop(len(items) // 2) else missing`, printed, where there's an item.
+    Middle,
+    /// `items.pop(-1) else missing`, printed, where there's an item.
+    Last,
+    /// `items.remove(value) else missing`, printed.
+    Removed,
+    /// `items.discard(value)`.
+    Discarded,
+    /// `items.discard(None)`.
+    DiscardedNone,
+    /// `taken(ref items) else missing`, printed: popped through a `ref` parameter.
+    ByRef,
+    /// `pop() else missing` on a list made empty there, printed.
+    Empty,
+}
+
+/// Every `PopWay`, for the generator to pick from.
+pub(crate) const POP_WAYS: [PopWay; 13] = [
+    PopWay::Pushed,
+    PopWay::PushedNone,
+    PopWay::Kept,
+    PopWay::Inline,
+    PopWay::Dropped,
+    PopWay::First,
+    PopWay::Middle,
+    PopWay::Last,
+    PopWay::Removed,
+    PopWay::Discarded,
+    PopWay::DiscardedNone,
+    PopWay::ByRef,
+    PopWay::Empty,
+];
+
 /// An `Arrayed` statement: `arrayed{id}(stdout)`, a `Grid{id}` of fixed-size arrays, of ints, of
 /// structs holding a list, of optional structs, of texts and of arrays, held in a list, a Table and
 /// a dict too, beside a loose array, then a step at a time, then what each holds. An array is held
@@ -2041,6 +2170,8 @@ pub(crate) enum Stmt {
     LockedTogether(LockingTogether),
     /// `arrayed{id}(stdout)`: fixed-size arrays held inline, copied by `=` and changed apart.
     Arrayed(Arraying),
+    /// `popped{id}(stdout)`: optionals of a heap type put in a list and taken out every way.
+    Popped(Popping),
     /// `generated{id}(stdout)`: generators that fail partway, wrapped with `? from` and held in
     /// names, tuples, lists, generic structs and a generator kept for later.
     Generated(Generating),

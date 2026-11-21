@@ -7,7 +7,9 @@
 //! call passes up is the first round's that fails, by position, since the runtime keeps the lowest
 //! range's. Rounds after one that fails or breaks out may run or not, so they run here too, as
 //! rounds that may not run, and anything they'd change, or a channel they'd use, is refused, as
-//! is one failing after a `break`. What a round does that another round, or a stream's reader,
+//! is one failing after a `break`. A `for` over `parallel` whose body has a `return` in it runs
+//! as a plain loop over the source instead, as compiled code runs it and the docs say: one round
+//! after another, the `return` leaving the function. What a round does that another round, or a stream's reader,
 //! could see in another order is refused: printing, which follows real call order, the file
 //! system, a `shared` value one round changes and another reaches, and a generator made outside
 //! the round. Each round is one of its own to the channels it uses (`actors.rs`), so which
@@ -20,7 +22,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use fennec_check::Type;
-use fennec_syntax::{Expr, ExprKind, Span, Stmt};
+use fennec_syntax::{Expr, ExprKind, Span, Stmt, StmtKind, visit};
 
 use super::{Flow, Interp, Place, Run, Step, as_int, unsupported};
 use crate::value::Value;
@@ -155,6 +157,80 @@ pub(crate) fn reads_since(scopes: &[Scope]) -> Option<u64> {
 pub(crate) struct Written {
     source: &'static Expr,
     limit: Option<&'static Expr>,
+}
+
+impl Written {
+    /// What the call goes over, for a loop that runs as a plain one over it.
+    pub(crate) fn source(self) -> &'static Expr {
+        self.source
+    }
+}
+
+/// Whether a `parallel` loop's `body` has a `return` in it, outside the functions written inside
+/// it: in its blocks, a `match`'s cases and an `except` block included. Compiled code never lifts
+/// such a body into ranges (`liftable` in the IR's lowering, which this walks as it does), and
+/// runs it as a plain loop.
+pub(crate) fn returns_in(body: &[Stmt]) -> bool {
+    let mut written = body.to_vec();
+    without_functions(&mut written);
+    returns_in_blocks(&written)
+}
+
+fn returns_in_blocks(body: &[Stmt]) -> bool {
+    let in_blocks = body.iter().any(|stmt| match &stmt.kind {
+        StmtKind::Return(_) => true,
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().any(|(_, block)| returns_in_blocks(block))
+                || otherwise.as_deref().is_some_and(returns_in_blocks)
+        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => returns_in_blocks(body),
+        _ => false,
+    });
+    in_blocks || {
+        let mut cases = Vec::new();
+        visit::in_stmts(&mut body.to_vec(), &mut |seen| {
+            if let ExprKind::Match { arms, .. } = &seen.kind {
+                cases.extend(arms.iter().map(|arm| arm.body.clone()));
+            }
+        });
+        cases.iter().any(|case| returns_in_blocks(case))
+    }
+}
+
+/// Takes the functions written inside `body` out of it, at any depth, those in a `match`'s cases
+/// included, as the IR does before it looks for a `return`.
+fn without_functions(body: &mut Vec<Stmt>) {
+    body.retain(|stmt| !matches!(stmt.kind, StmtKind::Def(_)));
+    for stmt in body.iter_mut() {
+        match &mut stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches.iter_mut() {
+                    without_functions(block);
+                }
+                if let Some(block) = otherwise {
+                    without_functions(block);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                without_functions(body);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                without_functions(cleanup);
+                without_functions(body);
+            }
+            _ => {}
+        }
+    }
+    visit::in_stmts(body, &mut |seen| {
+        if let ExprKind::Match { arms, .. } = &mut seen.kind {
+            for arm in arms.iter_mut() {
+                without_functions(&mut arm.body);
+            }
+        }
+    });
 }
 
 /// What a call's rounds made, in order, those that made something, and what stopped it, if

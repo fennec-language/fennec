@@ -492,9 +492,35 @@ fn lexer(input: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-#[expect(clippy::unnecessary_wraps, reason = "every target has the same signature")]
+/// The parser, and what it parses comes back from its bytes as it was.
 fn parser(input: &[u8]) -> Result<(), String> {
-    let _ = fennec_syntax::parse(&text(input));
+    let Ok(module) = fennec_syntax::parse(&text(input)) else { return Ok(()) };
+    comes_back("the module", &module)
+}
+
+/// `value` written as bytes reads back the same, and writes the same bytes again: what a build
+/// sends to another process is what that process builds from.
+fn comes_back<T>(what: &str, value: &T) -> Result<(), String>
+where
+    T: fennec_syntax::codec::Encode + fennec_syntax::codec::Decode + PartialEq,
+{
+    use fennec_syntax::codec::{Decode, Encode, Reader, Writer};
+    let mut to = Writer::default();
+    value.encode(&mut to);
+    let bytes = to.into_bytes();
+    let mut from = Reader::new(&bytes);
+    let Some(back) = T::decode(&mut from) else { return Err(format!("{what} didn't read back")) };
+    if !from.is_done() {
+        return Err(format!("{what} read back with bytes left over"));
+    }
+    if back != *value {
+        return Err(format!("{what} read back differently"));
+    }
+    let mut again = Writer::default();
+    back.encode(&mut again);
+    if again.into_bytes() != bytes {
+        return Err(format!("{what} read back wrote other bytes"));
+    }
     Ok(())
 }
 
@@ -542,10 +568,12 @@ fn meaning(mut module: fennec_syntax::Module) -> String {
     format!("{imports:?}\n{}", fennec_fmt::without_spans(&module))
 }
 
-/// The checker, and what's lowered from what it passes.
+/// The checker, what it finds coming back from its bytes as it was, and what's lowered from
+/// what it passes.
 fn checker(input: &[u8]) -> Result<(), String> {
     let Ok(module) = fennec_syntax::parse(&text(input)) else { return Ok(()) };
     let Ok(signatures) = fennec_check::check(&module) else { return Ok(()) };
+    comes_back("what the check found", &signatures)?;
     let program = fennec_ir::lower(&module, &signatures);
     fennec_ir::validate(&program).map_err(|problems| format!("the IR isn't valid: {problems:?}"))?;
     let _ = fennec_ir::costs(&program);

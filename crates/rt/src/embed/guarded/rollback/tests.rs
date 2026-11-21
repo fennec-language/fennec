@@ -1151,3 +1151,48 @@ fn a_list_in_a_boxed_struct_in_a_lists_item_is_appended_to_where_it_is_either_wa
         finish();
     }
 }
+
+/// A word of the lock's own cell that goes back on a crash lets go of what's there now only when it
+/// holds a block: a number there, however it reads, is left alone. A number that happened to be a
+/// live block's address once let go of that block (a missed mutant, `&&` made `||`).
+#[test]
+fn a_word_that_goes_back_lets_go_only_of_a_block_it_holds() {
+    begin_run();
+    let cell = locked(&["one"]);
+    let at = i64::try_from(COUNT_AT).unwrap();
+    save(cell, at, 3, 0);
+    undo();
+    let live = string("held elsewhere");
+    assert_eq!(undo_word(at, live, 0), 3);
+    assert!(exists(live), "a number that reads as its address let go of it");
+    assert_eq!(count_of(live), 1);
+    release(live);
+    shared_leave(cell, 1);
+    finish();
+}
+
+/// A word of a dict changed in place by the runtime is saved in the lock's log, which takes an owner
+/// of what it held only when it holds a block, and only the first time: a word saved already holds
+/// what was made under the lock. A number, or a second change, taking one too left the block held
+/// for good (missed mutants, each `&&` made `||`).
+#[test]
+fn a_word_changed_in_place_by_the_runtime_is_held_by_the_log_once_and_only_if_a_block() {
+    begin_run();
+    let cell = locked(&["one"]);
+    let inside = u64::try_from(word(cell, LINES_AT)).unwrap();
+    let live = string("held elsewhere");
+    let address = u64::try_from(live).unwrap();
+    // A number at the word, which reads as a live block's address.
+    with(|state| changing(state, inside, LIST_HEADER_WORDS, address, false));
+    assert_eq!(count_of(live), 1, "the log took an owner of a number");
+    // A block at another word, changed twice.
+    with(|state| changing(state, inside, LIST_HEADER_WORDS + 1, address, true));
+    assert_eq!(count_of(live), 2, "the log holds what the word held");
+    with(|state| changing(state, inside, LIST_HEADER_WORDS + 1, address, true));
+    assert_eq!(count_of(live), 2, "a second change took a second owner");
+    kept();
+    assert_eq!(count_of(live), 1, "the log let go of its owner as the lock ended");
+    release(live);
+    shared_leave(cell, 1);
+    finish();
+}

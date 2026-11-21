@@ -107,6 +107,7 @@ own_std_names.fen
 own_std_types.fen
 own_str.fen
 packed_lists.fen
+parallel_loops.fen
 parallel_put_back.fen
 parallel_streams.fen
 particles.fen

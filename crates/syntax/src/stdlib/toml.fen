@@ -1422,10 +1422,7 @@ def write_table(text: str, path: list[str], table: TomlTable, array: bool) -> st
                 pass
     return out
 
-## `value` as TOML text, through its own `def serialize`. Each table's header names its whole path,
-## so a value nested deep costs more than the square of its depth: 800 levels write 1.6 MB and take
-## half a gigabyte while they're written, and a few thousand run out of memory, before the stack
-## does.
+## `value` as TOML text, through its own `def serialize`.
 export def native_dumps[T: Serializable](value: T) -> str:
     mut out = TomlWriter()
     value.serialize(ref out)

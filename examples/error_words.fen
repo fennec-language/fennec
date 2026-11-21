@@ -3,7 +3,8 @@
 # An error that writes `def message` says what went wrong in its own words. One that doesn't
 # gives the failure as it prints. Printing a failure prints its words. Inside a list, or through
 # `repr`, it shows as it is. A new failure raised inside `except why:` carries `why`'s words as a
-# note, and `with_note` gives a copy carrying one more.
+# note, and `with_note` gives a copy carrying one more. Every failure meets a bound asking for
+# `message()`, its own words or the ones the language gives it.
 
 error SellError:
     NotFound(item: str)
@@ -18,6 +19,12 @@ error SellError:
 
 error ShelfError:
     Broken(shelf: int)
+
+interface Spoken:
+    def message(self) -> str
+
+def said[T: Spoken](value: T) -> str:
+    return value.message()
 
 def sell(item: str) -> int fails SellError:
     if item == "pear": fail .NotFound(item)
@@ -42,7 +49,7 @@ def try_selling(stdout: Stdout, item: str):
 
 def try_restocking(stdout: Stdout, shelf: int):
     stocked = restock(shelf) except why:
-        stdout.print(why.message())
+        stdout.print(why.message(), said(why))
         return
     stdout.print(stocked)
 
@@ -59,3 +66,4 @@ def main(stdout: Stdout):
     try_restocking(stdout, 0)
     try_restocking(stdout, 3)
     try_checking_out(stdout, "apple")
+    stdout.print(said(SellError.NotFound("fig")), said(ShelfError.Broken(shelf=1)))

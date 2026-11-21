@@ -462,7 +462,8 @@ mod unix {
         if section(&mut to, STARTED, &[]).and_then(|()| to.flush()).is_err() {
             return ExitCode::FAILURE;
         }
-        if let Some(noted) = failing.as_deref().and_then(|failing| failing.strip_prefix("hang-building:")) {
+        let noted = failing.as_deref().and_then(|failing| failing.strip_prefix("hang-building:"));
+        if let Some(noted) = noted.filter(|noted| !Path::new(noted).exists()) {
             let _ = std::fs::write(noted, std::process::id().to_string());
             never_ends();
         }
@@ -578,7 +579,7 @@ pub(crate) fn serve() -> std::process::ExitCode {
 
 /// How a test asks a child to fail, in a dev build of Fennec only: `crash` before it reads its
 /// request, `hang` before it says it started, and `hang-building:<file>` after, writing its
-/// process's id to the file first.
+/// process's id to the file first, when the file isn't there.
 #[cfg(unix)]
 fn test_failure() -> Option<String> {
     cfg!(debug_assertions).then(|| std::env::var("FENNEC_TEST_BUILD_CHILD").ok()).flatten()

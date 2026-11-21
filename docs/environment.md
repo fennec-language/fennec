@@ -14,7 +14,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_VERSION`: which release `install.sh` installs.
 - `FENNEC_DOWNLOAD`: where `install.sh` downloads from.
 - `FENNEC_STATIC`: `0` links a built program against the system's libc in place of musl.
-- `FENNEC_THREADS`: how many workers a program's pool has; the number of cores by default.
+- `FENNEC_THREADS`: how many workers a program's pool has; the number of cores by default. At most 256: asking for more makes 256 and says so on standard error, once. A pool the system won't give the program, as when it has run out of open files, is said once too, and `parallel` then runs its ranges one after another.
 - `FENNEC_THREADS_RUNTIME`: `0` or `1` picks the plain runtime or the one with threads, in place of what the program needs.
 - `FENNEC_NO_CACHE`: build without the cache, and run every test rather than reusing results.
 - `FENNEC_TOOLCHAIN_STORE`: the toolchain's store, which every home reads the standard library's parse and the runtime libraries' stamps from, in place of `fennec-store` beside `fennec`; empty turns it off. See [store.md](store.md).

@@ -23544,6 +23544,60 @@ fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<
     Ok(())
 }
 
+/// A pool of workers the runtime can't make is said, once, never left silent (runtime exhaustion
+/// audit, 2026-11-20). Asking for 20,000 workers makes the most there are, 256, saying so, where
+/// it spent a minute and a gigabyte starting them. A pool the system can't give polls for, under
+/// a limit of 24 open files, says why, and `parallel` still gives its answer, running its ranges one
+/// after another. A loop of 100,000 items, so it's worth a pool at all.
+#[test]
+fn a_pool_smaller_than_asked_for_says_why() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("pool-says-why")?;
+    let program = dir.join("squares.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    squares = [x * x for x in parallel(range(100000))]\n    stdout.print(sum(squares))\n",
+    )?;
+    let executable = dir.join("squares");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let said = |ran: &Output| {
+        (String::from_utf8_lossy(&ran.stdout).into_owned(), String::from_utf8_lossy(&ran.stderr).into_owned())
+    };
+    let many = said(&Command::new(&executable).env("FENNEC_THREADS", "20000").output_within()?);
+    assert_eq!(
+        many,
+        (
+            "333328333350000\n".to_owned(),
+            "warning: FENNEC_THREADS asks for 20000 workers, more than the 256 the runtime makes, so it makes \
+             256\n"
+                .to_owned()
+        )
+    );
+    if cfg!(unix) {
+        let starved = said(
+            &Command::new("sh")
+                .args(["-c", "ulimit -n 24 && exec \"$0\"", &executable.to_string_lossy()])
+                .env("FENNEC_THREADS", "64")
+                .output_within()?,
+        );
+        assert_eq!(starved.0, "333328333350000\n", "{}", starved.1);
+        assert!(starved.1.starts_with("warning: couldn't start the runtime's 64 workers: "), "{}", starved.1);
+        assert!(
+            starved.1.ends_with(
+                "; `parallel` runs its ranges one after another, and `launch` has nothing to run a task on\n"
+            ),
+            "{}",
+            starved.1
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A program that uses `parallel`, built by a `fennec` whose threads runtime is from another
 /// build, fails saying so, rather than linking the plain runtime and running on one thread.
 #[test]

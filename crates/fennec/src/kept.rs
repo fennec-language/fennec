@@ -100,16 +100,37 @@ pub(crate) fn status() -> Option<String> {
 /// The build in progress is noted in the store as `name` once it's built, so the check it keeps
 /// knows what to take back if checking it all again disagrees later.
 pub(crate) fn building_as(name: Option<String>) {
-    (*ANALYSES_STORED_AS.lock().unwrap_or_else(PoisonError::into_inner)).clone_from(&name);
     *STORED_AS.lock().unwrap_or_else(PoisonError::into_inner) = name;
 }
 
-/// What the build in progress is noted as in the store, for the check of the analyses it used
-/// again ([`analyses_to_check`]).
-static ANALYSES_STORED_AS: Mutex<Option<String>> = Mutex::new(None);
+/// A build the daemon made, as the store has it, to take back if an analysis kept for builds turns
+/// out wrong.
+pub(crate) enum TakenBack {
+    /// What `fennec build` noted, by its name (`built::forget`).
+    Build(String),
+    /// Which program a run built, by its name (`run::forget_run`).
+    Run(String),
+}
 
-/// What the build whose analyses are waiting to be checked was noted as in the store.
-static ANALYSES_CHECKED_AS: Mutex<Option<String>> = Mutex::new(None);
+/// The builds the daemon made while it kept analyses, since checking them last disagreed: any may
+/// have used an analysis kept for another, so all are taken back if one is found wrong. The oldest
+/// go past [`MOST_REMEMBERED`].
+static BUILT_WHILE_KEEPING: Mutex<Vec<TakenBack>> = Mutex::new(Vec::new());
+
+/// How many builds the daemon remembers to take back.
+const MOST_REMEMBERED: usize = 4096;
+
+/// Notes a build the daemon made, to take back if an analysis kept for builds turns out wrong.
+pub(crate) fn built_while_keeping(built: TakenBack) {
+    if !fennec_llvm::keeps_between_builds() {
+        return;
+    }
+    let mut builds = BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner);
+    builds.push(built);
+    if builds.len() > MOST_REMEMBERED {
+        builds.remove(0);
+    }
+}
 
 /// What the next build says, once checking the analyses a build used again disagreed.
 static ANALYSES_NOTICE: Mutex<Option<String>> = Mutex::new(None);
@@ -118,10 +139,7 @@ static ANALYSES_NOTICE: Mutex<Option<String>> = Mutex::new(None);
 /// answered, against `lowered`, the program it built and needs no more
 /// (`fennec_llvm::check_later`): a release compiler has no other check of them.
 pub(crate) fn analyses_to_check(lowered: fennec_ir::Program) {
-    if fennec_llvm::check_later(lowered) {
-        let name = ANALYSES_STORED_AS.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        *ANALYSES_CHECKED_AS.lock().unwrap_or_else(PoisonError::into_inner) = name;
-    }
+    let _ = fennec_llvm::check_later(lowered);
 }
 
 /// Whether a check of the analyses a build used again is waiting.
@@ -133,8 +151,8 @@ pub(crate) fn analyses_pending() -> bool {
 /// Analyzes again each function whose analysis the last build used again, if a check is waiting,
 /// and compares. A difference is the compiler's mistake, and goes as one the checker's kept check
 /// finds does ([`verify_pending`]):
-/// - every kept analysis goes, and so does what the build noted in the store, so the next build of
-///   the same files builds again rather than putting out the program this one made;
+/// - every kept analysis goes, and so does every build the daemon made while it kept them, from the
+///   store, so nothing built on a wrong fact is put out again: the same files build again;
 /// - a report is written in `home`'s daemon folder, naming the functions;
 /// - the next build says so and analyzes every function.
 ///
@@ -146,8 +164,12 @@ pub(crate) fn verify_analyses(home: &std::path::Path) -> Option<PathBuf> {
     if differ.is_empty() {
         return None;
     }
-    if let Some(name) = ANALYSES_CHECKED_AS.lock().unwrap_or_else(PoisonError::into_inner).take() {
-        crate::built::forget(&name);
+    let builds = std::mem::take(&mut *BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner));
+    for built in builds {
+        match built {
+            TakenBack::Build(name) => crate::built::forget(&name),
+            TakenBack::Run(name) => crate::run::forget_run(&name),
+        }
     }
     let number = REPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let report =

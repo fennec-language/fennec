@@ -144,6 +144,11 @@ impl Keeping {
         Keeping::from(found)
     }
 
+    /// This build's number, by which what's checked after it turns about (see [`to_check_after`]).
+    pub(crate) fn build_number(&self) -> u64 {
+        self.build
+    }
+
     /// Each analysis this build used again, by function, with its key.
     pub(crate) fn take_used(&self) -> Vec<(String, Key)> {
         self.used.lock().map(|mut used| std::mem::take(&mut *used)).unwrap_or_default()
@@ -346,11 +351,48 @@ static FOUND_WRONG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// waiting for them.
 static LAST_USED: Mutex<Vec<(String, Key)>> = Mutex::new(Vec::new());
 
-/// Notes the analyses a build used again, for [`check_later`].
+/// Notes the analyses a build used again that are to be checked after it, for [`check_later`].
 pub(crate) fn note_used(used: Vec<(String, Key)>) {
     if let Ok(mut last) = LAST_USED.lock() {
         *last = used;
     }
+}
+
+/// How many functions there are in a turn of the analyses checked after builds: each is checked at
+/// least once in this many builds.
+const TURNS: u64 = 16;
+
+/// Of what a build used again, what's checked after it, and how many of those are near the edit:
+/// - every function a call away from one analyzed afresh, a caller or a callee, as a stale
+///   analysis almost always comes of a dependency near the edit that the rule missed (a function
+///   asks only of its callees, so its callers cover what it was asked);
+/// - of the rest, those whose turn it is: one in [`TURNS`], by a hash of the name and the build's
+///   number, so each is checked within that many builds.
+pub(crate) fn to_check_after(
+    program: &fennec_ir::Program,
+    used: Vec<(String, Key)>,
+    build: u64,
+) -> (Used, usize) {
+    let reused: std::collections::HashSet<String> = used.iter().map(|(name, _)| name.clone()).collect();
+    let mut near: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for function in program.functions.iter().chain(&program.constants) {
+        let afresh = !reused.contains(&function.name);
+        let calls: Vec<&str> = crate::analysis::callees(function).collect();
+        if afresh {
+            near.extend(calls.into_iter().filter(|callee| reused.contains(*callee)));
+        } else if calls.iter().any(|callee| !reused.contains(*callee)) {
+            near.insert(function.name.as_str());
+        }
+    }
+    let turn = build % TURNS;
+    let in_turn = |name: &str| {
+        let hash = crate::keys::key_of("fennec analysis checked in turn", &name);
+        u64::from(hash.first().copied().unwrap_or(0)) % TURNS == turn
+    };
+    let near_count = used.iter().filter(|(name, _)| near.contains(name.as_str())).count();
+    let checked =
+        used.into_iter().filter(|(name, _)| near.contains(name.as_str()) || in_turn(name)).collect();
+    (checked, near_count)
 }
 
 /// A check waiting to be made of what a build used again: the program it built, and each

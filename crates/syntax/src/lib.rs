@@ -1,6 +1,7 @@
 //! Fennec's front end: source text to a syntax tree, with diagnostics that point back at the source.
 
 mod ast;
+pub mod codec;
 mod diagnostic;
 mod doc_examples;
 #[doc(hidden)]

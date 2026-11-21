@@ -29910,9 +29910,11 @@ fn a_ref_str_parameter_grows_where_it_is() -> std::io::Result<()> {
 }
 
 /// `items += more` and `data += more` grow a list or bytes where they are, as `+=` on text does,
-/// for a local and through a `ref` parameter: counted, not timed. Each copied the whole list or
-/// bytes into a new block every time, so four times the rounds did sixteen times the work. A copy
-/// kept first keeps what it had, and a list or bytes added to itself doubles.
+/// for a local and through a `ref` parameter, and so do `items = items + a + b` and
+/// `data = data + more` written out: counted, not timed. Each copied the whole list or bytes into a
+/// new block every time, so four times the rounds did sixteen times the work. Only one nothing
+/// else holds grows where it is: a copy kept first, or another name for it, keeps what it had, and
+/// a list or bytes added to itself doubles, a list of lists too, its items each held twice.
 #[test]
 fn lists_and_bytes_added_to_grow_where_they_are() -> std::io::Result<()> {
     const PUT: &str = "def put_items(ref out: list[int], more: list[int]):\n    out += more\n\ndef put_bytes(ref out: bytes, more: bytes):\n    out += more\n\n";
@@ -29921,7 +29923,7 @@ fn lists_and_bytes_added_to_grow_where_they_are() -> std::io::Result<()> {
     }
     let counted = |rounds: usize| -> std::io::Result<(u64, u64)> {
         let source = format!(
-            "{PUT}def main(stdout: Stdout):\n    items = [7, 8]\n    data = bytes([1, 2, 3])\n    mut listed: list[int] = []\n    mut written = bytes([])\n    mut by_ref: list[int] = []\n    mut bytes_by_ref = bytes([])\n    for _ in range({rounds}):\n        listed += items\n        written += data\n        put_items(ref by_ref, items)\n        put_bytes(ref bytes_by_ref, data)\n    stdout.print(len(listed), len(written), len(by_ref), len(bytes_by_ref))\n    return\n"
+            "{PUT}def main(stdout: Stdout):\n    items = [7, 8]\n    data = bytes([1, 2, 3])\n    mut listed: list[int] = []\n    mut written = bytes([])\n    mut by_ref: list[int] = []\n    mut bytes_by_ref = bytes([])\n    mut joined: list[int] = []\n    mut joined_bytes = bytes([])\n    for _ in range({rounds}):\n        listed += items\n        written += data\n        put_items(ref by_ref, items)\n        put_bytes(ref bytes_by_ref, data)\n        joined = joined + items + items\n        joined_bytes = joined_bytes + data\n    stdout.print(len(listed), len(written), len(by_ref), len(bytes_by_ref), len(joined), len(joined_bytes))\n    return\n"
         );
         let said = counts_of(&format!("lists_and_bytes_grown_{rounds}"), &source)?;
         let number = |name: &str| count(&said, name).unwrap_or(u64::MAX);
@@ -29937,9 +29939,9 @@ fn lists_and_bytes_added_to_grow_where_they_are() -> std::io::Result<()> {
     prints_in_both_builds(
         "lists_and_bytes_grown_kept",
         &format!(
-            "{PUT}def main(stdout: Stdout):\n    mut items = [1, 2]\n    kept = items\n    items += [3]\n    put_items(ref items, [4])\n    items += items\n    mut data = bytes([1, 2])\n    kept_data = data\n    data += bytes([3])\n    put_bytes(ref data, bytes([4]))\n    data += data\n    mut empty: list[int] = []\n    empty += []\n    stdout.print(items, kept, data, kept_data, len(data), empty)\n    return\n"
+            "{PUT}def main(stdout: Stdout):\n    mut items = [1, 2]\n    kept = items\n    items += [3]\n    put_items(ref items, [4])\n    items += items\n    mut data = bytes([1, 2])\n    kept_data = data\n    data += bytes([3])\n    put_bytes(ref data, bytes([4]))\n    data += data\n    mut empty: list[int] = []\n    empty += []\n    held = items\n    items = items + [5] + [6]\n    held_data = data\n    data = data + bytes([5])\n    stdout.print(items, kept, held, data, kept_data, held_data, empty)\n    mut doubled = [1, 2]\n    doubled = doubled + doubled\n    mut doubled_data = bytes([7])\n    doubled_data = doubled_data + doubled_data\n    mut rows = [[1], [2, 3]]\n    rows_before = rows\n    rows = rows + rows\n    rows[0].append(9)\n    mut alone_rows = [[4], [5]]\n    for _ in range(3):\n        alone_rows = alone_rows + alone_rows\n    stdout.print(doubled, doubled_data, rows, rows_before, len(alone_rows), alone_rows[7])\n    return\n"
         ),
-        "[1, 2, 3, 4, 1, 2, 3, 4] [1, 2] bytes([1, 2, 3, 4, 1, 2, 3, 4]) bytes([1, 2]) 8 []\n",
+        "[1, 2, 3, 4, 1, 2, 3, 4, 5, 6] [1, 2] [1, 2, 3, 4, 1, 2, 3, 4] bytes([1, 2, 3, 4, 1, 2, 3, 4, 5]) bytes([1, 2]) bytes([1, 2, 3, 4, 1, 2, 3, 4]) []\n[1, 2, 1, 2] bytes([7, 7]) [[1, 9], [2, 3], [1], [2, 3]] [[1], [2, 3]] 16 [5]\n",
     )
 }
 

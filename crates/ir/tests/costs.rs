@@ -139,6 +139,29 @@ fn a_value_put_into_a_container_is_copied_when_changed() {
     assert!(matches!(&copy.cost, Cost::Copy { why: Shared::PutInto { later: Some(_), .. }, .. }));
 }
 
+/// A copy points at where what still holds the value is read next, past the change that copies
+/// it: on a later line of the same block, even when the change reads the holder too, as
+/// `xs.extend(snapshot)` does, and in a block after it, as one of an `if`'s.
+#[test]
+fn a_copy_points_at_where_its_holder_is_read_next() {
+    let later_line = |source: &str| -> Option<usize> {
+        let found = found(source).unwrap();
+        let copy = found.iter().find(|finding| matches!(finding.cost, Cost::Copy { .. }))?;
+        let Cost::Copy { why: Shared::HeldBy { later, .. } | Shared::PutInto { later, .. }, .. } = &copy.cost
+        else {
+            return None;
+        };
+        let at = usize::try_from(later.as_ref()?.start).ok()?;
+        Some(source.get(..at)?.matches('\n').count() + 1)
+    };
+    let same_block = "def f(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    xs.extend(snapshot)\n    \
+                      return len(snapshot) + len(xs)\n";
+    assert_eq!(later_line(same_block), Some(5));
+    let later_block = "def f(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    xs.append(1)\n    \
+                       if n > 0:\n        return len(snapshot)\n    return len(xs)\n";
+    assert_eq!(later_line(later_block), Some(6));
+}
+
 #[test]
 fn a_moved_value_is_never_copied() {
     // `xs` isn't used after `ys` takes it, so `ys` changes the only buffer.

@@ -689,6 +689,12 @@ fn a_function_that_locks_what_it_captures_cant_run_under_a_lock() {
     assert_eq!(before(nested, "poke()"), ["`poke` takes `one`'s lock while `locked` is locked"]);
     let through = "def poke():\n    lock one as ref held:\n        held.add(1)\ndef again():\n    poke()";
     assert_eq!(before(through, "again()"), ["`again` takes `one`'s lock while `locked` is locked"]);
+    // An arrow function given to a name captures it as a nested function does.
+    let arrow = "poke = () => through(Holder(cell=one))";
+    assert_eq!(
+        before(arrow, "poke()"),
+        ["`poke` is called while `locked` is locked, and this takes `self.cell`'s lock"]
+    );
 }
 
 #[test]

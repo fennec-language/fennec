@@ -375,6 +375,13 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
 }
 
 /// A failure as it's shown when it ends the program: with its call chain under it.
+/// `failure` as the end of a run says it, where it is in the program's source and the calls that
+/// led there, on a thread that has the program, as `main`'s and every worker do: a launched task's
+/// crash said on its worker. `None` on any other, as in a test.
+pub(crate) fn rendered_here(failure: &fennec_syntax::Diagnostic) -> Option<String> {
+    SOURCES.with_borrow(|sources| sources.as_ref().map(|sources| rendered(sources, failure)))
+}
+
 fn rendered(sources: &Sources, failure: &fennec_syntax::Diagnostic) -> String {
     let trace = super::take_trace();
     sources.render(failure) + &sources.render_trace(failure.span, &trace)

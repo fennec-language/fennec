@@ -43,6 +43,10 @@ enum Message {
     /// A block's copy, at this address in this table, kept for every listener of a channel to
     /// `.Every`: each takes a copy of its own.
     Shared(u64, Arc<Table>),
+    /// A flat message's words, with copies of the blocks they name (see `words`).
+    Words(Box<words::Flat>),
+    /// The same, kept for every listener of a channel to `.Every`: each takes copies of its own.
+    SharedWords(Arc<words::Flat>),
 }
 
 struct Channel {
@@ -273,19 +277,26 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
     } else {
         Message::Word(address)
     };
+    send_on(&channel, message, timeout_ns)
+}
+
+/// Puts `message`, made for `channel` once the send's turn came, in its queue: waiting up to
+/// `timeout_ns` for room, or as long as it takes for -1. What's given back is what
+/// `fennec_channel_send` gives back, and a message that didn't go is let go of.
+fn send_on(channel: &Arc<Channel>, message: Message, timeout_ns: i64) -> i64 {
     let deadline = deadline(timeout_ns);
     let mut message = Some(message);
     loop {
         let mut queue = channel.queue();
         if queue.closed {
-            met(&channel, "send", CLOSED);
+            met(channel, "send", CLOSED);
             drop(queue);
             let_go(message);
             return CLOSED;
         }
         if queue.every.is_some() {
             // It never waits: the oldest message goes, if there's no room.
-            met(&channel, "send", DONE);
+            met(channel, "send", DONE);
             let dropped = every::push(&mut queue, message.take(), channel.size);
             let waiting = channel.take_notes(&mut queue, Side::Receiving);
             let asleep = queue.asleep.for_a_message;
@@ -296,7 +307,7 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
             return DONE;
         }
         if queue.messages.len() < channel.size {
-            met(&channel, "send", DONE);
+            met(channel, "send", DONE);
             if let Some(message) = message.take() {
                 queue.messages.push_back(message);
             }
@@ -307,19 +318,19 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
             channel.tell(asleep);
             return DONE;
         }
-        match wait(&channel, queue, deadline, Side::Sending) {
+        match wait(channel, queue, deadline, Side::Sending) {
             Waited::Again => {}
             Waited::TimedOut => {
-                met(&channel, "send", TIMED_OUT);
+                met(channel, "send", TIMED_OUT);
                 let_go(message);
                 return TIMED_OUT;
             }
             Waited::Stopped => {
                 let_go(message);
-                return stopped(&channel, "send");
+                return stopped(channel, "send");
             }
             Waited::CutShort => {
-                met(&channel, "send", CLOSED);
+                met(channel, "send", CLOSED);
                 let_go(message);
                 return CLOSED;
             }
@@ -333,10 +344,23 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
 /// out. A stop cuts the wait short, failing it.
 pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64) -> i64 {
     *value = 0;
-    if let Some((channel, listener)) = every::listening(channel) {
-        return every::receive(&channel, listener, timeout_ns, value);
+    match next(channel, timeout_ns) {
+        Ok(message) => {
+            *value = i64::from_ne_bytes(taken(message).to_ne_bytes());
+            DONE
+        }
+        Err(code) => code,
     }
-    let Some(channel) = find(channel) else { return CLOSED };
+}
+
+/// The next message for `channel`, a channel's number or a listener's, taken off its queue once the
+/// receive's turn came: waiting up to `timeout_ns` for one, or as long as it takes for -1. With
+/// none, what a receive gives back instead: `DONE` when the running task is failing, as for a stop.
+fn next(channel: i64, timeout_ns: i64) -> Result<Message, i64> {
+    if let Some((channel, listener)) = every::listening(channel) {
+        return every::next(&channel, listener, timeout_ns);
+    }
+    let Some(channel) = find(channel) else { return Err(CLOSED) };
     // A channel to every listener has no one message to hand out: each listener has a place of its
     // own in what's kept. Taking one here used to pull the oldest out from under them, and a
     // listener that was caught up then never saw the message sent next, with nothing said.
@@ -347,12 +371,12 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
              with `for message in channel`, or take an `inbox()` and receive from that",
             Span::default(),
         ));
-        return DONE;
+        return Err(DONE);
     }
     let timeout_ns = match replayed(&channel, "receive", timeout_ns < 0) {
         Turn::Live => timeout_ns,
         Turn::Goes => -1,
-        Turn::Gives(code) => return code,
+        Turn::Gives(code) => return Err(code),
     };
     let deadline = deadline(timeout_ns);
     loop {
@@ -364,23 +388,22 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
             drop(queue);
             wake(waiting);
             channel.tell(asleep);
-            *value = i64::from_ne_bytes(taken(message).to_ne_bytes());
-            return DONE;
+            return Ok(message);
         }
         if queue.closed {
             met(&channel, "receive", CLOSED);
-            return CLOSED;
+            return Err(CLOSED);
         }
         match wait(&channel, queue, deadline, Side::Receiving) {
             Waited::Again => {}
             Waited::TimedOut => {
                 met(&channel, "receive", TIMED_OUT);
-                return TIMED_OUT;
+                return Err(TIMED_OUT);
             }
-            Waited::Stopped => return stopped(&channel, "receive"),
+            Waited::Stopped => return Err(stopped(&channel, "receive")),
             Waited::CutShort => {
                 met(&channel, "receive", CLOSED);
-                return CLOSED;
+                return Err(CLOSED);
             }
         }
     }
@@ -496,11 +519,19 @@ fn taken(message: Message) -> u64 {
             address
         }
         Message::Shared(address, table) => every::copied_out(address, &table),
+        // Native code asks for words for a kind it sends as words, and for a word otherwise.
+        Message::Words(_) | Message::SharedWords(_) => {
+            heap::runtime_bug("a message sent as words was received as one word")
+        }
     }
 }
 
 /// Lets go of a message that was never received.
 fn let_go(message: Option<Message>) {
+    // A message of words owns its copies outside any heap, so dropping it frees them.
+    if let Some(Message::Words(_) | Message::SharedWords(_)) = &message {
+        return;
+    }
     let message = match message {
         // Kept for others too, it's only let go of by the last to hold it.
         Some(Message::Shared(address, table)) => match Arc::try_unwrap(table) {
@@ -835,6 +866,8 @@ fn wake(waiting: Notes) {
 
 mod every;
 pub use every::{channel_listen, channel_new_every};
+mod words;
+pub use words::{channel_receive_words, channel_send_words};
 
 #[cfg(test)]
 mod tests;

@@ -1788,7 +1788,7 @@ thread_local! {
 /// long as the widest kind of item this run has, so any value one of its dicts holds in place
 /// fits. Native code writes a value's words before the runtime can look at how wide it is, so a
 /// buffer left by another run, of a narrower kind, would be written past its end.
-fn value_buffer_of<T>(state: &State, with: impl FnOnce(&[std::cell::Cell<u64>]) -> T) -> T {
+pub(super) fn value_buffer_of<T>(state: &State, with: impl FnOnce(&[std::cell::Cell<u64>]) -> T) -> T {
     let buffer = state.dict_value.get_or_init(|| {
         let widest = state.tables.elements.iter().map(|element| element.words()).max().unwrap_or(0);
         (0..widest.max(1)).map(|_| std::cell::Cell::new(0)).collect()

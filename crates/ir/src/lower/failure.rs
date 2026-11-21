@@ -383,7 +383,15 @@ impl Lowering<'_> {
         // it cover every failure, so its body runs as an `else` does, without taking the failure
         // out to match it.
         if let Some(body) = failure.and_then(|failure| one_case_binding_nothing(failure, block)) {
+            // A new failure raised there carries this one's words, though nothing names it.
+            let Some(Type::Result(_, error)) = type_in(&self.locals, value) else {
+                return Err("it handles the failure of something that can't fail".to_owned());
+            };
+            let held = self.temporary(*error);
+            self.emit(InstKind::GetErr { dest: held, value: value.clone() }, span);
+            self.excepts.push((String::new(), held));
             let lowered = self.stmts(body, tail);
+            self.excepts.pop();
             self.scopes.pop();
             return lowered;
         }
@@ -599,6 +607,17 @@ impl Lowering<'_> {
 
     /// `fail error`.
     pub(super) fn fail(&mut self, raised: &Expr, span: Span) -> Lowered<()> {
+        // Each side of a condition is raised on its own, so whether it carries the cause is that
+        // side's (`Expr::made_already`).
+        if let ExprKind::Cond { then, cond, otherwise } = &raised.kind {
+            let cond = self.expr(cond)?;
+            let (first, second) = (self.new_block(), self.new_block());
+            self.finish(Terminator::Branch { cond, then: first, otherwise: second });
+            self.current = first;
+            self.fail(then, span)?;
+            self.current = second;
+            return self.fail(otherwise, span);
+        }
         let error = self.expr(raised)?;
         let error = self.with_cause_noted(raised, error, span)?;
         let error = self.traced(error, "error.raised", span)?;

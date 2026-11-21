@@ -330,6 +330,9 @@ impl Lowering<'_> {
         if let Some(lowered) = self.errors_own_call(callee, args, keep, span) {
             return Some(lowered);
         }
+        if let Some(lowered) = self.repr_call(callee, args, keep, span) {
+            return Some(lowered);
+        }
         if let ExprKind::Attr { object, name, optional: true } = &callee.kind {
             return Some(self.optional_method((object, name), args, keep.cloned(), span));
         }

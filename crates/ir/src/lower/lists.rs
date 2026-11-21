@@ -353,7 +353,7 @@ impl Lowering<'_> {
     }
 
     /// The text a value's own `def str` writes.
-    fn own_text_of(
+    pub(super) fn own_text_of(
         &mut self,
         value: Operand,
         function: String,
@@ -469,7 +469,7 @@ impl Lowering<'_> {
     }
 
     /// The `def str` a type writes its own text with, if it has one.
-    fn own_str(&self, held: &Type) -> Option<String> {
+    pub(super) fn own_str(&self, held: &Type) -> Option<String> {
         let key = format!("{}.str", owner_name(held)?);
         let writer = Type::Named("StrWriter".to_owned());
         self.resolve(&key, &[Some(held.clone()), Some(writer)], None).map(|(function, _)| function)

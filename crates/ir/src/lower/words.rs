@@ -130,6 +130,39 @@ impl Lowering<'_> {
         Ok(Operand::Local(dest))
     }
 
+    /// `repr(value)`, the value as it shows inside another, where that isn't the backend's to work
+    /// out: through its type's own `def str`, as it shows in a list, and `None`. `None` for any other
+    /// call.
+    pub(super) fn repr_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Arg],
+        keep: Option<&Type>,
+        span: Span,
+    ) -> Option<Lowered<Option<LocalId>>> {
+        let ExprKind::Name(name) = &callee.kind else { return None };
+        let [Arg { name: None, value, .. }] = args else { return None };
+        if name != "repr" || self.lookup(name).is_some() || self.own_function(name) {
+            return None;
+        }
+        let held = self.type_at(value.span)?;
+        let shown = if held == Type::None {
+            Some(Ok(Operand::Str("None".to_owned())))
+        } else {
+            self.own_str(&held).map(|function| {
+                let writer = Type::Named("StrWriter".to_owned());
+                self.expr(value).and_then(|value| self.own_text_of(value, function, (writer, span)))
+            })
+        }?;
+        Some(shown.map(|shown| {
+            let dest = keep.map(|ty| self.temporary(ty.clone()));
+            if let Some(dest) = dest {
+                self.emit(InstKind::Copy { dest, value: shown }, span);
+            }
+            dest
+        }))
+    }
+
     /// `failure.message()` and `failure.with_note(text)` on an error that doesn't write its own:
     /// the failure's words, and a copy of it carrying one more note. `None` for any other call.
     pub(super) fn errors_own_call(
@@ -185,7 +218,7 @@ impl Lowering<'_> {
     /// `why.with_note(...)`, carries what it had.
     pub(super) fn with_cause_noted(&mut self, raised: &Expr, error: Operand, span: Span) -> Lowered<Operand> {
         let Some((_, why)) = self.excepts.last().cloned() else { return Ok(error) };
-        if !made_new(raised) {
+        if raised.made_already() {
             return Ok(error);
         }
         let ty = type_in(&self.locals, &error).ok_or("a value has no type")?;
@@ -204,20 +237,5 @@ impl Lowering<'_> {
         let (note, args) = ("error.add_note".to_owned(), vec![Operand::Local(held), words]);
         self.emit(InstKind::Builtin { dest: None, name: note, args, changes: true }, span);
         Ok(Operand::Local(held))
-    }
-}
-
-/// Whether an expression makes a new failure: a call to a type or to one of its cases, as
-/// `Refused(code=1)`, `.Disk(why)` or `IoError.NotFound(...)`, or a case written out, as `.Closed`.
-/// A name, a field, or a method's result, as `kept` or `why.with_note(...)`, is a failure
-/// that's already been made.
-fn made_new(expr: &Expr) -> bool {
-    let capitalized = |name: &str| name.chars().next().is_some_and(char::is_uppercase);
-    match &expr.kind {
-        ExprKind::Variant(_) => true,
-        ExprKind::Name(name) => capitalized(name),
-        ExprKind::Attr { object, .. } => matches!(&object.kind, ExprKind::Name(name) if capitalized(name)),
-        ExprKind::Call { callee, .. } => made_new(callee),
-        _ => false,
     }
 }

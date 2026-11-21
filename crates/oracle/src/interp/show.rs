@@ -25,27 +25,45 @@ impl Interp {
 
     /// An error's words: its own `def message(self) -> str`, or else the error as it shows.
     pub(crate) fn words(&mut self, instance: &Instance) -> Run<String> {
-        let Some(def) = self.program.method(&instance.ty, "message") else {
-            let mut out = String::new();
-            self.instance_repr_into(instance, &mut out)?;
-            return Ok(out);
-        };
-        let receiver = Receiver::Value(Value::Instance(Held::new(instance.clone())));
-        match self.call_def(def, None, Some(receiver), Vec::new(), def.span)? {
-            Value::Str(text) => Ok(text.as_str().to_owned()),
-            other => unsupported(format!("a `def message` that gave back a {}", other.kind())),
+        match self.own_words(instance) {
+            Some(words) => words,
+            None => {
+                let mut out = String::new();
+                self.instance_repr_into(instance, &mut out)?;
+                Ok(out)
+            }
         }
+    }
+
+    /// An error's own words, when it has a `def message`: the program's, or for an error the
+    /// oracle models, std's. `IoError`'s gives what each case holds as `reason`
+    /// (crates/syntax/src/stdlib/errors.fen).
+    fn own_words(&mut self, instance: &Instance) -> Option<Run<String>> {
+        if let Some(def) = self.program.method(&instance.ty, "message") {
+            let receiver = Receiver::Value(Value::Instance(Held::new(instance.clone())));
+            return Some(match self.call_def(def, None, Some(receiver), Vec::new(), def.span) {
+                Ok(Value::Str(text)) => Ok(text.as_str().to_owned()),
+                Ok(other) => unsupported(format!("a `def message` that gave back a {}", other.kind())),
+                Err(flow) => Err(flow),
+            });
+        }
+        if instance.ty != "IoError" {
+            return None;
+        }
+        Some(match instance.field("reason") {
+            Some(Value::Str(reason)) => Ok(reason.as_str().to_owned()),
+            _ => unsupported("an `IoError` without its reason"),
+        })
     }
 
     /// How a failure that ends the program is shown after "`main` failed: ": its own words with
     /// it as it is on the next line, or just it, when it has none.
     pub(crate) fn shown_ending_main(&mut self, error: &Value) -> Run<String> {
         let shown = self.repr(error)?;
-        match error {
-            Value::Instance(instance) if self.program.method(&instance.ty, "message").is_some() => {
-                Ok(format!("{}\n  {shown}", self.words(instance)?))
-            }
-            _ => Ok(shown),
+        let Value::Instance(instance) = error else { return Ok(shown) };
+        match self.own_words(instance) {
+            Some(words) => Ok(format!("{}\n  {shown}", words?)),
+            None => Ok(shown),
         }
     }
 
@@ -54,7 +72,7 @@ impl Interp {
     /// function the block calls isn't in the block.
     pub(crate) fn with_cause_noted(&mut self, raised: &fennec_syntax::Expr, error: Value) -> Run<Value> {
         let Some((frame, _, why)) = self.excepts.last().cloned() else { return Ok(error) };
-        if frame != self.cur || !made_new(raised) {
+        if frame != self.cur || raised.made_already() {
             return Ok(error);
         }
         let Value::Instance(instance) = error else { return Ok(error) };
@@ -462,20 +480,4 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
         }
         _ => false,
     })
-}
-
-/// Whether an expression makes a new failure: a call to a type or to one of its cases, as
-/// `Refused(code=1)`, `.Disk(why)` or `IoError.NotFound(...)`, or a case written out, as `.Closed`.
-/// A name, a field, or a method's result, as `kept` or `why.with_note(...)`, is a failure
-/// that's already been made.
-fn made_new(expr: &fennec_syntax::Expr) -> bool {
-    use fennec_syntax::ExprKind;
-    let capitalized = |name: &str| name.chars().next().is_some_and(char::is_uppercase);
-    match &expr.kind {
-        ExprKind::Variant(_) => true,
-        ExprKind::Name(name) => capitalized(name),
-        ExprKind::Attr { object, .. } => matches!(&object.kind, ExprKind::Name(name) if capitalized(name)),
-        ExprKind::Call { callee, .. } => made_new(callee),
-        _ => false,
-    }
 }

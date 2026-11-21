@@ -47,7 +47,9 @@ fn words_problem(type_name: &str, method: &FnDef) -> Option<Diagnostic> {
             .with_help("write `def message(self) -> str`, giving back its words: printing it shows them"),
         ),
         "message" => {
-            let takes_self = matches!(method.params.as_slice(), [this] if this.is_self && !this.is_mut);
+            // One with type parameters of its own would never be the one printing calls.
+            let takes_self = matches!(method.params.as_slice(), [this] if this.is_self && !this.is_mut)
+                && method.generics.is_empty();
             let gives_str =
                 method.ret.as_ref().is_some_and(|ty| ty.name == "str" && ty.args.is_empty() && !ty.optional);
             (!takes_self || !gives_str || method.fails.is_some()).then(|| {

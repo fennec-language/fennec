@@ -540,11 +540,11 @@ impl Expr {
     }
 
     /// Whether a failure `fail` raises with this was made already: read from a name holding one,
-    /// or from a field or an item of one, or made from one by a method of its own, as
-    /// `why.with_note(...)` is. Anything else is made here, as a call to a type, a case or any
-    /// function is, and `New(...).with_note(...)`: a new failure, which carries the words of the
-    /// one it's raised for inside `except` as a note. The compiler, the checker and the reference
-    /// evaluator all ask this.
+    /// or from a field or an item of one, or made from one by `with_note`, as `why.with_note(...)`
+    /// is. Anything else is made here, as a call to a type, a case or any function or method is,
+    /// and `New(...).with_note(...)`: a new failure, which carries the words of the one it's raised
+    /// for inside `except` as a note. The compiler, the checker and the reference evaluator all ask
+    /// this, of how it's written alone, so they agree.
     #[must_use]
     pub fn made_already(&self) -> bool {
         // A name written as a type's, as `Closed` is, is a type or a case, not a name holding one.
@@ -554,9 +554,8 @@ impl Expr {
         match &self.kind {
             ExprKind::Name(name) => !a_type(name),
             ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => object.made_already(),
-            ExprKind::Call { callee, .. } => {
-                matches!(&callee.kind, ExprKind::Attr { object, .. } if object.made_already())
-            }
+            ExprKind::Call { callee, .. } => matches!(&callee.kind,
+                ExprKind::Attr { object, name, .. } if name == "with_note" && object.made_already()),
             _ => false,
         }
     }

@@ -4905,7 +4905,8 @@ impl CheckPack {
 
 /// The functions in `used`, each with the key of the analysis a build used again for it, whose
 /// analysis worked out afresh now has another key, sorted, as the check after a build finds them.
-#[cfg(test)]
+/// Only `kept`'s tests use it, which don't run on Windows.
+#[cfg(all(test, not(windows)))]
 pub(crate) fn analyses_again(program: &Program, used: &[(String, Key)]) -> Vec<String> {
     let functions: HashMap<&str, &Function> = program
         .functions

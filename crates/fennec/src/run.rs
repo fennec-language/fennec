@@ -140,6 +140,7 @@ fn built(
             },
         };
         let built = build_for_run((&program, checked), path, executable)?;
+        #[cfg(unix)]
         if let Some((_, name)) = &started_from {
             crate::kept::built_while_keeping(crate::kept::TakenBack::Run(name.clone()));
         }
@@ -160,6 +161,7 @@ const RUN_ROOTS: &str = "run-roots";
 /// Forgets which program a run kept as `name` built, so the next run of it builds again: the
 /// daemon found an analysis it may have used wrong. It says nothing if it can't, as it's done on the
 /// daemon's own thread, where what's printed would be another build's.
+#[cfg(unix)]
 pub(crate) fn forget_run(name: &str) {
     if let Some(cache) = cache() {
         let _ = std::fs::remove_file(cache.path(RUN_ROOTS, name));

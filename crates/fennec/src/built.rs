@@ -89,6 +89,7 @@ pub(crate) fn build_here(path: &str, output: Option<&str>, release: bool) -> Exi
     crate::kept::building_as(Some(name.clone()));
     let built = crate::aot::build_kept(path, output, release);
     crate::kept::building_as(None);
+    #[cfg(unix)]
     crate::kept::built_while_keeping(crate::kept::TakenBack::Build(name.clone()));
     match built {
         Err(code) => code,

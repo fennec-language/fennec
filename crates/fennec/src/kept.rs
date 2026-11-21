@@ -104,7 +104,8 @@ pub(crate) fn building_as(name: Option<String>) {
 }
 
 /// A build the daemon made, as the store has it, to take back if an analysis kept for builds turns
-/// out wrong.
+/// out wrong. Only the daemon keeps analyses, so only Unix has any.
+#[cfg(unix)]
 pub(crate) enum TakenBack {
     /// What `fennec build` noted, by its name (`built::forget`).
     Build(String),
@@ -115,12 +116,15 @@ pub(crate) enum TakenBack {
 /// The builds the daemon made while it kept analyses, since checking them last disagreed: any may
 /// have used an analysis kept for another, so all are taken back if one is found wrong. The oldest
 /// go past [`MOST_REMEMBERED`].
+#[cfg(unix)]
 static BUILT_WHILE_KEEPING: Mutex<Vec<TakenBack>> = Mutex::new(Vec::new());
 
 /// How many builds the daemon remembers to take back.
+#[cfg(unix)]
 const MOST_REMEMBERED: usize = 4096;
 
 /// Notes a build the daemon made, to take back if an analysis kept for builds turns out wrong.
+#[cfg(unix)]
 pub(crate) fn built_while_keeping(built: TakenBack) {
     if !fennec_llvm::keeps_between_builds() {
         return;

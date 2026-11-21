@@ -148,8 +148,14 @@ pub(crate) enum Expr {
     Ints(Vec<Expr>),
     /// `[item * by + plus for item in list]`, or over `parallel(list)` when the flag says so.
     Mapped(Box<Expr>, Box<Expr>, Box<Expr>, bool),
-    /// `sum(item * by for item in parallel(list))`.
+    /// `sum(item * by for item in parallel(list))`, which adds in the runtime's fixed tree.
     ParallelSum(Box<Expr>, Box<Expr>),
+    /// `sum(float(item) * scale for item in parallel(list))`, which adds in the runtime's fixed
+    /// tree, or with `if item % 2 == 0` when the flag says so, which compiled code adds in order,
+    /// into eight running totals, as a plain `sum` does. The two give different bits.
+    FloatSum(Box<Expr>, Box<Expr>, bool),
+    /// `list(range(n))`: a list longer than one leaf of a `parallel` sum's tree, 1,024 positions.
+    Upto(usize),
     /// `sum(regrown(item) for item in parallel(list))`: each round makes a holder, reads its list
     /// and passes it to a `ref self` method on the same holder.
     Regrown(Box<Expr>),

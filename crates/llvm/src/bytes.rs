@@ -210,6 +210,26 @@ impl Emit<'_, '_, '_> {
         (held, length)
     }
 
+    /// `data += more`, taking over the owner `dest` holds: `more`'s bytes go on the end where `data`
+    /// is when nothing else holds it and it has room, as a builder's do, and otherwise the runtime
+    /// makes it the caller's own with room to grow, so a run of them is linear. Bytes added to
+    /// themselves were let go of if they grew, so they're read from the new block, which starts
+    /// with them.
+    pub(crate) fn bytes_grown(&mut self, dest: LocalId, more: &str) {
+        let slot = self.slot(dest);
+        let (size_at, size, before) = (self.offset(more, 16), self.temp(), self.temp());
+        self.line(&format!("{size} = load i64, ptr {size_at}"));
+        self.line(&format!("{before} = load ptr, ptr {slot}"));
+        let (block, length) = self.room_for(&slot, &size);
+        let (itself, read) = (self.temp(), self.temp());
+        self.line(&format!("{itself} = icmp eq ptr {more}, {before}"));
+        self.line(&format!("{read} = select i1 {itself}, ptr {block}, ptr {more}"));
+        let (from, at) = (self.offset(&read, DATA_OFFSET), self.byte_place(&block, &length));
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        self.line(&format!("call void @llvm.memcpy.p0.p0.i64(ptr {at}, ptr {from}, i64 {size}, i1 false)"));
+        self.lengthen(&block, &length, &size);
+    }
+
     /// Whether a builder has room for `wanted` bytes: its room, in bytes, is the header's last word,
     /// which the runtime writes whenever it makes or grows one.
     fn room_test(&mut self, block: &str, wanted: &str) -> String {

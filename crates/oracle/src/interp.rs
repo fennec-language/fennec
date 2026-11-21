@@ -19,7 +19,7 @@ mod own_index;
 mod packing;
 mod parallel;
 mod paths;
-mod saving;
+pub(crate) mod saving;
 mod show;
 mod sources;
 pub(crate) mod stream;

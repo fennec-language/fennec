@@ -5586,8 +5586,7 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
 
 /// The daemon keeps each function's analysis from one build to the next: after a body edit it
 /// uses most of them again, each checked against analyzing it again, and makes the program a
-/// build here makes, byte for byte. A `fennec run` through it uses them again too. A release
-/// build uses none, and keeps its own for the build after.
+/// build here makes, byte for byte. A `fennec run` through it uses them again too.
 #[cfg(unix)]
 #[test]
 fn a_daemon_build_uses_the_last_builds_analyses_again() {
@@ -5656,22 +5655,6 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
         let (again, of) = used(&stderr);
         assert!(again > 0 && again < of, "{stderr}");
     }
-    // A release build uses nothing kept, being the build that ships, and the build after it uses
-    // what it kept.
-    let mut command = crate::executables::fennec_command();
-    command.args(["build", "--release", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", &home);
-    command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
-    command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
-    let released = command.output().unwrap();
-    let stderr = text(&released.stderr);
-    assert_eq!(released.status.code(), Some(0), "{stderr}");
-    let (again, of) = used(&stderr);
-    assert!(again == 0 && of > 1, "{stderr}");
-    let made = build(&home, true);
-    let stderr = text(&made.stderr);
-    assert_eq!(made.status.code(), Some(0), "{stderr}");
-    let (again, of) = used(&stderr);
-    assert!(again == of && of > 1, "{stderr}");
     with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
     // The daemon wrote its index once each build had answered, and before it went: a build without
@@ -5683,6 +5666,49 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
         said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next()?.parse::<usize>().ok());
     assert!(compiled.is_some_and(|compiled| compiled <= 2), "{said}");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// A release build through the daemon uses no analysis a build before it kept, being the build
+/// that ships, and keeps its own: the dev build after it, of an edit to `main`, uses `doubled`'s.
+#[cfg(unix)]
+#[test]
+fn a_release_build_uses_no_kept_analysis() {
+    let (_folder, kit, home) = small_kit("kept-analyses-release").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    // Each build is of an edit, so none is put out from the store.
+    let build = |release: bool, printed: u32| -> (usize, usize) {
+        let source = format!(
+            "def doubled(number: int) -> int:\n    return number * 2\n\n\
+             def main(stdout: Stdout):\n    stdout.print(doubled(3))\n    stdout.print({printed})\n"
+        );
+        std::fs::write(kit.join("src/main.fen"), source).unwrap();
+        let mut command = crate::executables::fennec_command();
+        command.arg("build");
+        if release {
+            command.arg("--release");
+        }
+        command.args([".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", &home);
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+        let made = command.output().unwrap();
+        let said = format!("{}{}", text(&made.stdout), text(&made.stderr));
+        assert_eq!(made.status.code(), Some(0), "{said}");
+        // "note: used 12 of 15 functions' analyses again, ...".
+        let line = said.lines().find(|line| line.starts_with("note: used ")).unwrap_or("");
+        let words: Vec<&str> = line.split(' ').collect();
+        let count = |at: usize| words.get(at).and_then(|word| word.parse().ok()).unwrap_or(0);
+        assert!(count(4) > 1, "{said}");
+        (count(2), count(4))
+    };
+    assert_eq!(build(false, 1).0, 0);
+    assert!(build(false, 2).0 > 0, "the daemon kept nothing");
+    assert_eq!(build(true, 3).0, 0, "the release build used what was kept");
+    assert!(build(false, 4).0 > 0, "the release build kept nothing");
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 
 /// A build after an edit carries over what the daemon kept of the kit's last check for what the

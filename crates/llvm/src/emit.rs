@@ -3687,8 +3687,8 @@ impl Emit<'_, '_, '_> {
                 self.copy(dest.ok_or("no result")?, wrapper)
             }
             buffer if buffer.starts_with("Buffer.") => self.buffer_builtin(dest, name, args, span),
-            "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
-            | "str.replace" | "str.find" | "str.split" | "str.split_at" => {
+            "str.len" | "str" | "repr" | "str.code" | "str.join" | "str.contains" | "str.upper"
+            | "str.lower" | "str.replace" | "str.find" | "str.split" | "str.split_at" => {
                 self.text_builtin(dest, name, args, span)
             }
             "float" => {

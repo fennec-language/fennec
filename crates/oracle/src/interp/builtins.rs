@@ -91,6 +91,10 @@ impl Interp {
                 let value = self.one(&mut given, name)?;
                 self.display(&value).map(|shown| Value::Str(shown.into()))
             }
+            "repr" => {
+                let value = self.one(&mut given, name)?;
+                self.repr(&value).map(|shown| Value::Str(shown.into()))
+            }
             "int" | "i64" => match self.one(&mut given, name)? {
                 Value::Int(n) => Ok(Value::Int(n)),
                 Value::Float(x) => float_to_int(x, span).map(Value::Int),

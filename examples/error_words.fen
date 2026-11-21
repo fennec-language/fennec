@@ -1,0 +1,61 @@
+# decision: Every failure has words, `message()`, and printing one prints them.
+
+# An error that writes `def message` says what went wrong in its own words. One that doesn't
+# gives the failure as it prints. Printing a failure prints its words. Inside a list, or through
+# `repr`, it shows as it is. A new failure raised inside `except why:` carries `why`'s words as a
+# note, and `with_note` gives a copy carrying one more.
+
+error SellError:
+    NotFound(item: str)
+    OutOfStock(item: str)
+
+    def message(self) -> str:
+        return match self:
+            case .NotFound(item):
+                f"we don't sell {item}"
+            case .OutOfStock(item):
+                f"{item} is out of stock"
+
+error ShelfError:
+    Broken(shelf: int)
+
+def sell(item: str) -> int fails SellError:
+    if item == "pear": fail .NotFound(item)
+    fail .OutOfStock(item)
+
+def restock(shelf: int) -> int fails SellError | ShelfError:
+    if shelf > 0: fail .Broken(shelf)
+    return sell("pear")?
+
+def checkout(item: str) -> int fails ShelfError:
+    sold = sell(item) except why:
+        fail .Broken(shelf=7)
+    return sold
+
+def try_selling(stdout: Stdout, item: str):
+    sold = sell(item) except why:
+        stdout.print(f"no sale: {why}")
+        stdout.print(repr(why))
+        stdout.print([why])
+        return
+    stdout.print(sold)
+
+def try_restocking(stdout: Stdout, shelf: int):
+    stocked = restock(shelf) except why:
+        stdout.print(why.message())
+        return
+    stdout.print(stocked)
+
+def try_checking_out(stdout: Stdout, item: str):
+    sold = checkout(item) except why:
+        stdout.print(why, why.notes())
+        noted = why.with_note("at the front desk")
+        stdout.print(noted.notes())
+        return
+    stdout.print(sold)
+
+def main(stdout: Stdout):
+    try_selling(stdout, "apple")
+    try_restocking(stdout, 0)
+    try_restocking(stdout, 3)
+    try_checking_out(stdout, "apple")

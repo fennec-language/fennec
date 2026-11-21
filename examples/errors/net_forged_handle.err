@@ -1,4 +1,4 @@
-error: `Connection` is built through its named constructors: only its own methods can set `_label`
+error: `Connection` is built through its named constructors: only code in its file can set `_label`
  --> examples/errors/net_forged_handle.fen:4:12
   |
 4 |     conn = Connection(_handle=1, peer="x")
@@ -6,10 +6,10 @@ error: `Connection` is built through its named constructors: only its own method
   |
   = help: `_label` has no default, and `Connection` has no named constructor yet
 
-error: `_handle` is private to `Connection`
+error: `_handle` is private to `Connection`'s file
  --> examples/errors/net_forged_handle.fen:4:31
   |
 4 |     conn = Connection(_handle=1, peer="x")
   |                               ^
   |
-  = help: only `Connection`'s own methods can reach `_` names: go through one of its other methods
+  = help: only code in the file that declares `Connection` can reach `_` names: go through one of its other methods

@@ -477,37 +477,11 @@ const STD_FINDINGS: &str = "tests/std_findings.txt";
 
 /// What the checker finds in std that std truly needs, each with why: a program can't do these,
 /// and std has to. Each is matched by its file and the start of its message.
-const STD_EXCEPTIONS: [(&str, &str, &str); 9] = [
-    ("fs.fen", "nothing can build `Fs`:", "the compiler builds the capabilities it hands `main` and tests"),
-    ("env.fen", "nothing can build `Env`:", "the compiler builds the capabilities it hands `main` and tests"),
-    (
-        "io.fen",
-        "nothing can build `Stdout`:",
-        "the compiler builds the capabilities it hands `main` and tests",
-    ),
-    (
-        "io.fen",
-        "nothing can build `Stdin`:",
-        "the compiler builds the capabilities it hands `main` and tests",
-    ),
-    (
-        "io.fen",
-        "nothing can build `Stderr`:",
-        "the compiler builds the capabilities it hands `main` and tests",
-    ),
-    ("net.fen", "nothing can build `Net`:", "the compiler builds the capabilities it hands `main` and tests"),
-    (
-        "signals.fen",
-        "nothing can build `Signals`:",
-        "the compiler builds the capabilities it hands `main` and tests",
-    ),
-    ("embed.fen", "nothing can build `EmbeddedFolder`:", "`embed` builds it, when the program is built"),
-    (
-        "crypto.fen",
-        "`Secret` writes `def deserialize` but not `def serialize`",
-        "a secret is read from configuration and never written out: that's what the type is for",
-    ),
-];
+const STD_EXCEPTIONS: [(&str, &str, &str); 1] = [(
+    "crypto.fen",
+    "`Secret` writes `def deserialize` but not `def serialize`",
+    "a secret is read from configuration and never written out: that's what the type is for",
+)];
 
 /// The standard library's file a span is in, by its file name.
 fn library_file(span: Span) -> String {

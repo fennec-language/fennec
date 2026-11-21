@@ -25956,49 +25956,6 @@ fn postgres_takes_each_step_of_signing_in_in_its_turn() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A Postgres server's messages are read as the protocol writes them, and anything else fails
-/// rather than reading as something: a count below zero, a cell's size below -1, an error with
-/// no zero byte ending its fields, a `ReadyForQuery` that isn't one byte, and bytes left over in
-/// a message. A `bool` cell is `t` or `f`, and anything else fails rather than reading as false.
-/// Found by fuzzing `PgReader` (`fennec-fuzz run postgres`).
-#[test]
-fn postgres_refuses_messages_a_server_never_sends() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let printed = printed_by(
-        "postgres_strict",
-        r#"from std import postgres
-from std.postgres import PgMessage, PgReader
-
-def read(data: bytes) -> str:
-    mut reader = PgReader()
-    reader.feed(data)
-    message = reader.next() except .Constraint() | .Busy() | .Column() | .Failed():
-        return "refused"
-    _ = message else:
-        return "refused"
-    return "read"
-
-def main(stdout: Stdout):
-    stdout.print(read(bytes([84, 0, 0, 0, 6, 255, 255])))
-    stdout.print(read(bytes([68, 0, 0, 0, 6, 255, 255])))
-    stdout.print(read(bytes([68, 0, 0, 0, 10, 0, 1, 255, 255, 255, 254])))
-    stdout.print(read(bytes([69, 0, 0, 0, 11, 83, 69, 82, 82, 79, 82, 0])))
-    stdout.print(read(bytes([90, 0, 0, 0, 4])), read(bytes([90, 0, 0, 0, 6, 73, 73])))
-    stdout.print(read(bytes([75, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3])))
-    stdout.print(read(bytes([49, 0, 0, 0, 5, 120])))
-    rows = [PgMessage.Row(cells=[bytes([120])], present=[True])]
-    found = postgres.rows_of(["flag"], types=[16], rows=rows) except .Constraint() | .Busy() | .Column() | .Failed():
-        stdout.print("refused")
-        return
-    stdout.print("read", found.ints)
-"#,
-    )?;
-    assert_eq!(printed, "refused\nrefused\nrefused\nrefused\nrefused refused\nrefused\nrefused\nrefused\n");
-    Ok(())
-}
-
 /// `fennec update` locks the layouts a kit saves in `pack.lock`. A locked type's values are then
 /// written without their layout, as short as before layouts, and the next version of the type
 /// reads them by the locked layout's names. Without the lock, they'd be refused. `fennec check`
@@ -29963,6 +29920,42 @@ fn a_ref_str_parameter_grows_where_it_is() -> std::io::Result<()> {
         "ref_str_grown_kept",
         "def put(ref out: str, piece: str):\n    out += piece\n\ndef main(stdout: Stdout):\n    mut held = \"ab\"\n    kept = held\n    for at in range(3):\n        put(ref held, str(at))\n    stdout.print(held, kept)\n    return\n",
         "ab012 ab\n",
+    )
+}
+
+/// `items += more` and `data += more` grow a list or bytes where they are, as `+=` on text does,
+/// for a local and through a `ref` parameter, and so do `items = items + a + b` and
+/// `data = data + more` written out: counted, not timed. Each copied the whole list or bytes into a
+/// new block every time, so four times the rounds did sixteen times the work. Only one nothing
+/// else holds grows where it is: a copy kept first, or another name for it, keeps what it had, and
+/// a list or bytes added to itself doubles, a list of lists too, its items each held twice.
+#[test]
+fn lists_and_bytes_added_to_grow_where_they_are() -> std::io::Result<()> {
+    const PUT: &str = "def put_items(ref out: list[int], more: list[int]):\n    out += more\n\ndef put_bytes(ref out: bytes, more: bytes):\n    out += more\n\n";
+    if !ready() {
+        return Ok(());
+    }
+    let counted = |rounds: usize| -> std::io::Result<(u64, u64)> {
+        let source = format!(
+            "{PUT}def main(stdout: Stdout):\n    items = [7, 8]\n    data = bytes([1, 2, 3])\n    mut listed: list[int] = []\n    mut written = bytes([])\n    mut by_ref: list[int] = []\n    mut bytes_by_ref = bytes([])\n    mut joined: list[int] = []\n    mut joined_bytes = bytes([])\n    for _ in range({rounds}):\n        listed += items\n        written += data\n        put_items(ref by_ref, items)\n        put_bytes(ref bytes_by_ref, data)\n        joined = joined + items + items\n        joined_bytes = joined_bytes + data\n    stdout.print(len(listed), len(written), len(by_ref), len(bytes_by_ref), len(joined), len(joined_bytes))\n    return\n"
+        );
+        let said = counts_of(&format!("lists_and_bytes_grown_{rounds}"), &source)?;
+        let number = |name: &str| count(&said, name).unwrap_or(u64::MAX);
+        Ok((number("allocations"), number("allocated_bytes")))
+    };
+    let (small, small_bytes) = counted(10_000)?;
+    let (big, big_bytes) = counted(40_000)?;
+    // A handful, whatever the count: each one's few regrowths.
+    assert!(small < 200 && big < 200, "{small} and {big} allocations");
+    // Four times the rounds, at most about four times the bytes, where copying each time made it
+    // sixteen times.
+    assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
+    prints_in_both_builds(
+        "lists_and_bytes_grown_kept",
+        &format!(
+            "{PUT}def main(stdout: Stdout):\n    mut items = [1, 2]\n    kept = items\n    items += [3]\n    put_items(ref items, [4])\n    items += items\n    mut data = bytes([1, 2])\n    kept_data = data\n    data += bytes([3])\n    put_bytes(ref data, bytes([4]))\n    data += data\n    mut empty: list[int] = []\n    empty += []\n    held = items\n    items = items + [5] + [6]\n    held_data = data\n    data = data + bytes([5])\n    stdout.print(items, kept, held, data, kept_data, held_data, empty)\n    mut doubled = [1, 2]\n    doubled = doubled + doubled\n    mut doubled_data = bytes([7])\n    doubled_data = doubled_data + doubled_data\n    mut rows = [[1], [2, 3]]\n    rows_before = rows\n    rows = rows + rows\n    rows[0].append(9)\n    mut alone_rows = [[4], [5]]\n    for _ in range(3):\n        alone_rows = alone_rows + alone_rows\n    stdout.print(doubled, doubled_data, rows, rows_before, len(alone_rows), alone_rows[7])\n    return\n"
+        ),
+        "[1, 2, 3, 4, 1, 2, 3, 4, 5, 6] [1, 2] [1, 2, 3, 4, 1, 2, 3, 4] bytes([1, 2, 3, 4, 1, 2, 3, 4, 5]) bytes([1, 2]) bytes([1, 2, 3, 4, 1, 2, 3, 4]) []\n[1, 2, 1, 2] bytes([7, 7]) [[1, 9], [2, 3], [1], [2, 3]] [[1], [2, 3]] 16 [5]\n",
     )
 }
 

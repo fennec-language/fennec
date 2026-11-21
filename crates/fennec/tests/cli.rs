@@ -2411,6 +2411,53 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A `_` field is its file's: a kit's own file reaches it, and a program that depends on the kit
+/// reaches none of it, to read, set or build the type with one. The same as another file of the
+/// kit would be told.
+#[test]
+fn another_kits_underscore_fields_are_out_of_reach() {
+    let dir = scratch("underscore_kits").unwrap();
+    let vault = "## A secret kept in its file.\nexport struct Vault:\n    label: str\n    _secret = \"\"\n\n\
+                 ## A vault holding `secret`, which only this file can set.\nexport def sealed(label: str, secret: str) -> Vault:\n    \
+                 return Vault(label=label, _secret=secret)\n\n## Whether `guess` is the secret.\n\
+                 export def opens(vault: Vault, guess: str) -> bool:\n    return vault._secret == guess\n";
+    write_kit(&dir.join("vault"), "vault", "", &[("lib.fen", vault)]).unwrap();
+    let check = |main: &str| {
+        write_kit(
+            &dir.join("app"),
+            "app",
+            "[dependencies]\nvault = { path = \"../vault\" }\n",
+            &[("main.fen", main)],
+        )
+        .unwrap();
+        crate::executables::fennec_command()
+            .args(["check"])
+            .current_dir(dir.join("app"))
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let fine = check(
+        "from vault import Vault, opens, sealed\n\ndef main(stdout: Stdout):\n    stdout.print(opens(sealed(\"a\", secret=\"b\"), \"b\"))\n",
+    );
+    assert!(fine.status.success(), "{}", text(&fine.stderr));
+    for body in [
+        "stdout.print(sealed(\"a\", secret=\"b\")._secret)",
+        "stdout.print(Vault(label=\"a\", _secret=\"b\").label)",
+    ] {
+        let refused = check(&format!(
+            "from vault import Vault, opens, sealed\n\ndef main(stdout: Stdout):\n    {body}\n"
+        ));
+        assert!(!refused.status.success(), "{body}");
+        assert!(
+            text(&refused.stderr).contains("`_secret` is private to `vault.Vault`'s file"),
+            "{}",
+            text(&refused.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// What each file imports is its own, in a program's files and in its kits'. A kit's
 /// `from std.html import escape as sha256` once made the program's own `sha256(...)` give escaped
 /// text, as one table of imports served every file and the last import of a name decided it for
@@ -5621,6 +5668,49 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// A release build through the daemon uses no analysis a build before it kept, being the build
+/// that ships, and keeps its own: the dev build after it, of an edit to `main`, uses `doubled`'s.
+#[cfg(unix)]
+#[test]
+fn a_release_build_uses_no_kept_analysis() {
+    let (_folder, kit, home) = small_kit("kept-analyses-release").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    // Each build is of an edit, so none is put out from the store.
+    let build = |release: bool, printed: u32| -> (usize, usize) {
+        let source = format!(
+            "def doubled(number: int) -> int:\n    return number * 2\n\n\
+             def main(stdout: Stdout):\n    stdout.print(doubled(3))\n    stdout.print({printed})\n"
+        );
+        std::fs::write(kit.join("src/main.fen"), source).unwrap();
+        let mut command = crate::executables::fennec_command();
+        command.arg("build");
+        if release {
+            command.arg("--release");
+        }
+        command.args([".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", &home);
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+        let made = command.output().unwrap();
+        let said = format!("{}{}", text(&made.stdout), text(&made.stderr));
+        assert_eq!(made.status.code(), Some(0), "{said}");
+        // "note: used 12 of 15 functions' analyses again, ...".
+        let line = said.lines().find(|line| line.starts_with("note: used ")).unwrap_or("");
+        let words: Vec<&str> = line.split(' ').collect();
+        let count = |at: usize| words.get(at).and_then(|word| word.parse().ok()).unwrap_or(0);
+        assert!(count(4) > 1, "{said}");
+        (count(2), count(4))
+    };
+    assert_eq!(build(false, 1).0, 0);
+    assert!(build(false, 2).0 > 0, "the daemon kept nothing");
+    assert_eq!(build(true, 3).0, 0, "the release build used what was kept");
+    assert!(build(false, 4).0 > 0, "the release build kept nothing");
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
 /// A build after an edit carries over what the daemon kept of the kit's last check for what the
 /// edit left as it was, and makes the program a build here makes, byte for byte: here a function in
 /// the middle of the file grows, which moves a type and a function after it. Every build that
@@ -5654,7 +5744,7 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
     let build =
         |daemon: bool, home: &Path| fennec(&["build", ".", "-o", "prog"], daemon, home).output().unwrap();
     // The first build is the daemon's, so the edit's has a kept check to carry over.
-    let status = || fennec(&["daemon", "status"], true, &home).output().unwrap();
+    let status = || fennec(&["daemon", "status"], true, &home).output();
     crate::executables::daemon_started(fennec(&["daemon", "serve"], true, &home), &status).unwrap();
     for source in [before, after.as_str()] {
         std::fs::write(&main, source).unwrap();
@@ -5734,7 +5824,7 @@ fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
     // The first build is the daemon's, so it keeps the check the edit's build carries over. One
     // made in the command's own process, as one is when a daemon it starts is slow to answer,
     // keeps nothing, and the edit's build then refuses the program, rightly.
-    let status = || command(&["daemon", "status"], true).output().unwrap();
+    let status = || command(&["daemon", "status"], true).output();
     crate::executables::daemon_started(command(&["daemon", "serve"], true), &status).unwrap();
     std::fs::write(&main, before).unwrap();
     let first = fennec(&["build", ".", "-o", "prog"], true);
@@ -6006,6 +6096,24 @@ fn fennec_in_kit(
     Ok(output)
 }
 
+/// The daemon `fennec_in_kit` uses for `home` started, once its status says it's running: a test
+/// counting what the daemon served starts it first, or a loaded machine's commands build in their
+/// own processes while it starts (see `daemon_started`).
+#[cfg(unix)]
+fn kit_daemon_started(kit: &Path, home: &Path) -> std::io::Result<()> {
+    let daemon = |args: &[&str]| {
+        let mut command = crate::executables::fennec_command();
+        command.args(args).current_dir(kit).env("FENNEC_HOME", home).env("FENNEC_DAEMON_IDLE", DAEMON_IDLE);
+        command
+            .env_remove("CI")
+            .env_remove("FENNEC_NO_DAEMON")
+            .env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
+        command
+    };
+    let status = || daemon(&["daemon", "status"]).output();
+    crate::executables::daemon_started(daemon(&["daemon", "serve"]), &status)
+}
+
 /// What a daemon's status says of how many requests it has served.
 #[cfg(unix)]
 fn served_by_daemon(kit: &Path, home: &Path) -> std::io::Result<String> {
@@ -6040,6 +6148,7 @@ fn a_run_through_the_daemon_prints_and_ends_as_one_here_does() {
                  stdout.print(\"lines:\", len(stdin.lines()))\n    return 3\n";
     let (folder, kit, home) = kit_of("run-daemon", reads).unwrap();
     let _stopped = DaemonsStopped { home: &home };
+    kit_daemon_started(&kit, &home).unwrap();
     let here_home = folder.join("home-here");
     let linted = "def f(stdout: Stdout):\n    stdout.print(2)\n\ndef main(stdout: Stdout):\n    f(stdout)\n";
     let wrong = "def main(stdout: Stdout):\n    stdout.print(1 + \"x\")\n";
@@ -6086,6 +6195,7 @@ fn tests_through_the_daemon_print_and_end_as_ones_here_do() {
                   def main(stdout: Stdout):\n    stdout.print(double(4))\n";
     let (folder, kit, home) = kit_of("test-daemon", source).unwrap();
     let _stopped = DaemonsStopped { home: &home };
+    kit_daemon_started(&kit, &home).unwrap();
     let here_home = folder.join("home-here");
     let asked: [&[&str]; 4] = [&["test"], &["test"], &["test", "--verbose"], &["test", "--all", "-v"]];
     for args in asked {

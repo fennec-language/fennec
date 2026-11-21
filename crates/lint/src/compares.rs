@@ -5,14 +5,13 @@
 //! name or field of a plain type is all this looks at: a call may give something else the second
 //! time, and a type of its own may mean anything by `==`. So this looks at a program that checks.
 
-use std::collections::HashMap;
-
 use fennec_check::Type;
 use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, Module, Sources, Span};
 
 use crate::Lint;
 use crate::lookups::pure;
 use crate::rewrites::written;
+use crate::typed::Types;
 
 /// An `==` or `!=` with the same name or field on both sides, as the operator, that value, and
 /// how it's written.
@@ -25,7 +24,7 @@ fn self_compared(expr: &Expr, sources: &Sources) -> Option<(BinOp, Span, String)
     (Some(&text) == written(sources, rhs.span).as_ref()).then_some((*op, lhs.span, text))
 }
 
-pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
+pub(crate) fn of(module: &Module, sources: &Sources, types: &Types<'_>) -> Vec<Lint> {
     let mut candidates = Vec::new();
     fennec_syntax::read::exprs(module, &mut |expr| {
         if !expr.span.in_prelude()
@@ -37,13 +36,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     if candidates.is_empty() {
         return Vec::new();
     }
-    let Ok(checked) = fennec_check::check_typed(module) else { return Vec::new() };
-    let types: HashMap<(u32, u32), &Type> = checked
-        .types
-        .iter()
-        .flat_map(|(_, body)| body.exprs())
-        .map(|(span, ty)| ((span.start, span.end), ty))
-        .collect();
+    let Some(types) = types.by_span() else { return Vec::new() };
     let mut found = Vec::new();
     for (span, op, value, text) in candidates {
         let Some(ty) = types.get(&(value.start, value.end)) else { continue };

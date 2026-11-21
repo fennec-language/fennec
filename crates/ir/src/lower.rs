@@ -491,6 +491,12 @@ fn root_name(target: &Expr) -> Option<&str> {
     }
 }
 
+/// Whether `+` on this type makes what `+=` does, which grows the target where it is: text, a
+/// list, or bytes.
+fn grows_by_adding(ty: &Type) -> bool {
+    matches!(ty, Type::Str | Type::Bytes | Type::List(_))
+}
+
 /// The pieces of `a + b + c`, left to right.
 fn added_pieces(value: &Expr) -> Vec<Expr> {
     match &value.kind {
@@ -935,11 +941,12 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
         // `text = text + piece` and `text = f"{text}..."` make the same text `text += ...` does,
-        // so they're that: the text grows where it is, rather than being copied into a new one.
+        // so they're that: the text grows where it is, rather than being copied into a new one. So
+        // do `items = items + more` for a list and `data = data + more` for bytes.
         if op.is_none()
             && !declares
             && let ExprKind::Name(name) = &target.kind
-            && self.lookup(name).is_some_and(|held| self.local_type(held) == Type::Str)
+            && self.lookup(name).is_some_and(|held| grows_by_adding(&self.local_type(held)))
             && let Some(pieces) = grown_by(name, value)
         {
             for piece in &pieces {
@@ -948,16 +955,16 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
         // `text += a + b + c` adds each piece in turn, as `text += a`, `text += b`, `text += c`,
-        // with no texts made to join first. A piece that reads what the target is reached from
-        // isn't split off, since it would see the text grown already, and nor is one that can
-        // fail with `?`, since the pieces before it would be added already.
+        // with no texts made to join first, and a list or bytes the same. A piece that reads what
+        // the target is reached from isn't split off, since it would see the target grown already,
+        // and nor is one that can fail with `?`, since the pieces before it would be added already.
         if op == Some(BinOp::Add)
             && let Some(root) = root_name(target)
-            && self.type_at(target.span) == Some(Type::Str)
+            && let Some(grown) = self.type_at(target.span).filter(grows_by_adding)
             && let ExprKind::Binary { op: BinOp::Add, .. } = &value.kind
         {
             let pieces = added_pieces(value);
-            if pieces.iter().all(|piece| self.type_at(piece.span) == Some(Type::Str))
+            if pieces.iter().all(|piece| self.type_at(piece.span).as_ref() == Some(&grown))
                 && !pieces.iter().any(|piece| mentions(piece, root))
                 && !pieces.iter().skip(1).any(leaves_early)
             {

@@ -320,6 +320,8 @@ export! {
     fennec_crash_note(a0: i64, a1: i64) => cleanup::crash_note(a0, a1);
     fennec_channel_send(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => channels::channel_send(a0, a1, a2, a3);
     fennec_channel_receive(a0: i64, a1: i64, a2: &mut i64) -> i64 => channels::channel_receive(a0, a1, a2);
+    fennec_channel_send_words(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => channels::channel_send_words(a0, a1, a2, a3, a4);
+    fennec_channel_receive_words(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => channels::channel_receive_words(a0, a1, a2, a3);
     fennec_channel_close(a0: i64) => channels::channel_close(a0);
     fennec_channel_free(a0: i64) => channels::channel_free(a0);
     fennec_launch_end(a0: i64, a1: i64, a2: i64, a3: &mut i64) -> i64 => serve::launch_end(a0, a1, a2, a3);

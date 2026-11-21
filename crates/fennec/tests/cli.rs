@@ -5839,6 +5839,64 @@ fn a_daemon_build_knows_its_objects_till_a_cleanup_takes_any() {
     std::fs::remove_dir_all(folder.join("kit")).unwrap();
 }
 
+/// A build that used analyses kept from the build before is checked once it has answered: the
+/// daemon analyzes those functions again, and where one disagrees, every kept analysis goes, the
+/// build is taken back from the store, a report is written, and the next build says so and
+/// analyzes every function. A test switch leaves the parameters' ranges out of the rule here, and
+/// the in-build check off, so a function whose argument turned negative gets the analysis kept
+/// for a positive one, as a release compiler would use a wrong one the rule let through.
+#[cfg(unix)]
+#[test]
+fn a_kept_analysis_found_wrong_after_the_build_is_reported_and_let_go_of() {
+    let (folder, kit, home) = small_kit("kept-analysis-wrong").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let build = |count: &str| {
+        let source = format!(
+            "def picked(count: int) -> int:\n    return [5, 6, 7, 8, 9][count]\n\n\
+             def main(stdout: Stdout):\n    stdout.print(picked({count}))\n"
+        );
+        std::fs::write(kit.join("src/main.fen"), source).unwrap();
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", &home);
+        command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "0");
+        command
+            .env("FENNEC_KEPT_ANALYSIS_RULE_OFF", "ranges")
+            .env_remove("CI")
+            .env_remove("FENNEC_NO_DAEMON");
+        command.env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+        let built = command.output().unwrap();
+        assert_eq!(built.status.code(), Some(0), "{}", text(&built.stderr));
+        text(&built.stderr)
+    };
+    build("2");
+    // `picked`'s analysis, kept for 2, is used for -2: the check after the build finds it.
+    build("-2");
+    let reports = home.join("daemon");
+    let reported = || {
+        std::fs::read_dir(&reports)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("kept-analysis-differs-"))
+    };
+    let waiting = std::time::Instant::now();
+    while !reported() {
+        assert!(waiting.elapsed().as_secs() < 120, "the daemon never found the analysis wrong");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let said = build("-2");
+    assert!(
+        said.contains("analyzed again what the last build used the analyses of, and it disagreed"),
+        "{said}"
+    );
+    assert!(said.contains("may be wrong"), "{said}");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(folder.join("kit")).unwrap();
+}
+
 /// Two builds of one kit at once through the daemon queue, so neither's output takes in the
 /// other's: each prints what a build made here prints, once.
 #[cfg(unix)]

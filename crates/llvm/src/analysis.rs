@@ -4820,12 +4820,51 @@ pub(crate) fn whole_kept(program: &Program) -> (Whole<'_>, Vec<String>) {
     let keeping = crate::kept::Keeping::start();
     let found = whole_keeping(program, &keeping);
     crate::kept::note_used_again(keeping.used_again(), found.0.analyses.len());
+    crate::kept::note_used(keeping.take_used());
     // A kept analysis that analyzing again doesn't give: nothing is handed on, the wrong one least
     // of all, so the build after this one works every analysis out.
     if found.1.is_empty() {
         keeping.finish();
     }
     found
+}
+
+/// The functions in `used`, each with the key of the analysis a build used again for it, whose
+/// analysis worked out afresh now has another key, sorted: the check after a build that used
+/// analyses again (`kept::verify_pending_analyses`). Only what `analyze` is told is worked out, and
+/// only those functions are analyzed.
+pub(crate) fn analyses_again(program: &Program, used: &[(String, Key)]) -> Vec<String> {
+    let functions: HashMap<&str, &Function> = program
+        .functions
+        .iter()
+        .chain(&program.constants)
+        .map(|function| (function.name.as_str(), function))
+        .collect();
+    let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
+    let kept = parameters_kept(&functions);
+    let keeps = |callee: &str, at: usize| {
+        kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
+    };
+    let params = param_ranges(program, &changes, &keeps);
+    let layouts = crate::layouts_of(program).ok();
+    let held = in_entries_of(program, layouts.as_ref());
+    let in_entries = |dict: &Type| {
+        held.iter()
+            .find(|(ty, _)| *ty == dict)
+            .map_or_else(fennec_layout::dict_values_in_place, |(_, held)| *held)
+    };
+    let mut differ: Vec<String> = used
+        .iter()
+        .filter(|(name, key)| {
+            functions.get(name.as_str()).is_some_and(|function| {
+                let given = params.get(name.as_str()).map_or(&[][..], Vec::as_slice);
+                analysis_key(&analyze(function, &changes, &keeps, given, &in_entries)) != *key
+            })
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    differ.sort();
+    differ
 }
 
 /// [`whole_kept`], using again what `keeping` found and keeping in it what's worked out.

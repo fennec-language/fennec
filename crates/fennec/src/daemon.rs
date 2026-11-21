@@ -1061,6 +1061,13 @@ mod unix {
                 .stack_size(crate::STACK_BYTES)
                 .spawn(move || crate::kept::verify_pending(&home));
         }
+        // So are the analyses a build used again of the ones the build before kept.
+        if crate::kept::analyses_pending() {
+            let home = home.clone();
+            let _ = std::thread::Builder::new()
+                .stack_size(crate::STACK_BYTES)
+                .spawn(move || crate::kept::verify_analyses(&home));
+        }
         outcome
     }
 

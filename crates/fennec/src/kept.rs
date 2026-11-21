@@ -100,7 +100,84 @@ pub(crate) fn status() -> Option<String> {
 /// The build in progress is noted in the store as `name` once it's built, so the check it keeps
 /// knows what to take back if checking it all again disagrees later.
 pub(crate) fn building_as(name: Option<String>) {
+    (*ANALYSES_STORED_AS.lock().unwrap_or_else(PoisonError::into_inner)).clone_from(&name);
     *STORED_AS.lock().unwrap_or_else(PoisonError::into_inner) = name;
+}
+
+/// What the build in progress is noted as in the store, for the check of the analyses it used
+/// again ([`analyses_to_check`]).
+static ANALYSES_STORED_AS: Mutex<Option<String>> = Mutex::new(None);
+
+/// What the build whose analyses are waiting to be checked was noted as in the store.
+static ANALYSES_CHECKED_AS: Mutex<Option<String>> = Mutex::new(None);
+
+/// What the next build says, once checking the analyses a build used again disagreed.
+static ANALYSES_NOTICE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Has the analyses this build used again of the ones the build before kept checked once it has
+/// answered, against `lowered`, the program it built and needs no more
+/// (`fennec_llvm::check_later`): a release compiler has no other check of them.
+pub(crate) fn analyses_to_check(lowered: fennec_ir::Program) {
+    if fennec_llvm::check_later(lowered) {
+        let name = ANALYSES_STORED_AS.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        *ANALYSES_CHECKED_AS.lock().unwrap_or_else(PoisonError::into_inner) = name;
+    }
+}
+
+/// Whether a check of the analyses a build used again is waiting.
+#[cfg(unix)]
+pub(crate) fn analyses_pending() -> bool {
+    fennec_llvm::analyses_pending()
+}
+
+/// Analyzes again each function whose analysis the last build used again, if a check is waiting,
+/// and compares. A difference is the compiler's mistake, and goes as one the checker's kept check
+/// finds does ([`verify_pending`]):
+/// - every kept analysis goes, and so does what the build noted in the store, so the next build of
+///   the same files builds again rather than putting out the program this one made;
+/// - a report is written in `home`'s daemon folder, naming the functions;
+/// - the next build says so and analyzes every function.
+///
+/// Gives back the report written, if one was.
+#[cfg(unix)]
+pub(crate) fn verify_analyses(home: &std::path::Path) -> Option<PathBuf> {
+    static REPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let differ = fennec_llvm::verify_pending_analyses();
+    if differ.is_empty() {
+        return None;
+    }
+    if let Some(name) = ANALYSES_CHECKED_AS.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        crate::built::forget(&name);
+    }
+    let number = REPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let report =
+        home.join("daemon").join(format!("kept-analysis-differs-{number}-{}.txt", std::process::id()));
+    let shown: Vec<String> = differ.iter().take(20).map(|name| format!("`{name}`")).collect();
+    let more = if differ.len() > shown.len() {
+        format!(" and {} more", differ.len() - shown.len())
+    } else {
+        String::new()
+    };
+    let text = format!(
+        "The build daemon analyzed again the functions a build used the analysis of from the build before, and for {} of them it disagrees: {}{more}. This is a mistake in the compiler, not in the program: please report it with the program and this file.\n\nFennec {}\n",
+        differ.len(),
+        shown.join(", "),
+        env!("CARGO_PKG_VERSION"),
+    );
+    let written =
+        std::fs::create_dir_all(report.parent().unwrap_or(home)).and_then(|()| std::fs::write(&report, text));
+    let said = if written.is_ok() { format!(", reported in {}", report.display()) } else { String::new() };
+    *ANALYSES_NOTICE.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+        "note: the build daemon analyzed again what the last build used the analyses of, and it disagreed{said}: the program that build made may be wrong, so this build analyzes every function"
+    ));
+    Some(report)
+}
+
+/// Says, in this build, that checking the analyses the last one used again disagreed, if it did.
+pub(crate) fn say_analyses_notice() {
+    if let Some(notice) = ANALYSES_NOTICE.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        eprintln!("{notice}");
+    }
 }
 
 /// `fennec_check::check_to_build_saying`, as a build checks. In the build daemon, it carries over

@@ -34417,6 +34417,91 @@ fn a_struct_constant_is_worked_out_ahead_for_parallel() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A `parallel` `for ref` whose body reads what it loops over sees its item as it is now, as a
+/// plain one does: the round's own change is there for a `return` of the list, from an `except`
+/// arm or a loop inside it, and for a read of the list in the body. They lost it, since the round's
+/// item was out of the list until the round ended (#2356). At 1 and 4 threads, in dev and release.
+#[test]
+fn a_parallel_round_that_reads_its_list_sees_its_own_change() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("parallel_round_reads_its_list")?;
+    let (program, executable) = (dir.join("rounds.fen"), dir.join("rounds"));
+    std::fs::write(&program, PARALLEL_ROUND_READS)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let ran = Command::new(&executable).env("FENNEC_THREADS", threads).output_within()?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "[Spot(x=9)] [Spot(x=1), Spot(x=3), Spot(x=5)]\n[Spot(x=9)]\n[Spot(x=9)]\n[Spot(x=9), Spot(x=1)]\n9\n9\n",
+                "{how:?} at {threads}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const PARALLEL_ROUND_READS: &str = r#"struct Spot:
+    x: int
+
+def returned(spots: list[Spot]) -> list[Spot]:
+    mut kept = spots
+    for ref spot in parallel(kept):
+        spot.x = 9
+        return kept
+    return kept
+
+def grown_until(spots: list[Spot]) -> list[Spot]:
+    mut kept = spots
+    for ref spot in parallel(kept):
+        spot.x += 1
+        if spot.x > 2:
+            return kept
+    return kept
+
+def excepted(spots: list[Spot]) -> list[Spot]:
+    mut kept = spots
+    for ref spot in parallel(kept):
+        spot.x = 9
+        _ = int("no") except InvalidValue():
+            return kept
+    return kept
+
+def nested(spots: list[Spot]) -> list[Spot]:
+    mut kept = spots
+    for ref spot in parallel(kept):
+        spot.x = 9
+        for step in range(3):
+            if step == 1:
+                return kept
+    return kept
+
+def main(stdout: Stdout):
+    stdout.print(returned([Spot(x=0)]), grown_until([Spot(x=0), Spot(x=2), Spot(x=5)]))
+    stdout.print(excepted([Spot(x=0)]))
+    stdout.print(nested([Spot(x=0)]))
+    mut spots = [Spot(x=0), Spot(x=1)]
+    for ref spot in parallel(spots):
+        if spot.x == 0:
+            spot.x = 9
+        break
+    stdout.print(spots)
+    mut read = [Spot(x=0), Spot(x=1)]
+    for ref spot in parallel(read):
+        spot.x = 9
+        stdout.print(read[0].x)
+"#;
+
 /// A constant struct held in place, holding a list and a text, read by `parallel`'s workers: the
 /// blocks it holds live for the whole run, as a constant held in a block does, so no worker's
 /// count of them races another's and none is left held at the end, at 1, 4 and 18 threads, in dev

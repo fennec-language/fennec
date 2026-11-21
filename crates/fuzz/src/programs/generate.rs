@@ -437,7 +437,7 @@ impl Writer<'_> {
                 Expr::CountOf(Box::new(self.of(Ty::Counts, next)), key)
             }
             21 if !self.threadless => {
-                let list = self.of(Ty::Ints, next);
+                let list = self.long_or(next);
                 let by = if self.risky { self.int(next) } else { Expr::Int(i64::from(self.byte() % 4)) };
                 // Half pass each item's holder a list read from itself, on the threads.
                 let sum = if self.choice(2) == 0 {
@@ -730,7 +730,24 @@ impl Writer<'_> {
                 Expr::FloatArith(Arith::Div, Box::new(self.float(next)), Box::new(divisor))
             }
             4 => Expr::FloatOf(Box::new(self.int(next))),
+            // A sum over `parallel`, added in the runtime's tree, or in order with an `if`.
+            5 if !self.threadless && self.choice(2) == 0 => {
+                let list = self.long_or(next);
+                let filtered = self.choice(2) == 0;
+                Expr::FloatSum(Box::new(list), Box::new(self.float(next)), filtered)
+            }
             _ => self.name_of(Ty::Float, false).map_or_else(|| literal(self.choice(9), &FLOATS), Expr::Name),
+        }
+    }
+
+    /// A list of ints for a `parallel` sum: a quarter of the time one longer than a leaf of its
+    /// tree, of 1,024 positions, so the tree has halves to add, and otherwise any list.
+    fn long_or(&mut self, depth: usize) -> Expr {
+        const LONG: [usize; 3] = [1025, 2049, 3000];
+        if self.choice(4) == 0 {
+            Expr::Upto(LONG.get(self.choice(LONG.len())).copied().unwrap_or(1025))
+        } else {
+            self.of(Ty::Ints, depth)
         }
     }
 

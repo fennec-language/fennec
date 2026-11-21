@@ -33,6 +33,7 @@ use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 use super::ast::{LOCK_WAYS, LockStep, LockWay, LockingTogether};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
+use super::ast::{POP_TYS, POP_WAYS, PopTy, PopWay, Popping};
 use super::ast::{RULE_WAYS, RuleStep, RuleWay, Ruling};
 use super::ast::{SIZE_NUMS, SIZED_WAYS, SizeNum, SizedWay, Sizing, sized_choice, sized_step};
 use super::ast::{STUCK_WAYS, Sticking, StuckWay};
@@ -111,6 +112,12 @@ const WHERE_RULES: bool = true;
 /// generator kept for later, a tuple, a list and a generic struct, each looped over where it's
 /// made. Map row 7: nothing wrote `? from` before, and the oracle runs `zip` wrapped two ways now.
 const FAILING_GENERATORS: bool = true;
+
+/// Whether random programs put optionals of a heap type in a list and take them out every way
+/// (`Popped`): `pop()`, `pop(at)`, `remove`, `discard` and through `ref`, kept, inline and
+/// dropped, from a local and a struct's field. On since popping a present `str?` out of a
+/// `list[str?]` stopped crashing native code (#2282, fixed by #2292).
+const POPPED_OPTIONALS: bool = true;
 
 /// Whether random programs change a number of each of the eight integer sizes every way
 /// (`Sized`): checked arithmetic, `wrapping_` and `saturating_`, shifts past the top and at the
@@ -799,6 +806,7 @@ impl Writer<'_> {
             27 if SIZED_NUMBERS && self.choice(4) == 0 => self.sized_numbers(body),
             27 if FAILING_GENERATORS && self.choice(4) == 0 => self.failing_generators(body),
             27 if WHERE_RULES && self.choice(4) == 0 => self.where_rules(body),
+            27 if POPPED_OPTIONALS && self.choice(4) == 0 => self.popped_optionals(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1616,6 +1624,21 @@ impl Writer<'_> {
             steps.push(RuleStep { way, value, breaks });
         }
         body.push(Stmt::Ruled(Ruling { id, steps }));
+    }
+
+    /// A `Popped` statement: one type, in a local or a field, then 3 to 12 steps, each with a
+    /// value from 0 to 2.
+    fn popped_optionals(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let ty = POP_TYS.get(self.choice(POP_TYS.len())).copied().unwrap_or(PopTy::Short);
+        let in_field = self.choice(2) == 0;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(10) {
+            let way = POP_WAYS.get(self.choice(POP_WAYS.len())).copied().unwrap_or(PopWay::Kept);
+            steps.push((way, self.choice(3)));
+        }
+        body.push(Stmt::Popped(Popping { id, ty, in_field, steps }));
     }
 
     /// A `Sized` statement: one size, a start near its middle or either end, then 3 to 12 steps,

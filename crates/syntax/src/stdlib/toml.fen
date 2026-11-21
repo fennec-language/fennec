@@ -93,15 +93,13 @@ struct TomlParser:
     def bad_at(self, message: str, place: int) -> ParseError:
         mut line = 1
         mut column = 1
-        mut at = 0
-        while at < place:
+        for at in range(place):
             b = text_byte(self.source, at)
             if b == 10:
                 line += 1
                 column = 1
             elif b < 128 or b >= 192:
                 column += 1
-            at += 1
         return ParseError(
             message=f"{message}, at line {line}, column {column}",
             line=line,

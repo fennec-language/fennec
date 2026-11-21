@@ -22,6 +22,7 @@ use super::ast::{InOrder, OrderStep};
 use super::ast::{LockWay, LockingTogether};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
+use super::ast::{PopTy, PopWay, Popping};
 use super::ast::{RuleStep, RuleWay, Ruling};
 use super::ast::{SizedStep, SizedWay, Sizing};
 use super::ast::{Sticking, StuckWay};
@@ -2745,6 +2746,73 @@ fn ruled_written(ruling: &Ruling) -> String {
     out
 }
 
+/// `popped{id}`, the function a `Popped` calls, after the types and the function it uses: a list
+/// of optionals given three items, a step at a time on it, then what the list and the struct
+/// holding a list of them hold.
+fn popped_written(popping: &Popping) -> String {
+    let Popping { id, ty, in_field, steps } = popping;
+    let mut out = String::new();
+    match ty {
+        PopTy::Point => {
+            let _ = write!(out, "struct Pt{id}:\n    x: int\n\n");
+        }
+        PopTy::Bag => {
+            let _ = write!(out, "struct Bag{id}:\n    tag = \"b\"\n    items = list[int]()\n\n");
+        }
+        PopTy::Short | PopTy::Long | PopTy::Ints => {}
+    }
+    let t = ty.written(*id);
+    let values = ty.values(*id);
+    let value = |at: usize| values.get(at).map_or("None", |(written, _, _)| written.as_str()).to_owned();
+    let missing = value(3);
+    let _ = write!(
+        out,
+        "struct Holder{id}:\n    items = list[{t}?]()\n\ndef taken{id}(ref items: list[{t}?]) -> {t}?:\n    return \
+         items.pop()\n\ndef popped{id}(stdout: Stdout):\n    mut holder = Holder{id}()\n    mut items = list[{t}?]()\n"
+    );
+    let place = if *in_field { "holder.items" } else { "items" };
+    for line in [
+        format!("{place}.append({})", value(0)),
+        format!("{place}.append(None)"),
+        format!("{place}.append({})", value(1)),
+    ] {
+        let _ = writeln!(out, "    {line}");
+    }
+    for (n, &(way, which)) in steps.iter().enumerate() {
+        let v = value(which);
+        let at = |position: &str, name: &str| {
+            format!(
+                "if len({place}) > 0:\n        {name}{n} = {place}.pop({position}) else {missing}\n        \
+                 stdout.print({name}{n})"
+            )
+        };
+        let line = match way {
+            PopWay::Pushed => format!("{place}.append({v})"),
+            PopWay::PushedNone => format!("{place}.append(None)"),
+            PopWay::Kept => format!("got{n} = {place}.pop() else {missing}\n    stdout.print(got{n})"),
+            PopWay::Inline => format!("stdout.print({place}.pop() else {missing})"),
+            PopWay::Dropped => format!("_ = {place}.pop()"),
+            PopWay::First => at("0", "first"),
+            PopWay::Middle => at(&format!("len({place}) // 2"), "middle"),
+            PopWay::Last => at("-1", "last"),
+            PopWay::Removed => {
+                format!("removed{n} = {place}.remove({v}) else {missing}\n    stdout.print(removed{n})")
+            }
+            PopWay::Discarded => format!("{place}.discard({v})"),
+            PopWay::DiscardedNone => format!("{place}.discard(None)"),
+            PopWay::ByRef => {
+                format!("through{n} = taken{id}(ref {place}) else {missing}\n    stdout.print(through{n})")
+            }
+            PopWay::Empty => {
+                format!("mut empty{n} = list[{t}?]()\n    stdout.print(empty{n}.pop() else {missing})")
+            }
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push_str("    stdout.print(items)\n    stdout.print(holder)\n\n");
+    out
+}
+
 /// `sized{id}`, the function a `Sized` calls, after the functions it uses: the number made from
 /// what a call gives, so nothing about it is known as it's built, then a line or two for each
 /// step, each printing it after.
@@ -3774,6 +3842,10 @@ impl Writer {
             Stmt::Arrayed(arraying) => {
                 let _ = write!(self.helpers, "{}", arrayed_written(arraying));
                 self.line(indent, &format!("arrayed{}(stdout)", arraying.id));
+            }
+            Stmt::Popped(popping) => {
+                let _ = write!(self.helpers, "{}", popped_written(popping));
+                self.line(indent, &format!("popped{}(stdout)", popping.id));
             }
             Stmt::Sized(sizing) => {
                 let _ = write!(self.helpers, "{}", sized_written(sizing));

@@ -450,10 +450,10 @@ export struct MemoryStream:
 ## assert read_all(ref src)? == "all of it".encode()
 ## ```
 export def read_all[R: Reader](ref src: R) -> bytes fails IoError:
-    mut all = bytes_builder()
+    mut whole = bytes_builder()
     while True:
         chunk = src.read_chunk(65536)?
         # Copied to its exact size, as a builder has to be before anything else sees it.
-        if len(chunk) == 0: return all[0:len(all)]
-        bytes_push_bytes(ref all, chunk)
-    return all
+        if len(chunk) == 0: return whole[0:len(whole)]
+        bytes_push_bytes(ref whole, chunk)
+    return whole

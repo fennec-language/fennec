@@ -84,7 +84,7 @@ export struct Log:
     level = LogLevel.Info
     format = LogFormat.Text
     clock: Clock? = None
-    fields: dict[str, str] = {}
+    fields = dict[str, str]()
 
     ## An entry that matters least, written only when the log's `level` is `Debug`.
     ## ```fennec

@@ -47,6 +47,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_TEST_SLOW_WAKE_MS`: a debug build's runtime holds a woken idle worker this many milliseconds before its slot says it's awake, so a test finds every worker asleep while a `parallel` call's first job is queued: the moment the deadlock check's look at the pools' queues is for. A release build never reads it.
 - `FENNEC_UNDER_MUTANTS`: slow tests sample fewer inputs under cargo-mutants.
 - `FENNEC_TEST_POSTGRES`: the URL of a real Postgres for `std.postgres`'s tests.
+- `FENNEC_TEST_WORDS_ROLE`, `FENNEC_TEST_WORDS_LOG`, `FENNEC_TEST_WORDS_WORKERS`, `FENNEC_TEST_WORDS_WAY` and `FENNEC_TEST_WORDS_SAW`: what the runtime's test of messages sent as words gives a run of itself, recorded or replayed in a process of its own. They say: record or replay, the log, how many workers, words or today's calls, and the file to say what it saw in. Nothing else reads them.
 - `FENNEC_PIN_OUTPUTS`: rewrites `crates/fennec/tests/fixtures/pinned` from this build's results.
 - `FENNEC_UPDATE_UNCHECKED`: `1` rewrites `crates/llvm/unchecked_runtime_calls.txt`, the ratchet of runtime calls emitted code doesn't check yet, from what the lint finds now.
 - `FENNEC_RUN_WAITS`: `fennec run` waits for the program rather than becoming it, so its time can be measured.

@@ -1025,7 +1025,7 @@ fn saving_holds_unions_tables_ids_and_rules_through_every_format() {
     for (program, printed) in [
         (
             SAVED_UNION_JSON_LOADS,
-            r##"Holder(shape=Square(side=2.0))
+            r#"Holder(shape=Square(side=2.0))
 refused ParseError(message="`shape` is \"Triangle\", which is none of `Circle | Square`", line=0, column=0)
 refused ParseError(message="", line=0, column=0)
 refused ParseError(message="`shape` should be a Circle | Square, but it's an object", line=0, column=0)
@@ -1034,23 +1034,23 @@ refused ParseError(message="`shape` should be a Circle | Square, but it's a str"
 refused ParseError(message="`Circle` has no field \"side\", but `shape.Circle` has one", line=0, column=0)
 refused ParseError(message="`shape` should be a Circle | Square, but it's null", line=0, column=0)
 refused ParseError(message="`shape` should be a Circle | Square, but it's a list", line=0, column=0)
-"##,
+"#,
         ),
         (
             SAVED_UNION_ROUND_TRIPS,
-            r##"{"shape": {"Square": {"side": 2.0}}, "shapes": [{"Circle": {"radius": 1.5}}, {"Square": {"side": 3.0}}]}
+            r#"{"shape": {"Square": {"side": 2.0}}, "shapes": [{"Circle": {"radius": 1.5}}, {"Square": {"side": 3.0}}]}
 Holder(shape=Square(side=2.0), shapes=[Circle(radius=1.5), Square(side=3.0)])
 Holder(shape=Square(side=2.0), shapes=[Circle(radius=1.5), Square(side=3.0)])
-"##,
+"#,
         ),
         (
             SAVED_UNION_TOML,
-            r##"Holder(shape=Circle(radius=1.5))
-"##,
+            r"Holder(shape=Circle(radius=1.5))
+",
         ),
         (
             SAVED_TABLES_THROUGH_PACK_AND_TOML,
-            r##"pack {"units": [{"name": "ash", "target": null}, {"name": "kit", "target": 2}, {"name": "vex", "target": 0}], "gauges": [{"level": 1, "name": "g"}, {"level": 2, "name": "b"}], "picked": 1}
+            r#"pack {"units": [{"name": "ash", "target": null}, {"name": "kit", "target": 2}, {"name": "vex", "target": 0}], "gauges": [{"level": 1, "name": "g"}, {"level": 2, "name": "b"}], "picked": 1}
 best = [0]
 
 [[items]]
@@ -1062,12 +1062,12 @@ name = "two"
 {"items": [{"name": "one"}, {"name": "two"}], "best": [0]}
 34
 Holder(order=Order.Move(steps=2), orders=[Order.Wait, Order.Move(steps=5)])
-"##,
+"#,
         ),
         (
             SAVED_RULE_THROUGH_PACK,
-            r##"refused ParseError(message="Gauge.level breaks its `where` rule, at byte 25", line=0, column=0)
-"##,
+            r#"refused ParseError(message="Gauge.level breaks its `where` rule, at byte 25", line=0, column=0)
+"#,
         ),
     ] {
         let (got, ended) = ran(program);
@@ -1076,7 +1076,7 @@ Holder(order=Order.Move(steps=2), orders=[Order.Wait, Order.Move(steps=5)])
     }
 }
 
-const SAVED_UNION_JSON_LOADS: &str = r##"from std import json
+const SAVED_UNION_JSON_LOADS: &str = r#"from std import json
 
 struct Circle:
     radius: float
@@ -1105,9 +1105,9 @@ def main(stdout: Stdout):
     loaded("{\"shape\": {\"Circle\": {\"side\": 1}}}", stdout)
     loaded("{\"shape\": null}", stdout)
     loaded("{\"shape\": [1]}", stdout)
-"##;
+"#;
 
-const SAVED_UNION_ROUND_TRIPS: &str = r##"from std import json, pack
+const SAVED_UNION_ROUND_TRIPS: &str = r#"from std import json, pack
 
 struct Circle:
     radius: float
@@ -1133,9 +1133,9 @@ def main(stdout: Stdout):
         stdout.print("refused", why)
         return
     stdout.print(again)
-"##;
+"#;
 
-const SAVED_UNION_TOML: &str = r##"from std import toml
+const SAVED_UNION_TOML: &str = r#"from std import toml
 
 struct Circle:
     radius: float
@@ -1155,9 +1155,9 @@ def main(stdout: Stdout):
         stdout.print("refused", why)
         return
     stdout.print(back)
-"##;
+"#;
 
-const SAVED_TABLES_THROUGH_PACK_AND_TOML: &str = r##"from std import json, pack, toml
+const SAVED_TABLES_THROUGH_PACK_AND_TOML: &str = r#"from std import json, pack, toml
 from std.collections import Id, Table
 
 struct Gauge:
@@ -1220,9 +1220,9 @@ def main(stdout: Stdout):
         stdout.print("refused", why)
         return
     stdout.print(again)
-"##;
+"#;
 
-const SAVED_RULE_THROUGH_PACK: &str = r##"from std import pack
+const SAVED_RULE_THROUGH_PACK: &str = r#"from std import pack
 
 struct Gauge:
     level: int where level >= 0
@@ -1236,7 +1236,7 @@ def main(stdout: Stdout):
         stdout.print("refused", why)
         return
     stdout.print(got)
-"##;
+"#;
 
 /// A generator that can fail, given a name and let go of partway, leaves at its `yield` where
 /// compiled code frees it: as its function ends, or as its name is given another. Each `with` it's

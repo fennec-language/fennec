@@ -291,12 +291,16 @@ pub(crate) fn met(place: Option<&str>, what: &str, outcome: i64) {
     }
 }
 
-/// Ends the turn at the front of `place`'s stream. A step that takes effect where the recording
-/// has nothing more, past where its run deadlocked, is a divergence: past there a task may only
-/// wait.
+/// Ends the running task's turn at `place`: the front of its stream, or for a read, the reader's
+/// own entry, wherever it is (see [`turn_at`]). A step that takes effect where the recording has
+/// nothing more, past where its run deadlocked, is a divergence: past there a task may only wait.
 fn end_turn(player: &Mutex<Player>, place: &str, what: &str) {
     let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
-    let ended = player.streams.get_mut(place).and_then(VecDeque::pop_front);
+    let asked = format!("{} {what}", running());
+    let ended = player.streams.get_mut(place).and_then(|stream| {
+        let at = turn_at(stream, &asked)?;
+        stream.remove(at)
+    });
     moved(&mut player, place);
     if ended.is_none() && player.deadlock.is_some() && player.past.is_none() {
         player.past = Some(diverged(format!(
@@ -306,6 +310,26 @@ fn end_turn(player: &Mutex<Player>, place: &str, what: &str) {
             running()
         )));
     }
+}
+
+/// Where in a place's stream the turn `asked` for is, if it's that task's turn now: at the front,
+/// or, for a lock taken to read, anywhere with no write ahead of it. Readers between two writes held
+/// the value together, so the order their entries were logged in says nothing: two readers of two
+/// values at once can log them crossed, and a replay that gave each its turn in the log's order
+/// had each wait for the other (#2313).
+fn turn_at(stream: &VecDeque<(String, Vec<u8>)>, asked: &str) -> Option<usize> {
+    if !asked.ends_with(" read") {
+        return stream.front().is_some_and(|(next, _)| next == asked).then_some(0);
+    }
+    for (at, (entry, _)) in stream.iter().enumerate() {
+        if entry == asked {
+            return Some(at);
+        }
+        if entry.ends_with(" write") {
+            return None;
+        }
+    }
+    None
 }
 
 /// Told whenever a place's turn moves on, for a thread waiting for its turn that can't park.
@@ -387,12 +411,12 @@ fn wait_for_turn(held: &Mutex<Player>, player: MutexGuard<'_, Player>, place: &s
     deadlock::thread_woke();
 }
 
-/// Whether another's entry than `asked` is next at `place` in `player`: what a turn waits on, as
-/// `TurnWait::holds` asks. Anything else goes back to `turn_in` to say: the running task's turn, or
-/// a place with nothing more. A thread that asked only whether its own entry was next slept for
-/// good when the place ran out instead (Fable 5.2's review of #2276).
+/// Whether others' entries than `asked` are ahead of its turn at `place` in `player`: what a turn
+/// waits on, as `TurnWait::holds` asks. Anything else goes back to `turn_in` to say: the running
+/// task's turn ([`turn_at`]), or a place with nothing more. A thread that asked only whether its
+/// own entry was next slept for good when the place ran out instead (Fable 5.2's review of #2276).
 fn another_is_next(player: &Player, place: &str, asked: &str) -> bool {
-    player.streams.get(place).and_then(VecDeque::front).is_some_and(|(next, _)| next != asked)
+    player.streams.get(place).is_some_and(|stream| !stream.is_empty() && turn_at(stream, asked).is_none())
 }
 
 /// A replay's wait for its turn to do `asked` at `place`, for the deadlock check.
@@ -504,8 +528,13 @@ fn turn_in(
     let asked = format!("{} {what}", running());
     loop {
         let held = player.lock().unwrap_or_else(PoisonError::into_inner);
-        let front = held.streams.get(place).and_then(VecDeque::front);
-        match front.map(|(next, payload)| (next == &asked, payload.clone())) {
+        let stream = held.streams.get(place);
+        if let Some((_, payload)) = stream.and_then(|stream| stream.get(turn_at(stream, &asked)?)) {
+            let bytes: [u8; 8] =
+                payload.clone().try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
+            return Ok(i64::from_le_bytes(bytes));
+        }
+        match stream.and_then(VecDeque::front) {
             None if waits && held.whole && held.deadlock.is_some() => return Ok(PAST_THE_END),
             None if !held.whole => return Err(cut_short(what, place)),
             None => {
@@ -515,12 +544,7 @@ fn turn_in(
                      program has changed"
                 ));
             }
-            Some((true, payload)) => {
-                let bytes: [u8; 8] =
-                    payload.try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
-                return Ok(i64::from_le_bytes(bytes));
-            }
-            Some((false, _)) => wait(held, place, &asked)?,
+            Some(_) => wait(held, place, &asked)?,
         }
     }
 }

@@ -452,6 +452,10 @@ struct JsonWriter:
         self._close("}")
 
 ## `value` as JSON text, through its own `def serialize`.
+## A value nested deeper than the stack holds, about 550,000 levels in `main` and 13,000 in a
+## launched task, stops the program at the call, saying calls nested too deeply: a value that deep,
+## made in the program's own memory, is a bug in the program. `loads` fails past 500 levels instead,
+## as text from outside may be anything.
 ## Native code runs `json.dumps` through this. Its options' defaults are `None` and `-1`, since the
 ## default a call leaves out is written into the program calling it, which may not import `JsonNames`.
 export def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent = -1) -> str:

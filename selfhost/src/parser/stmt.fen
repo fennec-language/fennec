@@ -385,6 +385,12 @@ def assignment_op(tok: Tok) -> BinOp?:
             return .Mul
         case .Punct("/="):
             return .Div
+        case .Punct("//="):
+            return .FloorDiv
+        case .Punct("%="):
+            return .Mod
+        case .Punct("**="):
+            return .Pow
         case .Punct("&="):
             return .BitAnd
         case .Punct("|="):

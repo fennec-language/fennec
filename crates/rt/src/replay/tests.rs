@@ -253,6 +253,28 @@ fn never_coming(held: MutexGuard<'_, Player>, place: &str, asked: &str) -> Resul
     Err(never_comes(asked, place, &front.unwrap_or_default()))
 }
 
+/// At a lock, a reader's turn comes whenever no write is ahead of it, as readers held it together,
+/// and a writer's only at the front: once every task before it is done (#2313).
+#[test]
+fn a_readers_turn_comes_with_no_write_ahead_and_a_writers_at_the_front() {
+    let entry = |name: &str| (name.to_owned(), Vec::new());
+    let stream: VecDeque<_> =
+        [entry("0.1 read"), entry("0.2 read"), entry("0 write"), entry("0.3 read")].into_iter().collect();
+    assert_eq!(turn_at(&stream, "0.1 read"), Some(0));
+    assert_eq!(turn_at(&stream, "0.2 read"), Some(1));
+    // Behind a write, a reader waits for it.
+    assert_eq!(turn_at(&stream, "0.3 read"), None);
+    // A writer waits for the readers ahead of it, and a task with no entry here has no turn.
+    assert_eq!(turn_at(&stream, "0 write"), None);
+    assert_eq!(turn_at(&stream, "0.4 read"), None);
+    let writing: VecDeque<_> = [entry("0 write"), entry("0.1 read")].into_iter().collect();
+    assert_eq!(turn_at(&writing, "0 write"), Some(0));
+    assert_eq!(turn_at(&writing, "0.1 read"), None);
+    // Anything but a lock's read goes only at the front.
+    let sends: VecDeque<_> = [entry("0 send"), entry("0.1 receive")].into_iter().collect();
+    assert_eq!(turn_at(&sends, "0.1 receive"), None);
+}
+
 /// At a place where tasks meet, each task waits for its turn, so they go in the recorded order
 /// whatever order they arrive in, and each gets what it came to.
 #[test]

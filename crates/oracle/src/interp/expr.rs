@@ -379,7 +379,12 @@ impl Interp {
         if let Some((name, body)) = default.else_block() {
             let mark = self.mark();
             let value = match (name, failure) {
-                (Some(name), Some(failure)) => self.bind(name, failure).and_then(|()| self.block_value(body)),
+                (Some(name), Some(failure)) => {
+                    self.excepts.push((self.cur, name, failure.clone()));
+                    let value = self.bind(name, failure).and_then(|()| self.block_value(body));
+                    self.excepts.pop();
+                    value
+                }
                 _ => self.block_value(body),
             };
             self.restore(mark);
@@ -927,7 +932,12 @@ pub(crate) fn sized(num: Num, n: i128, span: Span) -> Run<Value> {
     if (least..=most).contains(&n) {
         Ok(Value::Sized(num, n))
     } else {
-        crash(format!("this calculation overflows a {}", num.name()), span)
+        // In compiled code's words, which name the size and what it holds.
+        let article = if num.is_unsigned() { "a" } else { "an" };
+        crash(
+            format!("this calculation overflows {article} {}, which holds {least} to {most}", num.name()),
+            span,
+        )
     }
 }
 
@@ -1027,7 +1037,14 @@ fn sized_arithmetic(op: BinOp, num: Num, a: i128, b: i128, span: Span) -> Run<Va
         BinOp::ShiftLeft | BinOp::ShiftRight => {
             let count = u32::try_from(b).ok().filter(|count| *count < bits);
             let Some(count) = count else {
-                return crash("can't shift by a count past the type's width", span);
+                // In compiled code's words: a `u64` is checked as an int's shift is.
+                if num == Num::U64 {
+                    return crash("can't shift by a count outside 0 to 63", span);
+                }
+                return crash(
+                    format!("can't shift {} by a count outside 0 to {}", num.name(), bits - 1),
+                    span,
+                );
             };
             if op == BinOp::ShiftLeft { Ok(wrap(a << count)) } else { Ok(Value::Sized(num, a >> count)) }
         }

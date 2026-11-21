@@ -338,6 +338,14 @@ fn a_conversion_to_what_a_value_is_already_goes() {
         needless_conversions(bracketed),
         (1, "def f(a: str, b: str) -> int:\n    return len(a + b)\n".to_owned())
     );
+    let sized = "def f(n: int, x: float) -> float:\n    y = i64(n)\n    return f64(x) + float(y)\n";
+    assert_eq!(
+        needless_conversions(sized),
+        (2, "def f(n: int, x: float) -> float:\n    y = n\n    return x + float(y)\n".to_owned()),
+        "`i64` is `int` and `f64` is `float`"
+    );
+    let widened = "def f(small: u8) -> int:\n    return i64(small) + 1\n";
+    assert_eq!(needless_conversions(widened).0, 0, "widening changes the type");
     let converts = "def f(n: int, x: float) -> str:\n    y = int(x)\n    return str(n + y)\n";
     assert_eq!(needless_conversions(converts).0, 0, "these change what the value is");
     let formatted = "def f(n: float) -> str:\n    return f\"{str(n):>8}\"\n";
@@ -1147,6 +1155,23 @@ fn a_short_name_is_flagged_unless_it_says_enough() {
         NONE,
         "kept apart, see below"
     );
+}
+
+#[test]
+fn a_parameter_saying_only_which_comes_first_is_short_enough() {
+    // `positional-arguments` lets `dot(first, second)` go unnamed for these, so they have to pass.
+    assert_eq!(name_rules("def dot(a: int, b: int) -> int:\n    return a * b\n"), NONE);
+    assert_eq!(
+        name_rules("def mixed(c: int, d: int) -> int:\n    return c - d\n"),
+        NONE,
+        "`c` and `d` as well"
+    );
+    assert_eq!(
+        name_rules("def total(items: list[int]) -> int:\n    a = len(items)\n    return a\n"),
+        ["short-name"],
+        "a local isn't a placeholder"
+    );
+    assert_eq!(name_rules("def area(e: int) -> int:\n    return e\n"), ["short-name"], "nor is any letter");
 }
 
 #[test]

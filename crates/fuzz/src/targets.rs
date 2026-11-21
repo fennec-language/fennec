@@ -416,9 +416,9 @@ pub(crate) const RANDOM_PROGRAMS: Target = Target {
 };
 
 /// Tasks and a server's rounds that print and make way, wait with timeouts, take jobs from one
-/// queue, send into one channel from several tasks, run `parallel` calls cut short and take locks,
-/// recorded on 1 and 4 threads and each recording replayed on 1, 4 and 16, which runs only when
-/// named, since it builds every input once and runs it 8 times: 2 recordings and 6 replays.
+/// queue, send into one channel from several tasks, run `parallel` calls cut short, take locks and
+/// deadlock, recorded on 1 and 4 threads and each recording replayed on 1, 4 and 16, which runs only
+/// when named, since it builds every input once and runs it 8 times: 2 recordings and 6 replays.
 pub(crate) const REPLAY: Target = Target {
     name: "replay",
     corpus: &["crates/fuzz/seeds/replay"],

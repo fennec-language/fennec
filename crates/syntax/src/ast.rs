@@ -525,6 +525,58 @@ impl TypeExpr {
 }
 
 impl Expr {
+    /// What `fail` raises with this, each judged on its own: itself, or each side of a condition,
+    /// `New() if first else why`.
+    #[must_use]
+    pub fn raised_sides(&self) -> Vec<&Expr> {
+        match &self.kind {
+            ExprKind::Cond { then, otherwise, .. } => {
+                let mut sides = then.raised_sides();
+                sides.extend(otherwise.raised_sides());
+                sides
+            }
+            _ => vec![self],
+        }
+    }
+
+    /// Whether a failure `fail` raises with this was made already: read from a name holding one,
+    /// or from a field or an item of one, or made from one by `with_note`, as `why.with_note(...)`
+    /// is. Anything else is made here, as a call to a type, a case or any function or method is,
+    /// and `New(...).with_note(...)`: a new failure, which carries the words of the one it's raised
+    /// for inside `except` as a note. The compiler, the checker and the reference evaluator all ask
+    /// this, of how it's written alone, so they agree.
+    #[must_use]
+    pub fn made_already(&self) -> bool {
+        // A name written as a type's, as `Closed` is, is a type or a case, not a name holding one.
+        let a_type = |name: &str| {
+            name.chars().next().is_some_and(char::is_uppercase) && name.chars().any(char::is_lowercase)
+        };
+        match &self.kind {
+            ExprKind::Name(name) => !a_type(name),
+            ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => object.made_already(),
+            ExprKind::Call { callee, .. } => matches!(&callee.kind,
+                ExprKind::Attr { object, name, .. } if name == "with_note" && object.made_already()),
+            _ => false,
+        }
+    }
+
+    /// The name a failure made already is read from, as `why` is for `why.with_note(...)`.
+    #[must_use]
+    pub fn made_from(&self) -> Option<&str> {
+        if !self.made_already() {
+            return None;
+        }
+        match &self.kind {
+            ExprKind::Name(name) => Some(name),
+            ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => object.made_from(),
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Attr { object, .. } => object.made_from(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The type an expression spells, as in `json.loads[list[int]]`: a name, a name with
     /// types in brackets, a tuple of types, or any of those with `?`. `None` for anything
     /// else.

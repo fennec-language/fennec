@@ -4,14 +4,16 @@
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Stmt, StmtKind};
 
 use crate::checker::Checker;
+use crate::program::TypeKind;
 
 impl Checker {
     /// Checks each program type's protocol methods, as declared.
     pub(crate) fn check_protocols(&mut self) {
         let mut problems = Vec::new();
         for info in self.program.types.values().filter(|info| self.reports(info.prelude)) {
+            let error = info.kind == TypeKind::Error;
             for method in &info.def.methods {
-                problems.extend(protocol_problem(&info.def.name, method));
+                problems.extend(protocol_problem((&info.def.name, error), method));
             }
         }
         self.diagnostics.extend(problems);
@@ -19,12 +21,45 @@ impl Checker {
 }
 
 /// What's wrong with a protocol method of a type, if it is one and anything is, wherever it's
-/// written: in the type's body or in an `extend`.
-pub(crate) fn protocol_problem(type_name: &str, method: &FnDef) -> Option<Diagnostic> {
+/// written: in the type's body or in an `extend`. `error` says the type is an error.
+pub(crate) fn protocol_problem((type_name, error): (&str, bool), method: &FnDef) -> Option<Diagnostic> {
+    if error && let Some(problem) = words_problem(type_name, method) {
+        return Some(problem);
+    }
     match method.name.as_str() {
         "str" => str_problem(type_name, method),
         "[]mut" => mut_index_problem(type_name, method),
         "is_live" => is_live_problem(type_name, method),
+        _ => None,
+    }
+}
+
+/// What's wrong with an error's way of giving its words, if anything. They come from one place,
+/// `def message(self) -> str`, which printing it calls: a `def str` is refused, so there's never a
+/// second.
+fn words_problem(type_name: &str, method: &FnDef) -> Option<Diagnostic> {
+    match method.name.as_str() {
+        "str" => Some(
+            Diagnostic::new(
+                format!("`{type_name}` is an error, so its words come from `def message`, not `def str`"),
+                method.span,
+            )
+            .with_help("write `def message(self) -> str`, giving back its words: printing it shows them"),
+        ),
+        "message" => {
+            // One with type parameters of its own would never be the one printing calls.
+            let takes_self = matches!(method.params.as_slice(), [this] if this.is_self && !this.is_mut)
+                && method.generics.is_empty();
+            let gives_str =
+                method.ret.as_ref().is_some_and(|ty| ty.name == "str" && ty.args.is_empty() && !ty.optional);
+            (!takes_self || !gives_str || method.fails.is_some()).then(|| {
+                Diagnostic::new(
+                    format!("`{type_name}`'s `def message` takes only `self` and gives back its words"),
+                    method.span,
+                )
+                .with_help("write `def message(self) -> str`")
+            })
+        }
         _ => None,
     }
 }

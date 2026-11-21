@@ -176,8 +176,9 @@ fn same_type(a: Option<&TypeExpr>, b: Option<&TypeExpr>) -> bool {
 }
 
 /// Parameter names that say only where a parameter comes, which the position says already, as in
-/// `dot(a, b)` or `max(a, b)`: an argument isn't asked to be named for one of these.
-const PLACEHOLDERS: [&str; 4] = ["a", "b", "c", "d"];
+/// `dot(a, b)` or `max(a, b)`: an argument isn't asked to be named for one of these, and
+/// `short-name` takes one as a parameter's name.
+pub(crate) const PLACEHOLDERS: [&str; 4] = ["a", "b", "c", "d"];
 
 fn placeholder(taken: Option<&Taken<'_>>) -> bool {
     taken.is_some_and(|taken| PLACEHOLDERS.contains(&taken.name))

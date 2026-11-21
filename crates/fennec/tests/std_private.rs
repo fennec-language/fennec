@@ -102,6 +102,7 @@ fn fennec_std_tests_starts_no_daemon() -> std::io::Result<()> {
     );
     let home = dir.join("home");
     std::fs::create_dir_all(&home)?;
+    let _stopped = crate::executables::DaemonsStopped { home: &home };
     let program = dir.join("hello.fen");
     std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hi\")\n    return\n")?;
     let shown = program.to_string_lossy();
@@ -110,7 +111,7 @@ fn fennec_std_tests_starts_no_daemon() -> std::io::Result<()> {
         command
             .env("FENNEC_HOME", &home)
             .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
-            .env("FENNEC_DAEMON_IDLE", "30")
+            .env("FENNEC_DAEMON_IDLE", crate::executables::DAEMON_IDLE)
             .env_remove("FENNEC_NO_DAEMON")
             .env_remove("CI");
         command

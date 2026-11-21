@@ -1,0 +1,9 @@
+error Overdrawn:
+    short: int
+
+    def message(self) -> str:
+        return f"the account is {self.short} short"
+
+def main(stdout: Stdout):
+    stdout.print("withdrawing")
+    fail Overdrawn(short=12)

@@ -1683,6 +1683,300 @@ pub(crate) const POP_WAYS: [PopWay; 13] = [
     PopWay::Empty,
 ];
 
+/// A `Sized` statement: `sized{id}(stdout)`, a number of one of the eight integer sizes changed a
+/// step at a time and printed after each: checked arithmetic, `wrapping_` and `saturating_`
+/// methods, shifts, bits, `sum`, widening, `parse` and a loop adding one a turn. What a step adds
+/// or takes is worked out, as the program is written, from what the number holds then, so it
+/// overflows, shifts past the width or divides by zero only where the step is meant to, which
+/// stops the program.
+#[derive(Clone, Debug)]
+pub(crate) struct Sizing {
+    pub(crate) id: usize,
+    pub(crate) num: SizeNum,
+    /// What the number starts at.
+    pub(crate) start: i128,
+    pub(crate) steps: Vec<SizedStep>,
+}
+
+/// One of the eight integer sizes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SizeNum {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+impl SizeNum {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            SizeNum::I8 => "i8",
+            SizeNum::I16 => "i16",
+            SizeNum::I32 => "i32",
+            SizeNum::I64 => "i64",
+            SizeNum::U8 => "u8",
+            SizeNum::U16 => "u16",
+            SizeNum::U32 => "u32",
+            SizeNum::U64 => "u64",
+        }
+    }
+
+    pub(crate) const fn bits(self) -> u32 {
+        match self {
+            SizeNum::I8 | SizeNum::U8 => 8,
+            SizeNum::I16 | SizeNum::U16 => 16,
+            SizeNum::I32 | SizeNum::U32 => 32,
+            SizeNum::I64 | SizeNum::U64 => 64,
+        }
+    }
+
+    pub(crate) const fn unsigned(self) -> bool {
+        matches!(self, SizeNum::U8 | SizeNum::U16 | SizeNum::U32 | SizeNum::U64)
+    }
+
+    /// The least and the most it holds.
+    pub(crate) const fn range(self) -> (i128, i128) {
+        let bits = self.bits();
+        if self.unsigned() {
+            (0, (1_i128 << bits) - 1)
+        } else {
+            (-(1_i128 << (bits - 1)), (1_i128 << (bits - 1)) - 1)
+        }
+    }
+
+    /// How a value of it is written from an int: `int(...)` for `i64`, which is `int`, since
+    /// `i64(...)` isn't a conversion yet (#2307).
+    pub(crate) fn convert(self) -> &'static str {
+        if self == SizeNum::I64 { "int" } else { self.name() }
+    }
+
+    /// What a value that's the type's least or most can be written as: an int literal, but past
+    /// the largest int, which a `u64` literal can't be yet.
+    pub(crate) fn literal(self, value: i128) -> String {
+        if let Ok(fits) = i64::try_from(value) {
+            format!("{}({fits})", self.convert())
+        } else {
+            // Past the largest int, only a `u64`, built from three that each fit.
+            let third = value / 3;
+            format!("(u64({third}) + u64({third}) + u64({}))", value - 2 * third)
+        }
+    }
+}
+
+/// Every `SizeNum`, for the generator to pick from.
+pub(crate) const SIZE_NUMS: [SizeNum; 8] = [
+    SizeNum::I8,
+    SizeNum::I16,
+    SizeNum::I32,
+    SizeNum::I64,
+    SizeNum::U8,
+    SizeNum::U16,
+    SizeNum::U32,
+    SizeNum::U64,
+];
+
+/// A step of a `Sized` statement, with the value it uses, worked out as it's written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SizedStep {
+    pub(crate) way: SizedWay,
+    pub(crate) operand: i128,
+}
+
+/// How a `Sized` step changes or reads the number `x`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SizedWay {
+    /// `x += T(k)`.
+    Added,
+    /// `x -= T(k)`.
+    Taken,
+    /// `x *= T(k)`.
+    Times,
+    /// `x //= T(k)`.
+    Halved,
+    /// `x %= T(k)`.
+    Remainder,
+    /// `x = x.wrapping_add(T(k))`.
+    WrappingAdd,
+    /// `x = x.wrapping_sub(T(k))`.
+    WrappingSub,
+    /// `x = x.wrapping_mul(T(k))`.
+    WrappingMul,
+    /// `x = x.saturating_add(T(k))`.
+    SaturatingAdd,
+    /// `x = x.saturating_sub(T(k))`.
+    SaturatingSub,
+    /// `x = x.saturating_mul(T(k))`.
+    SaturatingMul,
+    /// `x = x << T(k)`: the bits past the top dropped.
+    Shifted,
+    /// `x = x >> T(k)`.
+    ShiftedDown,
+    /// `x = x & T(k)`.
+    Masked,
+    /// `x = x | T(k)`.
+    Ored,
+    /// `x = x ^ T(k)`.
+    Xored,
+    /// `x = ~x`.
+    Inverted,
+    /// `int(x) * 3` and `float(x) / 2`, printed.
+    Widened,
+    /// `sum([x, T(k)])`, printed.
+    Summed,
+    /// `for _ in range(k): x += T(1)`: a bound the proofs can't see past.
+    Looped,
+    /// `T.parse("k") except why:`, printed, or refused past what it holds.
+    Parsed,
+}
+
+/// Every `SizedWay`, for the generator to pick from.
+pub(crate) const SIZED_WAYS: [SizedWay; 21] = [
+    SizedWay::Added,
+    SizedWay::Taken,
+    SizedWay::Times,
+    SizedWay::Halved,
+    SizedWay::Remainder,
+    SizedWay::WrappingAdd,
+    SizedWay::WrappingSub,
+    SizedWay::WrappingMul,
+    SizedWay::SaturatingAdd,
+    SizedWay::SaturatingSub,
+    SizedWay::SaturatingMul,
+    SizedWay::Shifted,
+    SizedWay::ShiftedDown,
+    SizedWay::Masked,
+    SizedWay::Ored,
+    SizedWay::Xored,
+    SizedWay::Inverted,
+    SizedWay::Widened,
+    SizedWay::Summed,
+    SizedWay::Looped,
+    SizedWay::Parsed,
+];
+
+/// What a `Sized` step uses, worked out from what `x` holds as it's written: one that keeps the
+/// step from stopping the program, or, where it `breaks` and can, one that stops it. `pick`, from
+/// 0 to 3, chooses among the values that do.
+pub(crate) fn sized_operand(num: SizeNum, x: i128, way: SizedWay, breaks: bool, pick: usize) -> i128 {
+    let (least, most) = num.range();
+    let bits = i128::from(num.bits());
+    let choose = |from: [i128; 4]| from.get(pick).copied().unwrap_or(1);
+    let small = choose([1, 3, 9, 100]);
+    match way {
+        SizedWay::Added | SizedWay::Summed if breaks && x >= 1 => most,
+        SizedWay::Added | SizedWay::Summed => small.min((most - x).max(0)),
+        SizedWay::Taken if breaks && num.unsigned() && x < most => x + 1,
+        SizedWay::Taken if breaks && x <= -2 => most,
+        SizedWay::Taken => small.min((x - least).max(0)),
+        SizedWay::Times if breaks && (x >= 2 || x <= -2) => most,
+        SizedWay::Times => {
+            [choose([2, 3, 0, 1]), 1].into_iter().find(|k| (least..=most).contains(&(x * k))).unwrap_or(1)
+        }
+        SizedWay::Halved | SizedWay::Remainder if breaks => 0,
+        SizedWay::Halved | SizedWay::Remainder => choose([2, 3, 7, 1]),
+        SizedWay::WrappingAdd
+        | SizedWay::WrappingSub
+        | SizedWay::WrappingMul
+        | SizedWay::SaturatingAdd
+        | SizedWay::SaturatingSub
+        | SizedWay::SaturatingMul => choose([1, 7, most / 2, most]),
+        SizedWay::Shifted | SizedWay::ShiftedDown if breaks => bits,
+        SizedWay::Shifted | SizedWay::ShiftedDown => choose([1, 3, bits - 1, 0]),
+        SizedWay::Masked | SizedWay::Ored | SizedWay::Xored => choose([15, 85, most / 3, 0]),
+        SizedWay::Inverted | SizedWay::Widened => 0,
+        SizedWay::Looped if breaks && most - x < 64 => most - x + 1,
+        SizedWay::Looped => choose([1, 3, 5, 2]).min((most - x).max(0)),
+        // Past what it holds is refused, which goes on: an int's text past the largest isn't
+        // read as an int at all, so `i64` keeps to what it holds.
+        SizedWay::Parsed if breaks && num != SizeNum::I64 => most + 1,
+        SizedWay::Parsed => choose([least, most, 7, 0]),
+    }
+}
+
+/// A `Sized` step for `x` as it is: `way` with what [`sized_operand`] works out for it, unless
+/// that would stop the program when it's not meant to, as widening a `u64` past the largest int
+/// would, where it's `~x` instead, which never does.
+pub(crate) fn sized_choice(num: SizeNum, x: i128, way: SizedWay, breaks: bool, pick: usize) -> SizedStep {
+    let operand = sized_operand(num, x, way, breaks, pick);
+    if !breaks && sized_step(num, x, way, operand).is_err() {
+        return SizedStep { way: SizedWay::Inverted, operand: 0 };
+    }
+    SizedStep { way, operand }
+}
+
+/// What a `Sized` step does to `x`, as compiled code does it: the number after it, or what stops
+/// the program, in compiled code's words.
+pub(crate) fn sized_step(num: SizeNum, x: i128, way: SizedWay, k: i128) -> Result<i128, String> {
+    let (least, most) = num.range();
+    let article = if num.unsigned() { "a" } else { "an" };
+    let overflows = || {
+        if num == SizeNum::I64 {
+            "this calculation overflows an int".to_owned()
+        } else {
+            format!("this calculation overflows {article} {}, which holds {least} to {most}", num.name())
+        }
+    };
+    let checked = |value: i128| if (least..=most).contains(&value) { Ok(value) } else { Err(overflows()) };
+    let width = 1_i128 << num.bits();
+    let wrapped = |value: i128| {
+        let low = value.rem_euclid(width);
+        if low > most { low - width } else { low }
+    };
+    let floor = |a: i128, b: i128| {
+        let (quotient, remainder) = (a / b, a % b);
+        if remainder != 0 && (remainder < 0) != (b < 0) { quotient - 1 } else { quotient }
+    };
+    match way {
+        SizedWay::Added | SizedWay::Summed => checked(x + k),
+        SizedWay::Taken => checked(x - k),
+        SizedWay::Times => x.checked_mul(k).map_or_else(|| Err(overflows()), checked),
+        SizedWay::Halved | SizedWay::Remainder if k == 0 => Err("division by zero".to_owned()),
+        SizedWay::Halved => checked(floor(x, k)),
+        SizedWay::Remainder => Ok(x - k * floor(x, k)),
+        SizedWay::WrappingAdd => Ok(wrapped(x + k)),
+        SizedWay::WrappingSub => Ok(wrapped(x - k)),
+        // The low bits of the product, as the bits each holds multiply.
+        SizedWay::WrappingMul => {
+            let bits_of = |value: i128| value.rem_euclid(width).cast_unsigned();
+            Ok(wrapped(bits_of(x).wrapping_mul(bits_of(k)).rem_euclid(width.cast_unsigned()).cast_signed()))
+        }
+        SizedWay::SaturatingAdd => Ok((x + k).clamp(least, most)),
+        SizedWay::SaturatingSub => Ok((x - k).clamp(least, most)),
+        SizedWay::SaturatingMul => {
+            Ok(x.checked_mul(k).unwrap_or(if (x < 0) == (k < 0) { most } else { least }).clamp(least, most))
+        }
+        SizedWay::Shifted | SizedWay::ShiftedDown if !(0..i128::from(num.bits())).contains(&k) => {
+            if num.bits() == 64 {
+                Err("can't shift by a count outside 0 to 63".to_owned())
+            } else {
+                Err(format!("can't shift {} by a count outside 0 to {}", num.name(), num.bits() - 1))
+            }
+        }
+        SizedWay::Shifted => Ok(wrapped(x << k)),
+        SizedWay::ShiftedDown => Ok(x >> k),
+        SizedWay::Masked => Ok(x & k),
+        SizedWay::Ored => Ok(wrapped(x | k)),
+        SizedWay::Xored => Ok(wrapped(x ^ k)),
+        SizedWay::Inverted if num.unsigned() => Ok(most - x),
+        SizedWay::Inverted => Ok(!x),
+        SizedWay::Widened if x > i128::from(i64::MAX) => {
+            Err(format!("it doesn't fit in int, which holds {} to {}: {x}", i64::MIN, i64::MAX))
+        }
+        SizedWay::Looped => {
+            if x + k > most {
+                Err(overflows())
+            } else {
+                Ok(x + k)
+            }
+        }
+        SizedWay::Widened | SizedWay::Parsed => Ok(x),
+    }
+}
+
 /// An `Arrayed` statement: `arrayed{id}(stdout)`, a `Grid{id}` of fixed-size arrays, of ints, of
 /// structs holding a list, of optional structs, of texts and of arrays, held in a list, a Table and
 /// a dict too, beside a loose array, then a step at a time, then what each holds. An array is held
@@ -2172,6 +2466,8 @@ pub(crate) enum Stmt {
     Arrayed(Arraying),
     /// `popped{id}(stdout)`: optionals of a heap type put in a list and taken out every way.
     Popped(Popping),
+    /// `sized{id}(stdout)`: a number of one integer size, changed every way it can be.
+    Sized(Sizing),
     /// `generated{id}(stdout)`: generators that fail partway, wrapped with `? from` and held in
     /// names, tuples, lists, generic structs and a generator kept for later.
     Generated(Generating),

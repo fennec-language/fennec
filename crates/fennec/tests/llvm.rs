@@ -7213,6 +7213,27 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `i64(x)` and `f64(x)` build as `int(x)` and `float(x)`, the widening language.md writes as
+/// `i64(small)` (#2307): each prints just what the plain name does for the same value.
+#[test]
+fn i64_and_f64_build_as_int_and_float_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "i64_f64",
+        "def main(stdout: Stdout):
+    small: u8 = 7
+    half: f32 = 1.5
+    stdout.print(i64(small) * 1000000000000, int(small) * 1000000000000)
+    stdout.print(f64(half) / 4.0, float(half) / 4.0)
+    stdout.print(i64(-2.7), int(-2.7), f64(small) + 0.25, float(small) + 0.25)
+",
+    )?;
+    assert_eq!(printed, "7000000000000 7000000000000\n0.375 0.375\n-2 -2 7.25 7.25\n");
+    Ok(())
+}
+
 /// A `u64` natively is unsigned all the way up: arithmetic, comparisons, shifts and `~` on its
 /// 64 bits. An `f32` is rounded to 32 bits after each operation, and prints as the shortest text
 /// that reads back as the same `f32`. Both go in structs, lists, f-strings with a format, `str`,
@@ -7725,6 +7746,41 @@ fn a_shift_drops_bits_past_a_sizes_top() -> std::io::Result<()> {
         "sized_shifts_drop_bits",
         "def main(stdout: Stdout):\n    a: u8 = 200\n    b: i8 = 100\n    c: u16 = 65535\n    d: i32 = 1\n    e: u32 = 3\n    stdout.print(a << 1, b << 1, c << 4, d << 31, e << 31, a << 7)\n",
         "144 -56 65520 -2147483648 2147483648 0\n",
+    )
+}
+
+/// Every binary operator has an assigning form, which applies it and writes the result back, as in
+/// Python: `//=`, `%=` and `**=` among them (#2308). Each gives what its operator gives, on an
+/// `int`, a `float` and a `u8`.
+#[test]
+fn every_assigning_form_gives_what_its_operator_gives() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "assigning_forms",
+        "def main(stdout: Stdout):
+    mut n = 100
+    n += 7
+    n -= 2
+    n *= 3
+    n //= 4
+    n %= 50
+    n **= 2
+    mut bits = 12
+    bits &= 10
+    bits |= 1
+    bits ^= 15
+    bits <<= 3
+    bits >>= 1
+    mut x = 7.5
+    x /= 2.0
+    mut small: u8 = 200
+    small //= 3
+    small %= 7
+    stdout.print(n, bits, x, small)
+",
+        "784 24 3.75 3\n",
     )
 }
 
@@ -9532,12 +9588,10 @@ fn deadlock_fixture_runs_with(
                 .env("FENNEC_THREADS", threads)
                 .envs(env.iter().copied())
                 .output_within()?;
-            let said = (
-                String::from_utf8_lossy(&ran.stdout),
-                String::from_utf8_lossy(&ran.stderr).replace(dir.to_string_lossy().as_ref(), "<dir>"),
-            );
+            // As `apart_from` writes it: `<dir>/`, whatever the system's separator.
+            let said = apart_from(&dir, outcome(&ran));
             assert_eq!(
-                (said.0.as_ref(), said.1.as_str(), ran.status.code()),
+                (said.0.as_str(), said.1.as_str(), said.2),
                 (out, err, Some(code)),
                 "{name} on {threads} threads"
             );
@@ -11811,7 +11865,7 @@ fn a_function_ending_in_a_with_that_fails_builds_natively() -> std::io::Result<(
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 []\n0\n")?;
+    prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 [\"Refused(code=1)\"]\n0\n")?;
     prints_in_both_builds("with_fails_last_ways", WITH_FAILS_LAST_WAYS, "unguard 7\nunguard 2\n7 -2 8\n")?;
     // A function ending in a `match` whose `ref` case always fails, which ends failing too.
     prints_in_both_builds("ref_case_fails_last", REF_CASE_FAILS_LAST, "5 Kind.Slider(value=5)\n")
@@ -14588,7 +14642,8 @@ def main(stdout: Stdout):
     stdout.print(said(() => nested(5)?), said(() => nested(2)?))
     stdout.print(said(() => listed(5)?), said(() => listed(2)?))
 ";
-    let stop = "IoError.Other(reason=\"stop\")";
+    // Printed, an `IoError` gives its words: what it holds as its reason.
+    let stop = "stop";
     let wanted = format!("{stop} 1\n{stop} 3\n{stop} 5\n{stop} [0, 2]\n");
     let dir = folder("generator_failure")?;
     let program = dir.join("failing.fen");
@@ -28217,6 +28272,40 @@ def main(stdout: Stdout):
     )
 }
 
+/// A `Table` of a struct the program never makes builds: its items are reached by the struct's
+/// type, which nothing else defines then, and `opt` refused the type unsized (#2334). A struct in
+/// the item's place too, and a `Table` held as a field.
+#[test]
+fn a_table_of_a_struct_never_made_builds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_never_made",
+        "from std.collections import Table
+
+struct Spot:
+    x: int
+    y: int
+
+struct Unit:
+    name: str
+    at: Spot
+
+struct World:
+    units = Table[Unit]()
+
+def main(stdout: Stdout):
+    units = Table[Unit]()
+    stdout.print(len(units.ids()), len(units.values()), len(units.items()), len(units))
+    world = World()
+    stdout.print(len(world.units.ids()), len(world.units))
+    return
+",
+        "0 0 0 0\n0 0\n",
+    )
+}
+
 /// `items()` and `values()` gone through in order, with slots empty, at the start and the end,
 /// and everything an item can be, which the loop walks with no list made.
 const WALKING_A_MAP: &str = r#"from std.collections import Table
@@ -29743,6 +29832,39 @@ fn a_field_grown_by_a_calls_text_grows_where_it_is() -> std::io::Result<()> {
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// `out += piece` on a `ref out: str` parameter grows the caller's text where it is, as on a
+/// local, so a function called once a piece builds a text with about as much work as the pieces:
+/// counted, not timed. The parameter's slot is the caller's, and `+=` there once made a new text
+/// and copied all of the old into it each time, so four times the pieces did sixteen times the
+/// work (#2322). A field handed by `ref`, which was copied the same way, grows where it is too,
+/// and a copy the caller kept first keeps what it had.
+#[test]
+fn a_ref_str_parameter_grows_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counted = |pieces: usize| -> std::io::Result<(u64, u64)> {
+        let source = format!(
+            "struct Text:\n    text = \"\"\n\ndef put(ref out: str, piece: str):\n    out += piece\n\ndef main(stdout: Stdout):\n    mut held = \"\"\n    for at in range({pieces}):\n        put(ref held, str(at % 10))\n    mut whole = Text()\n    for at in range({pieces}):\n        put(ref whole.text, str(at % 7))\n    stdout.print(len(held), len(whole.text))\n    return\n"
+        );
+        let said = counts_of(&format!("ref_str_grown_{pieces}"), &source)?;
+        let number = |name: &str| count(&said, name).unwrap_or(u64::MAX);
+        Ok((number("allocations"), number("allocated_bytes")))
+    };
+    let (small, small_bytes) = counted(10_000)?;
+    let (big, big_bytes) = counted(40_000)?;
+    // A handful, whatever the count: each text's few regrowths, and the pieces' own texts.
+    assert!(small < 200 && big < 200, "{small} and {big} allocations");
+    // Four times the pieces, at most about four times the bytes, where copying the text for each
+    // piece made it sixteen times.
+    assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
+    prints_in_both_builds(
+        "ref_str_grown_kept",
+        "def put(ref out: str, piece: str):\n    out += piece\n\ndef main(stdout: Stdout):\n    mut held = \"ab\"\n    kept = held\n    for at in range(3):\n        put(ref held, str(at))\n    stdout.print(held, kept)\n    return\n",
+        "ab012 ab\n",
+    )
 }
 
 /// A field grown by a call that fails keeps what it had: the call runs before the field is read,

@@ -378,13 +378,26 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// Ends the program, saying what `main` failed with. What the IR ends this block with is
+    /// Ends the program, saying what `main` failed with: as `shown` has it, its words and then
+    /// itself, when it's given, or else as the failure shows. What the IR ends this block with is
     /// never reached, so it goes in a block of its own.
-    pub(crate) fn main_failed(&mut self, error: &Operand, span: Span) -> Result<(), String> {
-        let (value, kind) = self.operand(error)?;
-        let shown = self.shown_text(&value, &kind)?;
+    pub(crate) fn main_failed(
+        &mut self,
+        error: &Operand,
+        shown: Option<&Operand>,
+        span: Span,
+    ) -> Result<(), String> {
         let start = self.literal("`main` failed: ");
-        let text = self.joined(&start, &shown, true);
+        let text = if let Some(shown) = shown {
+            // The program ends here, so a block made of a header isn't let go of.
+            let (shown, kind) = self.operand(shown)?;
+            let shown = if kind == Kind::Str && self.headers() { self.text_block(&shown).0 } else { shown };
+            self.joined(&start, &shown, false)
+        } else {
+            let (value, kind) = self.operand(error)?;
+            let shown = self.shown_text(&value, &kind)?;
+            self.joined(&start, &shown, true)
+        };
         // Its notes go under it, a line each, and its call chain: where it was raised, and each
         // `?` it passed up through.
         let word = self.notes_word(error)?;
@@ -1557,6 +1570,13 @@ tagged:
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "str" => self.text_of_value(dest.ok_or("no result")?, first.ok_or("no argument")?, span),
+            // The value as it shows inside another: text in quotes, and a failure as it is.
+            "repr" => {
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let text = self.shown_text(&value, &kind)?;
+                let text = self.text_value(&text);
+                self.assign(dest.ok_or("no result")?, &text)
+            }
             "str.code" => {
                 // One byte of ASCII is its own code; anything else goes to the runtime, which
                 // also fails for a string that isn't one character.

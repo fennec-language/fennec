@@ -1,7 +1,8 @@
 no sale: apple is out of stock
 SellError.OutOfStock(item="apple")
 [SellError.OutOfStock(item="apple")]
-we don't sell pear
-ShelfError.Broken(shelf=3)
+we don't sell pear we don't sell pear
+ShelfError.Broken(shelf=3) ShelfError.Broken(shelf=3)
 ShelfError.Broken(shelf=7) ["apple is out of stock"]
 ["apple is out of stock", "at the front desk"]
+we don't sell fig ShelfError.Broken(shelf=1)

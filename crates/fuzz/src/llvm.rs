@@ -164,6 +164,18 @@ pub(crate) fn built_and_run(
     name: &str,
     release: bool,
 ) -> Result<(Vec<u8>, String, bool), String> {
+    built_and_run_laid_out(source, name, release, false)
+}
+
+/// [`built_and_run`], with every type held in a block of its own (`FENNEC_BOXED_TYPES=1`) where
+/// `boxed` says, as it was before types were laid out in place, rather than as the compiler lays
+/// them out now.
+pub(crate) fn built_and_run_laid_out(
+    source: &str,
+    name: &str,
+    release: bool,
+    boxed: bool,
+) -> Result<(Vec<u8>, String, bool), String> {
     let work = work().join(name);
     std::fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
     let (program, executable) = (work.join("program.fen"), work.join("program"));
@@ -178,9 +190,18 @@ pub(crate) fn built_and_run(
         .env("FENNEC_HOME", &work)
         .env("FENNEC_NO_CACHE", "1")
         .env("FENNEC_NO_DAEMON", "1");
+    if boxed {
+        command.env("FENNEC_BOXED_TYPES", "1");
+    } else {
+        command.env_remove("FENNEC_BOXED_TYPES");
+    }
     let built = built_within(&mut command)?;
     if !built.status.success() {
-        let how = if release { "with --release" } else { "as a dev build" };
+        let how = match (release, boxed) {
+            (true, _) => "with --release",
+            (false, true) => "as a dev build with FENNEC_BOXED_TYPES=1",
+            (false, false) => "as a dev build",
+        };
         return Err(format!("it didn't build {how}:\n{}", String::from_utf8_lossy(&built.stderr)));
     }
     let (printed, said, succeeded) = ran(&executable, &[], &work)?;

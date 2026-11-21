@@ -1,30 +1,14 @@
 //! The syntax tree's encoding. Structs write their fields in order; enums write a tag for
 //! the variant, then its fields.
 
-use fennec_syntax::{
+use crate::{
     Annotation, Arg, BinOp, Case, CompKind, Copied, Expr, ExprKind, Extension, FStrPart, Field, FnDef,
     Generic, Holds, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef,
     TypeDef, TypeExpr, UnaryOp, WithName,
 };
 
 use super::{Decode, Encode, Reader, Writer};
-
-/// Encodes and decodes a struct field by field.
-macro_rules! fields {
-    ($ty:ident { $($field:ident),* $(,)? }) => {
-        impl Encode for $ty {
-            fn encode(&self, to: &mut Writer) {
-                $(self.$field.encode(to);)*
-            }
-        }
-
-        impl Decode for $ty {
-            fn decode(from: &mut Reader<'_>) -> Option<Self> {
-                Some($ty { $($field: Decode::decode(from)?),* })
-            }
-        }
-    };
-}
+use crate::{codec_fields as fields, codec_units as units};
 
 fields!(Module { items, std_rewritten, holds, files, copied });
 fields!(Copied { at, len, from });
@@ -46,26 +30,6 @@ fields!(Stmt { kind, span });
 fields!(Expr { kind, span });
 fields!(MatchArm { pattern, guard, body, span });
 fields!(Arg { name, is_mut, value });
-
-/// Encodes and decodes an enum whose variants have no fields, by position.
-macro_rules! units {
-    ($ty:ident [$($variant:ident),* $(,)?]) => {
-        impl Encode for $ty {
-            fn encode(&self, to: &mut Writer) {
-                const ALL: &[$ty] = &[$($ty::$variant),*];
-                let at = ALL.iter().position(|known| known == self).unwrap_or(0);
-                to.tag(u8::try_from(at).unwrap_or(0));
-            }
-        }
-
-        impl Decode for $ty {
-            fn decode(from: &mut Reader<'_>) -> Option<Self> {
-                const ALL: &[$ty] = &[$($ty::$variant),*];
-                ALL.get(usize::from(from.tag()?)).copied()
-            }
-        }
-    };
-}
 
 units!(UnaryOp[Neg, Not, BitNot]);
 units!(CompKind[List, Generator, Set, Dict]);

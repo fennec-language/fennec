@@ -139,7 +139,7 @@ fn note_at(home: &std::path::Path) -> PathBuf {
 /// How many times checking the analyses builds used again has disagreed, for this cache
 /// (`Cache::analyses_found_wrong`). It's part of what names a stored program (`built::key`), so a
 /// program stored before is never put out after: whatever its settings, it may have used the
-/// analysis found wrong.
+/// analysis found wrong. While it can't be read, `u64::MAX`, nothing is put out from the store.
 pub(crate) fn analyses_found_wrong() -> u64 {
     crate::run::cache().map_or(0, |cache| cache.analyses_found_wrong())
 }
@@ -168,9 +168,8 @@ pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::Analys
     }
     let note_at = note_at(home);
     let _ = std::fs::create_dir_all(home.join("daemon"));
-    if let Some(cache) = crate::run::cache() {
-        let _ = cache.count_analysis_found_wrong();
-    }
+    // The stored programs are taken back only if the count that names them is written.
+    let programs = crate::run::cache().is_some_and(|cache| cache.count_analysis_found_wrong().is_ok());
     let taken = std::mem::take(&mut *BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner));
     let mut named = Vec::new();
     for built in &taken {
@@ -191,16 +190,26 @@ pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::Analys
         String::new()
     };
     let text = format!(
-        "The build daemon analyzed again the functions builds used the analysis of from the builds before, and for {} of them it disagrees: {}{more}. This is a mistake in the compiler, not in the program: please report it with the program and this file.\n\nTaken back: every program `fennec build` and `fennec run` had stored{}.\n\nFennec {}\n",
+        "The build daemon analyzed again the functions builds used the analysis of from the builds before, and for {} of them it disagrees: {}{more}. This is a mistake in the compiler, not in the program: please report it with the program and this file.\n\nTaken back: {}{}.\n\nFennec {}\n",
         differ.len(),
         shown.join(", "),
+        if programs {
+            "every program `fennec build` and `fennec run` had stored"
+        } else {
+            "no stored program, as the count that names them couldn't be written"
+        },
         named.iter().map(|what| format!(", {what}")).collect::<String>(),
         env!("CARGO_PKG_VERSION"),
     );
     let written = std::fs::write(&report, text);
     let said = if written.is_ok() { format!(", reported in {}", report.display()) } else { String::new() };
+    let taken = if programs {
+        "every stored program, run and test result made since is taken back"
+    } else {
+        "the test results made since are taken back, but the stored programs couldn't be"
+    };
     let note = format!(
-        "note: the build daemon analyzed again what builds used the analyses of, and it disagreed{said}: the programs they made may be wrong, so every stored program, run and test result made since is taken back, and the next build analyzes every function\n"
+        "note: the build daemon analyzed again what builds used the analyses of, and it disagreed{said}: the programs they made may be wrong, so {taken}, and the next build analyzes every function\n"
     );
     let _ = std::fs::write(&note_at, note);
     drop(check);

@@ -57,9 +57,9 @@ pub(crate) struct Kept {
     key: Key,
     /// The build that last worked it out or used it, by its number.
     built: u64,
-    /// How many builds have used it again since it was worked out or last checked after a build,
-    /// from where its count starts ([`first_count`]): it's checked by the [`TURNS`]th (see
-    /// [`to_check_after`]).
+    /// How many builds have used it again since it was last checked after a build, or since it was
+    /// worked out, from where its count starts then ([`first_count`]): it's checked by the
+    /// [`TURNS`]th (see [`to_check_after`]).
     unchecked: u32,
 }
 
@@ -436,10 +436,10 @@ pub(crate) fn to_check_after(program: &fennec_ir::Program, used: Vec<(String, Ke
 /// Each analysis a build used again, by function, with its key.
 type Used = Vec<(String, Key)>;
 
-/// Where an analysis's count of uses starts, when it's worked out or checked: its function's place
-/// in the [`TURNS`], by a hash of its name. So what one build works out comes due over the next
-/// sixteen, about a sixteenth each, rather than all in one, and each is still checked by its
-/// sixteenth use.
+/// Where an analysis's count of uses starts when it's worked out: its function's place in the
+/// [`TURNS`], by a hash of its name. So what one build works out comes due over the next sixteen,
+/// about a sixteenth each, rather than all in one. A check sets the count back to 0, so each is
+/// checked every sixteen uses after that, and the places stay spread.
 fn first_count(name: &str) -> u32 {
     let hash = crate::keys::key_of("fennec analysis checked in turn", &name);
     u32::from(hash.first().copied().unwrap_or(0)) % TURNS
@@ -480,7 +480,7 @@ impl AnalysesCheck {
                     if let Some(entry) = kept.by_function.get_mut(name)
                         && entry.key == key
                     {
-                        entry.unchecked = first_count(name);
+                        entry.unchecked = 0;
                     }
                 }
             }
@@ -532,8 +532,8 @@ mod tests {
     }
 
     /// An analysis used again build after build, with nothing near it edited, is picked to be
-    /// checked by its sixteenth use since it was worked out, at its own place in the sixteen, and
-    /// at every use after till it's checked.
+    /// checked by its sixteenth use since it was worked out, at its own place in the sixteen; once
+    /// checked, at its sixteenth use after that, and not before.
     #[test]
     fn an_analysis_used_again_is_checked_by_its_sixteenth_use() -> Result<(), String> {
         let text = "def doubled(count: int) -> int:\n    return count * 2\n\ndef main(stdout: Stdout):\n    stdout.print(doubled(2))\n    return\n";
@@ -543,13 +543,32 @@ mod tests {
         let mut keeping = Keeping::from(None);
         let _ = crate::analysis::whole_keeping(&program, &keeping);
         let due = TURNS - first_count("doubled");
-        for uses in 1..=TURNS {
+        for uses in 1..due {
             keeping = Keeping::from(Some(keeping.into_kept()));
             let _ = crate::analysis::whole_keeping(&program, &keeping);
             let (picked, near) = to_check_after(&program, keeping.take_used());
             assert_eq!(near, 0);
+            assert!(
+                !picked.iter().any(|(name, _)| name == "doubled"),
+                "use {uses}, due at {due}: {picked:?}"
+            );
+        }
+        // Due now: picked, and checked, as the daemon checks it, with the store where it keeps it.
+        keeping = Keeping { checks_after: true, ..Keeping::from(Some(keeping.into_kept())) };
+        let _ = crate::analysis::whole_keeping(&program, &keeping);
+        keeping.finish();
+        let check = AnalysesCheck::take().ok_or("nothing was picked to check")?;
+        assert_eq!(check.run(), Vec::<String>::new());
+        drop(check);
+        let mut kept = KEPT.lock().map_err(|_| "the store's lock")?.take().ok_or("nothing kept")?;
+        // Checked, it's picked again only at its sixteenth use after.
+        for uses in 1..=TURNS {
+            keeping = Keeping::from(Some(kept));
+            let _ = crate::analysis::whole_keeping(&program, &keeping);
+            let (picked, _) = to_check_after(&program, keeping.take_used());
             let doubled = picked.iter().any(|(name, _)| name == "doubled");
-            assert_eq!(doubled, uses >= due, "use {uses}, due at {due}: {picked:?}");
+            assert_eq!(doubled, uses == TURNS, "use {uses} after the check: {picked:?}");
+            kept = keeping.into_kept();
         }
         Ok(())
     }

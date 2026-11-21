@@ -82,6 +82,7 @@ pub(crate) fn build_here(path: &str, output: Option<&str>, release: bool) -> Exi
     if let Some(state) = &state
         && let Some(files) = files_now(path, state)
         && crate::verdict::same_files(state, &files)
+        && crate::kept::analyses_found_wrong() != u64::MAX
         && stored(&cache, &key(path, &files, release), output)
     {
         return ExitCode::SUCCESS;

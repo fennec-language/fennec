@@ -125,12 +125,15 @@ fn built(
         );
         (cache, name)
     });
-    let ready = started_from.as_ref().is_some_and(|(cache, name)| {
-        cache
-            .read(RUN_ROOTS, name)
-            .and_then(|root| String::from_utf8(root).ok())
-            .is_some_and(|root| crate::aot::stored_executable(cache, &root, executable).is_some())
-    });
+    // A count of analyses found wrong that can't be read names nothing that can be trusted.
+    let trusted = crate::kept::analyses_found_wrong() != u64::MAX;
+    let ready = trusted
+        && started_from.as_ref().is_some_and(|(cache, name)| {
+            cache
+                .read(RUN_ROOTS, name)
+                .and_then(|root| String::from_utf8(root).ok())
+                .is_some_and(|root| crate::aot::stored_executable(cache, &root, executable).is_some())
+        });
     if !ready {
         let checked = match checked {
             Checked::Resolved(signatures) => signatures.map(|signatures| *signatures),

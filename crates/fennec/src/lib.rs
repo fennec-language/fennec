@@ -10,6 +10,7 @@ mod aot;
 mod bench;
 mod built;
 mod changes;
+mod child;
 mod copies;
 mod copy_rule;
 mod daemon;
@@ -160,21 +161,25 @@ pub fn main_with(names: StdNames) -> ExitCode {
     command()
 }
 
-/// The command, on this process's arguments.
-fn command() -> ExitCode {
-    fennec_rt::use_tls();
-    // Loading a kit parses only the files that changed since a parse of them was kept, and the
-    // standard library is parsed by the first process of a build, and read by the rest.
+/// Loading a kit parses only the files that changed since a parse of them was kept, and the
+/// standard library is parsed by the first process of a build, and read by the rest.
+fn keep_parses() {
     if let Some(cache) = run::cache() {
         fennec_kit::keep_parses_in(Box::new(parsed::Kept::new(cache.clone())));
         fennec_syntax::keep_prelude_in(Box::new(parsed::Kept::new(cache)));
     }
+}
+
+/// The command, on this process's arguments.
+fn command() -> ExitCode {
+    fennec_rt::use_tls();
+    keep_parses();
     builds_checking();
     let Some(args) = arguments() else {
         return ExitCode::FAILURE;
     };
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
-    if !matches!(words.as_slice(), ["cache" | "daemon", ..]) {
+    if !matches!(words.as_slice(), ["cache" | "daemon" | "build-child", ..]) {
         upkeep::start_if_due();
     }
     match words.as_slice() {
@@ -215,6 +220,7 @@ fn command() -> ExitCode {
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),
         ["daemon", action] => daemon::command(action),
+        ["build-child"] => child::serve(),
         ["lsp"] => lsp::lsp(),
         ["notices", program] => notices::command(program),
         ["dev", "checks"] => on_big_stack(fallbacks::checks, "."),

@@ -25,7 +25,10 @@
 //! when named too: random, well-typed programs built both ways and checked against a reference
 //! evaluator written here, which `fennec-fuzz show programs <file>` writes out. `replay` runs only
 //! when named as well: tasks and a server's rounds that print and make way, recorded and replayed
-//! on several thread counts, which `fennec-fuzz show replay <file>` writes out. `fennec-fuzz oracle`
+//! on several thread counts, which `fennec-fuzz show replay <file>` writes out. `fault-writes` runs
+//! only when named, with `FENNEC_FAULTED` naming a `fennec` beside a runtime built with the
+//! `faults` feature: files written while the runtime fails its work on the disk partway, which
+//! `fennec-fuzz show fault-writes <file>` writes out with each run's rules. `fennec-fuzz oracle`
 //! runs the first of a run's random programs, 200 unless `--inputs` says, through the oracle
 //! alone, and says how many it ran and why it refused the rest, since the builds are held to the
 //! oracle only on the programs it runs.
@@ -36,6 +39,7 @@ mod base64_rules;
 mod csv_rules;
 mod edits;
 mod engines;
+mod fault_writes;
 mod generate;
 mod html_rules;
 mod http_rules;
@@ -78,6 +82,7 @@ fn main() -> ExitCode {
         ["show", "replay", file] => show(Path::new(file), replay_rules::written),
         ["show", "edits", file] => show(Path::new(file), edits::shown),
         ["show", "killed-writes", file] => show(Path::new(file), killed_writes::written),
+        ["show", "fault-writes", file] => show(Path::new(file), fault_writes::written),
         ["show", "reader", name] => llvm::reader_source(name).map_or_else(
             || Err(format!("there's no reader for `{name}`; there are {}", llvm::reader_names().join(", "))),
             |source| {
@@ -240,6 +245,7 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
             targets::RANDOM_PROGRAMS.name,
             targets::REPLAY.name,
             targets::KILLED_WRITES.name,
+            targets::FAULT_WRITES.name,
             targets::EDITS.name,
         ]
         .contains(&target.name)

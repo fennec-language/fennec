@@ -5528,6 +5528,213 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// The daemon keeps each function's analysis from one build to the next: after a body edit it
+/// uses most of them again, each checked against analyzing it again, and makes the program a
+/// build here makes, byte for byte. A `fennec run` through it uses them again too.
+#[cfg(unix)]
+#[test]
+fn a_daemon_build_uses_the_last_builds_analyses_again() {
+    let (folder, kit, home) = small_kit("kept-analyses").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let here_home = folder.join("home-here");
+    let build = |home: &Path, daemon: bool| {
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", home);
+        command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        if daemon {
+            // A test's own daemons, which start for a Fennec folder in the temp folder.
+            command
+                .env_remove("FENNEC_NO_DAEMON")
+                .env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
+        }
+        command.output().unwrap()
+    };
+    // The note's counts: "note: used 12 of 15 functions' analyses again, ...".
+    let used = |stderr: &str| -> (usize, usize) {
+        let line = stderr.lines().find(|line| line.starts_with("note: used ")).unwrap_or("");
+        let words: Vec<&str> = line.split(' ').collect();
+        let count = |at: usize| words.get(at).and_then(|word| word.parse().ok()).unwrap_or(0);
+        (count(2), count(4))
+    };
+    let program = |printed: u32| {
+        format!(
+            "def doubled(number: int) -> int:\n    return number * 2\n\n\
+             def main(stdout: Stdout):\n    stdout.print(doubled(3))\n    stdout.print({printed})\n"
+        )
+    };
+    for (edit, printed) in [3, 4].into_iter().enumerate() {
+        std::fs::write(kit.join("src/main.fen"), program(printed)).unwrap();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let here = build(&here_home, false);
+        assert_eq!(here.status.code(), Some(0), "{}", text(&here.stderr));
+        let made_here = std::fs::read(kit.join("prog")).unwrap();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let made = build(&home, true);
+        let stderr = text(&made.stderr);
+        assert_eq!(made.status.code(), Some(0), "{stderr}");
+        assert_eq!(std::fs::read(kit.join("prog")).unwrap(), made_here);
+        let (again, of) = used(&stderr);
+        assert!(of > 1, "{stderr}");
+        if edit == 0 {
+            assert_eq!(again, 0, "{stderr}");
+        } else {
+            // Every analysis but `main`'s, whose body changed: `doubled` is still called with 3.
+            assert!(again > 0 && again < of, "{stderr}");
+        }
+    }
+    // `fennec run` builds through the daemon too, using what the build before kept.
+    for printed in [5, 6] {
+        std::fs::write(kit.join("src/main.fen"), program(printed)).unwrap();
+        let mut command = crate::executables::fennec_command();
+        command.args(["run", "."]).current_dir(&kit).env("FENNEC_HOME", &home);
+        command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+        let ran = command.output().unwrap();
+        let stderr = text(&ran.stderr);
+        assert_eq!(ran.status.code(), Some(0), "{stderr}");
+        assert!(text(&ran.stdout).ends_with(&format!("6\n{printed}\n")), "{}", text(&ran.stdout));
+        let (again, of) = used(&stderr);
+        assert!(again > 0 && again < of, "{stderr}");
+    }
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// A build after an edit carries over what the daemon kept of the kit's last check for what the
+/// edit left as it was, and makes the program a build here makes, byte for byte: here a function in
+/// the middle of the file grows, which moves a type and a function after it. Every build that
+/// carried anything over is compared with checking it all again (`FENNEC_COMPARE_KEPT`), which
+/// fails the build on a difference.
+#[cfg(unix)]
+#[test]
+fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_here() {
+    let (folder, kit, home) = small_kit("kept-daemon").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let here_home = folder.join("home-here");
+    let main = kit.join("src/main.fen");
+    let before = "def main(stdout: Stdout):\n    stdout.print(first(1) + edited(2) + later(3))\n\n\
+                  def first(n: int) -> int:\n    return n + 1\n\n\
+                  def edited(n: int) -> int:\n    return n * 2\n\n\
+                  struct Point:\n    x = 1\n\n\
+                  def later(n: int) -> int:\n    return Point().x + n\n";
+    let after = before.replace("    return n * 2\n", "    total = n * 2 + 1\n    return total\n");
+    let build = |daemon: bool, home: &Path| {
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", home);
+        command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_COMPARE_KEPT", "1").env_remove("CI");
+        if daemon {
+            command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
+        }
+        command.output().unwrap()
+    };
+    for source in [before, after.as_str()] {
+        std::fs::write(&main, source).unwrap();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let here = build(false, &here_home);
+        let made_here = std::fs::read(kit.join("prog")).ok();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let made = build(true, &home);
+        assert_eq!(made.status.code(), Some(0), "{}", text(&made.stderr));
+        assert_eq!(made.status.code(), here.status.code());
+        assert_eq!(text(&made.stderr), text(&here.stderr));
+        assert!(made_here.is_some());
+        assert_eq!(std::fs::read(kit.join("prog")).ok(), made_here);
+    }
+    let run = std::process::Command::new(kit.join("prog")).output().unwrap();
+    assert_eq!(text(&run.stdout), "11\n");
+    let mut command = crate::executables::fennec_command();
+    command.args(["daemon", "status"]).current_dir(&kit).env("FENNEC_HOME", &home);
+    command
+        .env("FENNEC_DAEMON_IDLE", "30")
+        .env("FENNEC_COMPARE_KEPT", "1")
+        .env_remove("CI")
+        .env_remove("FENNEC_NO_DAEMON")
+        .env("FENNEC_DAEMONS", home.join("noted-daemons"));
+    let status = text(&command.output().unwrap().stdout);
+    assert!(status.contains("checks kept: 1 kit"), "{status}");
+    let carried = status.split("the last build carried over ").nth(1).and_then(|rest| rest.split(' ').next());
+    assert!(
+        carried.and_then(|carried| carried.parse::<usize>().ok()).is_some_and(|carried| carried > 0),
+        "{status}"
+    );
+    let mut command = crate::executables::fennec_command();
+    command.args(["daemon", "stop"]).current_dir(&kit).env("FENNEC_HOME", &home);
+    command
+        .env("FENNEC_DAEMON_IDLE", "30")
+        .env("FENNEC_COMPARE_KEPT", "1")
+        .env_remove("CI")
+        .env_remove("FENNEC_NO_DAEMON")
+        .env("FENNEC_DAEMONS", home.join("noted-daemons"));
+    command.output().unwrap();
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// When the daemon checks all of a kit again in the background, after a build that carried
+/// anything over, and disagrees with that build, the next build says so and checks all of it, with
+/// the files as they were too: what that build put in the store is taken back, so the program it
+/// made isn't put out again. A dev compiler here leaves out the rule that checks a callee's callers
+/// again once its bounds change (`FENNEC_KEPT_RULE_OFF`), and nothing compares before a build goes
+/// on (`FENNEC_COMPARE_KEPT=0`), so only the check in the background can catch it.
+#[cfg(unix)]
+#[test]
+fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let (_folder, kit, home) = small_kit("kept-disagrees").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let main = kit.join("src/main.fen");
+    let before = "interface Shape:\n    def area(self) -> float\n\n\
+                  struct Dot:\n    x: int\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(measure(Dot(1)))\n\n\
+                  def measure[T](item: T) -> int:\n    return 1\n";
+    let after = before.replace("measure[T](item", "measure[T: Shape](item");
+    let fennec = |args: &[&str], daemon: bool| {
+        let mut command = crate::executables::fennec_command();
+        command.args(args).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", "30");
+        command.env("FENNEC_COMPARE_KEPT", "0").env("FENNEC_KEPT_RULE_OFF", "bounds").env_remove("CI");
+        if daemon {
+            command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
+        }
+        command.output().unwrap()
+    };
+    std::fs::write(&main, before).unwrap();
+    let first = fennec(&["build", ".", "-o", "prog"], true);
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+    // With the rule left out, the edit's build carries over `main`, which no longer fits.
+    std::fs::write(&main, &after).unwrap();
+    let wrong = fennec(&["build", ".", "-o", "prog"], true);
+    assert_eq!(wrong.status.code(), Some(0), "{}", text(&wrong.stderr));
+    let reported = || {
+        std::fs::read_dir(home.join("daemon")).is_ok_and(|listing| {
+            listing
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().starts_with("kept-check-differs-"))
+        })
+    };
+    let waiting = std::time::Instant::now();
+    while !reported() {
+        assert!(waiting.elapsed().as_secs() < 120, "the daemon never found the build wrong");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Built again with the files as they are, it says so, checks all of it and refuses it.
+    let again = fennec(&["build", ".", "-o", "prog"], true);
+    let said = text(&again.stderr);
+    assert_eq!(again.status.code(), Some(1), "{said}");
+    assert!(said.contains("checked the last build of this kit all again, and it disagreed"), "{said}");
+    assert!(said.contains("may be wrong"), "{said}");
+    let refused = fennec(&["build", ".", "-o", "prog"], false);
+    assert_eq!(refused.status.code(), Some(1), "{}", text(&refused.stderr));
+    fennec(&["daemon", "stop"], true);
+}
+
 /// Two builds of one kit at once through the daemon queue, so neither's output takes in the
 /// other's: each prints what a build made here prints, once.
 #[cfg(unix)]

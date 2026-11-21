@@ -802,7 +802,10 @@ impl FnCx<'_> {
                 Type::None
             }
             Type::Optional(inner) if optional => Type::optional(self.method_on(call, inner, false)),
-            ty if ty.maybe_none() => self.unusable(crate::messages::missing_step(object.span), args),
+            ty if ty.maybe_none() => {
+                let problem = self.changed_since_checked(object, object.span);
+                self.unusable(problem.unwrap_or_else(|| crate::messages::missing_step(object.span)), args)
+            }
             Type::Result(value, _) if method == "expect" => {
                 self.expect_reason(args, span);
                 value.as_ref().clone()

@@ -4,10 +4,11 @@
 //!
 //! The functions are `fennec_rt::embed`'s; this crate gives them names a linker can find,
 //! and asks the system for what only it can give: Windows's fine timer, and a process's end.
-//! Those are the things here Rust calls unsafe.
+//! It also has mimalloc call it when it runs out of memory. Those are the things here Rust calls
+//! unsafe.
 #![expect(
     unsafe_code,
-    reason = "exporting the runtime's functions under fixed names, and calling the system to end the process"
+    reason = "exporting the runtime's functions under fixed names, calling the system to end the process, and giving mimalloc its error handler"
 )]
 
 use fennec_rt::embed::guarded::rollback;
@@ -200,6 +201,53 @@ const fn same(a: &[u8], b: &[u8]) -> bool {
 #[cfg(not(feature = "sanitize"))]
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(not(feature = "sanitize"))]
+unsafe extern "C" {
+    /// mimalloc's: sets the function it calls on an error, as just before it gives back null for an
+    /// allocation it couldn't make, with the error's code and `argument`. Declared by hand from
+    /// mimalloc.h's `mi_register_error(mi_error_fun* fun, void* arg)`, so nothing checks it against
+    /// the header: read the header again whenever the `mimalloc` pin moves.
+    fn mi_register_error(
+        handler: Option<extern "C" fn(std::ffi::c_int, *mut std::ffi::c_void)>,
+        argument: *mut std::ffi::c_void,
+    );
+}
+
+/// Has running out of memory said in Fennec's words. Rust's own way, for an allocation that comes
+/// back null, is "memory allocation of N bytes failed", a note about `RUST_BACKTRACE`, and an abort
+/// that dumps core, with what the program printed lost (runtime exhaustion audit, 2026-11-20).
+/// mimalloc calls its error handler just before it gives back null, so the program ends there and
+/// nothing is added to the allocations that succeed: a wrapper checking each for null cost
+/// `grep_tool` 2% of its instructions.
+#[cfg(not(feature = "sanitize"))]
+fn say_when_out_of_memory() {
+    // SAFETY: `ran_out` is a function of the type mimalloc calls, and reads nothing through its
+    // argument, which is null.
+    unsafe { mi_register_error(Some(ran_out), std::ptr::null_mut()) }
+}
+
+/// mimalloc's error handler. Out of memory, or asked for more than it could ever give, ends the
+/// program saying so (`aot::out_of_memory`). Anything else, as freeing what it never gave, is left
+/// to mimalloc, which goes on.
+#[cfg(not(feature = "sanitize"))]
+extern "C" fn ran_out(code: std::ffi::c_int, _: *mut std::ffi::c_void) {
+    if code == ENOMEM || code == EOVERFLOW {
+        aot::out_of_memory();
+    }
+}
+
+/// The C library's code for running out of memory, the same on every system Fennec runs on.
+#[cfg(not(feature = "sanitize"))]
+const ENOMEM: std::ffi::c_int = 12;
+
+/// The C library's code for a request too large to ever give, which differs between systems.
+#[cfg(all(not(feature = "sanitize"), target_vendor = "apple"))]
+const EOVERFLOW: std::ffi::c_int = 84;
+#[cfg(all(not(feature = "sanitize"), windows))]
+const EOVERFLOW: std::ffi::c_int = 132;
+#[cfg(all(not(feature = "sanitize"), not(target_vendor = "apple"), not(windows)))]
+const EOVERFLOW: std::ffi::c_int = 75;
 
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {
@@ -537,6 +585,8 @@ export! {
 pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 {
     #[cfg(windows)]
     fine_timer();
+    #[cfg(not(feature = "sanitize"))]
+    say_when_out_of_memory();
     let code = aot::run(entry, length, stop);
     #[cfg(windows)]
     end_process(code);
@@ -602,6 +652,69 @@ fn end_process(code: i32) -> ! {
 
 #[cfg(test)]
 mod tests {
+    /// A block of a page, aligned to one, for asking mimalloc for memory with a large alignment.
+    #[cfg(not(feature = "sanitize"))]
+    #[repr(align(4096))]
+    struct Page(#[expect(dead_code, reason = "only its size and alignment are asked for")] [u8; 4096]);
+
+    /// What a child of `running_out_of_memory_is_said_however_mimalloc_comes_to_it` does, as
+    /// `RUNTIME_TEST_OUT_OF_MEMORY` says, with mimalloc's error handler set: asks for a petabyte, more than
+    /// any machine's address space, as a new block, a zeroed one, a grown one or one aligned to a
+    /// page, or says mimalloc refused a request as too large to ever give. Nothing, otherwise.
+    #[test]
+    #[cfg(not(feature = "sanitize"))]
+    fn runs_out_of_memory_when_asked() {
+        let Ok(how) = std::env::var("RUNTIME_TEST_OUT_OF_MEMORY") else { return };
+        super::say_when_out_of_memory();
+        let petabyte = 1_usize << 50;
+        let held = match how.as_str() {
+            "new" => Vec::<u8>::with_capacity(petabyte).capacity(),
+            "zeroed" => vec![0_u8; petabyte].capacity(),
+            "grown" => {
+                let mut grown = vec![1_u8; 16];
+                grown.reserve_exact(petabyte);
+                grown.capacity()
+            }
+            "aligned" => Vec::<Page>::with_capacity(petabyte / 4096).capacity(),
+            _ => {
+                super::ran_out(super::EOVERFLOW, std::ptr::null_mut());
+                0
+            }
+        };
+        std::hint::black_box(held);
+    }
+
+    /// Every way mimalloc comes to give back null for a Rust allocation calls its error handler
+    /// first, which says the program ran out of memory, once, before Rust's own "memory allocation
+    /// of N bytes failed" and abort could: a new block, a zeroed one, a grown one, one aligned to a
+    /// page, and a request too large to ever give, which mimalloc calls `EOVERFLOW`. Outside an
+    /// executable there's no runtime to end the program with 1, so it aborts after the words.
+    #[test]
+    #[cfg(not(feature = "sanitize"))]
+    fn running_out_of_memory_is_said_however_mimalloc_comes_to_it() -> std::io::Result<()> {
+        for how in ["new", "zeroed", "grown", "aligned", "too large"] {
+            let ran = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "tests::runs_out_of_memory_when_asked", "--test-threads=1"])
+                .env("RUNTIME_TEST_OUT_OF_MEMORY", how)
+                .output()?;
+            let said = String::from_utf8_lossy(&ran.stderr);
+            assert!(!ran.status.success(), "{how}: it went on");
+            assert_eq!(said.matches("error: out of memory\n").count(), 1, "{how}: {said}");
+            assert!(!said.contains("memory allocation of"), "{how}: {said}");
+        }
+        Ok(())
+    }
+
+    /// An error mimalloc has that isn't running out of memory, as a block freed twice, a corrupted
+    /// list or a block it never gave, is left to mimalloc, which goes on: the handler gives back.
+    #[test]
+    #[cfg(not(feature = "sanitize"))]
+    fn other_errors_are_left_to_mimalloc() {
+        for code in [11, 14, 22] {
+            super::ran_out(code, std::ptr::null_mut());
+        }
+    }
+
     /// Each function said never to fail is one the library exports, under that name.
     #[test]
     fn every_function_said_never_to_fail_is_exported() {

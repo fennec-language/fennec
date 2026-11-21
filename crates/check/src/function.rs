@@ -201,6 +201,9 @@ pub(crate) struct FnCx<'c> {
     /// The `shared` types whose locks are held, which a lock body can take only the inner
     /// types of: those they hold.
     pub(crate) locked_types: Vec<String>,
+    /// Where each field path checked for `None`, like `holder.cell`, might have changed since, for
+    /// saying so when it's read as if it couldn't be `None`.
+    pub(crate) changed_at: std::collections::HashMap<String, Span>,
     /// The error it says it fails with, from `fails E`.
     pub(crate) fails: Option<Type>,
 }
@@ -257,6 +260,7 @@ impl<'c> FnCx<'c> {
             fails: None,
             lock: None,
             locked_types: Vec::new(),
+            changed_at: std::collections::HashMap::new(),
         }
     }
 
@@ -1231,21 +1235,42 @@ impl<'c> FnCx<'c> {
         ty
     }
 
-    /// Forgets what was learned about a name's fields, because it's changing: each one holds
-    /// its field's type again.
-    pub(crate) fn forget_fields(&mut self, root: &str) {
-        let prefix = format!("{root}.");
-        let paths: Vec<String> = self
+    /// Forgets what was learned about a place's fields, as `place` changes at `at`: the field paths
+    /// it is, or is the start of, each hold their field's type again. One that was checked for
+    /// `None` notes where it might have changed (`changed_at`). Paths it doesn't reach keep what
+    /// was learned: `holder.cell.health = 1` and `holder.name = ""` leave `holder.cell` as checked.
+    pub(crate) fn forget_under(&mut self, place: &str, at: Span) {
+        let prefix = format!("{place}.");
+        let paths: Vec<(String, Type)> = self
             .scopes
             .iter()
             .flat_map(|scope| &scope.bindings)
-            .filter(|binding| binding.name.starts_with(&prefix))
-            .map(|binding| binding.name.clone())
+            .filter(|binding| {
+                binding.name.starts_with(&prefix) || (place.contains('.') && binding.name == place)
+            })
+            .map(|binding| (binding.name.clone(), binding.ty.clone()))
             .collect();
-        for path in paths {
+        for (path, was) in paths {
             let ty = self.path_type(&path);
+            if !self.checker.settled(&was).maybe_none() && self.checker.settled(&ty).maybe_none() {
+                self.changed_at.insert(path.clone(), at);
+            }
             self.set_type(&path, ty);
         }
+    }
+
+    /// "This might be None" for `span`, a field or method of `object`, when `object` is a field path
+    /// checked for `None` that might have changed since: it says where. None when it isn't one.
+    pub(crate) fn changed_since_checked(&self, object: &Expr, span: Span) -> Option<Diagnostic> {
+        let path = path(object)?;
+        let at = *self.changed_at.get(&path)?;
+        Some(
+            Diagnostic::new("this might be None", span)
+                .with_help(format!(
+                    "`{path}` was checked for `None`, but the line the note points at might have changed it: check it again after that line, with `if {path} is not None:`"
+                ))
+                .also_at_the(fennec_syntax::Also::Changed, at),
+        )
     }
 
     /// At the top of a loop: the body may have run already, so what it changes could hold
@@ -1285,7 +1310,7 @@ impl<'c> FnCx<'c> {
                     && let Some(root) = name.split('.').next()
                     && self.lookup(root).is_some_and(|(_, is_mut)| is_mut)
                 {
-                    self.forget_fields(&name);
+                    self.forget_under(&name, callee.span);
                 }
             }
             _ => {}
@@ -1300,7 +1325,7 @@ impl<'c> FnCx<'c> {
         if let Some(binding) = self.binding_mut(&name) {
             binding.ty = binding.declared.clone();
         }
-        self.forget_fields(&name);
+        self.forget_under(&name, target.span);
     }
 
     /// Records which member of its union each name holds, or doesn't: a name known to hold one
@@ -1389,6 +1414,7 @@ impl<'c> FnCx<'c> {
     /// Records that these names aren't None.
     pub(crate) fn narrow(&mut self, names: &[String]) {
         for name in names {
+            self.changed_at.remove(name);
             let Some(binding) = self.binding_mut(name) else { continue };
             let (ty, declared) = (binding.ty.clone(), binding.declared.clone());
             let narrowed = match self.checker.settled(&ty) {

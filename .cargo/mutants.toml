@@ -1,3 +1,5 @@
-# Mutants in one crate are often caught by another crate's tests: the examples, run through
-# the `fennec` command, check the type checker and LLVM backend together.
-test_workspace = true
+# A mutant runs its own crate's tests and a small set of `fennec`'s that run programs end to end,
+# picked by a nextest filter (`.github/scripts/mutants-tests.sh`), and nextest stops at the first
+# failure. Every test in the workspace takes CI three jobs of 17 to 28 minutes, past any limit a
+# mutant can have: when each ran them all, every one timed out and none was caught or missed.
+test_tool = "nextest"

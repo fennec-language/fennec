@@ -341,7 +341,7 @@ quick() {
   # With no git settings but git's own, as CI's runners have: this Mac's git names a new
   # repository's first branch `main`, which hid two tests that needed it, and CI found them.
   local script
-  for script in test-fetch test-open-pr test-landing test-sweep-worktrees test-flakes test-nightly-report test-gate-lock; do
+  for script in test-fetch test-open-pr test-landing test-sweep-worktrees test-flakes test-nightly-report test-mutants test-gate-lock; do
     if ! GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null ".github/scripts/$script.sh" > "$said" 2>&1; then
       cat "$said"
       echo "$script" >> "$names"

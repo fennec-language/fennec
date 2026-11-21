@@ -573,6 +573,11 @@ impl Accounts {
         }
     }
 
+    /// Its name in a recording or a replay, if it's a launched task's.
+    pub(in crate::embed) fn replay_name(&self) -> Option<Arc<str>> {
+        self.replay.as_ref().map(crate::replay::Task::name)
+    }
+
     /// Marks what it makes from now on as the blocks of the task numbered `task` on this thread.
     pub(in crate::embed) fn set_task(&mut self, task: u64) {
         self.task = super::heap::task_mark(task);

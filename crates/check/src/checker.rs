@@ -65,7 +65,134 @@ macro_rules! tables {
                 $(self.$field.extend(tables.$field.clone());)*
             }
         }
+
+        impl HoldsSpan for Tables {
+            // Every table, so one added later can't be left out of what's looked through.
+            fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+                $(self.$field.holds_span(hit) ||)* false
+            }
+        }
     };
+}
+
+/// What a check found that can hold spans: a function's kept result is carried over into a check
+/// after an edit only if it holds none of the text the edit changed or moved (`Checker::carrying`).
+/// `hit` says whether a span overlaps that text.
+pub(crate) trait HoldsSpan {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool;
+}
+
+/// What holds no span.
+macro_rules! no_spans {
+    ($($ty:ty),* $(,)?) => {
+        $(impl HoldsSpan for $ty {
+            fn holds_span(&self, _hit: &dyn Fn(Span) -> bool) -> bool {
+                false
+            }
+        })*
+    };
+}
+
+no_spans!(
+    String,
+    bool,
+    usize,
+    Type,
+    crate::generic_copies::Call,
+    crate::union_sources::Dispatch,
+    crate::routes::Route,
+    (String, Type, String, String),
+);
+
+impl HoldsSpan for (u32, u32) {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        hit(Span { start: self.0, end: self.1 })
+    }
+}
+
+impl HoldsSpan for Span {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        hit(*self)
+    }
+}
+
+impl HoldsSpan for (u32, u32, String) {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        hit(Span { start: self.0, end: self.1 })
+    }
+}
+
+impl HoldsSpan for (String, Expr) {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        self.1.holds_span(hit)
+    }
+}
+
+impl HoldsSpan for Expr {
+    /// Its own span, and each expression's inside it, which a value the checker made, as a zero
+    /// holding a field's default, has from other text.
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        if hit(self.span) {
+            return true;
+        }
+        let mut probe = [Stmt { kind: fennec_syntax::StmtKind::Expr(self.clone()), span: self.span }];
+        let mut found = false;
+        fennec_syntax::visit::in_stmts(&mut probe, &mut |inner| found = found || hit(inner.span));
+        found
+    }
+}
+
+impl HoldsSpan for crate::lend_lowering::Source {
+    /// The source's definition, written in where it's used, and the task it starts.
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        hit(self.def.span) || self.task.holds_span(hit)
+    }
+}
+
+impl HoldsSpan for crate::launch::Launch {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        self.task.holds_span(hit)
+    }
+}
+
+impl<T: HoldsSpan> HoldsSpan for Option<T> {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        self.as_ref().is_some_and(|inner| inner.holds_span(hit))
+    }
+}
+
+impl<T: HoldsSpan> HoldsSpan for Vec<T> {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        self.iter().any(|inner| inner.holds_span(hit))
+    }
+}
+
+impl<T: HoldsSpan> HoldsSpan for BTreeSet<T> {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        self.iter().any(|inner| inner.holds_span(hit))
+    }
+}
+
+impl<K: HoldsSpan, V: HoldsSpan> HoldsSpan for BTreeMap<K, V> {
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        self.iter().any(|(key, value)| key.holds_span(hit) || value.holds_span(hit))
+    }
+}
+
+impl HoldsSpan for Graph {
+    // Named in full, so a field added later can't be left out of what's looked through.
+    fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
+        let Graph { own_callers, waits, takes_locks, lock_calls, values, handovers, unfollowed, reached } =
+            self;
+        own_callers.holds_span(hit)
+            || waits.holds_span(hit)
+            || takes_locks.holds_span(hit)
+            || lock_calls.holds_span(hit)
+            || values.holds_span(hit)
+            || handovers.holds_span(hit)
+            || unfollowed.holds_span(hit)
+            || reached.holds_span(hit)
+    }
 }
 
 tables! {
@@ -573,10 +700,13 @@ impl Checker {
     /// with the functions written inside it: what it gives back and fails with, its typed body and
     /// locals, what it wrote in the tables and what it adds to what's followed across functions.
     /// The edit changed nothing the program declares besides its functions and tests
-    /// (`check_to_build_keeping`). One that calls a function that's gone is checked again, and so
-    /// are the callers of each function checked again that gives back or fails with something else
-    /// now (`run`). It keeps what it finds apart too, for a check after it.
-    pub(crate) fn carrying(module: &Module, mut previous: Checked) -> Checker {
+    /// (`check_to_build_keeping`), though a declaration may have moved. `dirty` is the text, in
+    /// `previous`'s spans, that the edit changed or moved: one whose kept result holds a span there,
+    /// as a default written in from a declaration after the edit, is checked again. So is one that
+    /// calls a function that's gone, and so are the callers of each function checked again that gives
+    /// back or fails with something else now (`run`). It keeps what it finds apart too, for a check
+    /// after it.
+    pub(crate) fn carrying(module: &Module, mut previous: Checked, dirty: &[Span]) -> Checker {
         let mut next = Checker::with_imports_unchecked(module);
         next.keeping = true;
         next.before_bounds =
@@ -593,20 +723,7 @@ impl Checker {
             return next;
         }
         let mut carried = left_as_they_were(&previous, &next.program);
-        // A function written inside one carried over goes with it: its key sorts after the one
-        // it's in, so what's inside that goes too.
-        let mut nested: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for key in previous.defs.keys() {
-            if next.program.functions.contains_key(key) || !previous.signatures.functions.contains_key(key) {
-                continue;
-            }
-            if let Some((outer, _)) = key.rsplit_once('.')
-                && carried.contains(outer)
-            {
-                nested.entry(outer.to_owned()).or_default().push(key.clone());
-                carried.insert(key.clone());
-            }
-        }
+        let mut nested = written_inside(&previous, &next.program, &mut carried);
         // What the check before found is taken, not copied: it's done with once this is made.
         let mut locals: BTreeMap<String, Vec<(String, Type)>> = BTreeMap::new();
         for (local, ty) in std::mem::take(&mut previous.signatures.locals) {
@@ -629,9 +746,21 @@ impl Checker {
                 || tables.is_some_and(|tables| tables.types().into_iter().any(Type::has_var))
                 || locals.get(key).is_some_and(|locals| locals.iter().any(|(_, ty)| ty.has_var()))
         };
-        let open: BTreeSet<String> = carried.iter().filter(|key| open(key)).cloned().collect();
-        // What's inside one that's checked again is checked again with it.
-        carried.retain(|key| !open.iter().any(|outer| key == outer || key.starts_with(&format!("{outer}."))));
+        // One whose kept result holds a span of text the edit changed or moved: what it found there
+        // is no longer what's there.
+        let in_dirty = |at: Span| dirty.iter().any(|edited| overlaps(at, *edited));
+        let stale = |key: &String| !dirty.is_empty() && previous.holds_span(key, &in_dirty);
+        let unusable: Vec<String> = carried.iter().filter(|key| open(key) || stale(key)).cloned().collect();
+        // A function and those written inside it are checked again together, whichever of them
+        // can't be carried over: from the outermost.
+        let outermost: BTreeSet<String> =
+            unusable.iter().map(|key| outermost_carried(key, &nested)).collect();
+        carried.retain(|key| {
+            !outermost.iter().any(|outer| key == outer || key.starts_with(&format!("{outer}.")))
+        });
+        for outer in &outermost {
+            nested.remove(outer);
+        }
         // One carried over used no type without its import when the check before looked.
         let passed: BTreeSet<(&str, u32, u32)> = carried
             .iter()
@@ -903,14 +1032,15 @@ impl Checker {
     /// parameters' bounds, or for a `with` source, which its callers keep whole to write in where
     /// they use it, anything at all.
     fn changed_functions(&self) -> BTreeSet<String> {
+        let bounds_rule_off = crate::kept_rule_off("bounds");
         self.states
             .iter()
             .filter_map(|(key, state)| match state {
                 State::Done(signature) if !self.carried.contains(key) => {
                     let entry = self.program.functions.get(key);
                     let signature_changed = self.before.get(key).is_none_or(|was| was != signature);
-                    let bounds_changed =
-                        entry.is_some_and(|entry| self.before_bounds.get(key) != Some(&bounds_of(entry)));
+                    let bounds_changed = !bounds_rule_off
+                        && entry.is_some_and(|entry| self.before_bounds.get(key) != Some(&bounds_of(entry)));
                     let source = entry.is_some_and(|entry| {
                         entry.def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH)
                     });
@@ -1754,7 +1884,8 @@ impl Checker {
         // Looked up by key, not searched for in a list of the library's functions: that made this
         // check about a function's typed body against each of thousands of keys.
         let functions = &self.program.functions;
-        let prelude = |key: &str| functions.get(key).is_some_and(|entry| entry.prelude);
+        let library = self.in_library();
+        let prelude = |key: &str| !library && functions.get(key).is_some_and(|entry| entry.prelude);
         let mut unknown: Vec<(u32, u32)> = self
             .typed
             .iter()
@@ -2045,6 +2176,45 @@ fn bounds_of(entry: &FnEntry) -> Bounds {
 /// Whether `functions` holds `entry` under `key`, as it was.
 fn self_same(functions: &BTreeMap<String, FnEntry>, key: &str, entry: &FnEntry) -> bool {
     functions.get(key).is_some_and(|now| now == entry)
+}
+
+/// The functions written inside each of `carried`, by its key, which go with it, each added to
+/// `carried` too. Its key sorts after the one it's in, so what's inside that goes too. One written
+/// inside another is in `previous` alone: a check adds it as it checks the one it's in.
+fn written_inside(
+    previous: &Checked,
+    program: &Program,
+    carried: &mut BTreeSet<String>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut nested: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for key in previous.defs.keys() {
+        if program.functions.contains_key(key) || !previous.signatures.functions.contains_key(key) {
+            continue;
+        }
+        if let Some((outer, _)) = key.rsplit_once('.')
+            && carried.contains(outer)
+        {
+            nested.entry(outer.to_owned()).or_default().push(key.clone());
+            carried.insert(key.clone());
+        }
+    }
+    nested
+}
+
+/// Whether `at` overlaps `edited`, or touches it at either end: an edit there can make the token
+/// ending or starting there longer. A span covering nothing does where it is.
+fn overlaps(at: Span, edited: Span) -> bool {
+    at.start <= edited.end && edited.start <= at.end
+}
+
+/// The outermost function `key` is written inside, by way of `nested`, which holds the functions
+/// written inside each carried over: `key` itself when it's written inside none.
+fn outermost_carried(key: &str, nested: &BTreeMap<String, Vec<String>>) -> String {
+    let mut found = key.to_owned();
+    while let Some((outer, _)) = nested.iter().find(|(_, inside)| inside.contains(&found)) {
+        found.clone_from(outer);
+    }
+    found
 }
 
 /// The functions and tests `previous` checked that `program` has just as they were, but those that

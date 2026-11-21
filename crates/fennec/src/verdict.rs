@@ -18,6 +18,10 @@ const BUILD: &str = env!("FENNEC_BUILD");
 /// What a run has to do: the program to run it on, the tests to run, and the rest.
 pub(crate) struct Plan {
     pub(crate) program: Program,
+    /// The definitions of the files whose text may have none kept, as the files have them, for the
+    /// next edit to be held against: worked out before checking, which writes in what it found and
+    /// declarations of its own.
+    pub(crate) rows: HashMap<String, Vec<Row>>,
     pub(crate) wanted: Vec<String>,
     pub(crate) unchanged: Vec<TestRecord>,
     /// What the whole program's check found, which the next quick check holds an edit against.
@@ -207,7 +211,8 @@ pub(crate) fn plan(
     }
     let dir = Path::new(path);
     let loaded = fennec_kit::load_modules_to_test(dir, path, &changed).ok()?;
-    let rows = rows_by_module(&loaded, files);
+    // As loaded, before anything's checked: these are kept for the next edit too (`remember`).
+    let rows = rows_of_modules(&loaded, files, &|module| changed.iter().any(|known| known == module));
     let mut bodies: HashSet<String> = HashSet::new();
     for module in &changed {
         let old = cache.file_rows(state.files.get(module)?.text)?;
@@ -239,6 +244,7 @@ pub(crate) fn plan(
     }
     Some(Plan {
         program,
+        rows,
         wanted: wanted.iter().map(|record| record.test.clone()).collect(),
         unchanged: unchanged.into_iter().cloned().collect(),
         facts,
@@ -618,14 +624,7 @@ pub(crate) fn remember_checked(
     (files, program): (&[KitFile], &Program),
     facts: &KitFacts,
 ) {
-    // Only a file whose text is new needs its definitions worked out: after an edit, that's the
-    // file edited.
-    let new: HashSet<&str> = files
-        .iter()
-        .filter(|file| !cache.has_file_rows(file.text))
-        .map(|file| file.module.as_str())
-        .collect();
-    let rows = rows_of_modules(program, files, &|module| new.contains(module));
+    let rows = new_rows(cache, files, program);
     for file in files {
         if let Some(rows) = rows.get(&file.module) {
             fennec_build::kept("keep a file's definitions", cache.store_file_rows(file.text, rows));
@@ -636,15 +635,30 @@ pub(crate) fn remember_checked(
     fennec_build::kept("keep the program's check", stored);
 }
 
-/// Remembers that all of a kit's tests pass with its files as they are, with its lock verdicts.
+/// The definitions of each of a kit's `files` that has none kept for its text, as `program`, just
+/// loaded, has them: only a file whose text is new needs them worked out, and after an edit that's
+/// the file edited. A program that's been checked won't do, since the check writes in what it found,
+/// and declarations of its own, like the one a `shared` type is made of, in whichever file it saw
+/// first: the next edit would then find the file's definitions changed, and check all of the kit.
+pub(crate) fn new_rows(cache: &Cache, files: &[KitFile], program: &Program) -> HashMap<String, Vec<Row>> {
+    let new: HashSet<&str> = files
+        .iter()
+        .filter(|file| !cache.has_file_rows(file.text))
+        .map(|file| file.module.as_str())
+        .collect();
+    rows_of_modules(program, files, &|module| new.contains(module))
+}
+
+/// Remembers that all of a kit's tests pass with its files as they are, with its lock verdicts,
+/// and the definitions of each file whose text has none kept, worked out before the program was
+/// checked (`new_rows`).
 pub(crate) fn remember(
     (cache, name): (&Cache, &str),
-    (files, program): (&[KitFile], &Program),
+    (files, program, rows): (&[KitFile], &Program, &HashMap<String, Vec<Row>>),
     facts: &KitFacts,
 ) -> std::io::Result<()> {
-    // A file that wasn't loaded already has its definitions kept. One that was may not, and one
-    // that has no definitions at all leaves the next edit to it looking at the whole program.
-    let rows = rows_by_module(program, files);
+    // A file that wasn't loaded already has its definitions kept. One that has no definitions at
+    // all leaves the next edit to it looking at the whole program.
     for file in files {
         if let Some(rows) = rows.get(&file.module)
             && !cache.has_file_rows(file.text)
@@ -703,5 +717,53 @@ mod tests {
         // The changed module, and the modules of the tests it affects: `module2`'s, and tests 3, 13,
         // 23 and 33, in modules 3, 6, 2 and 5. In one order, sorted.
         assert_eq!(want.2, ["module2", "module3", "module5", "module6"]);
+    }
+
+    /// A quick test run keeps an edited file's definitions as the file has them, not as checking
+    /// left them. The check makes the declaration a `shared` type is held in, which isn't written in
+    /// any file, so it was kept with whichever file a load had first: in a quick run's, the file
+    /// edited. Its next edit then found a definition gone, and looked at all of the kit, as every
+    /// second edit to a big kit did. Here two edits in a row are each planned quickly.
+    #[test]
+    fn an_edited_files_definitions_are_kept_as_it_has_them() {
+        let root = fennec_temp::Temp::folder("rows-as-written").unwrap();
+        let manifest =
+            format!("name = \"probe\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+        let edited = |times: &str| {
+            format!(
+                "from counter import count\n\ndef twice(n: int) -> int:\n    return n * {times} + count()\n\n\
+                 test \"twice adds the count\":\n    assert twice(2) > 0\n"
+            )
+        };
+        let counter = "struct Tally:\n    n: int\n\ndef read(tally: shared Tally) -> int:\n    lock tally as held:\n        return held.n\n\n\
+                       def count() -> int:\n    shared tally = Tally(n=1)\n    return read(tally)\n";
+        let main = "from edited import twice\n\ndef main(stdout: Stdout):\n    stdout.print(twice(1))\n";
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for (file, text) in
+            [("kit.toml", manifest.as_str()), ("src/main.fen", main), ("src/counter.fen", counter)]
+        {
+            std::fs::write(root.join(file), text).unwrap();
+        }
+        std::fs::write(root.join("src/edited.fen"), edited("2")).unwrap();
+        let home = fennec_temp::Temp::folder("rows-as-written-home").unwrap();
+        let cache = super::Cache::new(&home);
+        let path = root.display().to_string();
+        let name = "rows-as-written";
+        // All of it, as the first `fennec test` checks it.
+        let files = super::kit_files(&path, None).unwrap();
+        let mut program = crate::load(&path, fennec_kit::Entry::Tests).unwrap();
+        let rows = super::new_rows(&cache, &files, &program);
+        let signatures = crate::copy_rule::check_to_run(&mut program.module, &program.sources).unwrap();
+        let facts = super::KitFacts::of(super::KitNames::of(&program.module.items), &signatures);
+        super::remember((&cache, name), (&files, &program, &rows), &facts).unwrap();
+        // Each edit's text is another length, so it's read again.
+        for times in ["30", "400"] {
+            std::fs::write(root.join("src/edited.fen"), edited(times)).unwrap();
+            let state = super::last_state((&cache, name)).unwrap();
+            let files = super::kit_files(&path, Some(&state)).unwrap();
+            let plan = super::plan(&path, (&cache, name), (&state, &files), &HashMap::new());
+            let plan = plan.unwrap_or_else(|| panic!("the edit to `* {times}` was looked at as a whole"));
+            super::remember((&cache, name), (&files, &plan.program, &plan.rows), &plan.facts).unwrap();
+        }
     }
 }

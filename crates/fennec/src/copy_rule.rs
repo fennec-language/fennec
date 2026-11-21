@@ -207,7 +207,7 @@ pub(crate) fn check_rules_to_build(
     module: &mut Module,
     sources: &Sources,
 ) -> Result<Option<fennec_check::Signatures>, Vec<Diagnostic>> {
-    let (signatures, as_left) = fennec_check::check_to_build_saying(module)?;
+    let (signatures, as_left) = crate::kept::check_to_build(module, sources)?;
     let copies = implicit_copies(module, &signatures, sources);
     if copies.is_empty() { Ok(as_left.then_some(signatures)) } else { Err(copies) }
 }
@@ -232,6 +232,12 @@ fn baked(module: &mut Module, check: Check) -> Result<fennec_check::Signatures, 
 /// Works out a module's top-level constants while compiling: each that isn't a literal already
 /// becomes the literal of its value, in the module as written, which is still to be checked.
 pub(crate) fn bake(module: &mut Module) -> Result<(), Vec<Diagnostic>> {
+    // A program whose constants are all literals has nothing to work out, so it isn't checked
+    // here to find that: what a run checks next checks it.
+    let unworked = |item: &fennec_syntax::Item| matches!(item, fennec_syntax::Item::Const { value, .. } if !is_literal(value));
+    if !module.items.iter().any(unworked) {
+        return Ok(());
+    }
     let mut resolved = module.clone();
     let signatures = fennec_check::check_to_run(&mut resolved)?;
     bake_resolved(module, &resolved, &signatures).map(|_| ())

@@ -11,6 +11,9 @@
 //! - LLVM keeps each function's object in the edit cache. A build reusing it, with
 //!   `FENNEC_CACHE_AUDIT` writing each reused unit again to check it, has to make the same
 //!   executable and the same objects, byte for byte, as a build with `FENNEC_NO_CACHE`.
+//! - LLVM keeps each function's analysis from one build to the next, as the daemon does. Each
+//!   version is lowered here and its analyses worked out using again what the version before
+//!   kept, every one used again checked against analyzing it again.
 //!
 //! The program is made of pieces, each with a first way of writing it and others an edit switches
 //! to: a body, a signature a test calls, a bound, a callee changing what its caller loops over,
@@ -21,7 +24,8 @@
 //! written as the module's name, the module an enum and a function reached by a leading dot are
 //! imported from swapped, a function and an import moved to another file, and a file growing past
 //! its 256 KiB span slot, which moves the files after it. Then lines put in above declarations,
-//! and a parameter's and a field's default read by a function written before them. The input
+//! and a parameter's and a field's default read by a function written before them. Last, a callee
+//! that stops keeping what it's handed, or changing it, while its callers stay as written. The input
 //! picks 1 to 4 edits in a row, each switching one or two pieces and sometimes moving one, so
 //! later declarations move, and whether each version's types are laid out boxed. An edit may
 //! leave the program failing to check, which is compared too.
@@ -51,7 +55,7 @@ const FILE_MARK: &str = "# file: ";
 const PAD_MARK: &str = "# pad: ";
 
 /// Every piece. `main` calls into each.
-const PIECES: [Piece; 19] = [
+const PIECES: [Piece; 20] = [
     // A body.
     Piece {
         variants: &[
@@ -200,6 +204,16 @@ const PIECES: [Piece; 19] = [
     },
     // Lines put in above what follows, or taken out.
     Piece { variants: &["", "# A note above what follows.\n\n# And another.\n", "\n\n"] },
+    // What a callee says of what it's handed changes while its callers stay as written: whether
+    // it keeps what it's handed, and whether it changes it. The LLVM lane keeps each caller's
+    // analysis across builds with what it asked of its callees.
+    Piece {
+        variants: &[
+            "def kept_list(items: list[int]) -> list[int]:\n    return items\n\ndef holder() -> int:\n    items = [1, 2, 3]\n    held = kept_list(items)\n    return len(held) + items[0]\n\ndef touch(ref items: list[int]):\n    items.append(4)\n\ndef toucher() -> int:\n    mut items = [1, 2]\n    touch(ref items)\n    return items[0]\n",
+            "def kept_list(items: list[int]) -> list[int]:\n    return [4, 5]\n\ndef holder() -> int:\n    items = [1, 2, 3]\n    held = kept_list(items)\n    return len(held) + items[0]\n\ndef touch(ref items: list[int]):\n    items.append(4)\n\ndef toucher() -> int:\n    mut items = [1, 2]\n    touch(ref items)\n    return items[0]\n",
+            "def kept_list(items: list[int]) -> list[int]:\n    return items\n\ndef holder() -> int:\n    items = [1, 2, 3]\n    held = kept_list(items)\n    return len(held) + items[0]\n\ndef touch(ref items: list[int]):\n    _ = len(items)\n\ndef toucher() -> int:\n    mut items = [1, 2]\n    touch(ref items)\n    return items[0]\n",
+        ],
+    },
 ];
 
 /// `main`, which calls into every piece.
@@ -224,6 +238,7 @@ const MAIN: &str = "def main(stdout: Stdout, clock: Clock):
     stdout.print(read_slot([4, 5, 6]))
     stdout.print(use_scaled(), costed(), use_tripled(), padded_size())
     stdout.print(use_defaults())
+    stdout.print(holder(), toucher())
     return
 ";
 
@@ -436,12 +451,23 @@ fn as_checked(found: Result<(fennec_check::Signatures, bool), Vec<fennec_syntax:
 /// The program's module, loaded from its files in `folder` as `fennec build` loads them, or what
 /// stops it loading.
 fn loaded(files: &Files, folder: &Path) -> Result<fennec_syntax::Module, Vec<String>> {
+    loaded_with_sources(files, folder).map(|(module, _)| module)
+}
+
+/// `loaded`, with the files' texts as the load laid them out.
+fn loaded_with_sources(
+    files: &Files,
+    folder: &Path,
+) -> Result<(fennec_syntax::Module, fennec_syntax::Sources), Vec<String>> {
     write_files(folder, files).map_err(|err| vec![err])?;
     let overlay = fennec_kit::Overlay::new();
     fennec_kit::load_with(&folder.join(PROGRAM), PROGRAM, fennec_kit::Entry::Main, &overlay)
-        .map(|program| program.module)
+        .map(|program| (program.module, program.sources))
         .map_err(|problems| problems.diagnostics.iter().map(|problem| format!("load: {problem:?}")).collect())
 }
+
+/// What a check kept, with the files it was found in.
+type Kept = (KeptCheck, fennec_syntax::Sources);
 
 /// The files loaded using what the load before kept, with the loader's own comparison with loading
 /// it all again on, against loading them all again here: they load the same, or fail the same.
@@ -465,15 +491,22 @@ fn loads_agree(files: &Files, folder: &Path, kept: &mut fennec_kit::KeptLoad) ->
     Ok(used)
 }
 
-/// A check of the files that keeps what it finds, carrying over from `kept`, with the checker's
+/// A check of the files that keeps what it finds, carrying over from `kept` what the edit since
+/// left as it was, as the build daemon does (`fennec_check::Edit::between`), with the checker's
 /// own comparison on.
-fn kept_check(files: &Files, folder: &Path, kept: Option<KeptCheck>) -> (Checked, Option<KeptCheck>) {
-    let mut module = match loaded(files, folder) {
-        Ok(module) => module,
+fn kept_check(files: &Files, folder: &Path, kept: Option<Kept>) -> (Checked, Option<Kept>) {
+    let (mut module, sources) = match loaded_with_sources(files, folder) {
+        Ok(loaded) => loaded,
         Err(problems) => return (Err(problems), None),
     };
-    match check_to_build_keeping(&mut module, kept, true) {
-        Ok((signatures, as_left, kept)) => (as_checked(Ok((signatures, as_left))), Some(kept)),
+    let carried =
+        kept.and_then(|(kept, before)| Some((kept, fennec_check::Edit::between(&before, &sources)?)));
+    let found = match carried {
+        Some((kept, edit)) => check_to_build_keeping(&mut module, (Some(kept), Some(&edit)), true),
+        None => check_to_build_keeping(&mut module, (None, None), true),
+    };
+    match found {
+        Ok((signatures, as_left, kept)) => (as_checked(Ok((signatures, as_left))), Some((kept, sources))),
         Err(problems) => (as_checked(Err(problems)), None),
     }
 }
@@ -516,7 +549,7 @@ fn checks_agree_in(versions: &[Version], folder: &Path) -> Result<Carried, Strin
             .map_err(|why| format!("after edit {at}, {why}\nin:\n{}", shown_files(version)))?;
         carried.loads += usize::from(used);
         let (found, next) = kept_check(&version.files, folder, kept);
-        if next.as_ref().is_some_and(|next| next.carried_over() > 0) {
+        if next.as_ref().is_some_and(|(next, _)| next.carried_over() > 0) {
             carried.checks += 1;
         }
         let whole = whole_check(&version.files, folder);
@@ -530,6 +563,57 @@ fn checks_agree_in(versions: &[Version], folder: &Path) -> Result<Carried, Strin
         kept = next;
     }
     Ok(carried)
+}
+
+/// The version's program as a build lowers it, if it checks and every function lowers.
+fn lowered(files: &Files, folder: &Path) -> Option<fennec_ir::Program> {
+    let mut module = loaded(files, folder).ok()?;
+    check_to_build_saying(&mut module).ok()?;
+    let reached = fennec_build::what_main_reaches(&module);
+    let signatures = fennec_check::check_to_emit(&reached).ok()?;
+    let options =
+        fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true, serve_in_order: false };
+    let mut lowered = fennec_ir::lower_with(&reached, &signatures, options);
+    if fennec_llvm::uses_parallel(&lowered) {
+        fennec_ir::guard_shared(&mut lowered);
+    }
+    let main_at = reached.items.iter().find_map(|item| match item {
+        fennec_syntax::Item::Function(def) if def.name == "main" => Some(def.span),
+        _ => None,
+    });
+    fennec_llvm::wrap_main(&mut lowered, main_at.unwrap_or_default());
+    lowered.not_lowered.is_empty().then_some(lowered)
+}
+
+/// Each version that checks and lowers has its functions' analyses worked out using again what
+/// the version before kept, as an edit build through the daemon does, and every one used again
+/// is what analyzing it again gives. How many versions used any again.
+fn analyses_agree(versions: &[Version]) -> Result<usize, String> {
+    let folder = check_folder();
+    let agreed = analyses_agree_in(versions, &folder);
+    let _ = std::fs::remove_dir_all(&folder);
+    agreed
+}
+
+fn analyses_agree_in(versions: &[Version], folder: &Path) -> Result<usize, String> {
+    let mut kept = fennec_llvm::KeptForNext::default();
+    let mut used = 0;
+    for (at, version) in versions.iter().enumerate() {
+        // A version that doesn't build leaves what the one before kept, as it does in the daemon.
+        let Some(lowered) = lowered(&version.files, folder) else { continue };
+        let (differ, used_again) = fennec_llvm::analyses_kept_and_checked(&lowered, &mut kept);
+        if !differ.is_empty() {
+            return Err(format!(
+                "after edit {at}, the analyses of {differ:?} used again from the version before aren't what \
+                 analyzing them again gives, in:\n{}",
+                shown_files(version)
+            ));
+        }
+        if used_again > 0 {
+            used += 1;
+        }
+    }
+    Ok(used)
 }
 
 /// How a build is made: with the edit cache or nothing kept, and with types boxed or not.
@@ -667,11 +751,13 @@ fn builds_agree(fennec: &Path, versions: &[Version], work: &Path) -> Result<usiz
     Ok(compared)
 }
 
-/// The target: every check carrying over agrees with a whole one, and where LLVM can build here,
-/// every build reusing the edit cache makes what one keeping nothing makes.
+/// The target: every check carrying over agrees with a whole one, every analysis used again is
+/// what analyzing it again gives, and where LLVM can build here, every build reusing the edit
+/// cache makes what one keeping nothing makes.
 pub(crate) fn edits(input: &[u8]) -> Result<(), String> {
     let versions = versions(&plan(input));
     checks_agree(&versions)?;
+    analyses_agree(&versions)?;
     if crate::llvm::ready().is_err() {
         return Ok(());
     }
@@ -681,7 +767,9 @@ pub(crate) fn edits(input: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Edit, PIECES, Plan, builds_agree, check_folder, checks_agree, loaded, versions};
+    use super::{
+        Edit, PIECES, Plan, analyses_agree, builds_agree, check_folder, checks_agree, loaded, versions,
+    };
 
     /// An edit switching `switched`, moving none, laid out as `boxed` says.
     fn edit(switched: &[(usize, usize)], moved: bool, boxed: bool) -> Edit {
@@ -753,5 +841,23 @@ mod tests {
         }
         assert!(checks > 0, "no edit carried anything of a check over");
         assert!(loads > 0, "no edit used anything a load kept");
+    }
+
+    /// Every switch of every piece, one at a time and then back, uses again only analyses that are
+    /// what analyzing them again gives, and most versions use some again.
+    #[test]
+    fn every_single_edit_uses_again_only_analyses_as_analyzing_again_gives() {
+        let (mut used, mut versions_made) = (0, 0);
+        for (piece, kind) in PIECES.iter().enumerate() {
+            for variant in 1..kind.variants.len() {
+                let plan = Plan {
+                    order: (0..PIECES.len()).collect(),
+                    edits: vec![edit(&[(piece, variant)], false, false), edit(&[(piece, 0)], false, false)],
+                };
+                used += analyses_agree(&versions(&plan)).unwrap_or_else(|err| unreachable!("{err}"));
+                versions_made += 3;
+            }
+        }
+        assert!(used * 2 > versions_made, "only {used} of {versions_made} versions used any analysis again");
     }
 }

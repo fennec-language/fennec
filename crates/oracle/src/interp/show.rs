@@ -25,14 +25,12 @@ impl Interp {
 
     /// An error's words: its own `def message(self) -> str`, or else the error as it shows.
     pub(crate) fn words(&mut self, instance: &Instance) -> Run<String> {
-        match self.own_words(instance) {
-            Some(words) => words,
-            None => {
-                let mut out = String::new();
-                self.instance_repr_into(instance, &mut out)?;
-                Ok(out)
-            }
+        if let Some(words) = self.own_words(instance) {
+            return words;
         }
+        let mut out = String::new();
+        self.instance_repr_into(instance, &mut out)?;
+        Ok(out)
     }
 
     /// An error's own words, when it has a `def message`: the program's, or for an error the

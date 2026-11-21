@@ -315,6 +315,42 @@ fn every_error_has_words() {
     assert_eq!(problems(own), empty);
 }
 
+/// Inside `except why:`, a new failure carries `why`'s words, so raising one uses `why`: a call to
+/// a type, a helper's result, `New(...).with_note(...)`, each side of a condition. One made
+/// already, held in a name, doesn't, so raising an unrelated one with `why` unused is refused, as a
+/// `return` there is (`Expr::made_already`).
+#[test]
+fn only_a_new_failure_raised_in_except_uses_the_one_handled() {
+    let empty: [&str; 0] = [];
+    let raising = |body: &str| {
+        problems(&format!(
+            "error Oops:\n    why: str\n\ndef risky(n: int) -> int fails Oops:\n    if n > 1:\n        fail Oops('big')\n    return n\n\n\
+             def made(why: str) -> Oops:\n    return Oops(why)\n\n\
+             def again(kept: Oops, first: bool) -> int fails Oops:\n    got = risky(5) except failure:\n{body}\n    return got\n"
+        ))
+    };
+    for new in [
+        "        fail Oops('new')",
+        "        fail made('a helper')",
+        "        fail Oops('new').with_note('while loading')",
+        "        fail Oops('one') if first else Oops('two')",
+        "        fail failure.with_note('passing up')",
+        "        fail failure",
+    ] {
+        assert_eq!(raising(new), empty, "{new}");
+    }
+    assert_eq!(
+        raising("        fail kept"),
+        ["`failure` isn't used on this way out, so it drops the failure @ fail kept"]
+    );
+    assert_eq!(
+        raising("        fail Oops('one') if first else kept"),
+        [
+            "`failure` isn't used on this way out, so it drops the failure @ fail Oops(\"one\") if first else kept"
+        ]
+    );
+}
+
 #[test]
 fn ignored_results_are_mistakes() {
     let program = "

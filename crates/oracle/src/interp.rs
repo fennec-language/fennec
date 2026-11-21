@@ -814,6 +814,16 @@ impl Interp {
         cleanup.replaces = Some(!noted);
     }
 
+    /// `fail raised`, each side of a condition raised on its own, as the compiled program does.
+    fn fail(&mut self, mut raised: &'static Expr, span: Span) -> Run<()> {
+        while let ExprKind::Cond { then, cond, otherwise } = &raised.kind {
+            raised = if self.truth(cond)? { then } else { otherwise };
+        }
+        let error = self.eval(raised)?;
+        let error = self.with_cause_noted(raised, error)?;
+        Err(Flow::Fail(error, span))
+    }
+
     fn stmt_ran(&mut self, stmt: &'static Stmt) -> Run<()> {
         self.tick()?;
         match &stmt.kind {
@@ -865,16 +875,7 @@ impl Interp {
                 };
                 Err(Flow::Return(value))
             }
-            StmtKind::Fail(raised) => {
-                // Each side of a condition is raised on its own, as the compiled program does.
-                let mut raised = raised;
-                while let ExprKind::Cond { then, cond, otherwise } = &raised.kind {
-                    raised = if self.truth(cond)? { then } else { otherwise };
-                }
-                let error = self.eval(raised)?;
-                let error = self.with_cause_noted(raised, error)?;
-                Err(Flow::Fail(error, stmt.span))
-            }
+            StmtKind::Fail(raised) => self.fail(raised, stmt.span),
             StmtKind::Yield(value) => {
                 let value = self.eval(value)?;
                 self.yield_value(value)

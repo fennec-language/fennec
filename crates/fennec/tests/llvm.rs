@@ -12428,6 +12428,36 @@ fn f_strings_made_in_one_go_match_what_was_pinned() -> std::io::Result<()> {
     same_as_pinned("f_strings_in_one_go", F_STRINGS_IN_ONE_GO)
 }
 
+/// `text += f"..."`, and `text = text + f"..."`, write the f-string's pieces on the end of the
+/// text where they are, with no text made for the f-string: counted, not timed, a block for each
+/// piece once. Then what each gives: onto an inline text and a block, a copy kept first keeping
+/// what it had, the text read in its own f-string, through a `ref` parameter, and growing past
+/// its room with characters of more than a byte.
+#[test]
+fn an_f_string_added_to_a_text_goes_on_its_end() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counted = |rounds: usize| -> std::io::Result<(u64, u64)> {
+        let source = format!(
+            "def main(stdout: Stdout):\n    mut out = \"\"\n    mut through = \"start\"\n    for at in range({rounds}):\n        out += f\"an item numbered {{at}} in the list; \"\n        through = through + f\", and {{at}} more besides that\"\n    stdout.print(len(out), len(through))\n    return\n"
+        );
+        let said = counts_of(&format!("f_string_added_{rounds}"), &source)?;
+        let number = |name: &str| count(&said, name).unwrap_or(u64::MAX);
+        Ok((number("allocations"), number("allocated_bytes")))
+    };
+    let (small, small_bytes) = counted(10_000)?;
+    let (big, big_bytes) = counted(40_000)?;
+    // A handful, whatever the count: each text's few regrowths, where each piece made one.
+    assert!(small < 200 && big < 200, "{small} and {big} allocations");
+    assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
+    prints_in_both_builds(
+        "f_string_added",
+        "def put(ref out: str, n: int):\n    out += f\" and number {n} put through a ref parameter\"\n\ndef main(stdout: Stdout):\n    mut out = \"\"\n    out += f\"{1.5} short\"\n    out += f\", then a piece long enough to need a block: {42}\"\n    kept = out\n    out += f\" / {out}\"\n    out = out + f\" (wrote {len(kept)} bytes before)\"\n    put(ref out, 7)\n    stdout.print(out)\n    stdout.print(kept)\n    mut grown = \"\u{fc}\"\n    for at in range(12):\n        grown += f\"{at}\u{e9}\"\n    stdout.print(len(grown), grown)\n    return\n",
+        "1.5 short, then a piece long enough to need a block: 42 / 1.5 short, then a piece long enough to need a block: 42 (wrote 55 bytes before) and number 7 put through a ref parameter\n1.5 short, then a piece long enough to need a block: 42\n27 \u{fc}0\u{e9}1\u{e9}2\u{e9}3\u{e9}4\u{e9}5\u{e9}6\u{e9}7\u{e9}8\u{e9}9\u{e9}10\u{e9}11\u{e9}\n",
+    )
+}
+
 const F_STRINGS_IN_ONE_GO: &str = r#"struct Point:
     x: int
     y: int

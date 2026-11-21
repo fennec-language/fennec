@@ -1650,6 +1650,9 @@ impl Emit<'_, '_, '_> {
                 } else if let Some((joined, parts)) = self.appended_parts(&inst.kind, next) {
                     self.append_parts(joined, &parts, inst.span)?;
                     appended = true;
+                } else if let Some((grown, made, parts)) = self.format_added(&inst.kind, next)? {
+                    self.format_appended((grown, made), &parts, inst.span)?;
+                    appended = true;
                 } else if let Some((tested, op, wanted, items)) = self.literals_tested(&inst.kind, next) {
                     // A list or set written out of constants only to be looked in is never made.
                     self.in_literals(tested, op, &wanted, &items)?;
@@ -4085,6 +4088,40 @@ impl Emit<'_, '_, '_> {
             && self.known.used_once(made)
             && matches!(self.kinds.get(joined.0), Some(Kind::Str | Kind::TextBlock)))
         .then_some((*joined, parts))
+    }
+
+    /// An f-string whose one use is `text += ` it right after, onto a text that grows where it is
+    /// (as [`Self::grows_in_place`] says): the text, the f-string's local, and its parts. Only
+    /// parts that are read where they are, a literal or a string, an int or a float with no
+    /// spec, so working them out can't fail with some already written on.
+    fn format_added(
+        &self,
+        inst: &InstKind,
+        next: Option<&InstKind>,
+    ) -> Result<Option<(LocalId, LocalId, Vec<FormatPart>)>, String> {
+        let InstKind::Format { dest: made, parts } = inst else { return Ok(None) };
+        let Some(InstKind::Binary { dest, op: BinOp::Add, lhs, rhs: Operand::Local(added) }) = next else {
+            return Ok(None);
+        };
+        // A field taken out only just before the `+=` isn't in its local yet.
+        if added != made
+            || self.known.path_due((self.at.0, self.at.1 + 1)).is_some()
+            || !self.headers()
+            || !self.known.used_once(*made)
+            || !matches!(self.kinds.get(dest.0), Some(Kind::Str))
+            || !self.grows_in_place(BinOp::Add, lhs, *dest)
+        {
+            return Ok(None);
+        }
+        for part in parts {
+            if let FormatPart::Value { value, spec } = part
+                && (spec.is_some()
+                    || !matches!(self.operand_kind(value)?, Kind::Str | Kind::Int | Kind::Float))
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some((*dest, *made, parts.clone())))
     }
 
     /// A list or set written out of constant strings or ints, which only the `in` right after reads

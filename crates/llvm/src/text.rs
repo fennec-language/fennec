@@ -800,6 +800,14 @@ impl Emit<'_, '_, '_> {
             self.retain_text(&text);
             return self.assign(dest, &text);
         }
+        let pieces = self.format_pieces(parts, span)?;
+        let value = self.built_from(&pieces);
+        self.let_go_of_pieces(&pieces);
+        self.assign(dest, &value)
+    }
+
+    /// An f-string's pieces, each read where it is, an empty literal left out.
+    fn format_pieces(&mut self, parts: &[FormatPart], span: Span) -> Result<Vec<Piece>, String> {
         let mut pieces = Vec::with_capacity(parts.len());
         for part in parts {
             match part {
@@ -810,15 +818,111 @@ impl Emit<'_, '_, '_> {
                 }
             }
         }
-        let value = self.built_from(&pieces);
-        for piece in &pieces {
+        Ok(pieces)
+    }
+
+    /// Lets go of what was made for an f-string's pieces to be read from, once they're written.
+    fn let_go_of_pieces(&mut self, pieces: &[Piece]) {
+        for piece in pieces {
             match &piece.owned {
                 Some(Owned::Header(header)) => self.release_text(header),
                 Some(Owned::Block(block)) => self.release_quietly(block),
                 None => {}
             }
         }
-        self.assign(dest, &value)
+    }
+
+    /// `text += f"..."`, where the f-string is for nothing else: its pieces are read where they
+    /// are and written on the end of the text's block, with no text made for the f-string. In
+    /// place when the block is alone and has room for them all, and otherwise in a new block with
+    /// room for twice as much, as the runtime grows a text, the old block's owner let go of as
+    /// `+=` takes it over. A text held inline is joined with the f-string made as before. `made`
+    /// is the f-string's local, left empty, so letting go of it after the `+=` lets go of nothing.
+    pub(crate) fn format_appended(
+        &mut self,
+        (dest, made): (LocalId, LocalId),
+        parts: &[FormatPart],
+        span: Span,
+    ) -> Result<(), String> {
+        let header = crate::headers::HEADER;
+        let pieces = self.format_pieces(parts, span)?;
+        let (text, _) = self.operand(&Operand::Local(dest))?;
+        let (mut bytes, mut chars) = ("0".to_owned(), "0".to_owned());
+        for piece in &pieces {
+            let (more_bytes, more_chars) = (self.temp(), self.temp());
+            self.line(&format!("{more_bytes} = add nuw nsw i64 {bytes}, {}", piece.size));
+            self.line(&format!("{more_chars} = add nuw nsw i64 {chars}, {}", piece.chars));
+            (bytes, chars) = (more_bytes, more_chars);
+        }
+        let in_block = self.header_in_block(&text);
+        let (blocked, inline, done) =
+            (self.label("format_onto"), self.label("format_joined"), self.label("format_appended"));
+        self.line(&format!("br i1 {in_block}, label %{blocked}, label %{inline}"));
+        self.start_block(&blocked);
+        let (first, block) = (self.header_word(&text, 0), self.temp());
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        let at = |emit: &mut Self, base: &str, offset: i32| emit.offset(base, offset.unsigned_abs());
+        let (length_at, chars_at, room_at) =
+            (at(self, &block, TEXT_BYTES), at(self, &block, TEXT_CHARS), at(self, &block, TEXT_ROOM));
+        let (length, old_chars, room, total, fits) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{length} = load i64, ptr {length_at}"));
+        self.line(&format!("{old_chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{room} = load i64, ptr {room_at}"));
+        self.line(&format!("{total} = add nuw i64 {length}, {bytes}"));
+        self.line(&format!("{fits} = icmp ule i64 {total}, {room}"));
+        let (alone, quick) = (self.alone(&block), self.temp());
+        self.line(&format!("{quick} = and i1 {alone}, {fits}"));
+        let (in_place, grow, written) =
+            (self.label("format_in_place"), self.label("format_grow"), self.label("format_written"));
+        self.line(&format!("br i1 {quick}, label %{in_place}, label %{grow}, !prof !8"));
+        self.start_block(&in_place);
+        let (start, to) = (self.offset(&block, crate::emit::TEXT_START), self.temp());
+        self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {length}"));
+        self.write_pieces(&to, &pieces, false);
+        let in_place_end = self.current.clone();
+        self.line(&format!("br label %{written}"));
+        self.start_block(&grow);
+        self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let (wider, grown) = (self.temp(), self.temp());
+        self.line(&format!("{wider} = shl nuw i64 {total}, 1"));
+        self.line(&format!("{grown} = call ptr @fennec_str_with_room(i64 {wider})"));
+        let (grown_start, old_start) =
+            (self.offset(&grown, crate::emit::TEXT_START), self.offset(&block, crate::emit::TEXT_START));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {grown_start}, ptr {old_start}, i64 {length}, i1 false)"
+        ));
+        let grown_to = self.temp();
+        self.line(&format!("{grown_to} = getelementptr inbounds i8, ptr {grown_start}, i64 {length}"));
+        // Written before the old block goes, as a piece may be read from it.
+        self.write_pieces(&grown_to, &pieces, false);
+        self.release_quietly(&block);
+        let grow_end = self.current.clone();
+        self.line(&format!("br label %{written}"));
+        self.start_block(&written);
+        let out = self.temp();
+        self.line(&format!("{out} = phi ptr [ {block}, %{in_place_end} ], [ {grown}, %{grow_end} ]"));
+        let (out_length_at, out_chars_at) = (at(self, &out, TEXT_BYTES), at(self, &out, TEXT_CHARS));
+        let (all_chars, address) = (self.temp(), self.temp());
+        self.line(&format!("store i64 {total}, ptr {out_length_at}"));
+        self.line(&format!("{all_chars} = add nuw i64 {old_chars}, {chars}"));
+        self.line(&format!("store i64 {all_chars}, ptr {out_chars_at}"));
+        self.line(&format!("{address} = ptrtoint ptr {out} to i64"));
+        let grown_header = self.header_of([&address, &total, "0"]);
+        let slot = self.slot(dest);
+        self.line(&format!("store {header} {grown_header}, ptr {slot}"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&inline);
+        let value = self.built_from(&pieces);
+        self.header_append(dest, &text, &value)?;
+        self.release_text(&value);
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        self.let_go_of_pieces(&pieces);
+        let made_slot = self.slot(made);
+        self.line(&format!("store {header} zeroinitializer, ptr {made_slot}"));
+        Ok(())
     }
 
     /// A text made of pieces one after another: inline when it fits in a header, and otherwise

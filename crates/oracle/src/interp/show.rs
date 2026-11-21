@@ -49,12 +49,12 @@ impl Interp {
         }
     }
 
-    /// A new failure raised inside `except why:` carries `why`'s words as a note. One that's `why`
-    /// itself, or made from it, as `why.with_note(...)` is, is the same failure. A `fail` in a
+    /// A new failure raised inside `except why:` carries `why`'s words as a note. One that was made
+    /// already, as `why`, a copy of it, or `why.with_note(...)`, carries what it had. A `fail` in a
     /// function the block calls isn't in the block.
     pub(crate) fn with_cause_noted(&mut self, raised: &fennec_syntax::Expr, error: Value) -> Run<Value> {
-        let Some((frame, name, why)) = self.excepts.last().cloned() else { return Ok(error) };
-        if frame != self.cur || made_from(raised, name) {
+        let Some((frame, _, why)) = self.excepts.last().cloned() else { return Ok(error) };
+        if frame != self.cur || !made_new(raised) {
             return Ok(error);
         }
         let Value::Instance(instance) = error else { return Ok(error) };
@@ -464,13 +464,18 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
     })
 }
 
-/// Whether an expression is the name `name`, or a field, item or method's result read from it.
-fn made_from(expr: &fennec_syntax::Expr, name: &str) -> bool {
+/// Whether an expression makes a new failure: a call to a type or to one of its cases, as
+/// `Refused(code=1)`, `.Disk(why)` or `IoError.NotFound(...)`, or a case written out, as `.Closed`.
+/// A name, a field, or a method's result, as `kept` or `why.with_note(...)`, is a failure
+/// that's already been made.
+fn made_new(expr: &fennec_syntax::Expr) -> bool {
     use fennec_syntax::ExprKind;
+    let capitalized = |name: &str| name.chars().next().is_some_and(char::is_uppercase);
     match &expr.kind {
-        ExprKind::Name(named) => named == name,
-        ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => made_from(object, name),
-        ExprKind::Call { callee, .. } => made_from(callee, name),
+        ExprKind::Variant(_) => true,
+        ExprKind::Name(name) => capitalized(name),
+        ExprKind::Attr { object, .. } => matches!(&object.kind, ExprKind::Name(name) if capitalized(name)),
+        ExprKind::Call { callee, .. } => made_new(callee),
         _ => false,
     }
 }

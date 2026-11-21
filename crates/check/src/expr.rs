@@ -958,8 +958,11 @@ impl FnCx<'_> {
             return Type::Unknown;
         }
         if name == "message" && self.words_are_a_method(&ty) {
+            let what = ty
+                .type_name()
+                .map_or_else(|| "a failure of several errors".to_owned(), |name| format!("`{name}`"));
             self.error(
-                Diagnostic::new(format!("{} has no field `message`: its words are a method", a(&ty)), span)
+                Diagnostic::new(format!("{what} has no field `message`: its words are a method"), span)
                     .with_help("call it, as `.message()`")
                     .with_fix(Span { start: span.end, end: span.end }, "()"),
             );

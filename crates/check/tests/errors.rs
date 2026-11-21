@@ -262,6 +262,59 @@ fn an_error_carries_notes() {
     assert_eq!(found("p = player('a')?\n_ = p.notes()\n").len(), 1);
 }
 
+/// Every error has words, `message()`, and `with_note(text)`, a copy carrying one more note, as a
+/// failure that's one of several does. Its words come only from `def message(self) -> str`: a
+/// `def str` on an error is refused, as is a `def message` of another shape, and `.message` on an
+/// error with no field of that name is refused with a fix that calls it.
+#[test]
+fn every_error_has_words() {
+    let found = |body: &str| crate::in_main_after(RISKY, body);
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        found(
+            "_ = risky(5) except failure:\n    words: str = failure.message()\n    noted = failure.with_note('while loading')\n    texts: list[str] = noted.notes()\n    _ = words\n    _ = texts\n    0\n"
+        ),
+        empty
+    );
+    let several = "error Gone:\n    name: str\n\ndef either(n: int) -> int fails Oops | Gone:\n    if n > 1:\n        fail Oops('big')\n    fail Gone('x')\n";
+    let both = format!("{RISKY}\n{several}");
+    assert_eq!(
+        crate::in_main_after(
+            &both,
+            "_ = either(5) except failure:\n    words: str = failure.message()\n    _ = words\n    _ = failure.with_note('again')\n    0\n"
+        ),
+        empty
+    );
+    assert_eq!(
+        found(
+            "_ = risky(5) except failure:\n    noted = failure.with_note(3)\n    texts: list[str] = noted.notes()\n    _ = texts\n    0\n"
+        ),
+        ["`with_note` takes the note's text, a str, but this is an int @ 3"]
+    );
+    let written = "_ = risky(5) except failure:\n    words: str = failure.message\n    _ = words\n    0\n";
+    assert_eq!(found(written), ["`Oops` has no field `message`: its words are a method @ failure.message"]);
+    let in_main = "error Oops:\n    why: str\n\ndef risky(n: int) -> int fails Oops:\n    if n > 1:\n        fail Oops(\"big\")\n    return n\n\ndef main(stdout: Stdout):\n    _ = risky(5) except failure:\n        stdout.print(failure.message)\n        0\n";
+    assert!(fixed(in_main).contains("stdout.print(failure.message())"), "{}", fixed(in_main));
+    let with_str =
+        "error Late:\n    hours: int\n\n    def str(self, ref out: StrWriter):\n        out.write('late')\n";
+    assert_eq!(
+        problems(with_str),
+        [
+            "`Late` is an error, so its words come from `def message`, not `def str` @ def str(self, ref out: StrWriter)"
+        ]
+    );
+    let taking =
+        "error Late:\n    hours: int\n\n    def message(self, long: bool) -> str:\n        return 'late'\n";
+    assert_eq!(
+        problems(taking),
+        [
+            "`Late`'s `def message` takes only `self` and gives back its words @ def message(self, long: bool) -> str"
+        ]
+    );
+    let own = "error Late:\n    hours: int\n\n    def message(self) -> str:\n        return f'{self.hours} hours late'\n";
+    assert_eq!(problems(own), empty);
+}
+
 #[test]
 fn ignored_results_are_mistakes() {
     let program = "

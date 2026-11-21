@@ -410,21 +410,10 @@ impl<K: Encode, V: Encode> Encode for BTreeMap<K, V> {
 
 impl<K: Decode + Ord, V: Decode> Decode for BTreeMap<K, V> {
     fn decode(from: &mut Reader<'_>) -> Option<Self> {
-        let length = usize::decode(from)?;
-        if length > from.bytes.len() {
-            return None;
-        }
-        let mut map = BTreeMap::new();
-        for _ in 0..length {
-            let key = K::decode(from)?;
-            let value = V::decode(from)?;
-            // Written in order, so a key out of order, or twice, is corrupt.
-            if map.last_key_value().is_some_and(|(last, _)| *last >= key) {
-                return None;
-            }
-            map.insert(key, value);
-        }
-        Some(map)
+        let entries = Vec::<(K, V)>::decode(from)?;
+        // Written in order, so a key out of order, or twice, is corrupt. In order, the map is
+        // built at once rather than key by key.
+        entries.windows(2).all(|pair| pair[0].0 < pair[1].0).then(|| entries.into_iter().collect())
     }
 }
 
@@ -439,19 +428,8 @@ impl<T: Encode> Encode for BTreeSet<T> {
 
 impl<T: Decode + Ord> Decode for BTreeSet<T> {
     fn decode(from: &mut Reader<'_>) -> Option<Self> {
-        let length = usize::decode(from)?;
-        if length > from.bytes.len() {
-            return None;
-        }
-        let mut set = BTreeSet::new();
-        for _ in 0..length {
-            let item = T::decode(from)?;
-            if set.last().is_some_and(|last| *last >= item) {
-                return None;
-            }
-            set.insert(item);
-        }
-        Some(set)
+        let items = Vec::<T>::decode(from)?;
+        items.windows(2).all(|pair| pair[0] < pair[1]).then(|| items.into_iter().collect())
     }
 }
 

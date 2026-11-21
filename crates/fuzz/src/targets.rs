@@ -504,7 +504,7 @@ fn comes_back<T>(what: &str, value: &T) -> Result<(), String>
 where
     T: fennec_syntax::codec::Encode + fennec_syntax::codec::Decode + PartialEq,
 {
-    use fennec_syntax::codec::{Decode, Encode, Reader, Writer};
+    use fennec_syntax::codec::{Reader, Writer};
     let mut to = Writer::default();
     value.encode(&mut to);
     let bytes = to.into_bytes();

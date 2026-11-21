@@ -23,103 +23,69 @@ codec_units!(Saver[Library, Program]);
 
 impl Encode for Type {
     fn encode(&self, to: &mut Writer) {
+        to.tag(tag_of(self));
         match self {
-            Type::Unknown => to.tag(0),
-            Type::Unit => to.tag(1),
-            Type::None => to.tag(2),
-            Type::Bool => to.tag(3),
-            Type::Int => to.tag(4),
-            Type::Float => to.tag(5),
-            Type::Sized(num) => {
-                to.tag(6);
-                num.encode(to);
-            }
-            Type::Str => to.tag(7),
-            Type::LiteralStr => to.tag(8),
-            Type::Bytes => to.tag(9),
-            Type::List(item) => {
-                to.tag(10);
-                item.encode(to);
-            }
-            Type::Buffer(item) => {
-                to.tag(11);
-                item.encode(to);
-            }
-            Type::Array(item, length) => {
-                to.tag(12);
-                item.encode(to);
-                length.encode(to);
-            }
-            Type::Set(item) => {
-                to.tag(13);
-                item.encode(to);
-            }
-            Type::Dict(key, value) => {
-                to.tag(14);
-                key.encode(to);
-                value.encode(to);
-            }
-            Type::Iterator(item, sent) => {
-                to.tag(15);
-                item.encode(to);
-                sent.encode(to);
-            }
-            Type::Tuple(items) => {
-                to.tag(16);
-                items.encode(to);
-            }
-            Type::Optional(inner) => {
-                to.tag(17);
-                inner.encode(to);
-            }
-            Type::Result(value, error) => {
-                to.tag(18);
-                value.encode(to);
-                error.encode(to);
-            }
-            Type::Named(name) => {
-                to.tag(19);
-                name.encode(to);
-            }
-            Type::Generic(name, args) => {
-                to.tag(20);
-                name.encode(to);
-                args.encode(to);
-            }
-            Type::Id(held) => {
-                to.tag(21);
-                held.encode(to);
-            }
-            Type::Table(held) => {
-                to.tag(22);
-                held.encode(to);
-            }
-            Type::Function(name) => {
-                to.tag(23);
-                name.encode(to);
-            }
-            Type::Arrow(params, returns) => {
-                to.tag(24);
-                params.encode(to);
-                returns.encode(to);
-            }
-            Type::Param(name) => {
-                to.tag(25);
-                name.encode(to);
-            }
-            Type::Errors(names) => {
-                to.tag(26);
-                names.encode(to);
-            }
-            Type::Union(members) => {
-                to.tag(27);
-                members.encode(to);
-            }
-            Type::Var(at) => {
-                to.tag(28);
-                at.encode(to);
-            }
+            Type::Unknown
+            | Type::Unit
+            | Type::None
+            | Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::Str
+            | Type::LiteralStr
+            | Type::Bytes => {}
+            Type::Sized(num) => num.encode(to),
+            Type::List(held)
+            | Type::Buffer(held)
+            | Type::Set(held)
+            | Type::Optional(held)
+            | Type::Id(held)
+            | Type::Table(held) => held.encode(to),
+            Type::Array(item, length) => (item, length).encode(to),
+            Type::Dict(first, second) | Type::Result(first, second) => (first, second).encode(to),
+            Type::Iterator(item, sent) => (item, sent).encode(to),
+            Type::Tuple(types) | Type::Union(types) => types.encode(to),
+            Type::Named(name) | Type::Function(name) | Type::Param(name) => name.encode(to),
+            Type::Generic(name, args) => (name, args).encode(to),
+            Type::Arrow(params, returns) => (params, returns).encode(to),
+            Type::Errors(names) => names.encode(to),
+            Type::Var(at) => at.encode(to),
         }
+    }
+}
+
+/// The tag written before a type, which says which kind it is.
+fn tag_of(ty: &Type) -> u8 {
+    match ty {
+        Type::Unknown => 0,
+        Type::Unit => 1,
+        Type::None => 2,
+        Type::Bool => 3,
+        Type::Int => 4,
+        Type::Float => 5,
+        Type::Sized(_) => 6,
+        Type::Str => 7,
+        Type::LiteralStr => 8,
+        Type::Bytes => 9,
+        Type::List(_) => 10,
+        Type::Buffer(_) => 11,
+        Type::Array(..) => 12,
+        Type::Set(_) => 13,
+        Type::Dict(..) => 14,
+        Type::Iterator(..) => 15,
+        Type::Tuple(_) => 16,
+        Type::Optional(_) => 17,
+        Type::Result(..) => 18,
+        Type::Named(_) => 19,
+        Type::Generic(..) => 20,
+        Type::Id(_) => 21,
+        Type::Table(_) => 22,
+        Type::Function(_) => 23,
+        Type::Arrow(..) => 24,
+        Type::Param(_) => 25,
+        Type::Errors(_) => 26,
+        Type::Union(_) => 27,
+        Type::Var(_) => 28,
     }
 }
 

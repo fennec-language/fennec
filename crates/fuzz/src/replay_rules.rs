@@ -649,12 +649,8 @@ impl Plan {
     /// with the length of moves they found, which the order decides.
     fn crashes_said(&self, said: &str) -> bool {
         let crashes = self.locks.iter().filter(|lock| lock.ending == Ending::Crashed).count();
-        let lines: Vec<&str> = said.lines().collect();
-        lines.len() == crashes
+        crash_reports(said).is_some_and(|reports| reports == crashes)
             && (said.is_empty() || said.ends_with('\n'))
-            && lines
-                .iter()
-                .all(|line| line.strip_prefix(CRASHED).is_some_and(|length| length.parse::<usize>().is_ok()))
     }
 
     /// Checks a recording of a program that deadlocks: it ended with 1, saying its deadlock once,
@@ -664,8 +660,7 @@ impl Plan {
         let at = said.find(DEADLOCKED);
         let before = at.and_then(|at| said.get(..at)).unwrap_or(said);
         let crashed = self.locks.iter().filter(|lock| lock.ending == Ending::Crashed).count();
-        let crashes_before =
-            before.lines().all(|line| line.starts_with(CRASHED)) && before.lines().count() <= crashed;
+        let crashes_before = crash_reports(before).is_some_and(|reports| reports <= crashed);
         if *code != Some(1) || at.is_none() || said.matches(DEADLOCKED).count() != 1 || !crashes_before {
             return Err(format!("where it deadlocks, it ended with {code:?}, saying:\n{said}"));
         }
@@ -1219,6 +1214,29 @@ const DEADLOCKED: &str = "error: a deadlock";
 
 /// What a lock that crashes says on standard error, before the length of the moves it read past.
 const CRASHED: &str = "error: index 99 is out of range for length ";
+
+/// How many crash reports `said` is, if it's only crash reports: each a [`CRASHED`] line with the
+/// length of the moves, then the lines saying where it happened, ` --> file:line:column` and the
+/// source line under a `|` margin.
+fn crash_reports(said: &str) -> Option<usize> {
+    let mut reports = 0;
+    for line in said.lines() {
+        if let Some(length) = line.strip_prefix(CRASHED) {
+            length.parse::<usize>().ok()?;
+            reports += 1;
+        } else if reports == 0 || !says_where(line) {
+            return None;
+        }
+    }
+    Some(reports)
+}
+
+/// Whether `line` is one of the lines under an error saying where it happened.
+fn says_where(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("--> ")
+        || line.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start().starts_with('|')
+}
 
 /// What a replay of a server says when the recording's end stops it, and all it may say.
 const SERVER_STOPPED: &str = "replay: the recording ends here, so the server is stopped\n";

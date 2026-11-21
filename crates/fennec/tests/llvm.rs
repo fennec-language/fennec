@@ -31844,7 +31844,13 @@ fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Resul
 #[cfg(target_os = "linux")]
 #[test]
 fn a_program_that_runs_out_of_memory_says_so_after_what_it_printed() -> std::io::Result<()> {
-    if !ready() || !crate::executables::threads_runtime_built() {
+    // Not under a sanitizer: its runtime allocates through the system's allocator, which the
+    // sanitizer replaces, and leaves mimalloc out, so there's no mimalloc to call the error handler
+    // this checks. AddressSanitizer's own allocator stops the program in its words instead.
+    if !ready()
+        || !crate::executables::threads_runtime_built()
+        || std::env::var_os("FENNEC_SANITIZE").is_some()
+    {
         return Ok(());
     }
     let dir = folder("out_of_memory")?;
@@ -31902,7 +31908,13 @@ def main(stdout: Stdout, args: Args) fails Crashed:
 #[cfg(target_os = "linux")]
 #[test]
 fn ranges_running_out_of_memory_at_once_say_so_once() -> std::io::Result<()> {
-    if !ready() || !crate::executables::threads_runtime_built() {
+    // Not under a sanitizer: its runtime allocates through the system's allocator, which the
+    // sanitizer replaces, and leaves mimalloc out, so there's no mimalloc to call the error handler
+    // this checks. AddressSanitizer's own allocator stops the program in its words instead.
+    if !ready()
+        || !crate::executables::threads_runtime_built()
+        || std::env::var_os("FENNEC_SANITIZE").is_some()
+    {
         return Ok(());
     }
     let dir = folder("out_of_memory_at_once")?;

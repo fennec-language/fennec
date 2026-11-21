@@ -14,7 +14,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_VERSION`: which release `install.sh` installs.
 - `FENNEC_DOWNLOAD`: where `install.sh` downloads from.
 - `FENNEC_STATIC`: `0` links a built program against the system's libc in place of musl.
-- `FENNEC_THREADS`: how many workers a program's pool has; the number of cores by default.
+- `FENNEC_THREADS`: how many workers a program's pool has; the number of cores by default. At most 256: asking for more makes 256 and says so on standard error, once. A pool the system won't give the program, as when it has run out of open files, is said once too, and `parallel` then runs its ranges one after another.
 - `FENNEC_THREADS_RUNTIME`: `0` or `1` picks the plain runtime or the one with threads, in place of what the program needs.
 - `FENNEC_NO_CACHE`: build without the cache, and run every test rather than reusing results.
 - `FENNEC_TOOLCHAIN_STORE`: the toolchain's store, which every home reads the standard library's parse and the runtime libraries' stamps from, in place of `fennec-store` beside `fennec`; empty turns it off. See [store.md](store.md).
@@ -54,6 +54,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_KEEP_FAILED`: `1` has a test that fails keep the temporary folder it made, and say on standard error where, rather than remove it: the gate's tests step sets it, and keeps each such folder, with the failed step's whole log and every panic, in `~/.fennec/gate-logs`.
 - `FENNEC_LINK_KEEP`: a build keeps the objects it links, whole, in the folder this names, for the loader's tests to link them their own way and compare with the system linker's.
 - `FENNEC_LOSE_KEPT_OBJECTS`: `1` has a dev build remove every kept object it found just before it links, as a cleanup another command runs can, for a test to check that each is compiled again and the build still makes the same program.
+- `FENNEC_CHECK_WHOLE`: `1` has a build analyze every function again when it used any function's analysis kept from the build before in the same process, as the build daemon keeps them, and stop if one isn't what analyzing it again gives. The build then says how many it used again, of how many. A dev compiler does this on one build in eight, picked by the program; this asks for it on every build, with any compiler.
 - `FENNEC_CHECK_SIGNS`: `1` has a build work out which ints can't be negative a second way, walking every function round after round as it did before the worklist, and stop if the two differ. What's proven there leaves bounds checks out, so this checks the worklist on a program a test doesn't have.
 - `FENNEC_CACHE_AUDIT`: `1` has a dev build write each unit it uses again from the last build anyway, and fail if it doesn't come out as it was kept: its text, what it shares, every kind it asks the layouts for, in order, and every read it makes of the whole program. For a test to check that a unit is only used again when it would come out the same.
 - `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.

@@ -44,13 +44,17 @@ impl Emit<'_, '_, '_> {
         self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Table["))
     }
 
-    fn parts(&self, kind: &Kind) -> Result<Parts, String> {
+    /// Where a `Table`'s parts are, and how its items are held, with the types naming an item
+    /// defined: a `Table`'s item is reached by its type, which a program that never makes one
+    /// defines nowhere else (#2334).
+    fn parts(&mut self, kind: &Kind) -> Result<Parts, String> {
         let (items, items_kind) = self.field(kind, "items")?;
         let (generations, _) = self.field(kind, "generations")?;
         let (live, _) = self.field(kind, "live")?;
         let (free_from, _) = self.field(kind, "free_from")?;
         let (tag, _) = self.field(kind, "tag")?;
         let held = self.item_kind(list_item(&items_kind)?)?;
+        self.module.define_types(&held);
         Ok(Parts { items, generations, live, free_from, tag, held })
     }
 

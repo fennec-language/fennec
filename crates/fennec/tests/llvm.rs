@@ -28258,6 +28258,40 @@ def main(stdout: Stdout):
     )
 }
 
+/// A `Table` of a struct the program never makes builds: its items are reached by the struct's
+/// type, which nothing else defines then, and `opt` refused the type unsized (#2334). A struct in
+/// the item's place too, and a `Table` held as a field.
+#[test]
+fn a_table_of_a_struct_never_made_builds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_never_made",
+        "from std.collections import Table
+
+struct Spot:
+    x: int
+    y: int
+
+struct Unit:
+    name: str
+    at: Spot
+
+struct World:
+    units = Table[Unit]()
+
+def main(stdout: Stdout):
+    units = Table[Unit]()
+    stdout.print(len(units.ids()), len(units.values()), len(units.items()), len(units))
+    world = World()
+    stdout.print(len(world.units.ids()), len(world.units))
+    return
+",
+        "0 0 0 0\n0 0\n",
+    )
+}
+
 /// `items()` and `values()` gone through in order, with slots empty, at the start and the end,
 /// and everything an item can be, which the loop walks with no list made.
 const WALKING_A_MAP: &str = r#"from std.collections import Table

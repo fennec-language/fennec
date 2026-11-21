@@ -291,6 +291,20 @@ fn every_error_has_words() {
         ),
         ["`with_note` takes the note's text, a str, but this is an int @ 3"]
     );
+    // A bound asking for `message()` or `notes()` is met by every failure: one that writes no
+    // `def message`, and several at once (#2343).
+    let bounded = format!(
+        "{both}\ninterface Spoken:\n    def message(self) -> str\n\ninterface Noted:\n    def notes(self) -> list[str]\n\n\
+         def said[T: Spoken](value: T) -> str:\n    return value.message()\n\n\
+         def noted[T: Noted](value: T) -> list[str]:\n    return value.notes()\n"
+    );
+    assert_eq!(
+        crate::in_main_after(
+            &bounded,
+            "_ = risky(5) except failure:\n    words = said(failure)\n    texts = noted(failure)\n    _ = words\n    _ = texts\n    0\n_ = either(5) except failure:\n    words = said(failure)\n    _ = words\n    0\n_ = said(Gone('y'))\n"
+        ),
+        empty
+    );
     let written = "_ = risky(5) except failure:\n    words: str = failure.message\n    _ = words\n    0\n";
     assert_eq!(found(written), ["`Oops` has no field `message`: its words are a method @ failure.message"]);
     let in_main = "error Oops:\n    why: str\n\ndef risky(n: int) -> int fails Oops:\n    if n > 1:\n        fail Oops(\"big\")\n    return n\n\ndef main(stdout: Stdout):\n    _ = risky(5) except failure:\n        stdout.print(failure.message)\n        0\n";

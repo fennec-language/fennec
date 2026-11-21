@@ -527,6 +527,46 @@ fn float_order(left: f64, right: f64) -> std::cmp::Ordering {
     }
 }
 
+/// The most positions a leaf of a `parallel` sum's tree holds, as the runtime's `REDUCE_LEAF`.
+const REDUCE_LEAF: usize = 1024;
+
+/// `terms` added as the runtime adds a `parallel` sum's parts: a range of at most [`REDUCE_LEAF`]
+/// positions from its first term on, in order, and a longer one as its two halves, split at the
+/// middle, the earlier first. `None` for no terms.
+fn tree_sum<T: Copy>(terms: &[T], add: &dyn Fn(T, T) -> Ran<T>) -> Ran<Option<T>> {
+    let Some((first, rest)) = terms.split_first() else { return Ok(None) };
+    if terms.len() <= REDUCE_LEAF {
+        let mut total = *first;
+        for term in rest {
+            total = add(total, *term)?;
+        }
+        return Ok(Some(total));
+    }
+    let (left, right) = terms.split_at(terms.len() / 2);
+    match (tree_sum(left, add)?, tree_sum(right, add)?) {
+        (Some(left), Some(right)) => add(left, right).map(Some),
+        (one, other) => Ok(one.or(other)),
+    }
+}
+
+/// Floats added as a plain `sum` adds them: term `at` into total `at % 8`, the totals added
+/// pairwise, and then to the start.
+fn lanes_sum(terms: &[f64], start: f64) -> f64 {
+    let mut lanes = [0.0_f64; 8];
+    for (at, term) in terms.iter().enumerate() {
+        if let Some(lane) = lanes.get_mut(at % 8) {
+            *lane += term;
+        }
+    }
+    for (into, from) in [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (4, 6), (0, 4)] {
+        let added = lanes.get(from).copied().unwrap_or(0.0);
+        if let Some(lane) = lanes.get_mut(into) {
+            *lane += added;
+        }
+    }
+    start + lanes.first().copied().unwrap_or(0.0)
+}
+
 /// `sum(items)`. Overflowing partway but not at the end could go either way.
 fn sum_of(items: &[i64]) -> Ran<i64> {
     let mut total: i64 = 0;
@@ -4197,8 +4237,29 @@ impl Machine {
                     let by = int(&self.expr(by)?)?;
                     terms.push(checked(item.checked_mul(by))?);
                 }
-                Value::Int(sum_of(&terms)?)
+                // Which overflow stops it, of the tree's or a term's, doesn't change what it says.
+                let added = tree_sum(&terms, &|left: i64, right| checked(left.checked_add(right)))?;
+                Value::Int(added.unwrap_or(0))
             }
+            Expr::FloatSum(list, scale, filtered) => {
+                let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
+                let mut terms = Vec::with_capacity(items.len());
+                for item in items {
+                    if *filtered && item % 2 != 0 {
+                        continue;
+                    }
+                    #[expect(clippy::cast_precision_loss, reason = "float(int) rounds to the nearest float")]
+                    let item = item as f64;
+                    terms.push(item * self.float_of(scale)?);
+                }
+                let total = if *filtered {
+                    lanes_sum(&terms, 0.0)
+                } else {
+                    tree_sum(&terms, &|left: f64, right| Ok(left + right))?.map_or(0.0, |tree| 0.0 + tree)
+                };
+                Value::Float(total.to_bits())
+            }
+            Expr::Upto(count) => Value::Ints((0..*count).map(|at| i64::try_from(at).unwrap_or(0)).collect()),
             Expr::Mapped(list, by, plus, _) => {
                 let Value::Ints(items) = self.expr(list)? else { return Err(Stop::Unsure) };
                 let mut mapped = Vec::with_capacity(items.len());

@@ -5682,6 +5682,68 @@ fn parallel_rounds_give_what_every_order_gives() {
     );
 }
 
+/// A `for` over `parallel` whose body has a `return` in it runs one round after another, as a
+/// plain loop over the list: it prints in order, and the `return`, written as a statement or in an
+/// `except` block, leaves the function at the round it's in, with no round after it run. What's
+/// printed is what the compiled program printed.
+#[test]
+fn a_parallel_loop_with_a_return_runs_as_a_plain_loop() {
+    prints(
+        "
+        error Odd:
+            number: int
+
+        def halved(number: int) -> int fails Odd:
+            if number % 2 == 1:
+                fail Odd(number)
+            return number // 2
+
+        def first_big(items: list[int], stdout: Stdout) -> int:
+            for item in parallel(items):
+                stdout.print('looking', item)
+                if item > 10:
+                    return item
+            return -1
+
+        def first_odd(items: list[int], stdout: Stdout) -> int:
+            for item in parallel(items):
+                half = halved(item) except why:
+                    stdout.print('odd', why.number)
+                    return item
+                stdout.print('half', half)
+            return 0
+
+        def main(stdout: Stdout):
+            stdout.print(first_big([1, 5, 20, 3, 40], stdout))
+            stdout.print(first_big([1, 2], stdout))
+            stdout.print(first_odd([4, 8, 3, 6], stdout))
+        ",
+        "looking 1\nlooking 5\nlooking 20\n20\nlooking 1\nlooking 2\n-1\nhalf 2\nhalf 4\nodd 3\n3\n",
+    );
+}
+
+/// A set or dict comprehension over `parallel` takes its rounds' items in the list's order, as a
+/// plain one does: the first of equal items is kept where it came, and a key keeps its first place
+/// and its last value. What's printed is what the compiled program printed.
+#[test]
+fn a_set_or_dict_made_over_parallel_holds_its_items_in_the_lists_order() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            stdout.print({item % 5 for item in parallel([7, 3, 12, 8, 2, 7])})
+            stdout.print({item for item in parallel(list(range(3000))) if item % 1000 == 7})
+            stdout.print({(left, right % 2) for left, right in parallel([(1, 4), (2, 5), (1, 6)])})
+            stdout.print(len({item // 3 for item in parallel(list(range(5000)))}))
+            stdout.print({item % 5: item for item in parallel([7, 3, 12, 8, 2, 7])})
+            stdout.print({item: item * 2 for item in parallel(list(range(3000))) if item % 1000 == 7})
+            stdout.print({left: right for left, right in parallel([(1, 4), (2, 5), (1, 6)])})
+            stdout.print(len({item // 3: item for item in parallel(list(range(5000)))}))
+        ",
+        "{2, 3}\n{7, 1007, 2007}\n{(1, 0), (2, 1)}\n1667\n{2: 7, 3: 8}\n{7: 14, 1007: 2014, 2007: 4014}\n\
+         {1: 6, 2: 5}\n1667\n",
+    );
+}
+
 /// What `parallel` doesn't promise an order for is refused: printing in a round, a `shared` value
 /// one round changes and another reaches, and a round that may not run changing something.
 #[test]

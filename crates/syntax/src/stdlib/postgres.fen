@@ -61,7 +61,7 @@ LONGEST_SHORT = 30000
 LONG_KINDS = [100, 68, 69, 86, 78, 65, 84, 116]
 
 ## A message a Postgres server sends.
-export enum PgMessage:
+enum PgMessage:
     ## The client is in.
     AuthOk
     ## The server wants the password as it is.
@@ -98,7 +98,7 @@ export enum PgMessage:
     Other(kind: int)
 
 ## The startup message: the protocol's version, then who's signing in and to which database.
-export def startup(user: str, database: str) -> bytes:
+def startup(user: str, database: str) -> bytes:
     mut out = PgWriter()
     out.int32(PROTOCOL)
     for name, value in [("user", user), ("database", database)]:
@@ -108,13 +108,13 @@ export def startup(user: str, database: str) -> bytes:
     return out.done(-1)
 
 ## The password, as it is, for a server that asks for it that way.
-export def password(text: str) -> bytes:
+def password(text: str) -> bytes:
     mut out = PgWriter()
     out.text(text)
     return out.done(112)
 
 ## The first SASL message: the mechanism chosen, then its first message.
-export def sasl_first(mechanism: str, data: bytes) -> bytes:
+def sasl_first(mechanism: str, data: bytes) -> bytes:
     mut out = PgWriter()
     out.text(mechanism)
     out.int32(len(data))
@@ -122,13 +122,13 @@ export def sasl_first(mechanism: str, data: bytes) -> bytes:
     return out.done(112)
 
 ## A later SASL message.
-export def sasl_next(data: bytes) -> bytes:
+def sasl_next(data: bytes) -> bytes:
     mut out = PgWriter()
     out.bytes(data)
     return out.done(112)
 
 ## Says the client is done, before it closes the connection.
-export def terminate() -> bytes:
+def terminate() -> bytes:
     return PgWriter().done(88)
 
 ## Writes a message's body, then gives the message: its type byte, unless it's the startup
@@ -166,7 +166,7 @@ struct PgWriter:
 
 ## Reads a server's messages from the bytes it's sent so far: `feed` takes more, and `next` gives
 ## the next whole message, or `None` until there's enough for one.
-export struct PgReader:
+struct PgReader:
     ## What the server's sent, read up to `_at`: a builder, so what's fed is added in place,
     ## rather than all that's held being copied each time a long message comes in another piece.
     _data = bytes_builder()
@@ -353,7 +353,7 @@ def int32_at(data: bytes, at: int) -> int:
 ## the client's first message, `answer` reads the server's first and gives the client's proof that
 ## it knows the password, and `check` reads the server's last, which proves the server knows it
 ## too. The password never crosses the network.
-export struct PgScram:
+struct PgScram:
     _password: Secret[str]
     _first_bare: str
     _nonce: str
@@ -453,7 +453,7 @@ def nibble(digit: int) -> int:
 ## `$1` for each value, bind the values, describe the rows it gives, run it, then sync. Each value
 ## is sent apart from the text, as a parameter, so it can never change what the text means: an
 ## int, a float or text as text, and bytes as they are.
-export def query_messages(query: Template[SqlValue]) -> bytes:
+def query_messages(query: Template[SqlValue]) -> bytes:
     mut text = ""
     for at, part in enumerate(query.strings):
         text += part
@@ -527,11 +527,7 @@ def float_text(value: float) -> str:
 ## The rows a query gave, from its columns and each row as text, ready for `sql.rows_as`. Each
 ## cell is read by its column's type: ints and bools as ints, floats as floats, `bytea` as bytes,
 ## and everything else as text.
-export def rows_of(
-    names: list[str],
-    types: list[int],
-    rows: list[PgMessage],
-) -> SqlRows fails SqlError:
+def rows_of(names: list[str], types: list[int], rows: list[PgMessage]) -> SqlRows fails SqlError:
     mut found = SqlRows(columns=names, kinds=[], at=[], ints=[], floats=[], texts=[], blobs=[])
     for each in rows:
         match each:
@@ -610,7 +606,7 @@ def hex_digit(digit: int) -> int fails SqlError:
 ## A failure the server sent, as the `SqlError` it is: class `23`, a broken rule, is `Constraint`,
 ## a serialization failure or a deadlock is `Busy`, and anything else is `Failed`, each with the
 ## server's own message and code.
-export def failure_from_fields(fields: dict[str, str]) -> SqlError:
+def failure_from_fields(fields: dict[str, str]) -> SqlError:
     code = fields.get("C") else ""
     said = fields.get("M") else "the server failed with no message"
     reason = f"{said} ({code})" if code != "" else said

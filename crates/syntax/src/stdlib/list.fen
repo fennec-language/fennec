@@ -42,19 +42,20 @@ extend list[T]:
             low += 1
             high -= 1
 
-    ## Swaps the items at `i` and `j`, in place, counting from the end when either is negative, as
+    ## Swaps the items at `a` and `b`, in place, counting from the end when either is negative, as
     ## `self[at]` does. Each has to be there. It's how two items of one list change places, since
-    ## `f(ref xs[i], ref xs[j])` is refused: `i` and `j` may be the same.
+    ## `f(ref xs[a], ref xs[b])` is refused: `a` and `b` may be the same. Which comes first makes
+    ## no difference, so neither is named at a call.
     ##
     ## ```fennec
     ## mut items = ["a", "b", "c"]
     ## items.swap(0, -1)
     ## assert items == ["c", "b", "a"]
     ## ```
-    def swap(ref self, i: int, j: int):
-        held = self[i]
-        self[i] = self[j]
-        self[j] = held
+    def swap(ref self, a: int, b: int):
+        held = self[a]
+        self[a] = self[b]
+        self[b] = held
 
 ## Methods for lists whose items can be compared with `==`.
 extend list[T: Eq]:

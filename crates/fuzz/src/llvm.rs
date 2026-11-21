@@ -97,9 +97,10 @@ pub(crate) fn ready() -> Result<(), String> {
 }
 
 /// What `fennec build --llvm` says when building went wrong, rather than the backend saying what
-/// it doesn't take yet.
-pub(crate) const BROKEN: [&str; 5] =
-    ["linking failed", "failed on", "couldn't run", "once trimmed", "panicked"];
+/// it doesn't take yet. A runtime library that's missing, or from another build than the `fennec`
+/// building, is one, as a `fennec-std-tests` left from an earlier build finds it.
+pub(crate) const BROKEN: [&str; 6] =
+    ["linking failed", "failed on", "couldn't run", "once trimmed", "panicked", "the runtime library `"];
 
 /// What `fennec build` gave, run with the tools it starts in a group of their own: one whose
 /// tools together take more than `BUILD_STUCK` CPU time or `MOST_KILOBYTES` of memory is
@@ -537,6 +538,32 @@ pub(crate) fn reader_names() -> Vec<&'static str> {
     READERS.iter().map(|(name, _)| *name).chain(["pack", "toml-rules", "router", "html"]).collect()
 }
 
+/// The readers that read what std keeps for its own code, as `postgres`'s reads `PgReader`: a
+/// program can import it only through `fennec-std-tests`, so that builds them.
+const PRIVATE_READERS: [&str; 1] = ["postgres"];
+
+/// How to build `fennec-std-tests` beside `fennec`.
+const BUILD_STD_TESTS: &str =
+    "`cargo build -p fennec --features std-private`, with `--release` for a release `fennec`";
+
+/// What builds the reader for `name`: the `fennec` the fuzzer uses, or for a reader of std's own
+/// names, `fennec-std-tests` beside it, which only a build with fennec's `std-private` feature
+/// makes. One that isn't there is said, with how to build it, rather than built without.
+fn compiler_for(name: &str) -> Result<PathBuf, String> {
+    let fennec = fennec();
+    if !PRIVATE_READERS.contains(&name) {
+        return Ok(fennec);
+    }
+    let beside = fennec.with_file_name(format!("fennec-std-tests{}", std::env::consts::EXE_SUFFIX));
+    if beside.exists() {
+        return Ok(beside);
+    }
+    Err(format!(
+        "the `{name}` reader reads std's private names, so `fennec-std-tests` builds it, and there's none beside {}: build it with {BUILD_STD_TESTS}",
+        fennec.display()
+    ))
+}
+
 /// The readers built so far in this process, by target.
 type Built = std::sync::Mutex<Vec<(String, PathBuf)>>;
 
@@ -552,10 +579,11 @@ fn reader(name: &str) -> Result<PathBuf, String> {
         return Ok(executable.clone());
     }
     let source = reader_source(name).ok_or_else(|| format!("there's no reader for `{name}`"))?;
+    let compiler = compiler_for(name)?;
     // Built once for every process, by what it's built from, since cutting a failure down runs a
     // process for each try.
     let readers = std::env::temp_dir().join("fennec-fuzz-readers");
-    let folder = readers.join(built_from(&source));
+    let folder = readers.join(built_from(&source, &compiler));
     let kept = folder.join("program");
     if !kept.exists() {
         forget_old(&readers);
@@ -563,7 +591,19 @@ fn reader(name: &str) -> Result<PathBuf, String> {
     let executable = if kept.exists() {
         kept
     } else {
-        let made = build(&source, &work().join(name), false)?
+        let made = build_with(&compiler, &source, &work().join(name), false)
+            .map_err(|err| {
+                // A `fennec-std-tests` left from an earlier build is refused the runtime beside it,
+                // as `cargo test -p fennec-fuzz` alone leaves it.
+                if PRIVATE_READERS.contains(&name) && err.contains("the runtime library `") {
+                    format!(
+                        "{err}\n`{}` built it, and it, `fennec` and the runtimes have to be from one build: build it again with {BUILD_STD_TESTS}",
+                        compiler.display()
+                    )
+                } else {
+                    err
+                }
+            })?
             .ok_or_else(|| format!("LLVM doesn't take the `{name}` reader"))?;
         std::fs::create_dir_all(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
         let copying = folder.join(format!("program.{}", std::process::id()));
@@ -616,14 +656,14 @@ pub(crate) fn threads_runtime_here() -> bool {
     fennec().with_file_name("libfennec_runtime_threads.a").is_file()
 }
 
-/// A name for what a reader's built from: its source, and the `fennec` and runtimes that build it.
-fn built_from(source: &str) -> String {
+/// A name for what a reader's built from: its source, the `compiler` that builds it, and the
+/// runtimes beside it.
+fn built_from(source: &str, compiler: &Path) -> String {
     let mut hasher = fennec_blake3::Hasher::new();
     hasher.update(source.as_bytes());
-    let fennec = fennec();
     let runtimes =
-        ["libfennec_runtime.a", "libfennec_runtime_threads.a"].map(|file| fennec.with_file_name(file));
-    for made in std::iter::once(fennec.clone()).chain(runtimes) {
+        ["libfennec_runtime.a", "libfennec_runtime_threads.a"].map(|file| compiler.with_file_name(file));
+    for made in std::iter::once(compiler.to_path_buf()).chain(runtimes) {
         let changed = std::fs::metadata(&made).and_then(|meta| meta.modified()).ok();
         let since = changed.and_then(|changed| changed.duration_since(std::time::UNIX_EPOCH).ok());
         hasher.update(&since.unwrap_or_default().as_nanos().to_le_bytes());

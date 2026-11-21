@@ -1270,10 +1270,7 @@ fn the_standard_library_is_linted_as_a_kit_is() {
     }
     module.files = sources.spans();
     let mut lints = lint(&module, &sources);
-    lints.extend(fennec_lint::needless_conversions(&module, &sources));
-    lints.extend(fennec_lint::stale_copies(&module, &sources));
-    lints.extend(fennec_lint::double_lookups(&module, &sources));
-    lints.extend(fennec_lint::self_compares(&module, &sources));
+    lints.extend(fennec_lint::typed_lints(&module, &sources, true));
     let exceptions = std_exceptions();
     let mut excepted = vec![0; exceptions.len()];
     let mut found: Vec<String> = Vec::new();

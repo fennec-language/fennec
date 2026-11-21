@@ -28270,7 +28270,7 @@ fn a_table_of_a_struct_never_made_builds() -> std::io::Result<()> {
     }
     prints_in_both_builds(
         "table_never_made",
-        r#"from std.collections import Table
+        "from std.collections import Table
 
 struct Spot:
     x: int
@@ -28289,7 +28289,7 @@ def main(stdout: Stdout):
     world = World()
     stdout.print(len(world.units.ids()), len(world.units))
     return
-"#,
+",
         "0 0 0 0\n0 0\n",
     )
 }

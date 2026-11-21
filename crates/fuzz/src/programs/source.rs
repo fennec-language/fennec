@@ -658,7 +658,17 @@ pub(crate) fn source(program: &Program) -> String {
     };
     // Only a program holding a `Filed` statement reaches the disk, so only it takes an `Fs`.
     let fs = if writer.helpers.contains("(fs: Fs, stdout: Stdout)") { ", fs: Fs" } else { "" };
-    format!("{channels}{HEADER}{tasks}{}def main(stdout: Stdout{fs}):\n{}", writer.helpers, writer.out)
+    // Only a program holding a `Saved` statement saves values, so only it imports the formats and
+    // names `Id`.
+    let (formats, header) = if writer.helpers.contains("json.loads[") {
+        ("from std import json, pack, toml\n", HEADER.replacen("import Table", "import Id, Table", 1))
+    } else {
+        ("", HEADER.to_owned())
+    };
+    format!(
+        "{formats}{channels}{header}{tasks}{}def main(stdout: Stdout{fs}):\n{}",
+        writer.helpers, writer.out
+    )
 }
 
 /// `streamed{id}`, the function a `Streamed` calls: its stream, made and read.
@@ -3858,6 +3868,10 @@ impl Writer {
             Stmt::Generated(generating) => {
                 let _ = write!(self.helpers, "{}", generated_written(generating));
                 self.line(indent, &format!("generated{}(stdout)", generating.id));
+            }
+            Stmt::Saved(saving) => {
+                let _ = write!(self.helpers, "{}", super::saving::written(saving));
+                self.line(indent, &format!("saved{}(stdout)", saving.id));
             }
             Stmt::Ruled(ruling) => {
                 let _ = write!(self.helpers, "{}", ruled_written(ruling));

@@ -5634,15 +5634,20 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
                   struct Point:\n    x = 1\n\n\
                   def later(n: int) -> int:\n    return Point().x + n\n";
     let after = before.replace("    return n * 2\n", "    total = n * 2 + 1\n    return total\n");
-    let build = |daemon: bool, home: &Path| {
+    let fennec = |args: &[&str], daemon: bool, home: &Path| {
         let mut command = crate::executables::fennec_command();
-        command.args(["build", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", home);
+        command.args(args).current_dir(&kit).env("FENNEC_HOME", home);
         command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_COMPARE_KEPT", "1").env_remove("CI");
         if daemon {
             command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
         }
-        command.output().unwrap()
+        command
     };
+    let build =
+        |daemon: bool, home: &Path| fennec(&["build", ".", "-o", "prog"], daemon, home).output().unwrap();
+    // The first build is the daemon's, so the edit's has a kept check to carry over.
+    let status = || fennec(&["daemon", "status"], true, &home).output().unwrap();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"], true, &home), &status).unwrap();
     for source in [before, after.as_str()] {
         std::fs::write(&main, source).unwrap();
         let _ = std::fs::remove_file(kit.join("prog"));
@@ -5708,15 +5713,21 @@ fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
                   def main(stdout: Stdout):\n    stdout.print(measure(Dot(1)))\n\n\
                   def measure[T](item: T) -> int:\n    return 1\n";
     let after = before.replace("measure[T](item", "measure[T: Shape](item");
-    let fennec = |args: &[&str], daemon: bool| {
+    let command = |args: &[&str], daemon: bool| {
         let mut command = crate::executables::fennec_command();
         command.args(args).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", DAEMON_IDLE);
         command.env("FENNEC_COMPARE_KEPT", "0").env("FENNEC_KEPT_RULE_OFF", "bounds").env_remove("CI");
         if daemon {
             command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
         }
-        command.output().unwrap()
+        command
     };
+    let fennec = |args: &[&str], daemon: bool| command(args, daemon).output().unwrap();
+    // The first build is the daemon's, so it keeps the check the edit's build carries over. One
+    // made in the command's own process, as one is when a daemon it starts is slow to answer,
+    // keeps nothing, and the edit's build then refuses the program, rightly.
+    let status = || command(&["daemon", "status"], true).output().unwrap();
+    crate::executables::daemon_started(command(&["daemon", "serve"], true), &status).unwrap();
     std::fs::write(&main, before).unwrap();
     let first = fennec(&["build", ".", "-o", "prog"], true);
     assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));

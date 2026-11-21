@@ -16,6 +16,15 @@
 set -u
 root="$(git rev-parse --show-toplevel)" || exit 1
 cd "$root" || exit 1
+# One gate a worktree: a second one here builds and tests in the same target folder as the first,
+# and each corrupts the other (#2294). Run by open-pr.sh, which holds the lock for it, it goes on
+# under that. Run on its own, it takes the lock, and lets it go when it ends.
+holder=${FENNEC_GATE_LOCK_HOLDER:-$$}
+"$root/.github/scripts/gate-lock.sh" take "$holder" || exit 1
+let_go() {
+  [ "$holder" != "$$" ] || "$root/.github/scripts/gate-lock.sh" release "$$"
+}
+trap let_go EXIT
 # How much the disk it builds on has free, said loudly first when it's under 40 GB, and again by
 # its summary: a gate builds 7 to 13 GB in its worktree, and a build that runs out of room part way
 # leaves broken objects behind, as one lane's did with 12 GB free on 2026-11-17. It still runs.
@@ -37,7 +46,7 @@ fi
 logs="$(mktemp -d)"
 # Its logs, and the programs and Fennec folder it makes, go however it ends: what a failed step
 # printed is shown before then.
-trap 'rm -rf "$logs"' EXIT
+trap 'rm -rf "$logs"; let_go' EXIT
 log="$logs/gate.log"
 : > "$log"
 # LLVM is the main backend, so its tests have to run, not skip.
@@ -332,7 +341,7 @@ quick() {
   # With no git settings but git's own, as CI's runners have: this Mac's git names a new
   # repository's first branch `main`, which hid two tests that needed it, and CI found them.
   local script
-  for script in test-fetch test-open-pr test-landing test-sweep-worktrees test-flakes test-nightly-report test-mutants; do
+  for script in test-fetch test-open-pr test-landing test-sweep-worktrees test-flakes test-nightly-report test-mutants test-gate-lock; do
     if ! GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null ".github/scripts/$script.sh" > "$said" 2>&1; then
       cat "$said"
       echo "$script" >> "$names"

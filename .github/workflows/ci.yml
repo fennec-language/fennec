@@ -641,6 +641,8 @@ jobs:
         run: .github/scripts/test-sweep-worktrees.sh
       - name: Fetching under the lock every worktree shares, on a throwaway repository
         run: .github/scripts/test-fetch.sh
+      - name: One gate a worktree, a second refused at once, on a throwaway repository
+        run: .github/scripts/test-gate-lock.sh
       - name: Telling flakes from failures main fixed, on a throwaway repository
         run: .github/scripts/test-flakes.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files

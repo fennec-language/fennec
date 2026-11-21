@@ -40,6 +40,11 @@ stop() {
   echo "open-pr: $*" >&2
   exit 1
 }
+# One gate a worktree (#2294): this holds the worktree's lock from before it merges main until it's
+# done, and the gate it runs goes on under it.
+.github/scripts/gate-lock.sh take $$ || exit 1
+export FENNEC_GATE_LOCK_HOLDER=$$
+trap '.github/scripts/gate-lock.sh release $$' EXIT
 [ -f "$body" ] || stop "there's no file $body for the pull request's text"
 branch=$(git symbolic-ref --short HEAD) || stop "nothing's checked out as a branch"
 [ "$branch" != main ] || stop "this is main: open a pull request from a branch of your own"
@@ -63,7 +68,7 @@ if git grep --quiet -E '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'; then
   stop "conflict markers are left in these files"
 fi
 said=$(mktemp)
-trap 'rm -f "$said" "$said.md" "$said.was"' EXIT
+trap 'rm -f "$said" "$said.md" "$said.was"; .github/scripts/gate-lock.sh release $$' EXIT
 "$gate" | tee "$said" || stop "the gate failed, so nothing's pushed"
 gated="at \`$(git rev-parse --short=12 HEAD)\`, $(date -u '+%Y-%m-%d %H:%M UTC')"
 if [ "$gate" = .github/scripts/gate.sh ]; then

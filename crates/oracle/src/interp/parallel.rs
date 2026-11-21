@@ -107,7 +107,14 @@ pub(crate) enum Work {
     /// `for names in parallel(...)`: the body, with each item.
     For { names: &'static [String], body: &'static [Stmt], items: Vec<Value> },
     /// A comprehension's element, for each item its condition keeps.
-    Made { elem: &'static Expr, names: &'static [String], cond: Option<&'static Expr>, items: Vec<Value> },
+    /// A dict comprehension's `value` too, each round making its key and value as a pair.
+    Made {
+        elem: &'static Expr,
+        value: Option<&'static Expr>,
+        names: &'static [String],
+        cond: Option<&'static Expr>,
+        items: Vec<Value>,
+    },
 }
 
 /// A `parallel` call whose rounds this thread runs, the innermost last, and whether the rounds
@@ -293,7 +300,7 @@ fn added(left: Value, right: &Value, span: Span) -> Run<Value> {
 /// Whether `expr` uses `?` anywhere in it, as the IR asks before lifting a sum.
 fn tries(expr: &Expr) -> bool {
     let mut found = false;
-    fennec_syntax::visit::in_expr(&mut expr.clone(), &mut |seen| {
+    visit::in_expr(&mut expr.clone(), &mut |seen| {
         found |= matches!(seen.kind, ExprKind::Try { .. });
     });
     found
@@ -630,9 +637,9 @@ impl Interp {
                     Err(other) => Err(other),
                 }
             }
-            Work::Made { elem, names, cond, items } => {
+            Work::Made { elem, value, names, cond, items } => {
                 let item = items.get(at).cloned().unwrap_or(Value::Unit);
-                self.made_from(elem, names, item, *cond)
+                self.made_from((elem, *value), names, item, *cond)
             }
         }
     }
@@ -729,26 +736,28 @@ impl Interp {
         }
     }
 
-    /// What each round of `[elem for names in parallel(source) if cond]` makes, by position.
+    /// What each round of `[elem for names in parallel(source) if cond]` makes, by position, or
+    /// of `{elem: value for ...}`, each a pair.
     fn parallel_made(
         &mut self,
-        elem: &'static Expr,
+        (elem, value): (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         call: Written,
         cond: Option<&'static Expr>,
     ) -> Run<(Ran, usize)> {
         let items = self.parallel_items(call)?;
         let count = items.len();
-        let work = Arc::new(Work::Made { elem, names, cond, items });
+        let work = Arc::new(Work::Made { elem, value, names, cond, items });
         let ran =
             self.rounds(count, Some(Arc::clone(&work)), &mut |interp, at, _| interp.run_round(&work, at))?;
         Ok((ran, count))
     }
 
-    /// What `elem` makes of an item, or `None` when `cond` leaves it out.
+    /// What `elem` makes of an item, with `value` after it as a pair when there's one, or `None`
+    /// when `cond` leaves it out.
     fn made_from(
         &mut self,
-        elem: &'static Expr,
+        (elem, value): (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         item: Value,
         cond: Option<&'static Expr>,
@@ -759,21 +768,29 @@ impl Interp {
                 Some(cond) => self.truth(cond)?,
                 None => true,
             };
-            if keep { self.eval(elem).map(Some) } else { Ok(None) }
+            if !keep {
+                return Ok(None);
+            }
+            let key = self.eval(elem)?;
+            match value {
+                Some(value) => Ok(Some(Value::Tuple(Held::new(vec![key, self.eval(value)?])))),
+                None => Ok(Some(key)),
+            }
         });
         self.restore(mark);
         made
     }
 
-    /// `[elem for names in parallel(source) if cond]`: the rounds' results, in the list's order.
+    /// `[elem for names in parallel(source) if cond]`: the rounds' results, in the list's order;
+    /// for `{elem: value for ...}`, each a pair.
     pub(crate) fn parallel_list(
         &mut self,
-        elem: &'static Expr,
+        made: (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         call: Written,
         cond: Option<&'static Expr>,
     ) -> Run<Vec<Value>> {
-        let (ran, _) = self.parallel_made(elem, names, call, cond)?;
+        let (ran, _) = self.parallel_made(made, names, call, cond)?;
         if let Some(stop) = ran.stop {
             return Err(stop);
         }
@@ -814,7 +831,7 @@ impl Interp {
             && matches!(self.program.type_at(call.source.span), Some(Type::List(_)))
             && !tries(elem);
         let (Ran { mut made, stop, before }, count) =
-            self.parallel_made(elem, names, call, cond.as_deref())?;
+            self.parallel_made((elem, None), names, call, cond.as_deref())?;
         made.truncate(before);
         if !lifted {
             let total = self.summed(ArgVal::Value(None, Value::List(Held::new(made))), start, expr)?;
@@ -854,7 +871,8 @@ impl Interp {
         for (at, item) in items.into_iter().enumerate() {
             self.push_call(true, count)?;
             self.rounds_as.push(None);
-            let made = self.start_round(at, false).and_then(|()| self.made_from(elem, names, item, cond));
+            let made =
+                self.start_round(at, false).and_then(|()| self.made_from((elem, None), names, item, cond));
             let numbered: Vec<usize> = self.rounds_as.pop().flatten().into_iter().collect();
             self.pop_scope();
             self.rounds_ended(&numbered)?;

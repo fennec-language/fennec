@@ -385,7 +385,7 @@ fn built_and_linked(
     (checked, reusing): (Option<fennec_check::Signatures>, bool),
 ) -> Result<Built, String> {
     let started = Instant::now();
-    let (built, units) = llvm_objects(program, release, (checked, reusing))?;
+    let (built, units, known) = llvm_objects(program, release, (checked, reusing))?;
     let compiled = started.elapsed();
     if fennec_build::cancelled() {
         return Err(fennec_llvm::STOPPED.to_owned());
@@ -396,7 +396,7 @@ fn built_and_linked(
     // taking another way.
     let linked = finish(&built, output, runtime_in, &units)?;
     // Every object it linked is in the cache, for the daemon's next build to know without looking.
-    fennec_llvm::objects_known(&units);
+    fennec_llvm::objects_known(known, &units);
     let root = built.stored.as_ref().map(|stored| stored.root.clone());
     Ok(Built { total: built.total, fresh: built.fresh, reused: built.reused, compiled, linked, root })
 }
@@ -930,7 +930,7 @@ fn llvm_objects(
     program: &fennec_kit::Program,
     release: bool,
     (checked, reusing): (Option<fennec_check::Signatures>, bool),
-) -> Result<(Compiled, Vec<fennec_llvm::Unit>), String> {
+) -> Result<(Compiled, Vec<fennec_llvm::Unit>, Option<fennec_llvm::KnownUnder>), String> {
     // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
     // the runtime of each, for it to stop if it's ever given one.
     fennec_llvm::trust_native_blocks(release);
@@ -938,10 +938,10 @@ fn llvm_objects(
     // Cutting it down only lets items go, so what was checked holds for what's left once what was
     // cut is let go of too.
     let checked = checked.map(|checked| checked.cut_to(&cut_keys(&program.module, &reached)));
-    let emitted = if !release && reusing {
+    let (emitted, known) = if !release && reusing {
         emitted_reusing(program, &reached, checked)?
     } else {
-        emitted_with(&reached, &fennec_llvm::emit_for, false, checked)?
+        (emitted_with(&reached, &fennec_llvm::emit_for, false, checked)?, None)
     };
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
@@ -954,8 +954,9 @@ fn llvm_objects(
     let compiled = compile_emitted(&emitted, release, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::entry(lowered, shared, image, bytes)
     })?;
-    // Kept for compiling again any kept object a cleanup takes before the link.
-    Ok((compiled, emitted.units))
+    // Kept for compiling again any kept object a cleanup takes before the link, with what the
+    // objects it found are known under.
+    Ok((compiled, emitted.units, known))
 }
 
 /// A dev build's text, using again each unit the last build of this program kept whose function,
@@ -967,21 +968,21 @@ fn emitted_reusing(
     program: &fennec_kit::Program,
     reached: &fennec_syntax::Module,
     checked: Option<fennec_check::Signatures>,
-) -> Result<Emitted, String> {
+) -> Result<(Emitted, Option<fennec_llvm::KnownUnder>), String> {
     let cache = fennec_build::fennec_home()
         .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
         .map(|home| fennec_build::Cache::new(&home));
     let first = program.sources.files().next().map(|(shown, _)| shown.to_owned());
     let named = first.and_then(|shown| std::fs::canonicalize(shown).ok());
     let (Some(cache), Some(named)) = (cache, named) else {
-        return emitted_with(reached, &fennec_llvm::emit_for, false, checked);
+        return emitted_with(reached, &fennec_llvm::emit_for, false, checked).map(|emitted| (emitted, None));
     };
     let key = units_key(program, &named);
     let tools = fennec_llvm::Tools::find()?;
     // Every object the program held last time is marked used at once, by marking its list: the
     // units used again are found without marking each (`fennec_llvm::has_object`).
     cache.mark(fennec_build::HOLDS, &key);
-    let has_object = fennec_llvm::has_object(&cache, &tools)?;
+    let (has_object, known) = fennec_llvm::has_object(&cache, &tools)?;
     later::say_failure();
     // An index the daemon hasn't written yet is the newest there is.
     let kept = later::pending(&key).map(|index| index.as_ref().clone()).or_else(|| cache.read(UNITS, &key));
@@ -1017,7 +1018,7 @@ fn emitted_reusing(
             fennec_build::kept("keep the program's list of objects", held.map_err(std::io::Error::other));
         }
     }
-    Ok(emitted)
+    Ok((emitted, known))
 }
 
 /// What names a program's index of kept units, and its list of objects, in the cache. For a kit,

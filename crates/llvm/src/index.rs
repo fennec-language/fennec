@@ -167,18 +167,20 @@ pub(crate) struct Using<'u, 'r, 'w, 'p> {
 type Expected = (String, Key, Key, bool, Vec<(u8, String, Option<Key>)>, Vec<Asked>, Vec<Added>);
 
 /// Whether this build checks the index it brings up to date against one made afresh: always with
-/// `FENNEC_CHECK_UNITS=1`, and in a dev compiler on one build in eight, picked by `build`, so the
-/// same program and settings always do or don't.
-fn compares_index(build: &Key) -> bool {
+/// `FENNEC_CHECK_UNITS=1`, and in a dev compiler on one build in eight, picked by `picked`, the
+/// units' IR keys taken together. An edit changes them, so each kit's builds are checked in turn,
+/// and the same program always is or isn't. Picked by the build's settings, which an edit
+/// doesn't change, one kit in eight was checked on every build and the rest never.
+fn compares_index(picked: u64) -> bool {
     std::env::var("FENNEC_CHECK_UNITS").as_deref() == Ok("1")
-        || (cfg!(debug_assertions) && build.first().is_some_and(|byte| byte % 8 == 0))
+        || (cfg!(debug_assertions) && picked.is_multiple_of(8))
 }
 
 impl<'u, 'r, 'w, 'p> Using<'u, 'r, 'w, 'p> {
     /// What `reuse` kept last time, if it was kept with the settings and layouts this build has.
     pub(crate) fn new(
         reuse: &'u mut Reuse<'r>,
-        build: Key,
+        (build, picked): (Key, u64),
         reads: &'u Reads<'w, 'p>,
         layouts: &'u Layouts,
     ) -> Self {
@@ -192,7 +194,7 @@ impl<'u, 'r, 'w, 'p> Using<'u, 'r, 'w, 'p> {
         let same = vec![None; index.reads.len()];
         let seen = vec![false; index.units.len()];
         let audit = reuse.audit;
-        let expected = compares_index(&build).then(Vec::new);
+        let expected = compares_index(picked).then(Vec::new);
         Using { reuse, reads, layouts, audit, index, by_name, same, seen, numbered: None, expected }
     }
 

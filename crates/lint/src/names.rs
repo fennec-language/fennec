@@ -64,6 +64,8 @@ struct Named<'m> {
     local: bool,
     /// The name of the type it's written with, for a parameter: `fs: Fs` names what it holds.
     written_type: Option<&'m str>,
+    /// Whether it's a parameter, which may be one of `calls::PLACEHOLDERS`, as in `dot(a, b)`.
+    parameter: bool,
 }
 
 fn is_snake(name: &str) -> bool {
@@ -97,8 +99,14 @@ fn pattern_names<'m>(pattern: &'m Pattern, found: &mut Vec<&'m str>) {
 
 /// The names a block binds: locals, loop names, `with` names and what a `match` takes apart.
 fn block_names<'m>(stmts: &'m [Stmt], found: &mut Vec<Named<'m>>) {
-    let local =
-        |name: &'m str, span: Span| Named { name, kind: Kind::Value, span, local: true, written_type: None };
+    let local = |name: &'m str, span: Span| Named {
+        name,
+        kind: Kind::Value,
+        span,
+        local: true,
+        written_type: None,
+        parameter: false,
+    };
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Assign { target, op: None, .. } => {
@@ -143,8 +151,14 @@ fn expression_names(def: &FnDef, found: &mut Vec<(String, Span)>) {
 
 /// Every name a module defines at the top level, with fields, cases and methods.
 fn top_level<'m>(module: &'m Module, found: &mut Vec<Named<'m>>) {
-    let top =
-        |name: &'m str, kind: Kind, span: Span| Named { name, kind, span, local: false, written_type: None };
+    let top = |name: &'m str, kind: Kind, span: Span| Named {
+        name,
+        kind,
+        span,
+        local: false,
+        written_type: None,
+        parameter: false,
+    };
     for item in &module.items {
         match item {
             Item::Function(def) => found.push(top(&def.name, Kind::Value, def.span)),
@@ -172,17 +186,20 @@ fn top_level<'m>(module: &'m Module, found: &mut Vec<Named<'m>>) {
 
 /// What's wrong with a name, if anything.
 fn judge(named: &Named<'_>) -> Option<Lint> {
-    let Named { name, kind, span, local, written_type } = *named;
+    let Named { name, kind, span, local, written_type, parameter } = *named;
     // An operator method's name, like `+` or `[]`, isn't a name to judge.
     if name == "_" || !name.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
         return None;
     }
     let short = name.trim_start_matches('_');
     let named_for_its_type = written_type.is_some_and(|ty| ty.to_lowercase() == name);
+    // `positional-arguments` lets an argument go unnamed for a parameter that says only which comes
+    // first, as in `dot(a, b)`, so such a parameter's name is short enough.
+    let placeholder = parameter && crate::calls::PLACEHOLDERS.contains(&name);
     let too_short = short.chars().count() == 1 || (short.chars().count() == 2 && !WORDS.contains(&short));
     let (rule, message) = if local && BUILTINS.contains(&name) {
         ("shadowed-builtin", format!("`{name}` hides the builtin of that name: call it something else"))
-    } else if too_short && !SHORT_ENOUGH.contains(&name) && !named_for_its_type {
+    } else if too_short && !SHORT_ENOUGH.contains(&name) && !named_for_its_type && !placeholder {
         ("short-name", format!("`{name}` is too short to say what it is: write a word"))
     } else {
         let (written, how) = match kind {
@@ -265,6 +282,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
                 span: param.span,
                 local: true,
                 written_type: param.ty.as_ref().map(|ty| ty.name.as_str()),
+                parameter: true,
             })
             .collect();
         block_names(&def.body, &mut bound);
@@ -276,6 +294,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
             span: *span,
             local: true,
             written_type: None,
+            parameter: false,
         }));
         // A name given a value again is still one name, so it's judged once.
         let mut judged: HashSet<&str> = HashSet::new();

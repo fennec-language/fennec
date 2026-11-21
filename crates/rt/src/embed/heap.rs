@@ -1267,16 +1267,21 @@ impl Heap {
     /// Takes the block at `address` for `handed`, if it's `task`'s and doesn't live for the whole
     /// run.
     fn hand_one(&mut self, address: u64, task: u64, handed: &mut Vec<Box<[u64]>>) {
-        // An address it freed may have come back as another task's block.
-        let block = self.block(address);
-        if block.and_then(|block| block.get(1)).is_none_or(|word| word & TASK_BITS != task) {
-            return;
-        }
-        let lives = block.and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
+        let Ok(at) = usize::try_from(address) else { return };
+        // Its address can come back holding another string: a place kept in it is forgotten even
+        // when it isn't the task's, which only costs the next read of a string a look.
         self.forget_place(address);
-        if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at)) {
-            // Its address can come back holding another string.
-            self.texts.get_mut().remove(&block.as_ptr().addr());
+        // An address it freed may have come back as another task's block, and one that lives for
+        // the whole run stays. It's found once.
+        let taken = |block: &[u64]| {
+            block.get(1).is_some_and(|word| word & TASK_BITS == task)
+                && block.first().is_some_and(|count| *count < IMMORTAL)
+        };
+        if let Some(block) = self.blocks.take_if(at, taken) {
+            let texts = self.texts.get_mut();
+            if !texts.is_empty() {
+                texts.remove(&block.as_ptr().addr());
+            }
             handed.push(block);
         }
     }

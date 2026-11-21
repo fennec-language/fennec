@@ -1,0 +1,6 @@
+error: `main` failed: the account is 12 short
+  Overdrawn(short=12)
+ --> examples/errors/main_fails_with_words.fen:9:5
+  |
+9 |     fail Overdrawn(short=12)
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^

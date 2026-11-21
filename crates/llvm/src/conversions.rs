@@ -237,7 +237,11 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest, &list)
             }),
             ("main.result", [result], [Some(Kind::Boxed(_) | Kind::Enum(_))]) => {
-                self.main_result(result, span)
+                self.main_result(result, None, span)
+            }
+            // A failure shown with its words, as `fennec_ir::MAIN_SHOWN` gives them.
+            ("main.result", [result, shown], [Some(Kind::Boxed(_) | Kind::Enum(_)), _]) => {
+                self.main_result(result, Some(shown), span)
             }
             // An int `main` gives back is the program's exit code.
             ("main.result", [code], [Some(Kind::Int)]) => self.main_exit(code),
@@ -250,7 +254,8 @@ impl Emit<'_, '_, '_> {
                     Ok(())
                 })
             }),
-            ("main.failed", [error], _) => self.main_failed(error, span),
+            ("main.failed", [error], _) => self.main_failed(error, None, span),
+            ("main.failed", [error, shown], _) => self.main_failed(error, Some(shown), span),
             ("shared.in", [value], _) => {
                 dest.and_then(|dest| self.across_lock(dest, value, crate::locks::Way::In))
             }
@@ -630,9 +635,9 @@ impl Emit<'_, '_, '_> {
         self.assign_memory_owned(dest, &to)
     }
 
-    /// Fails the program if what `main` gave back is an error, as the runtime says it. Only then
-    /// does the result cross to the runtime.
-    fn main_result(&mut self, result: &Operand, span: Span) -> Result<(), String> {
+    /// Fails the program if what `main` gave back is an error, as the runtime says it, shown as
+    /// `shown` says when it's given. Only then does the result cross to the runtime.
+    fn main_result(&mut self, result: &Operand, shown: Option<&Operand>, span: Span) -> Result<(), String> {
         let (value, kind) = self.operand(result)?;
         let (err_case, _) = self.case_of(&kind, "Err")?;
         let fields = self.fields_at(&value, &kind);
@@ -652,11 +657,28 @@ impl Emit<'_, '_, '_> {
             value
         };
         self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
-        self.declare("declare void @fennec_main_result(i64, i64, i64) nounwind");
         let handle = self.temp();
         let (from, to) = self.place_in_source(span);
         self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
-        self.line(&format!("call void @fennec_main_result(i64 {handle}, i64 {from}, i64 {to})"));
+        if let Some(shown) = shown {
+            // The runtime takes over a string's block.
+            let (text, kind) = self.operand(shown)?;
+            let text = if kind == Kind::Str && self.headers() {
+                self.owned_text_block(&text)
+            } else {
+                self.retain(&text);
+                text
+            };
+            let word = self.temp();
+            self.line(&format!("{word} = ptrtoint ptr {text} to i64"));
+            self.declare("declare void @fennec_main_result_shown(i64, i64, i64, i64) nounwind");
+            self.line(&format!(
+                "call void @fennec_main_result_shown(i64 {handle}, i64 {word}, i64 {from}, i64 {to})"
+            ));
+        } else {
+            self.declare("declare void @fennec_main_result(i64, i64, i64) nounwind");
+            self.line(&format!("call void @fennec_main_result(i64 {handle}, i64 {from}, i64 {to})"));
+        }
         self.leave_if_failed();
         self.line(&format!("br label %{fine}"));
         self.start_block(&fine);

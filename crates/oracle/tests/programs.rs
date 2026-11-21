@@ -5283,7 +5283,7 @@ fn a_folder_is_listed_in_order_and_walked_a_folder_before_what_is_in_it() {
 const WHY: &str = "
         def why[T](run: () -> T fails IoError) -> str:
             _ = run() except failed:
-                return f'{failed}'
+                return repr(failed)
             return 'fine'
 ";
 
@@ -5428,7 +5428,7 @@ fn a_program_makes_an_io_error_of_its_own() {
 
         def main(stdout: Stdout, fs: Fs):
             _ = checked(fs, 'missing.txt') except why:
-                stdout.print(why, why.message())
+                stdout.print(repr(why), why.message())
                 ''
         ",
         "IoError.Other(reason=\"missing.txt is missing: nothing is there\") missing.txt is missing: nothing is there\n",

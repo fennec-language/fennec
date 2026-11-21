@@ -186,7 +186,7 @@ fn run_once(
             },
             _ => Ended::Exited(0),
         },
-        interp::MainEnded::Failed(error, span) => match runner.repr(&error) {
+        interp::MainEnded::Failed(error, span) => match runner.shown_ending_main(&error) {
             Ok(shown) => Ended::Stopped(said(program, &format!("`main` failed: {shown}"), span)),
             Err(_) => Ended::Unsupported("printing the failure `main` ended with".to_owned()),
         },

@@ -1,5 +1,6 @@
 //! Compiling modules with `opt` and `llc`, a function at a time, through the cache.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -676,12 +677,61 @@ pub fn compile_again(tools: &Tools, unit: &Unit, work: &Path) -> Result<Vec<u8>,
 ///
 /// # Errors
 /// When `llc` can't be run to ask its version.
-pub fn has_object(cache: &Cache, tools: &Tools) -> Result<impl Fn(&fennec_blake3::Hash) -> bool, String> {
+///
+/// In the daemon, an object the last build found or made is known to be there still when no
+/// cleanup has taken anything since (`Cache::removals`), and isn't looked for. Should it be gone
+/// anyway, the link finds that, and the build writes every unit again (`USED_AGAIN_OBJECT_GONE`).
+///
+/// Gives back too what the objects it finds are known under, in the daemon, for this build to hand
+/// to [`objects_known`] once it has linked them.
+pub fn has_object(
+    cache: &Cache,
+    tools: &Tools,
+) -> Result<(impl Fn(&fennec_blake3::Hash) -> bool, Option<KnownUnder>), String> {
     let (version, pipeline) = (tools.version()?, pipeline());
     let cache = cache.clone();
-    Ok(move |text: &fennec_blake3::Hash| {
-        cache.held_object(KIND, &object_key(&version, &pipeline, text)).is_some()
-    })
+    let (known, under) = if crate::kept::keeps_between_builds() {
+        let now =
+            Objects { removals: cache.removals(), version: version.clone(), pipeline: pipeline.clone() };
+        let known = KNOWN.lock().ok().and_then(|mut known| known.take()).filter(|(then, _)| *then == now);
+        (known.map(|(_, known)| known).unwrap_or_default(), Some(KnownUnder(now)))
+    } else {
+        (HashSet::new(), None)
+    };
+    let found = move |text: &fennec_blake3::Hash| {
+        known.contains(text.as_bytes())
+            || cache.held_object(KIND, &object_key(&version, &pipeline, text)).is_some()
+    };
+    Ok((found, under))
+}
+
+/// What the objects a build found are known under, as it started looking for them (see
+/// [`has_object`]): handed back to [`objects_known`] by that build alone.
+pub struct KnownUnder(Objects);
+
+/// What the objects a build knows are there were known under: how many cleanups had taken
+/// anything from the cache as it started, and the LLVM and passes that name its objects.
+#[derive(Clone, PartialEq, Eq)]
+struct Objects {
+    removals: u64,
+    version: String,
+    pipeline: String,
+}
+
+/// The objects this process's last build found or made, by their units' texts' hashes, and what
+/// they were known under. Only the daemon keeps them (`kept::keeps_between_builds`).
+static KNOWN: Mutex<Option<(Objects, HashSet<[u8; 32]>)>> = Mutex::new(None);
+
+/// Notes that every object of `units` is in the cache, as a build that has just linked them knows,
+/// for the next build in this process to find without looking (see [`has_object`]), known under
+/// what `under` says, which that build was given as it started. A build that didn't look for its
+/// objects, as a release build doesn't, has nothing to note.
+pub fn objects_known(under: Option<KnownUnder>, units: &[Unit]) {
+    let Some(KnownUnder(started)) = under else { return };
+    let known = units.iter().map(|unit| *unit.hash.as_bytes()).collect();
+    if let Ok(mut kept) = KNOWN.lock() {
+        *kept = Some((started, known));
+    }
 }
 
 /// Keeps the list of the objects `units` compile to as what the program `name` holds, so cleanup
@@ -691,11 +741,41 @@ pub fn has_object(cache: &Cache, tools: &Tools) -> Result<impl Fn(&fennec_blake3
 /// # Errors
 /// When `llc` can't be run to ask its version, or the list can't be written.
 pub fn hold_objects(cache: &Cache, tools: &Tools, name: &str, units: &[Unit]) -> Result<(), String> {
-    let (version, pipeline) = (tools.version()?, pipeline());
-    let objects: Vec<String> = units.iter().map(|unit| object_key(&version, &pipeline, &unit.hash)).collect();
-    cache
-        .hold(name, KIND, &objects)
+    holding(tools, units)?
+        .hold(cache, name)
         .map_err(|err| format!("couldn't keep the program's list of objects: {err}"))
+}
+
+/// The list of the objects `units` compile to, to keep later, as the daemon does once a build has
+/// answered: what names each is worked out then too (see [`Holding::hold`]).
+///
+/// # Errors
+/// When `llc` can't be run to ask its version.
+pub fn holding(tools: &Tools, units: &[Unit]) -> Result<Holding, String> {
+    Ok(Holding {
+        version: tools.version()?,
+        pipeline: pipeline(),
+        texts: units.iter().map(|unit| unit.hash).collect(),
+    })
+}
+
+/// The objects a program holds, as [`holding`] took them, to keep as its list.
+pub struct Holding {
+    version: String,
+    pipeline: String,
+    texts: Vec<fennec_blake3::Hash>,
+}
+
+impl Holding {
+    /// Keeps the list as what the program `name` holds (see [`hold_objects`]).
+    ///
+    /// # Errors
+    /// When the list can't be written.
+    pub fn hold(self, cache: &Cache, name: &str) -> std::io::Result<()> {
+        let objects: Vec<String> =
+            self.texts.iter().map(|text| object_key(&self.version, &self.pipeline, text)).collect();
+        cache.hold(name, KIND, &objects)
+    }
 }
 
 /// What names a function's compiled object in the cache: the hash of its module's text, with the

@@ -447,12 +447,27 @@ pub(crate) fn fennec_command_with_empty_store() -> Command {
 
 /// The runtime library executables link against, which `fennec build` expects next to
 /// itself. `cargo test` doesn't build it, so this does, once a run: `fennec` refuses one from
-/// other source. Only once, because even when it's
-/// current Cargo puts the library in place again, removing it first, so a test linking
-/// while another builds it could find it missing. `llvm.rs` uses this too.
+/// other source. Only once, and not at all when it's this build's already (`current`), because
+/// even when it's current Cargo puts the library in place again, removing it first, so a test
+/// linking while another builds it could find it missing. `llvm.rs` uses this too.
 pub(crate) fn runtime_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
     *BUILT.get_or_init(|| {
+        let library = Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name(runtime_file());
+        if current(&library) {
+            threads_up_to_date();
+            return true;
+        }
+        // One process at a time builds it, as nextest runs a process for each test: the first
+        // builds it, and each one after finds it current and leaves it, rather than putting it in
+        // place again under another test linking it. Held until this one's built it.
+        let building =
+            fs::OpenOptions::new().create(true).append(true).open(library.with_extension("a.building"));
+        let _held = building.and_then(|file| file.lock().map(|()| file));
+        if current(&library) {
+            threads_up_to_date();
+            return true;
+        }
         let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
         let mut build = cargo();
         build.args(["build", "--quiet", "-p", "fennec-runtime"]).args(profile);
@@ -463,17 +478,60 @@ pub(crate) fn runtime_built() -> bool {
             build.arg("--target-dir").arg(target).env_remove("RUSTC_WRAPPER");
         }
         let plain = build.status().is_ok_and(|status| status.success());
-        // A program that uses `parallel` links the threads library beside `fennec` whenever
-        // there's one, so one left there by a build from other source would be taken by any test,
-        // not only the ones that ask for it. It's brought up to date before anything links, or
-        // taken away when it can't be, so those programs link the plain library instead.
-        if !threads_runtime_built()
-            && let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent()
-        {
-            let _ = fs::remove_file(beside.join("libfennec_runtime_threads.a"));
-        }
+        threads_up_to_date();
         plain
     })
+}
+
+/// Brings the threads library beside `fennec` up to date, or takes it away when it can't be. A
+/// program that uses `parallel` links it whenever there's one, so one left there by a build from
+/// other source would be taken by any test, not only the ones that ask for it, and these programs
+/// link the plain library instead.
+fn threads_up_to_date() {
+    if !threads_runtime_built()
+        && let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent()
+    {
+        let _ = fs::remove_file(beside.join("libfennec_runtime_threads.a"));
+    }
+}
+
+/// Whether the runtime library at `path` is from this build of Fennec, by the build its bytes are
+/// stamped with, as `fennec` reads it before it links one. Then it needn't be built again. Under
+/// nextest, which mutation testing runs the tests with, each test is a process of its own, so the
+/// `OnceLock` above built the library once for each test, and some of 639 LLVM tests failed,
+/// finding it missing as another put it in place again. What a library's stamp says is kept beside
+/// it, by its size and when it changed, so each process needn't read all of it again.
+fn current(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else { return false };
+    let changed = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_nanos());
+    let seen = format!("{} {changed}", metadata.len());
+    let kept = path.with_extension("a.stamp");
+    if let Ok(text) = fs::read_to_string(&kept)
+        && let Some((was, build)) = text.split_once('\n')
+        && was == seen
+    {
+        return build == env!("FENNEC_BUILD");
+    }
+    let Some(build) = fs::read(path).ok().as_deref().and_then(stamp_in) else { return false };
+    // Written under another name and renamed, so another process reads the old note or the new one.
+    let writing = path.with_extension(format!("a.stamp.{}", std::process::id()));
+    if fs::write(&writing, format!("{seen}\n{build}")).is_ok() {
+        let _ = fs::rename(&writing, &kept);
+    }
+    build == env!("FENNEC_BUILD")
+}
+
+/// The build a runtime library's bytes are stamped with: the 64 hex digits after its marker, as
+/// `aot.rs`'s `stamp_in` reads it.
+fn stamp_in(bytes: &[u8]) -> Option<String> {
+    let marker = ["fennec-runtime-", "build:"].concat().into_bytes();
+    let at = bytes.windows(marker.len()).position(|window| window == marker.as_slice())? + marker.len();
+    let hex = std::str::from_utf8(bytes.get(at..at + 64)?).ok()?;
+    hex.bytes().all(|digit| digit.is_ascii_hexdigit()).then(|| hex.to_owned())
 }
 
 /// Whether coverage is being measured. What it adds to the code it builds isn't for a runtime
@@ -519,6 +577,10 @@ pub(crate) fn audited_runtimes_built() -> bool {
 /// plain build's `target/debug`, and puts it next to `fennec` as `name`.
 fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
     let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
+    // As `runtime_built` takes the plain library: built again only when it isn't this build's.
+    if current(&beside.join(format!("lib{name}.a"))) {
+        return true;
+    }
     let Some(own) = beside.parent().map(|target| target.join(folder)) else { return false };
     let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
     let mut cargo = cargo();

@@ -5,6 +5,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 
+#[cfg(unix)]
+use crate::executables::{DAEMON_IDLE, DaemonsStopped};
+
 fn fennec(args: &[&str], stdin: &str) -> std::io::Result<Output> {
     fennec_in(&repo(), args, stdin)
 }
@@ -3797,7 +3800,7 @@ fn stops(dir: &Path, home: &Path) -> bool {
     (0..250).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(20));
         noted() == 0
-            && with_daemon(dir, home, "30", &["daemon", "status"])
+            && with_daemon(dir, home, DAEMON_IDLE, &["daemon", "status"])
                 .is_ok_and(|output| text(&output.stdout) == "not running\n")
     })
 }
@@ -3809,23 +3812,24 @@ fn stops(dir: &Path, home: &Path) -> bool {
 #[test]
 fn a_fennec_folder_in_the_temp_folder_starts_no_daemon() {
     let (_folder, kit, home) = small_kit("temp-no-daemon").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let changes = crate::executables::fennec_command()
         .args(["dev", "changes"])
         .current_dir(&kit)
         .env("FENNEC_HOME", &home)
-        .env("FENNEC_DAEMON_IDLE", "30")
+        .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
         .env_remove("FENNEC_NO_DAEMON")
         .env_remove("FENNEC_DAEMONS")
         .output()
         .unwrap();
     assert!(changes.status.success(), "{}", text(&changes.stderr));
-    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    let status = text(&with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
     assert_eq!(status, "not running\n");
-    let started = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
+    let started = with_daemon(&kit, &home, DAEMON_IDLE, &["dev", "changes"]).unwrap();
     assert!(started.status.success(), "{}", text(&started.stderr));
-    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    let status = text(&with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
     assert!(status.starts_with("running:"), "{status}");
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 
@@ -3835,12 +3839,13 @@ fn a_fennec_folder_in_the_temp_folder_starts_no_daemon() {
 #[test]
 fn past_four_daemons_the_one_used_longest_ago_stops() {
     let (_folder, kit, home) = small_kit("daemon-cap").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let in_environment = |side: &str, args: &[&str]| {
         crate::executables::fennec_command()
             .args(args)
             .current_dir(&kit)
             .env("FENNEC_HOME", &home)
-            .env("FENNEC_DAEMON_IDLE", "30")
+            .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
             .env("DAEMON_TEST_SIDE", side)
             .env_remove("FENNEC_NO_DAEMON")
             .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
@@ -3848,7 +3853,7 @@ fn past_four_daemons_the_one_used_longest_ago_stops() {
             .unwrap()
     };
     let running = || {
-        text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout)
+        text(&with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout)
             .lines()
             .filter(|line| line.starts_with("running:"))
             .count()
@@ -3867,7 +3872,7 @@ fn past_four_daemons_the_one_used_longest_ago_stops() {
     assert!(four, "{} daemons run", running());
     let noted = std::fs::read_dir(crate::executables::daemons_of(&home)).unwrap().count();
     assert_eq!(noted, 4);
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemons didn't stop");
 }
 
@@ -5361,13 +5366,14 @@ fn small_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf
 fn a_daemon_serves_a_fennec_folder_too_deep_for_a_socket() {
     let (folder, kit, _) = small_kit("deep-daemon").unwrap();
     let home = folder.join("a folder with a long name, ".repeat(4));
+    let _stopped = DaemonsStopped { home: &home };
     let deep = |args: &[&str]| {
         crate::executables::fennec_command()
             .args(args)
             .current_dir(&kit)
             .env("FENNEC_HOME", &home)
             .env("TMPDIR", &home)
-            .env("FENNEC_DAEMON_IDLE", "30")
+            .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
             .env_remove("FENNEC_NO_DAEMON")
             .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
             .env_remove("XDG_RUNTIME_DIR")
@@ -5397,10 +5403,11 @@ fn a_daemon_serves_a_fennec_folder_too_deep_for_a_socket() {
 #[test]
 fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
     let (_folder, kit, home) = small_kit("daemon").unwrap();
-    let status = || text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    let _stopped = DaemonsStopped { home: &home };
+    let status = || text(&with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
     assert_eq!(status(), "not running\n");
 
-    let first = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
+    let first = with_daemon(&kit, &home, DAEMON_IDLE, &["dev", "changes"]).unwrap();
     assert_eq!(text(&first.stdout), "first run: hashed 1 files and 1 definitions\n");
     assert!(
         status().starts_with("running: Fennec") && status().contains("1 request served\n"),
@@ -5416,11 +5423,11 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
         .and_then(|(_, cap)| cap.parse::<f64>().ok());
     assert!(cap.is_some_and(|cap| cap > 0.0 && cap <= 21_474.9), "{said}");
 
-    let again = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
+    let again = with_daemon(&kit, &home, DAEMON_IDLE, &["dev", "changes"]).unwrap();
     assert_eq!(text(&again.stdout), "0 files parsed, 1 unchanged and not parsed again\nnothing changed\n");
     assert!(status().contains("2 requests served\n"), "{}", status());
 
-    let stop = with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    let stop = with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert_eq!(text(&stop.stdout), "stopped\n");
     assert!(stops(&kit, &home), "the daemon didn't stop");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
@@ -5432,6 +5439,7 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
 #[test]
 fn status_and_stop_reach_the_daemon_of_every_environment() {
     let (_folder, kit, home) = small_kit("daemons").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     // Commands whose environments differ in one variable, so each has a daemon of its own. It's
     // none of Fennec's, so `docs/environment.md` doesn't list it.
     let run_in = |environment: &str, args: &[&str]| {
@@ -5439,7 +5447,7 @@ fn status_and_stop_reach_the_daemon_of_every_environment() {
             .args(args)
             .current_dir(&kit)
             .env("FENNEC_HOME", &home)
-            .env("FENNEC_DAEMON_IDLE", "30")
+            .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
             .env("DAEMON_TEST_SIDE", environment)
             .env_remove("FENNEC_NO_DAEMON")
             .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
@@ -5463,7 +5471,7 @@ fn status_and_stop_reach_the_daemon_of_every_environment() {
 fn build_in(kit: &Path, home: &Path, daemon: bool, ci: bool) -> std::io::Result<Output> {
     let mut command = crate::executables::fennec_command();
     command.args(["build", ".", "-o", "prog"]).current_dir(kit).env("FENNEC_HOME", home);
-    command.env("FENNEC_DAEMON_IDLE", "30").env_remove("CI");
+    command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env_remove("CI");
     if daemon {
         command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
     }
@@ -5497,6 +5505,7 @@ fn without_times(printed: &[u8]) -> String {
 #[test]
 fn a_build_the_daemon_makes_is_the_one_made_here() {
     let (folder, kit, home) = small_kit("build-daemon").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(kit.join("kit.toml"), manifest).unwrap();
@@ -5516,14 +5525,14 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
         assert_eq!(std::fs::read(kit.join("prog")).ok(), made_here);
         assert_eq!(made_here.is_some(), built);
     }
-    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    let status = text(&with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
     assert!(status.contains("2 requests served"), "{status}");
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
     // Under CI it's built here, and no daemon is started.
     let ci_home = folder.join("home-ci");
     assert_eq!(build_in(&kit, &ci_home, true, true).unwrap().status.code(), Some(1));
-    let status = text(&with_daemon(&kit, &ci_home, "30", &["daemon", "status"]).unwrap().stdout);
+    let status = text(&with_daemon(&kit, &ci_home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
     assert_eq!(status, "not running\n");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
@@ -5535,6 +5544,7 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
 #[test]
 fn a_daemon_build_uses_the_last_builds_analyses_again() {
     let (folder, kit, home) = small_kit("kept-analyses").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(kit.join("kit.toml"), manifest).unwrap();
@@ -5542,7 +5552,7 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
     let build = |home: &Path, daemon: bool| {
         let mut command = crate::executables::fennec_command();
         command.args(["build", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", home);
-        command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
         if daemon {
             // A test's own daemons, which start for a Fennec folder in the temp folder.
             command
@@ -5589,7 +5599,7 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
         std::fs::write(kit.join("src/main.fen"), program(printed)).unwrap();
         let mut command = crate::executables::fennec_command();
         command.args(["run", "."]).current_dir(&kit).env("FENNEC_HOME", &home);
-        command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
         command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
         let ran = command.output().unwrap();
         let stderr = text(&ran.stderr);
@@ -5598,7 +5608,7 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
         let (again, of) = used(&stderr);
         assert!(again > 0 && again < of, "{stderr}");
     }
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
@@ -5612,6 +5622,7 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
 #[test]
 fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_here() {
     let (folder, kit, home) = small_kit("kept-daemon").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(kit.join("kit.toml"), manifest).unwrap();
@@ -5623,15 +5634,20 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
                   struct Point:\n    x = 1\n\n\
                   def later(n: int) -> int:\n    return Point().x + n\n";
     let after = before.replace("    return n * 2\n", "    total = n * 2 + 1\n    return total\n");
-    let build = |daemon: bool, home: &Path| {
+    let fennec = |args: &[&str], daemon: bool, home: &Path| {
         let mut command = crate::executables::fennec_command();
-        command.args(["build", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", home);
-        command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_COMPARE_KEPT", "1").env_remove("CI");
+        command.args(args).current_dir(&kit).env("FENNEC_HOME", home);
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_COMPARE_KEPT", "1").env_remove("CI");
         if daemon {
             command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
         }
-        command.output().unwrap()
+        command
     };
+    let build =
+        |daemon: bool, home: &Path| fennec(&["build", ".", "-o", "prog"], daemon, home).output().unwrap();
+    // The first build is the daemon's, so the edit's has a kept check to carry over.
+    let status = || fennec(&["daemon", "status"], true, &home).output().unwrap();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"], true, &home), &status).unwrap();
     for source in [before, after.as_str()] {
         std::fs::write(&main, source).unwrap();
         let _ = std::fs::remove_file(kit.join("prog"));
@@ -5650,7 +5666,7 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
     let mut command = crate::executables::fennec_command();
     command.args(["daemon", "status"]).current_dir(&kit).env("FENNEC_HOME", &home);
     command
-        .env("FENNEC_DAEMON_IDLE", "30")
+        .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
         .env("FENNEC_COMPARE_KEPT", "1")
         .env_remove("CI")
         .env_remove("FENNEC_NO_DAEMON")
@@ -5665,7 +5681,7 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
     let mut command = crate::executables::fennec_command();
     command.args(["daemon", "stop"]).current_dir(&kit).env("FENNEC_HOME", &home);
     command
-        .env("FENNEC_DAEMON_IDLE", "30")
+        .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
         .env("FENNEC_COMPARE_KEPT", "1")
         .env_remove("CI")
         .env_remove("FENNEC_NO_DAEMON")
@@ -5687,6 +5703,7 @@ fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
         return;
     }
     let (_folder, kit, home) = small_kit("kept-disagrees").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(kit.join("kit.toml"), manifest).unwrap();
@@ -5696,15 +5713,21 @@ fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
                   def main(stdout: Stdout):\n    stdout.print(measure(Dot(1)))\n\n\
                   def measure[T](item: T) -> int:\n    return 1\n";
     let after = before.replace("measure[T](item", "measure[T: Shape](item");
-    let fennec = |args: &[&str], daemon: bool| {
+    let command = |args: &[&str], daemon: bool| {
         let mut command = crate::executables::fennec_command();
-        command.args(args).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", "30");
+        command.args(args).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", DAEMON_IDLE);
         command.env("FENNEC_COMPARE_KEPT", "0").env("FENNEC_KEPT_RULE_OFF", "bounds").env_remove("CI");
         if daemon {
             command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
         }
-        command.output().unwrap()
+        command
     };
+    let fennec = |args: &[&str], daemon: bool| command(args, daemon).output().unwrap();
+    // The first build is the daemon's, so it keeps the check the edit's build carries over. One
+    // made in the command's own process, as one is when a daemon it starts is slow to answer,
+    // keeps nothing, and the edit's build then refuses the program, rightly.
+    let status = || command(&["daemon", "status"], true).output().unwrap();
+    crate::executables::daemon_started(command(&["daemon", "serve"], true), &status).unwrap();
     std::fs::write(&main, before).unwrap();
     let first = fennec(&["build", ".", "-o", "prog"], true);
     assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
@@ -5741,6 +5764,7 @@ fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
 #[test]
 fn two_builds_of_one_kit_at_once_queue_in_the_daemon() {
     let (folder, kit, home) = small_kit("queued-daemon").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(kit.join("kit.toml"), manifest).unwrap();
@@ -5760,9 +5784,9 @@ fn two_builds_of_one_kit_at_once_queue_in_the_daemon() {
         assert_eq!(without_times(&made.stdout), without_times(&here.stdout));
         assert_eq!(text(&made.stderr), text(&here.stderr));
     }
-    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    let status = text(&with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
     assert!(status.contains("3 requests served"), "{status}");
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
@@ -5779,7 +5803,7 @@ fn fennec_in_kit(
     one_file: bool,
 ) -> std::io::Result<Output> {
     let mut command = crate::executables::fennec_command();
-    command.args(args).current_dir(kit).env("FENNEC_HOME", home).env("FENNEC_DAEMON_IDLE", "30");
+    command.args(args).current_dir(kit).env("FENNEC_HOME", home).env("FENNEC_DAEMON_IDLE", DAEMON_IDLE);
     command.env_remove("CI").stdin(Stdio::piped());
     if daemon {
         command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
@@ -5806,7 +5830,7 @@ fn fennec_in_kit(
 /// What a daemon's status says of how many requests it has served.
 #[cfg(unix)]
 fn served_by_daemon(kit: &Path, home: &Path) -> std::io::Result<String> {
-    let status = text(&with_daemon(kit, home, "30", &["daemon", "status"])?.stdout);
+    let status = text(&with_daemon(kit, home, DAEMON_IDLE, &["daemon", "status"])?.stdout);
     Ok(status.lines().next().and_then(|line| line.rsplit(", ").next()).unwrap_or_default().to_owned())
 }
 
@@ -5836,6 +5860,7 @@ fn a_run_through_the_daemon_prints_and_ends_as_one_here_does() {
                  stdout.print(\"args:\", [arg for arg in args])\n    \
                  stdout.print(\"lines:\", len(stdin.lines()))\n    return 3\n";
     let (folder, kit, home) = kit_of("run-daemon", reads).unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let here_home = folder.join("home-here");
     let linted = "def f(stdout: Stdout):\n    stdout.print(2)\n\ndef main(stdout: Stdout):\n    f(stdout)\n";
     let wrong = "def main(stdout: Stdout):\n    stdout.print(1 + \"x\")\n";
@@ -5865,7 +5890,7 @@ fn a_run_through_the_daemon_prints_and_ends_as_one_here_does() {
         }
     }
     assert_eq!(served_by_daemon(&kit, &home).unwrap(), "8 requests served");
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 
@@ -5881,6 +5906,7 @@ fn tests_through_the_daemon_print_and_end_as_ones_here_do() {
                   test \"doubling three\":\n    assert double(3) == 7\n\n\
                   def main(stdout: Stdout):\n    stdout.print(double(4))\n";
     let (folder, kit, home) = kit_of("test-daemon", source).unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let here_home = folder.join("home-here");
     let asked: [&[&str]; 4] = [&["test"], &["test"], &["test", "--verbose"], &["test", "--all", "-v"]];
     for args in asked {
@@ -5898,7 +5924,7 @@ fn tests_through_the_daemon_print_and_end_as_ones_here_do() {
     assert_eq!(real.status.code(), Some(1), "{}", text(&real.stderr));
     assert!(text(&real.stdout).contains("✗ doubling two"), "{}", text(&real.stdout));
     assert_eq!(served_by_daemon(&kit, &home).unwrap(), "8 requests served");
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 
@@ -5911,9 +5937,10 @@ fn a_test_command_gone_stops_its_tests_in_the_daemon() {
                   test \"never ends\":\n    mut count = 0\n    while count >= 0:\n        \
                   count = (count + 1) % 1000\n";
     let (_folder, kit, home) = kit_of("stopped-tests", source).unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let said = kit.with_file_name("said");
     let mut command = crate::executables::fennec_command();
-    command.args(["test"]).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", "30");
+    command.args(["test"]).current_dir(&kit).env("FENNEC_HOME", &home).env("FENNEC_DAEMON_IDLE", DAEMON_IDLE);
     command
         .env_remove("CI")
         .env_remove("FENNEC_NO_DAEMON")
@@ -5946,7 +5973,7 @@ fn a_test_command_gone_stops_its_tests_in_the_daemon() {
     }
     let built = fennec_in_kit(&kit, &home, true, (&["build", "."], ""), false).unwrap();
     assert!(built.status.success(), "{}", text(&built.stderr));
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 
@@ -5954,6 +5981,7 @@ fn a_test_command_gone_stops_its_tests_in_the_daemon() {
 #[test]
 fn an_idle_daemon_exits_by_itself() {
     let (_folder, kit, home) = small_kit("idle-daemon").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     with_daemon(&kit, &home, "1", &["dev", "changes"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't exit after a second with nothing to do");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
@@ -5963,6 +5991,7 @@ fn an_idle_daemon_exits_by_itself() {
 #[test]
 fn the_daemon_keeps_the_cache_under_its_cap() {
     let (_folder, kit, home) = small_kit("cache-daemon").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
     let old = home.join("cache").join("0.0.0-old").join("functions").join("x");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, vec![0_u8; 10_000]).unwrap();
@@ -5972,7 +6001,7 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
         .args(["dev", "changes"])
         .current_dir(&kit)
         .env("FENNEC_HOME", &home)
-        .env("FENNEC_DAEMON_IDLE", "30")
+        .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
         .env("FENNEC_CACHE_CAP", "5000")
         .env_remove("FENNEC_NO_DAEMON")
         .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
@@ -5989,7 +6018,7 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(cleaned, "the daemon should drop another version's entries once over its cap");
     assert!(stops(&kit, &home));
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();

@@ -338,6 +338,14 @@ fn a_conversion_to_what_a_value_is_already_goes() {
         needless_conversions(bracketed),
         (1, "def f(a: str, b: str) -> int:\n    return len(a + b)\n".to_owned())
     );
+    let sized = "def f(n: int, x: float) -> float:\n    y = i64(n)\n    return f64(x) + float(y)\n";
+    assert_eq!(
+        needless_conversions(sized),
+        (2, "def f(n: int, x: float) -> float:\n    y = n\n    return x + float(y)\n".to_owned()),
+        "`i64` is `int` and `f64` is `float`"
+    );
+    let widened = "def f(small: u8) -> int:\n    return i64(small) + 1\n";
+    assert_eq!(needless_conversions(widened).0, 0, "widening changes the type");
     let converts = "def f(n: int, x: float) -> str:\n    y = int(x)\n    return str(n + y)\n";
     assert_eq!(needless_conversions(converts).0, 0, "these change what the value is");
     let formatted = "def f(n: float) -> str:\n    return f\"{str(n):>8}\"\n";

@@ -14,7 +14,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_VERSION`: which release `install.sh` installs.
 - `FENNEC_DOWNLOAD`: where `install.sh` downloads from.
 - `FENNEC_STATIC`: `0` links a built program against the system's libc in place of musl.
-- `FENNEC_THREADS`: how many workers a program's pool has; the number of cores by default. At most 256: asking for more makes 256 and says so on standard error, once. A pool the system won't give the program, as when it has run out of open files, is said once too, and `parallel` then runs its ranges one after another.
+- `FENNEC_THREADS`: how many workers a program's pool has; the number of cores by default. At most 256: asking for more makes 256 and says so on standard error, once. A pool the system won't give the program, as when it has run out of open files, is said once too, and `parallel` then runs its ranges one after another. A worker past the first that the system won't start stops the program, saying how many started and to ask for no more than that.
 - `FENNEC_THREADS_RUNTIME`: `0` or `1` picks the plain runtime or the one with threads, in place of what the program needs.
 - `FENNEC_NO_CACHE`: build without the cache, and run every test rather than reusing results.
 - `FENNEC_TOOLCHAIN_STORE`: the toolchain's store, which every home reads the standard library's parse and the runtime libraries' stamps from, in place of `fennec-store` beside `fennec`; empty turns it off. See [store.md](store.md).
@@ -51,6 +51,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_UPDATE_UNCHECKED`: `1` rewrites `crates/llvm/unchecked_runtime_calls.txt`, the ratchet of runtime calls emitted code doesn't check yet, from what the lint finds now.
 - `FENNEC_RUN_WAITS`: `fennec run` waits for the program rather than becoming it, so its time can be measured.
 - `FENNEC_NEW_EXECUTABLES`: a file every executable a build makes as a new file is added to, a line each, so the gate can count them: macOS can hold a new file's first launch. One linked out of the store, the same file as one launched before, isn't added.
+- `FENNEC_GATE_LOCK_HOLDER`: set by `open-pr.sh` for the gate it runs, to its own pid: the process holding the worktree's gate lock, which `gate.sh` goes on under rather than taking it again. One gate runs in a worktree at a time (`.github/scripts/gate-lock.sh`).
 - `FENNEC_KEEP_FAILED`: `1` has a test that fails keep the temporary folder it made, and say on standard error where, rather than remove it: the gate's tests step sets it, and keeps each such folder, with the failed step's whole log and every panic, in `~/.fennec/gate-logs`.
 - `FENNEC_LINK_KEEP`: a build keeps the objects it links, whole, in the folder this names, for the loader's tests to link them their own way and compare with the system linker's.
 - `FENNEC_LOSE_KEPT_OBJECTS`: `1` has a dev build remove every kept object it found just before it links, as a cleanup another command runs can, for a test to check that each is compiled again and the build still makes the same program.

@@ -132,7 +132,16 @@ impl Interp {
             }
             (Type::Named(name), Value::Instance(_)) => self.saved_instance(value, name, &[])?,
             (Type::Generic(name, args), Value::Instance(_)) => self.saved_instance(value, name, args)?,
-            (Type::Union(_), _) => return unsupported("saving a union as JSON"),
+            // Tagged with the member it holds, by its type's name, as `{"Circle": {...}}`.
+            (Type::Union(members), held) => {
+                let holding: Vec<&Type> =
+                    members.iter().filter(|member| crate::interp::saving::holds(member, held)).collect();
+                let [member] = holding.as_slice() else {
+                    return unsupported("saving a union's value that isn't one member's alone");
+                };
+                let name = super::read::member_name(member);
+                Saved::Map(vec![(Saved::Text(name), self.saved(held, member)?)])
+            }
             (Type::Bytes, _) => return unsupported("saving bytes as JSON"),
             (ty, held) => return unsupported(format!("saving a {} as a {}", held.kind(), type_name(ty))),
         })

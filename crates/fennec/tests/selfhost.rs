@@ -72,6 +72,10 @@ const LEX_CASES: &[(&str, &str)] = &[
 /// Small sources that reach the parser's error paths, and one that uses every construct.
 const PARSE_CASES: &[(&str, &str)] = &[
     ("top_level_statement", "x = 1\n"),
+    (
+        "assigning_forms",
+        "x += 1\nx -= 1\nx *= 2\nx /= 2\nx //= 2\nx %= 3\nx **= 2\nx &= 1\nx |= 1\nx ^= 1\nx <<= 1\nx >>= 1\n",
+    ),
     ("pub_field", "struct A:\n    pub x: int\n"),
     ("export_field", "export struct A:\n    export x: int\n"),
     ("pub_def", "pub def f():\n    pass\n\nstruct A:\n    pub def g(self):\n        pass\n"),

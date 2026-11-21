@@ -942,10 +942,10 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
 }
 
 /// A name written in as the standard library's own, as `sha256` imported from std.crypto is
-/// `crypto.sha256`, and a call the checker sent to another of std's functions, as `crypto.blake3`
-/// given a list goes to `crypto.blake3_of_str_list`. A call is seen before its callee, so `sent`
-/// holds each such callee: the name it was written with, which may be std's too, mustn't then
-/// replace where it was sent.
+/// `crypto.sha256`, and a call the checker sent to another function: std's, as `crypto.blake3`
+/// given a list goes to `crypto.blake3_of_str_list`, or a builtin's, as `i64(x)` is `int(x)`. A
+/// call is seen before its callee, so `sent` holds each such callee: the name it was written with,
+/// which may be std's too, mustn't then replace where it was sent.
 fn std_written(expr: &mut Expr, checked: &Checked, span: (u32, u32), sent: &mut BTreeSet<(u32, u32)>) {
     if let Some(function) = checked.std_names.get(&span)
         && !sent.contains(&span)
@@ -965,6 +965,8 @@ fn std_written(expr: &mut Expr, checked: &Checked, span: (u32, u32), sent: &mut 
 /// imported it: it's imported under a name of its own, which nothing written can reach or clash
 /// with.
 fn imports_for_std_calls<'a>(module: &mut Module, functions: impl Iterator<Item = &'a String>) {
+    // Only a std function, named with its module, needs one. A builtin a call was sent to, as `int`
+    // for `i64(x)`, has no dot, so it goes by: a dotted builtin would pull in an import here.
     let mut wanted: Vec<&str> =
         functions.filter_map(|function| function.split_once('.')).map(|(from, _)| from).collect();
     wanted.sort_unstable();

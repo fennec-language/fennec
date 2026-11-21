@@ -109,6 +109,12 @@ impl Interp {
                 self.tell(out, "value", vec![held.clone()], vec![(*member).clone()], span)?;
                 self.tell(out, "end_member", Vec::new(), Vec::new(), span)
             }
+            (Type::Table(item), Value::Table(table)) => self.serialize_table(table, item, out, span),
+            (Type::Id(item), Value::Id(id)) => {
+                let kind = Value::Str(Text::from(type_name(item)));
+                let given = vec![kind, Value::Int(id_key(*id)?), Value::Int(tag_int(id.tag)?)];
+                self.tell(out, "id", given, Vec::new(), span)
+            }
             (Type::Named(name), Value::Instance(_)) => self.serialize_instance(value, name, &[], out, span),
             (Type::Generic(name, args), Value::Instance(_)) => {
                 self.serialize_instance(value, name, args, out, span)
@@ -119,6 +125,38 @@ impl Interp {
                 type_name(ty)
             )),
         }
+    }
+
+    /// What a `Table` calls on `out`, as std's `serialize` for one does: its slots and the items in
+    /// them where the format saves `Table`s slot for slot, and otherwise its items in order, each
+    /// with its `Id`.
+    fn serialize_table(
+        &mut self,
+        table: &crate::value::Table,
+        item: &Type,
+        out: &Place,
+        span: Span,
+    ) -> Run<()> {
+        let kind = Value::Str(Text::from(type_name(item)));
+        let tag = Value::Int(tag_int(table.tag)?);
+        let items: Vec<Value> = table.live().map(|(_, held)| held.clone()).collect();
+        let exact = matches!(self.ask(out, "exact", Vec::new(), Vec::new(), span)?, Value::Bool(true));
+        if exact {
+            // A slot in use holds its generation, and one taken out -1 less it.
+            let slots = table
+                .slots
+                .iter()
+                .map(|slot| {
+                    let generation = i64::from(slot.generation);
+                    Value::Int(if slot.item.is_some() { generation } else { -1 - generation })
+                })
+                .collect();
+            let given = vec![kind, tag, Value::List(Held::new(slots)), Value::List(Held::new(items))];
+            return self.tell(out, "slots", given, vec![item.clone()], span);
+        }
+        let ids = table.live().map(|(id, _)| Value::Id(id)).collect();
+        let given = vec![kind, tag, Value::List(Held::new(ids)), Value::List(Held::new(items))];
+        self.tell(out, "table", given, vec![item.clone()], span)
     }
 
     /// What a struct, or an enum's case, calls on `out`: its type's own `def serialize`, if it
@@ -264,12 +302,137 @@ impl Interp {
                 Ok(Value::Set(Held::new(found)))
             }
             Type::Dict(key, held) => self.dict_from(key, held, src, span),
+            Type::Union(members) => self.member_from(members, src, span),
+            Type::Table(item) => self.table_from(item, src, span),
+            Type::Id(item) => self.id_from(item, src, span),
             Type::Named(name) => self.instance_from(name, &[], src, span),
             Type::Generic(name, args) => self.instance_from(name, args, src, span),
             other => {
                 unsupported(format!("loading a {} through a format's own `Deserializer`", type_name(other)))
             }
         }
+    }
+
+    /// A `Table`, as std's `deserialize` for one reads it: slot for slot where the format saves
+    /// them so, and otherwise its items, added in order to a new `Table` with the tag the read
+    /// gives its kind.
+    fn table_from(&mut self, item: &Type, src: &Place, span: Span) -> Run<Value> {
+        let kind = Value::Str(Text::from(type_name(item)));
+        if self.asked_yes(src, "exact", Vec::new(), span)? {
+            let Value::List(slots) =
+                self.ask(src, "value", Vec::new(), vec![Type::List(Box::new(Type::Int))], span)?
+            else {
+                return unsupported("slots read as what isn't a list");
+            };
+            let Value::List(items) =
+                self.ask(src, "value", Vec::new(), vec![Type::List(Box::new(item.clone()))], span)?
+            else {
+                return unsupported("items read as what isn't a list");
+            };
+            let mut words = Vec::with_capacity(slots.len());
+            for slot in &slots {
+                let Value::Int(word) = slot else { return unsupported("a slot that isn't an int") };
+                if *word > 4_294_967_295 || *word < -4_294_967_296 {
+                    return self.failed_here(src, "has a slot past the last generation".to_owned(), span);
+                }
+                words.push(*word);
+            }
+            let live = words.iter().filter(|word| **word >= 0).count();
+            if live != items.len() {
+                let used = if live == 1 { "1 slot".to_owned() } else { format!("{live} slots") };
+                return self.failed_here(src, format!("has {used} in use but {} items", items.len()), span);
+            }
+            let count = Value::Int(super::as_int(words.len()));
+            self.ask(src, "saw_table", vec![kind.clone(), count], Vec::new(), span)?;
+            let tag = self.read_tag(src, kind, span)?;
+            let mut items = items.into_inner().into_iter();
+            let mut table = crate::value::Table::new(tag);
+            for word in words {
+                let generation = u32::try_from(if word >= 0 { word } else { -1 - word }).unwrap_or(u32::MAX);
+                let held = if word >= 0 { items.next() } else { None };
+                table.slots.push(crate::value::Slot { generation, item: held });
+            }
+            return Ok(Value::Table(Box::new(table)));
+        }
+        let Value::List(items) =
+            self.ask(src, "value", Vec::new(), vec![Type::List(Box::new(item.clone()))], span)?
+        else {
+            return unsupported("items read as what isn't a list");
+        };
+        let count = items.len();
+        let tag = self.read_tag(src, kind.clone(), span)?;
+        let mut table = crate::value::Table::new(tag);
+        for held in items.into_inner() {
+            table.add(held);
+        }
+        self.ask(src, "saw_table", vec![kind, Value::Int(super::as_int(count))], Vec::new(), span)?;
+        Ok(Value::Table(Box::new(table)))
+    }
+
+    /// An `Id`, as std's `deserialize` for one reads it: its slot and generation where the format
+    /// saves `Table`s slot for slot, and otherwise where its item is in its `Table`.
+    fn id_from(&mut self, item: &Type, src: &Place, span: Span) -> Run<Value> {
+        let kind = Value::Str(Text::from(type_name(item)));
+        let int = |interp: &mut Interp| match interp.ask(src, "value", Vec::new(), vec![Type::Int], span)? {
+            Value::Int(n) => Ok(n),
+            other => unsupported(format!("an Id read as a {}", other.kind())),
+        };
+        if self.asked_yes(src, "exact", Vec::new(), span)? {
+            let slot = int(self)?;
+            let generation = int(self)?;
+            if slot < 0 || !(0..=4_294_967_295).contains(&generation) {
+                return self.failed_here(src, "is out of range".to_owned(), span);
+            }
+            self.ask(src, "saw_id", vec![kind.clone(), Value::Int(slot)], Vec::new(), span)?;
+            let tag = self.read_tag(src, kind, span)?;
+            let slot = usize::try_from(slot).unwrap_or(usize::MAX);
+            let generation = u32::try_from(generation).unwrap_or(u32::MAX);
+            return Ok(Value::Id(crate::value::Id { slot, generation, tag }));
+        }
+        let position = int(self)?;
+        if position < 0 {
+            return self.failed_here(src, "is out of range".to_owned(), span);
+        }
+        self.ask(src, "saw_id", vec![kind.clone(), Value::Int(position)], Vec::new(), span)?;
+        let tag = self.read_tag(src, kind, span)?;
+        let slot = usize::try_from(position).unwrap_or(usize::MAX);
+        Ok(Value::Id(crate::value::Id { slot, generation: 0, tag }))
+    }
+
+    /// The tag `src` gives the `Table`s of `kind` it reads, and their `Id`s.
+    fn read_tag(&mut self, src: &Place, kind: Value, span: Span) -> Run<u64> {
+        match self.ask(src, "tag", vec![kind], Vec::new(), span)? {
+            Value::Int(tag) => u64::try_from(tag).map_or_else(|_| unsupported("a negative tag"), Ok),
+            other => unsupported(format!("a tag that's a {}", other.kind())),
+        }
+    }
+
+    /// Fails the load with `src.here(message)`, the error std's readers give for what was just
+    /// read.
+    fn failed_here<T>(&mut self, src: &Place, message: String, span: Span) -> Run<T> {
+        let error = self.ask(src, "here", vec![Value::Str(Text::from(message))], Vec::new(), span)?;
+        Err(Flow::Fail(error, span))
+    }
+
+    /// A union's value, as the `def deserialize` the checker writes for one reads it: `src.member`
+    /// of its members' names says which comes next, `src.value` reads it, and `src.end_member`
+    /// finishes it.
+    fn member_from(&mut self, members: &[Type], src: &Place, span: Span) -> Run<Value> {
+        let names = members
+            .iter()
+            .map(|member| Value::Str(Text::from(super::json::read::member_name(member))))
+            .collect();
+        let Value::Int(at) =
+            self.ask(src, "member", vec![Value::List(Held::new(names))], Vec::new(), span)?
+        else {
+            return unsupported("a `member` that isn't an int");
+        };
+        let Some(member) = usize::try_from(at).ok().and_then(|at| members.get(at)) else {
+            return unsupported("a `member` past the union's members");
+        };
+        let value = self.ask(src, "value", Vec::new(), vec![member.clone()], span)?;
+        self.ask(src, "end_member", Vec::new(), Vec::new(), span)?;
+        Ok(value)
     }
 
     /// A dict, as the core's `extend` of it reads one: its pairs counted first where the format
@@ -332,7 +495,7 @@ impl Interp {
         let Some(declared) = self.program.types.get(name) else {
             return unsupported(format!("loading a {shown} through a format's own `Deserializer`"));
         };
-        if declared.kind == Kind::Error || declared.def.shared || declared.ruled {
+        if declared.kind == Kind::Error || declared.def.shared {
             return unsupported(format!("loading a {name} through a format's own `Deserializer`"));
         }
         let def = declared.def;
@@ -379,9 +542,6 @@ impl Interp {
         let shown =
             Value::Str(Text::from(case.unwrap_or(fennec_syntax::rename::shown_type_name(name)).to_owned()));
         let saved: Vec<&super::json::SavedField> = fields.iter().filter(|field| !field.skipped).collect();
-        if saved.iter().any(|field| holds_union(&field.ty)) {
-            return unsupported("loading a union through a format's own `Deserializer`");
-        }
         let mut given = Vec::with_capacity(saved.len());
         if self.asked_yes(src, "ordered", vec![shown.clone()], span)? {
             for field in &saved {
@@ -392,7 +552,7 @@ impl Interp {
             if case.is_some() {
                 self.ask(src, "end_case", Vec::new(), Vec::new(), span)?;
             }
-            return self.construct(name, case, given, span);
+            return self.loaded_made((name, case), given, src, span);
         }
         self.ask(src, "record", vec![shown], Vec::new(), span)?;
         let listed = saved
@@ -451,7 +611,29 @@ impl Interp {
         if case.is_some() {
             self.ask(src, "end_case", Vec::new(), Vec::new(), span)?;
         }
-        self.construct(name, case, given, span)
+        self.loaded_made((name, case), given, src, span)
+    }
+
+    /// A value loaded, made from what was read: one that breaks a `where` rule fails the load
+    /// through `src.rule`, with the words making it would say, as the `def deserialize` the
+    /// checker writes does.
+    fn loaded_made(
+        &mut self,
+        (name, case): (&str, Option<&str>),
+        given: Vec<ArgVal>,
+        src: &Place,
+        span: Span,
+    ) -> Run<Value> {
+        let made = self.made_unruled(name, case, given)?;
+        if let Value::Instance(instance) = &made
+            && let Some(broken) = self.broken_rule(instance)?
+        {
+            let shown = fennec_syntax::rename::shown_type_name(name);
+            let message = Value::Str(Text::from(format!("{shown}.{broken} breaks its `where` rule")));
+            let error = self.ask(src, "rule", vec![message], Vec::new(), span)?;
+            return Err(Flow::Fail(error, span));
+        }
+        Ok(made)
     }
 
     /// Calls the method `name` of the format at `src`, as `tell` does, and gives back what it
@@ -491,19 +673,8 @@ impl Interp {
     }
 }
 
-/// Whether a type holds a union, which the checker saves and loads through helpers of its own.
-fn holds_union(ty: &Type) -> bool {
-    match ty {
-        Type::Union(_) => true,
-        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => holds_union(inner),
-        Type::Dict(key, value) => holds_union(key) || holds_union(value),
-        Type::Tuple(items) | Type::Generic(_, items) => items.iter().any(holds_union),
-        _ => false,
-    }
-}
-
 /// Whether a value could be one a union's member `member` holds, by what kind of value it is.
-fn holds(member: &Type, value: &Value) -> bool {
+pub(crate) fn holds(member: &Type, value: &Value) -> bool {
     match (member, value) {
         (Type::Int, Value::Int(_))
         | (Type::Float, Value::Float(_))
@@ -517,5 +688,19 @@ fn holds(member: &Type, value: &Value) -> bool {
         | (Type::None | Type::Optional(_), Value::None) => true,
         (Type::Named(name) | Type::Generic(name, _), Value::Instance(instance)) => instance.ty == *name,
         _ => false,
+    }
+}
+
+/// A `Table`'s tag as std's `table_tag` gives it.
+fn tag_int(tag: u64) -> Run<i64> {
+    i64::try_from(tag).map_or_else(|_| unsupported("a `Table` tag past the largest int"), Ok)
+}
+
+/// An `Id`'s slot and generation in one number, the slot above the generation's 32 bits, as
+/// std's `id_key` gives it.
+fn id_key(id: crate::value::Id) -> Run<i64> {
+    match i64::try_from(id.slot) {
+        Ok(slot) if slot < 1 << 31 => Ok(slot << 32 | i64::from(id.generation)),
+        _ => unsupported("an `Id` whose slot doesn't fit in 31 bits"),
     }
 }

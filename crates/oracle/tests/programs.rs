@@ -1014,6 +1014,230 @@ def main(stdout: Stdout):
     stdout.print("after", stats)
 "#;
 
+/// What a program saves of its own values loads back as compiled code loads it, through JSON,
+/// `std.pack` and TOML: a union, as a field and in a list, tagged with its member's name, and each
+/// way JSON can fail to hold one; a `Table` with an item taken out and the `Id`s into it, through
+/// `std.pack` and TOML; and a `where` rule a value read through `std.pack` breaks, failing the load
+/// with the error's line and column. The oracle refused each before. What each prints is what the
+/// compiled program printed.
+#[test]
+fn saving_holds_unions_tables_ids_and_rules_through_every_format() {
+    for (program, printed) in [
+        (
+            SAVED_UNION_JSON_LOADS,
+            r#"Holder(shape=Square(side=2.0))
+refused ParseError(message="`shape` is \"Triangle\", which is none of `Circle | Square`", line=0, column=0)
+refused ParseError(message="", line=0, column=0)
+refused ParseError(message="`shape` should be a Circle | Square, but it's an object", line=0, column=0)
+refused ParseError(message="`shape.Circle` should be a Circle, but it's an int", line=0, column=0)
+refused ParseError(message="`shape` should be a Circle | Square, but it's a str", line=0, column=0)
+refused ParseError(message="`Circle` has no field \"side\", but `shape.Circle` has one", line=0, column=0)
+refused ParseError(message="`shape` should be a Circle | Square, but it's null", line=0, column=0)
+refused ParseError(message="`shape` should be a Circle | Square, but it's a list", line=0, column=0)
+"#,
+        ),
+        (
+            SAVED_UNION_ROUND_TRIPS,
+            r#"{"shape": {"Square": {"side": 2.0}}, "shapes": [{"Circle": {"radius": 1.5}}, {"Square": {"side": 3.0}}]}
+Holder(shape=Square(side=2.0), shapes=[Circle(radius=1.5), Square(side=3.0)])
+Holder(shape=Square(side=2.0), shapes=[Circle(radius=1.5), Square(side=3.0)])
+"#,
+        ),
+        (
+            SAVED_UNION_TOML,
+            r"Holder(shape=Circle(radius=1.5))
+",
+        ),
+        (
+            SAVED_TABLES_THROUGH_PACK_AND_TOML,
+            r#"pack {"units": [{"name": "ash", "target": null}, {"name": "kit", "target": 2}, {"name": "vex", "target": 0}], "gauges": [{"level": 1, "name": "g"}, {"level": 2, "name": "b"}], "picked": 1}
+best = [0]
+
+[[items]]
+name = "one"
+
+[[items]]
+name = "two"
+
+{"items": [{"name": "one"}, {"name": "two"}], "best": [0]}
+34
+Holder(order=Order.Move(steps=2), orders=[Order.Wait, Order.Move(steps=5)])
+"#,
+        ),
+        (
+            SAVED_RULE_THROUGH_PACK,
+            r#"refused ParseError(message="Gauge.level breaks its `where` rule, at byte 25", line=0, column=0)
+"#,
+        ),
+    ] {
+        let (got, ended) = ran(program);
+        assert_eq!(ended, Ended::Exited(0), "{program}");
+        assert_eq!(got, printed, "{program}");
+    }
+}
+
+const SAVED_UNION_JSON_LOADS: &str = r#"from std import json
+
+struct Circle:
+    radius: float
+
+struct Square:
+    side: float
+
+type Shape = Circle | Square
+
+struct Holder:
+    shape: Shape
+
+def loaded(text: str, stdout: Stdout):
+    got = json.loads[Holder](text) except why:
+        stdout.print("refused", why)
+        return
+    stdout.print(got)
+
+def main(stdout: Stdout):
+    loaded("{\"shape\": {\"Square\": {\"side\": 2}}}", stdout)
+    loaded("{\"shape\": {\"Triangle\": {\"side\": 2}}}", stdout)
+    loaded("{\"shape\": {\"Circle\": {\"radius\": 1.5}, \"Square\": {\"side\": 2}}}", stdout)
+    loaded("{\"shape\": {}}", stdout)
+    loaded("{\"shape\": {\"Circle\": 3}}", stdout)
+    loaded("{\"shape\": \"Circle\"}", stdout)
+    loaded("{\"shape\": {\"Circle\": {\"side\": 1}}}", stdout)
+    loaded("{\"shape\": null}", stdout)
+    loaded("{\"shape\": [1]}", stdout)
+"#;
+
+const SAVED_UNION_ROUND_TRIPS: &str = r#"from std import json, pack
+
+struct Circle:
+    radius: float
+
+struct Square:
+    side: float
+
+type Shape = Circle | Square
+
+struct Holder:
+    shape: Shape
+    shapes: list[Shape]
+
+def main(stdout: Stdout):
+    held = Holder(shape=Square(side=2.0), shapes=[Circle(radius=1.5), Square(side=3.0)])
+    text = json.dumps(held)
+    stdout.print(text)
+    back = json.loads[Holder](text) except why:
+        stdout.print("refused", why)
+        return
+    stdout.print(back)
+    again = pack.loads[Holder](pack.dumps(held)) except why:
+        stdout.print("refused", why)
+        return
+    stdout.print(again)
+"#;
+
+const SAVED_UNION_TOML: &str = r#"from std import toml
+
+struct Circle:
+    radius: float
+
+struct Square:
+    side: float
+
+type Shape = Circle | Square
+
+struct Holder:
+    shape: Shape
+
+def main(stdout: Stdout):
+    held = Holder(shape=Circle(radius=1.5))
+    saved = toml.dumps(held)
+    back = toml.loads[Holder](saved) except why:
+        stdout.print("refused", why)
+        return
+    stdout.print(back)
+"#;
+
+const SAVED_TABLES_THROUGH_PACK_AND_TOML: &str = r#"from std import json, pack, toml
+from std.collections import Id, Table
+
+struct Gauge:
+    level: int where level >= 0
+    name = "g"
+
+struct Unit:
+    name: str
+    target: Id[Unit]? = None
+
+struct World:
+    units = Table[Unit]()
+    gauges = list[Gauge]()
+    picked: Id[Unit]? = None
+
+struct Item:
+    name: str
+
+struct Flat:
+    items = Table[Item]()
+    best = list[Id[Item]]()
+
+enum Order:
+    Wait
+    Move(steps: int)
+
+struct Holder:
+    order: Order
+    orders = list[Order]()
+
+def main(stdout: Stdout):
+    mut world = World()
+    ash = world.units.add(Unit(name="ash"))
+    gone = world.units.add(Unit(name="gone"))
+    vex = world.units.add(Unit(name="vex", target=ash))
+    _ = world.units.remove(gone)
+    kit = world.units.add(Unit(name="kit", target=vex))
+    world.picked = kit
+    world.gauges = [Gauge(level=1), Gauge(level=2, name="b")]
+    for name, packed in [("pack", pack.dumps(world))]:
+        back = pack.loads[World](packed) except why:
+            stdout.print("refused", why)
+            return
+        stdout.print(name, json.dumps(back))
+    mut flat = Flat()
+    one = flat.items.add(Item(name="one"))
+    _ = flat.items.add(Item(name="two"))
+    flat.best = [one]
+    text = toml.dumps(flat)
+    stdout.print(text)
+    from_toml = toml.loads[Flat](text) except why:
+        stdout.print("refused", why)
+        return
+    stdout.print(json.dumps(from_toml))
+    bad = Gauge(level=1)
+    raw = pack.dumps(bad)
+    stdout.print(len(raw))
+    held = Holder(order=.Move(steps=2), orders=[.Wait, .Move(steps=5)])
+    again = pack.loads[Holder](pack.dumps(held)) except why:
+        stdout.print("refused", why)
+        return
+    stdout.print(again)
+"#;
+
+const SAVED_RULE_THROUGH_PACK: &str = r#"from std import pack
+
+struct Gauge:
+    level: int where level >= 0
+
+struct Loose:
+    level: int
+
+def main(stdout: Stdout):
+    raw = pack.dumps(Loose(level=-4))
+    got = pack.loads[Gauge](raw) except why:
+        stdout.print("refused", why)
+        return
+    stdout.print(got)
+"#;
+
 /// A generator that can fail, given a name and let go of partway, leaves at its `yield` where
 /// compiled code frees it: as its function ends, or as its name is given another. Each `with` it's
 /// in runs its cleanup there, and a cleanup that fails stops the program, with compiled code's

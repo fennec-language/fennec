@@ -122,6 +122,27 @@ fn sized_integers_convert_when_written_out() {
     );
 }
 
+/// `i64(x)` and `f64(x)` are `int(x)` and `float(x)`, by the names of their sizes, as language.md
+/// writes widening (#2307): the same conversions, and the same mistakes.
+#[test]
+fn i64_and_f64_convert_as_int_and_float_do() {
+    let program = "
+        def sizes(stdout: Stdout, small: u8, half: f32, text: str, items: list[int]):
+            wide: int = i64(small)
+            precise: float = f64(half)
+            read: int = i64(text)?
+            stdout.print(wide, precise, read, i64(3.9), f64(small))
+            stdout.print(i64(items), f64(items))
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`i64` converts a number or text, not a list[int] @ items",
+            "`f64` converts a number or text, not a list[int] @ items",
+        ]
+    );
+}
+
 /// A program using an `f32` or a `u64` checks all the way to where it's built.
 #[test]
 fn f32_and_u64_check_to_run() {

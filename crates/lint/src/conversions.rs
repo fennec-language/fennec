@@ -1,9 +1,10 @@
-//! `needless-conversion`: `str(s)` on what's text already, `int(n)` on an int, `float(x)` on a
-//! float, and `f"{str(x)}"`, since an f-string shows any value as `str` does. Only the typed
-//! tree knows what a value is, so this looks at a program that checks. The fixes are tried
-//! together: without the conversions the program has to check and make no copy each time round
-//! a loop (`fine_together`). A conversion where a place is named is left alone: `mut y = str(s)` makes
-//! a value of `y`'s own, and `mut y = s` would make `y` stand for `s`.
+//! `needless-conversion`: `str(s)` on what's text already, `int(n)` or `i64(n)` on an int,
+//! `float(x)` or `f64(x)` on a float, and `f"{str(x)}"`, since an f-string shows any value as
+//! `str` does. Only the typed tree knows what a value is, so this looks at a program that checks.
+//! The fixes are tried together: without the conversions the program has to check and make no
+//! copy each time round a loop (`fine_together`). A conversion where a place is named is left
+//! alone: `mut y = str(s)` makes a value of `y`'s own, and `mut y = s` would make `y` stand for
+//! `s`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,11 +16,11 @@ use crate::copies::{places, redefined};
 use crate::rewrites::{operand, replaceable};
 
 /// The builtins this looks at.
-const CONVERSIONS: [&str; 3] = ["str", "int", "float"];
+const CONVERSIONS: [&str; 5] = ["str", "int", "float", "i64", "f64"];
 
 /// Whether a builtin gives back what a value of this type is already.
 fn gives(builtin: &str, ty: &Type) -> bool {
-    matches!((builtin, ty), ("str", Type::Str) | ("int", Type::Int) | ("float", Type::Float))
+    matches!((builtin, ty), ("str", Type::Str) | ("int" | "i64", Type::Int) | ("float" | "f64", Type::Float))
 }
 
 /// A call to one of the builtins with one plain value, as its name and the value.

@@ -262,12 +262,21 @@ impl Interp {
                     Some(arg) => arg,
                     None => Self::first(&mut given, name)?,
                 };
-                match self.arg_as_value(message)? {
-                    Value::Str(message) => {
-                        Ok(Value::instance(name, None, vec![("message".to_owned(), Value::Str(message))]))
+                let mut fields = match self.arg_as_value(message)? {
+                    Value::Str(message) => vec![("message".to_owned(), Value::Str(message))],
+                    other => {
+                        return unsupported(format!("`{name}` with a message that's a {}", other.kind()));
                     }
-                    other => unsupported(format!("`{name}` with a message that's a {}", other.kind())),
+                };
+                // A `ParseError` made in the program says where too, as std declares it.
+                if name == "ParseError" {
+                    for place in ["line", "column"] {
+                        if let Some(arg) = given.take_named(place) {
+                            fields.push((place.to_owned(), self.arg_as_value(arg)?));
+                        }
+                    }
                 }
+                Ok(Value::instance(name, None, fields))
             }
             // `bytes()`, empty, or `bytes(items)`: each item an int from 0 to 255, and any other
             // stops the program, as the runtime's does.

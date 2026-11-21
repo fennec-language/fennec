@@ -2700,8 +2700,8 @@ impl Emit<'_, '_, '_> {
                 && self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind)))
     }
 
-    /// Whether `dest = lhs + more` is a text growing, from a local that holds its only owner or
-    /// took it from a field, or from a `ref` parameter. A parameter's slot is the caller's, which
+    /// Whether `dest = lhs + more` is a text, a list or bytes growing, from a local that holds its
+    /// only owner or took it from a field, or from a `ref` parameter. A parameter's slot is the caller's, which
     /// holds its owner, so growing it there is the caller's text growing, as [`Self::assign`]
     /// writes there too. Not where a change asks a lock's log first: the text may be in what the
     /// lock holds, which has to be put back as it was if the lock's block fails.
@@ -2983,7 +2983,15 @@ impl Emit<'_, '_, '_> {
                 self.same_blocks(op, (&a, &b))
             }
             Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
+            Kind::List(_) if self.grows_in_place(op, lhs, dest) => {
+                // `items += more` takes over the owner the local had, and grows in place if it can.
+                let grown = self.extended_list(&a, &b);
+                let slot = self.slot(dest);
+                self.line(&format!("store ptr {grown}, ptr {slot}"));
+                return Ok(());
+            }
             Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::Bytes if self.grows_in_place(op, lhs, dest) => return self.bytes_grown(dest, &b),
             Kind::Bytes => self.bytes_binary(op, (&a, &b))?,
             Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.lists_in_order(op, item, (&a, &b), span)?

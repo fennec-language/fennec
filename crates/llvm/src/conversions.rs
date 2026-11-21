@@ -913,6 +913,16 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `a + b` on lists: a copy of the first, with the second's items after them.
+    /// `items += more`, taking over the owner the local held: the runtime adds `more`'s items where
+    /// the list is when nothing else holds it, with room to grow, as `extend` does, so a run of them
+    /// is linear. Joined, the list was copied first every time.
+    pub(crate) fn extended_list(&mut self, list: &str, more: &str) -> String {
+        self.declare("declare ptr @fennec_list_extend(ptr, ptr) nounwind");
+        let grown = self.temp();
+        self.line(&format!("{grown} = call ptr @fennec_list_extend(ptr {list}, ptr {more})"));
+        grown
+    }
+
     pub(crate) fn joined_lists(&mut self, a: &str, b: &str) -> String {
         self.declare("declare ptr @fennec_list_slice(ptr, i64, i64) nounwind");
         self.declare("declare ptr @fennec_list_extend(ptr, ptr) nounwind");

@@ -127,12 +127,7 @@ fn locked_layout_problems(program: &fennec_kit::Program) -> Vec<String> {
 /// lints of a kit's files leave them out too.
 fn lints_of(program: &fennec_kit::Program, trials: bool) -> Vec<fennec_lint::Lint> {
     let mut found = fennec_lint::lint(&program.module, &program.sources);
-    if trials {
-        found.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
-        found.extend(fennec_lint::double_lookups(&program.module, &program.sources));
-    }
-    found.extend(fennec_lint::stale_copies(&program.module, &program.sources));
-    found.extend(fennec_lint::self_compares(&program.module, &program.sources));
+    found.extend(fennec_lint::typed_lints(&program.module, &program.sources, trials));
     if program.manifest.is_some() {
         found.extend(fennec_lint::kit_lints(&program.module));
     }

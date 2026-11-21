@@ -3,7 +3,7 @@
 # Each task ends as a crash and the program goes on, so the blocks made for each message have to
 # be let go of as it stops, or they outlive the task (#2170).
 from std.concurrent import Crashed
-from std.random import random_int
+from std.random import Random
 
 error Bad:
     Wrong(why: str)
@@ -30,8 +30,9 @@ def sized(hundreds: int, stdout: Stdout):
     stdout.print(u8(hundreds * 100))
 
 def picked(lowest: int, highest: int, stdout: Stdout):
-    value, drawn = random_int(7, 3, highest, lowest)
-    stdout.print(value, drawn)
+    mut picker = Random(seed=7, drawn=3)
+    value = picker.randint(highest, high=lowest)
+    stdout.print(value, picker.drawn)
 
 def expected_in_a_task(text: str, stdout: Stdout) fails Crashed:
     with launch(() => expected(text, stdout)):

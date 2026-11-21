@@ -1142,7 +1142,7 @@ struct TomlReader:
         _ = self._path.pop()
 
 ## `text` read as a `T`, through its own `def deserialize`.
-export def native_loads[T: Deserializable](text: str) -> T fails ParseError:
+def native_loads[T: Deserializable](text: str) -> T fails ParseError:
     mut parser = TomlParser(source=text)
     root = parser.document()?
     mut src = TomlReader(_here=.Table(table=root))
@@ -1438,7 +1438,7 @@ def write_table(ref out: TomlOut, ref path: list[str], table: TomlTable, array: 
 ## 1.6 MB, and about 27,000 in `main` write 2 GB, near where memory runs out. In a launched task,
 ## about 4,000 levels stop the program at the call, saying calls nested too deeply, as `json.dumps`
 ## does deeper: a value that deep, made in the program's own memory, is a bug in the program.
-export def native_dumps[T: Serializable](value: T) -> str:
+def native_dumps[T: Serializable](value: T) -> str:
     mut out = TomlWriter()
     value.serialize(ref out)
     if out._wants_tables:

@@ -18664,6 +18664,58 @@ fn standard_error_comes_out_after_what_was_printed_before() -> std::io::Result<(
     Ok(())
 }
 
+/// What a program prints to a pipe goes out without its waiting for anything: its first line at
+/// once, and a line printed 100 ms or more after the last write at once too, so a program killed
+/// while it counts loses only its last moment's lines. This one counts for 20 seconds after its
+/// second line, and both are read before it ends. Each was kept until the program ended or waited.
+#[cfg(unix)]
+#[test]
+fn printed_lines_go_out_to_a_pipe_in_time_though_the_program_never_waits() -> std::io::Result<()> {
+    use std::io::BufRead as _;
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("printed_in_time")?;
+    let program = dir.join("counting.fen");
+    std::fs::write(
+        &program,
+        "# Counts until `millis` have gone, never waiting: a wait writes what's been printed.
+def counted(clock: Clock, millis: int) -> int:
+    began = clock.now()
+    mut total = 0
+    while (clock.now() - began).nanos < millis * 1_000_000:
+        total = (total + 1) % 1_000_003
+    return total
+
+def main(stdout: Stdout, clock: Clock):
+    stdout.print(\"first\")
+    stdout.print(\"then\", counted(clock, millis=300) % 1)
+    stdout.print(\"last\", counted(clock, millis=20_000) % 1)
+",
+    )?;
+    let executable = dir.join("counting");
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut counting = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let stdout = counting.0.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+    let (says, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            if says.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let within = std::time::Duration::from_secs(15);
+    let read: Vec<_> = (0..2).map(|_| said.recv_timeout(within).ok().and_then(Result::ok)).collect();
+    let still_counting = counting.0.try_wait()?.is_none();
+    assert_eq!(read, [Some("first".to_owned()), Some("then 0".to_owned())]);
+    assert!(still_counting, "both lines came only once it ended");
+    drop(counting);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A server built on the runtime `threads` names, `"1"` with threads and `"0"` without, serving
 /// HTTP until the program's asked to stop, with 2 seconds' grace. Gives it running, the port it
 /// listens on, and what it prints after.
@@ -23499,6 +23551,60 @@ fn a_build_runs_parallel_on_every_core_unless_asked_not_to() -> std::io::Result<
     if !cfg!(windows) {
         assert!(has_pool(&every_core)?, "the program has no pool to run on");
         assert!(!has_pool(&one_thread)?, "asked for one thread, the program has a pool");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A pool of workers the runtime can't make is said, once, never left silent (runtime exhaustion
+/// audit, 2026-11-20). Asking for 20,000 workers makes the most there are, 256, saying so, where
+/// it spent a minute and a gigabyte starting them. A pool the system can't give polls for, under
+/// a limit of 24 open files, says why, and `parallel` still gives its answer, running its ranges one
+/// after another. A loop of 100,000 items, so it's worth a pool at all.
+#[test]
+fn a_pool_smaller_than_asked_for_says_why() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("pool-says-why")?;
+    let program = dir.join("squares.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    squares = [x * x for x in parallel(range(100000))]\n    stdout.print(sum(squares))\n",
+    )?;
+    let executable = dir.join("squares");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let said = |ran: &Output| {
+        (String::from_utf8_lossy(&ran.stdout).into_owned(), String::from_utf8_lossy(&ran.stderr).into_owned())
+    };
+    let many = said(&Command::new(&executable).env("FENNEC_THREADS", "20000").output_within()?);
+    assert_eq!(
+        many,
+        (
+            "333328333350000\n".to_owned(),
+            "warning: FENNEC_THREADS asks for 20000 workers, more than the 256 the runtime makes, so it makes \
+             256\n"
+                .to_owned()
+        )
+    );
+    if cfg!(unix) {
+        let starved = said(
+            &Command::new("sh")
+                .args(["-c", "ulimit -n 24 && exec \"$0\"", &executable.to_string_lossy()])
+                .env("FENNEC_THREADS", "64")
+                .output_within()?,
+        );
+        assert_eq!(starved.0, "333328333350000\n", "{}", starved.1);
+        assert!(starved.1.starts_with("warning: couldn't start the runtime's 64 workers: "), "{}", starved.1);
+        assert!(
+            starved.1.ends_with(
+                "; `parallel` runs its ranges one after another, and `launch` has nothing to run a task on\n"
+            ),
+            "{}",
+            starved.1
+        );
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -31856,7 +31962,13 @@ fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Resul
 #[cfg(target_os = "linux")]
 #[test]
 fn a_program_that_runs_out_of_memory_says_so_after_what_it_printed() -> std::io::Result<()> {
-    if !ready() || !crate::executables::threads_runtime_built() {
+    // Not under a sanitizer: its runtime allocates through the system's allocator, which the
+    // sanitizer replaces, and leaves mimalloc out, so there's no mimalloc to call the error handler
+    // this checks. AddressSanitizer's own allocator stops the program in its words instead.
+    if !ready()
+        || !crate::executables::threads_runtime_built()
+        || std::env::var_os("FENNEC_SANITIZE").is_some()
+    {
         return Ok(());
     }
     let dir = folder("out_of_memory")?;
@@ -31914,7 +32026,13 @@ def main(stdout: Stdout, args: Args) fails Crashed:
 #[cfg(target_os = "linux")]
 #[test]
 fn ranges_running_out_of_memory_at_once_say_so_once() -> std::io::Result<()> {
-    if !ready() || !crate::executables::threads_runtime_built() {
+    // Not under a sanitizer: its runtime allocates through the system's allocator, which the
+    // sanitizer replaces, and leaves mimalloc out, so there's no mimalloc to call the error handler
+    // this checks. AddressSanitizer's own allocator stops the program in its words instead.
+    if !ready()
+        || !crate::executables::threads_runtime_built()
+        || std::env::var_os("FENNEC_SANITIZE").is_some()
+    {
         return Ok(());
     }
     let dir = folder("out_of_memory_at_once")?;

@@ -109,7 +109,7 @@ impl<'w, 'p> Reads<'w, 'p> {
     }
 
     pub(crate) fn analysis(&self, name: &str) -> Option<&'w Analysis> {
-        entry(self, What::Analysis, &self.whole.analyses, name)
+        entry(self, What::Analysis, &self.whole.analyses, name).map(std::sync::Arc::as_ref)
     }
 
     pub(crate) fn can_fail(&self, name: &str) -> bool {
@@ -230,7 +230,11 @@ impl Reads<'_, '_> {
             state.key()
         };
         match what {
-            What::Function => whole.functions.get(name).map(|function| ir_key(function)),
+            What::Function => whole
+                .ir_keys
+                .get(name)
+                .copied()
+                .or_else(|| whole.functions.get(name).map(|function| ir_key(function))),
             What::Analysis => whole.analyses.get(name).map(|analysis| keyed(&|state| analysis.stable(state))),
             What::CanFail => member(&whole.can_fail),
             What::Generator => whole.generators.get(name).map(|def| key_of("generator", def)),

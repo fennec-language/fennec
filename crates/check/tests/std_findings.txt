@@ -1,43 +1,6 @@
 # What the checker finds in the standard library that a program would be told, by file and
 # message, held by crates/check/tests/typed.rs: fix one and it leaves this list, which only
 # shrinks. Written with FENNEC_PIN_OUTPUTS=1.
-cli.fen: `rest`'s default is written as `list[str]()`
-cli.fen: `takes`'s default is written as `list[CliArg]()`
-cli.fen: `values`'s default is written as `dict[str, str]()`
-collections.fen: `T` could be any type, so `==` might not work on it
-collections.fen: `_cells`'s default is written as `list[T]()`
-collections.fen: `_ends`'s default is written as `list[int]()`
-collections.fen: `_first_in`'s default is written as `list[int]()`
-collections.fen: `_first_out`'s default is written as `list[int]()`
-collections.fen: `_free`'s default is written as `list[int]()`
-collections.fen: `_ids`'s default is written as `list[Id[N]]()`
-collections.fen: `_items`'s default is written as `list[T]()`
-collections.fen: `_last_in`'s default is written as `list[int]()`
-collections.fen: `_last_out`'s default is written as `list[int]()`
-collections.fen: `_next_in`'s default is written as `list[int]()`
-collections.fen: `_next_out`'s default is written as `list[int]()`
-collections.fen: `_nodes`'s default is written as `list[SortedNode[K, V]]()`
-collections.fen: `_roots`'s default is written as `list[Id[TreeNode[T]]]()`
-collections.fen: `_starts`'s default is written as `list[int]()`
-collections.fen: `_values`'s default is written as `list[E]()`
-collections.fen: `children`'s default is written as `list[Id[TreeNode[T]]]()`
-collections.fen: `children`'s default is written as `list[int]()`
-collections.fen: `counts`'s default is written as `dict[T, int]()`
-collections.fen: `items`'s default is written as `list[T]()`
-collections.fen: `keys`'s default is written as `list[K]()`
-collections.fen: `slots`'s default is written as `list[T]()`
-collections.fen: `values`'s default is written as `list[V]()`
-collections.fen: `waiting`'s default is written as `dict[int, T]()`
-collections.fen: this changes `self._nodes[...].children`, which the call it's passed to changes too
-collections.fen: this changes `self._nodes[...].children`, which the call it's passed to changes too
-collections.fen: this changes `self._nodes[...].keys`, which the call it's passed to changes too
-collections.fen: this changes `self._nodes[...].values`, which the call it's passed to changes too
-collections.fen: this gives back a (int, int)?, and nothing uses it
-collections.fen: this gives back a K, and nothing uses it
-collections.fen: this gives back a TreeNode[T]?, and nothing uses it
-collections.fen: this gives back a TreeNode[T]?, and nothing uses it
-collections.fen: this gives back a V, and nothing uses it
-collections.fen: this gives back an int, and nothing uses it
 concurrent.fen: `_back` is private to `Borrowed`
 concurrent.fen: `_channel` is private to `Channel`
 concurrent.fen: `_channel` is private to `Channel`
@@ -60,23 +23,13 @@ concurrent.fen: nothing can build `Channel`: `_channel` has no default, and `Cha
 concurrent.fen: nothing can build `Inbox`: `_channel` has no default, and `Inbox` has no named constructor
 concurrent.fen: nothing can build `Pool`: `_notes` has no default, and `Pool` has no named constructor
 concurrent.fen: nothing can build `Sender`: `_channel` has no default, and `Sender` has no named constructor
-concurrent.fen: the type here is known, so write `.Closed` without `PoolError`
-concurrent.fen: the type here is known, so write `.Open` without `PoolError`
-concurrent.fen: the type here is known, so write `.Open` without `PoolError`
-concurrent.fen: the type here is known, so write `.Open` without `PoolError`
-concurrent.fen: the type here is known, so write `.Open` without `PoolError`
 crypto.fen: `equal` takes a str or bytes, but this is a T
 crypto.fen: `equal` takes a str or bytes, but this is a T
-csv.fen: `delimiter` has a default, so it's passed by name
-csv.fen: `delimiter` has a default, so it's passed by name
-csv.fen: `delimiter` has a default, so it's passed by name
-errors.fen: this gives back a T, and nothing uses it
 fs.fen: nothing can build `File`: `_handle` has no default, and `File` has no named constructor
 html.fen: `_text` is private to `Html`
 html.fen: `_text` is private to `Html`
 html.fen: `_text` is private to `Html`
 html.fen: `_text` is private to `Html`
-html.fen: the type here is known, so write `.Misplaced` without `HtmlError`
 io.fen: `_in` is private to `StdinReader`
 io.fen: `_out` is private to `StdoutWriter`
 io.fen: nothing can build `StdinReader`: `_in` has no default, and `StdinReader` has no named constructor
@@ -102,11 +55,7 @@ json.fen: `_tables` is private to `JsonWriter`
 json.fen: `_unwritable` is private to `JsonWriter`
 json.fen: `_wants_tables` is private to `JsonWriter`
 json.fen: `_whole` is private to `JsonReader`
-json.fen: `piece` isn't mut
-json.fen: `piece` isn't mut
-json.fen: `value != value` is always False, since NaN equals NaN here
 json.fen: nothing can build `JsonReader`: `_source` has no default, and `JsonReader` has no named constructor
-log.fen: `fields`'s default is written as `dict[str, str]()`
 net.fen: `_ =` would drop this failure
 net.fen: `_conn` is private to `ConnectionReader`
 net.fen: `_conn` is private to `ConnectionWriter`
@@ -254,8 +203,6 @@ pack.fen: `_word` is private to `PackReader`
 pack.fen: `_word` is private to `PackWriter`
 pack.fen: nothing can build `PackByName`: `_raw` has no default, and `PackByName` has no named constructor
 pack.fen: nothing can build `PackReader`: `_data` has no default, and `PackReader` has no named constructor
-pack.fen: this gives back an int, and nothing uses it
-path.fen: this gives back a str?, and nothing uses it
 postgres.fen: `_at` is private to `PgBody`
 postgres.fen: `_at` is private to `PgBody`
 postgres.fen: `_conn` is private to `PgDatabase`
@@ -271,58 +218,6 @@ postgres.fen: nothing can build `PgBody`: `_data` has no default, and `PgBody` h
 postgres.fen: nothing can build `PgDatabase`: `_conn` has no default, and `PgDatabase` has no named constructor
 postgres.fen: nothing can build `PgPool`: `_pool` has no default, and `PgPool` has no named constructor
 postgres.fen: nothing can build `PgTransaction`: `_db` has no default, and `PgTransaction` has no named constructor
-postgres.fen: the type here is known, so write `.Busy` without `SqlError`
-postgres.fen: the type here is known, so write `.Constraint` without `SqlError`
-postgres.fen: the type here is known, so write `.Done` without `PgMessage`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-postgres.fen: the type here is known, so write `.Failed` without `SqlError`
-sized.fen: `problem` isn't used on this way out, so it drops the failure
 sql.fen: `_cell` is private to `SqlRowReader`
 sql.fen: `_column` is private to `SqlRowReader`
 sql.fen: `_in_record` is private to `SqlRowReader`

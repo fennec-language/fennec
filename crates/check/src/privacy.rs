@@ -120,9 +120,11 @@ fn has_word(text: &str, name: &str) -> bool {
 }
 
 /// Whether `declared` and `used` are in the same file: one of a program's `files`, or one of
-/// the standard library's.
+/// the standard library's. A program checked as one text, with no files listed, is one file.
+/// A span the compiler wrote at no place of its own, `0..0`, is in no file, as
+/// [`crate::import_place`] has it, so it never counts as the first file's code.
 fn same_file(files: &[Span], declared: Span, used: Span) -> bool {
-    match (crate::place(files, declared), crate::place(files, used)) {
+    match (crate::import_place(files, declared), crate::import_place(files, used)) {
         (crate::Place::File(declared), crate::Place::File(used)) => declared == used,
         (crate::Place::Std, crate::Place::Std) => {
             let file = |span: Span| fennec_syntax::prelude_file_at(span).map(|(name, _, _)| name);

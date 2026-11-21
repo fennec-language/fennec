@@ -401,11 +401,17 @@ fn problems_in_files(files: &[(&str, &str)]) -> Vec<String> {
 
 /// A `_` field or method is its file's: a function, another type, an `extend` and a test written
 /// in the file that declares the type read, set and call one, build the type with one, and match
-/// it in a `case`, as its own methods do.
+/// it in a `case`, as its own methods do. The program has another file, so each use is found in
+/// its file by its span, not taken as the one file a program checked as one text is.
 #[test]
 fn code_in_a_types_file_reaches_its_underscore_names() {
+    let in_its_file = |text: &str| {
+        problems_in_files(&[("account.fen", text), ("note.fen", "struct Note:\n    text: str\n")])
+    };
     let in_main = |body: &str| {
-        problems(&format!("{ACCOUNT}def main(stdout: Stdout):\n    mut account = Account(\"ash\")\n{body}"))
+        in_its_file(&format!(
+            "{ACCOUNT}def main(stdout: Stdout):\n    mut account = Account(\"ash\")\n{body}"
+        ))
     };
     let empty: [&str; 0] = [];
     assert_eq!(in_main("    stdout.print(account._balance)\n"), empty);
@@ -425,12 +431,12 @@ fn code_in_a_types_file_reaches_its_underscore_names() {
          struct Bank:\n    first: Account\n\n    def held(self) -> int:\n        return self.first._balance\n\n\
          test \"an account starts empty\":\n    assert Account(\"ash\")._balance == 0\n"
     );
-    assert_eq!(problems(&more), empty);
+    assert_eq!(in_its_file(&more), empty);
 }
 
 /// No other file reaches a type's `_` names, of the same kit or another: it reads, sets and
 /// calls none, sets none when it builds or copies one, matches none in a `case`, and an
-/// `extend` written there reaches none either.
+/// `extend` or a test written there reaches none either.
 #[test]
 fn no_other_file_reaches_a_types_underscore_names() {
     let in_main = |body: &str| {
@@ -465,6 +471,11 @@ fn no_other_file_reaches_a_types_underscore_names() {
     assert_eq!(
         problems_in_files(&[("account.fen", ACCOUNT), ("peek.fen", peek)]),
         [format!("{private} @ self._balance")]
+    );
+    let test = "test \"an account starts empty\":\n    assert Account(\"ash\")._balance == 0\n";
+    assert_eq!(
+        problems_in_files(&[("account.fen", ACCOUNT), ("account_test.fen", test)]),
+        [format!("{private} @ Account(\"ash\")._balance")]
     );
 }
 

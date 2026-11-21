@@ -215,7 +215,7 @@ impl Emit<'_, '_, '_> {
     /// makes it the caller's own with room to grow, so a run of them is linear. Bytes added to
     /// themselves were let go of if they grew, so they're read from the new block, which starts
     /// with them.
-    pub(crate) fn bytes_grown(&mut self, dest: LocalId, more: &str) -> Result<(), String> {
+    pub(crate) fn bytes_grown(&mut self, dest: LocalId, more: &str) {
         let slot = self.slot(dest);
         let (size_at, size, before) = (self.offset(more, 16), self.temp(), self.temp());
         self.line(&format!("{size} = load i64, ptr {size_at}"));
@@ -228,7 +228,6 @@ impl Emit<'_, '_, '_> {
         self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
         self.line(&format!("call void @llvm.memcpy.p0.p0.i64(ptr {at}, ptr {from}, i64 {size}, i1 false)"));
         self.lengthen(&block, &length, &size);
-        Ok(())
     }
 
     /// Whether a builder has room for `wanted` bytes: its room, in bytes, is the header's last word,

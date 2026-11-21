@@ -2991,7 +2991,10 @@ impl Emit<'_, '_, '_> {
                 return Ok(());
             }
             Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
-            Kind::Bytes if self.grows_in_place(op, lhs, dest) => return self.bytes_grown(dest, &b),
+            Kind::Bytes if self.grows_in_place(op, lhs, dest) => {
+                self.bytes_grown(dest, &b);
+                return Ok(());
+            }
             Kind::Bytes => self.bytes_binary(op, (&a, &b))?,
             Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.lists_in_order(op, item, (&a, &b), span)?

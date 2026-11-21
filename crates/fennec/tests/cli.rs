@@ -5935,20 +5935,25 @@ fn a_daemon_build_knows_its_objects_till_a_cleanup_takes_any() {
 /// count is used for a negative one, as a release compiler would use a wrong one the rule let
 /// through. Gives back the exit code, what it printed and what it said.
 #[cfg(unix)]
-fn with_picked(kit: &Path, home: &Path, args: &[&str], count: i32) -> (Option<i32>, String, String) {
+fn with_picked(
+    kit: &Path,
+    home: &Path,
+    args: &[&str],
+    count: i32,
+) -> std::io::Result<(Option<i32>, String, String)> {
     let source = format!(
         "def picked(count: int) -> int:\n    return [5, 6, 7, 8, 9][count]\n\n\
          def main(stdout: Stdout):\n    stdout.print(picked({count}))\n\n\
          test \"picked\":\n    assert picked({count}) > 0\n"
     );
-    std::fs::write(kit.join("src/main.fen"), source).unwrap();
+    std::fs::write(kit.join("src/main.fen"), source)?;
     let mut command = crate::executables::fennec_command();
     command.args(args).current_dir(kit).env("FENNEC_HOME", home);
     command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "0");
     command.env("FENNEC_KEPT_ANALYSIS_RULE_OFF", "ranges").env_remove("CI").env_remove("FENNEC_NO_DAEMON");
     command.env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
-    let done = command.output().unwrap();
-    (done.status.code(), text(&done.stdout), text(&done.stderr))
+    let done = command.output()?;
+    Ok((done.status.code(), text(&done.stdout), text(&done.stderr)))
 }
 
 /// Whether the daemon has reported an analysis it kept wrong, waiting up to two minutes for it.
@@ -5986,21 +5991,21 @@ fn a_kept_analysis_found_wrong_after_the_build_is_reported_and_let_go_of() {
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(kit.join("kit.toml"), manifest).unwrap();
     let build = ["build", ".", "-o", "prog"];
-    assert_eq!(with_picked(&kit, &home, &build, 2).0, Some(0));
+    assert_eq!(with_picked(&kit, &home, &build, 2).unwrap().0, Some(0));
     // `picked`'s analysis, kept for 2, is used for -2: the check after the build finds it, even
     // with the daemon stopped at once.
-    assert_eq!(with_picked(&kit, &home, &build, -2).0, Some(0));
+    assert_eq!(with_picked(&kit, &home, &build, -2).unwrap().0, Some(0));
     with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
     assert!(kept_analysis_reported(&home, false), "the daemon ended without checking the build");
     // A release build of the same files, in a new daemon, says so.
-    let (code, _, said) = with_picked(&kit, &home, &["build", "--release", ".", "-o", "prog"], -2);
+    let (code, _, said) = with_picked(&kit, &home, &["build", "--release", ".", "-o", "prog"], -2).unwrap();
     assert_eq!(code, Some(0), "{said}");
     assert!(said.contains(KEPT_ANALYSIS_NOTE) && said.contains("may be wrong"), "{said}");
     // And the dev build after it builds again, rather than put out what the wrong one made, as a
     // stored program is, in no time at all. What it compiles and links may still be found where
     // it's kept by what's in it, which is the same whatever analysis made it.
-    let (code, printed, said) = with_picked(&kit, &home, &build, -2);
+    let (code, printed, said) = with_picked(&kit, &home, &build, -2).unwrap();
     assert_eq!(code, Some(0), "{said}");
     assert!(!printed.contains("functions in 0 ms, linked in 0 ms"), "{printed}");
     assert!(!said.contains(KEPT_ANALYSIS_NOTE), "said twice: {said}");
@@ -6016,12 +6021,12 @@ fn tests_built_with_a_kept_analysis_found_wrong_run_again() {
     let manifest =
         format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
     std::fs::write(kit.join("kit.toml"), manifest).unwrap();
-    let (code, printed, said) = with_picked(&kit, &home, &["test", "."], 2);
+    let (code, printed, said) = with_picked(&kit, &home, &["test", "."], 2).unwrap();
     assert_eq!(code, Some(0), "{printed}{said}");
-    let (code, printed, said) = with_picked(&kit, &home, &["test", "."], -2);
+    let (code, printed, said) = with_picked(&kit, &home, &["test", "."], -2).unwrap();
     assert_eq!(code, Some(0), "{printed}{said}");
     assert!(kept_analysis_reported(&home, true), "the daemon never found the test build's analysis wrong");
-    let (code, printed, said) = with_picked(&kit, &home, &["test", "."], -2);
+    let (code, printed, said) = with_picked(&kit, &home, &["test", "."], -2).unwrap();
     assert_eq!(code, Some(0), "{printed}{said}");
     assert!(said.contains(KEPT_ANALYSIS_NOTE), "{said}");
     assert!(printed.contains("1 passed") && !printed.contains("1 unchanged"), "{printed}");

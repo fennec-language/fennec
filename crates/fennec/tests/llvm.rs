@@ -7213,6 +7213,27 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `i64(x)` and `f64(x)` build as `int(x)` and `float(x)`, the widening language.md writes as
+/// `i64(small)` (#2307): each prints just what the plain name does for the same value.
+#[test]
+fn i64_and_f64_build_as_int_and_float_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "i64_f64",
+        "def main(stdout: Stdout):
+    small: u8 = 7
+    half: f32 = 1.5
+    stdout.print(i64(small) * 1000000000000, int(small) * 1000000000000)
+    stdout.print(f64(half) / 4.0, float(half) / 4.0)
+    stdout.print(i64(-2.7), int(-2.7), f64(small) + 0.25, float(small) + 0.25)
+",
+    )?;
+    assert_eq!(printed, "7000000000000 7000000000000\n0.375 0.375\n-2 -2 7.25 7.25\n");
+    Ok(())
+}
+
 /// A `u64` natively is unsigned all the way up: arithmetic, comparisons, shifts and `~` on its
 /// 64 bits. An `f32` is rounded to 32 bits after each operation, and prints as the shortest text
 /// that reads back as the same `f32`. Both go in structs, lists, f-strings with a format, `str`,
@@ -7725,6 +7746,41 @@ fn a_shift_drops_bits_past_a_sizes_top() -> std::io::Result<()> {
         "sized_shifts_drop_bits",
         "def main(stdout: Stdout):\n    a: u8 = 200\n    b: i8 = 100\n    c: u16 = 65535\n    d: i32 = 1\n    e: u32 = 3\n    stdout.print(a << 1, b << 1, c << 4, d << 31, e << 31, a << 7)\n",
         "144 -56 65520 -2147483648 2147483648 0\n",
+    )
+}
+
+/// Every binary operator has an assigning form, which applies it and writes the result back, as in
+/// Python: `//=`, `%=` and `**=` among them (#2308). Each gives what its operator gives, on an
+/// `int`, a `float` and a `u8`.
+#[test]
+fn every_assigning_form_gives_what_its_operator_gives() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "assigning_forms",
+        "def main(stdout: Stdout):
+    mut n = 100
+    n += 7
+    n -= 2
+    n *= 3
+    n //= 4
+    n %= 50
+    n **= 2
+    mut bits = 12
+    bits &= 10
+    bits |= 1
+    bits ^= 15
+    bits <<= 3
+    bits >>= 1
+    mut x = 7.5
+    x /= 2.0
+    mut small: u8 = 200
+    small //= 3
+    small %= 7
+    stdout.print(n, bits, x, small)
+",
+        "784 24 3.75 3\n",
     )
 }
 

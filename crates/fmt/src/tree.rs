@@ -170,8 +170,7 @@ impl<'t, 'a> Line<'t, 'a> {
                 (1, len.checked_sub(1).filter(|&last| self.text(last) == ":")?)
             }
             _ => {
-                let assign =
-                    (0..len).find(|&at| top(at) && self.is_punct_in(at, &["=", "+=", "-=", "*=", "/="]))?;
+                let assign = (0..len).find(|&at| top(at) && self.is_punct_in(at, &ASSIGNING))?;
                 (assign + 1, len)
             }
         };
@@ -329,6 +328,10 @@ impl<'t, 'a> Line<'t, 'a> {
 
 /// The longest string, quotes included, that counts as a plain literal for filling lines.
 const SHORT_STRING: usize = 20;
+
+/// `=` and each operator's assigning form, after which a long line can break.
+const ASSIGNING: [&str; 13] =
+    ["=", "+=", "-=", "*=", "/=", "//=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>="];
 
 /// Whether an item is a plain literal: a number, possibly negative, `True`, `False`, `None`, or
 /// a short string.

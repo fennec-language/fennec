@@ -14,6 +14,10 @@ fn spaces_go_around_operators_and_after_commas() {
         "def f(a: int, b: int) -> int:\n    x = -a + b * 2 ** -3 // 4 % 5\n    y = a if a > b else -(b)\n    x += 1\n    return x\n",
     );
     check(
+        "def f(ref x: int):\n    x//=2\n    x%=3\n    x**=2\n    x<<=1\n    x^=1\n",
+        "def f(ref x: int):\n    x //= 2\n    x %= 3\n    x **= 2\n    x <<= 1\n    x ^= 1\n",
+    );
+    check(
         "def f(xs: list[int]):\n    ok = not xs and 3 not in xs or xs is not None\n",
         "def f(xs: list[int]):\n    ok = not xs and 3 not in xs or xs is not None\n",
     );

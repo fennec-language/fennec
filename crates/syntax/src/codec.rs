@@ -413,7 +413,7 @@ impl<K: Decode + Ord, V: Decode> Decode for BTreeMap<K, V> {
         let entries = Vec::<(K, V)>::decode(from)?;
         // Written in order, so a key out of order, or twice, is corrupt. In order, the map is
         // built at once rather than key by key.
-        entries.windows(2).all(|pair| pair[0].0 < pair[1].0).then(|| entries.into_iter().collect())
+        entries.is_sorted_by(|before, after| before.0 < after.0).then(|| entries.into_iter().collect())
     }
 }
 
@@ -429,7 +429,7 @@ impl<T: Encode> Encode for BTreeSet<T> {
 impl<T: Decode + Ord> Decode for BTreeSet<T> {
     fn decode(from: &mut Reader<'_>) -> Option<Self> {
         let items = Vec::<T>::decode(from)?;
-        items.windows(2).all(|pair| pair[0] < pair[1]).then(|| items.into_iter().collect())
+        items.is_sorted_by(|before, after| before < after).then(|| items.into_iter().collect())
     }
 }
 

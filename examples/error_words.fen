@@ -20,13 +20,11 @@ error ShelfError:
     Broken(shelf: int)
 
 def sell(item: str) -> int fails SellError:
-    if item == "pear":
-        fail .NotFound(item)
+    if item == "pear": fail .NotFound(item)
     fail .OutOfStock(item)
 
 def restock(shelf: int) -> int fails SellError | ShelfError:
-    if shelf > 0:
-        fail .Broken(shelf)
+    if shelf > 0: fail .Broken(shelf)
     return sell("pear")?
 
 def checkout(item: str) -> int fails ShelfError:

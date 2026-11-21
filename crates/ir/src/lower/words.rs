@@ -36,15 +36,17 @@ impl Lowering<'_> {
     pub(super) fn words_of(&mut self, error: Operand, span: Span) -> Lowered<Operand> {
         self.by_member(error, span, &|lowering, error, ty, span| {
             let dest = lowering.temporary(Type::Str);
-            match lowering.own_message(&ty) {
-                Some(function) => {
-                    lowering.emit(InstKind::Call { dest: Some(dest), function, args: vec![error] }, span);
+            let made = if let Some(function) = lowering.own_message(&ty) {
+                InstKind::Call { dest: Some(dest), function, args: vec![error] }
+            } else {
+                InstKind::Builtin {
+                    dest: Some(dest),
+                    name: "str".to_owned(),
+                    args: vec![error],
+                    changes: false,
                 }
-                None => {
-                    let (name, args) = ("str".to_owned(), vec![error]);
-                    lowering.emit(InstKind::Builtin { dest: Some(dest), name, args, changes: false }, span);
-                }
-            }
+            };
+            lowering.emit(made, span);
             Ok(Operand::Local(dest))
         })
     }

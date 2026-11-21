@@ -388,19 +388,15 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let start = self.literal("`main` failed: ");
-        let text = match shown {
-            Some(shown) => {
-                // The program ends here, so a block made of a header isn't let go of.
-                let (shown, kind) = self.operand(shown)?;
-                let shown =
-                    if kind == Kind::Str && self.headers() { self.text_block(&shown).0 } else { shown };
-                self.joined(&start, &shown, false)
-            }
-            None => {
-                let (value, kind) = self.operand(error)?;
-                let shown = self.shown_text(&value, &kind)?;
-                self.joined(&start, &shown, true)
-            }
+        let text = if let Some(shown) = shown {
+            // The program ends here, so a block made of a header isn't let go of.
+            let (shown, kind) = self.operand(shown)?;
+            let shown = if kind == Kind::Str && self.headers() { self.text_block(&shown).0 } else { shown };
+            self.joined(&start, &shown, false)
+        } else {
+            let (value, kind) = self.operand(error)?;
+            let shown = self.shown_text(&value, &kind)?;
+            self.joined(&start, &shown, true)
         };
         // Its notes go under it, a line each, and its call chain: where it was raised, and each
         // `?` it passed up through.

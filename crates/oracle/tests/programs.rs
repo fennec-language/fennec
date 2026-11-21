@@ -5683,8 +5683,7 @@ fn parallel_rounds_give_what_every_order_gives() {
 }
 
 /// What `parallel` doesn't promise an order for is refused: printing in a round, a `shared` value
-/// one round changes and another reaches, a round that may not run changing something, and a sum
-/// added in a tree of the runtime's own, of floats or of ints that could overflow.
+/// one round changes and another reaches, and a round that may not run changing something.
 #[test]
 fn what_parallel_rounds_could_do_in_another_order_is_refused() {
     let refused = |body: &str, why: &str| {
@@ -5708,13 +5707,58 @@ fn what_parallel_rounds_could_do_in_another_order_is_refused() {
          lock total as ref held:\n                held.count += number\n",
         "a `parallel` round that may not run changing a `shared` value",
     );
-    refused(
-        "    stdout.print(sum(number / 2 for number in parallel(range(3))))\n",
-        "a float `sum` over `parallel`, which adds in a tree of its own",
+}
+
+/// A `sum` over `parallel(xs)` that compiled code lifts into ranges, of one name with no `if` and
+/// no `?`, adds in the runtime's fixed tree: ranges of at most 1,024 positions, each from its
+/// first part on, halved at the middle, the earlier half first, and the start added last. So a
+/// float sum gives the tree's bits, not the eight running totals a plain `sum` keeps, and an int
+/// sum overflows where the tree does, not where adding in order would. Any other form adds in
+/// order, as a plain `sum` does. What's printed is what the compiled program printed.
+#[test]
+fn a_sum_over_parallel_adds_in_the_runtimes_tree_where_its_lifted_and_in_order_where_not() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            floats = [float(at % 7) * 0.1 + (1.0e16 if at % 1000 == 3 else 0.0) - (1.0e16 if at % 1000 == 501 else 0.0) for at in range(3000)]
+            stdout.print(sum(x for x in parallel(floats)), sum(x for x in floats))
+            stdout.print(sum((x for x in parallel(floats)), start=0.5))
+            stdout.print(sum(x for x in parallel(floats) if True))
+            stdout.print(sum(x for x in parallel([-0.0])), sum(x for x in parallel(list[float]())))
+            ints = list(range(5000))
+            stdout.print(sum(x * x for x in parallel(ints)), sum(x for x in parallel(ints) if x % 3 == 0))
+            stdout.print(sum((x for x in parallel(ints)), start=100))
+            pairs = [(at, at * 2) for at in range(2000)]
+            stdout.print(sum(left * right for left, right in parallel(pairs)))
+            stdout.print(sum((x for x in parallel(list[int]())), start=4))
+            big = 9223372036854775807 // 1024
+            stdout.print(sum(x for x in parallel([big if at <= 1024 else -big for at in range(2048)])))
+        ",
+        "300.0 688.0\n300.5\n688.0\n0.0 0.0\n41654167500 4165833\n12497600\n5329334000\n4\n18014398509481982\n",
     );
-    refused(
-        "    stdout.print(sum(number for number in parallel([9223372036854775807, 1, -1])))\n",
-        "an int `sum` over `parallel` that may overflow, by how it's split",
+    let stopped = |body: &str, said: &str| {
+        let (printed, ended) = ran(&format!(
+            "def picked(at: int, x: int) -> int:\n    if at == 1500 or at == 3000:\n        return [7][at]\n    \
+             return x\n\ndef main(stdout: Stdout):\n    big = 9223372036854775807 // 1024\n{body}"
+        ));
+        assert_eq!(printed, "", "{body}");
+        assert!(matches!(&ended, Ended::Stopped(stopped) if stopped.contains(said)), "{body}: {ended:?}");
+    };
+    // Adding in order overflows at the 1,025th part, where the tree adds the two leaves' totals.
+    stopped(
+        "    stdout.print(sum(x for x in parallel([big if at <= 1024 else -big for at in range(2048)]) if True))\n",
+        "this calculation overflows an int",
+    );
+    // The crash at 1500 is in the range from 1024, below the range from 2048 whose halves' total
+    // overflows, so it's the one passed up.
+    stopped(
+        "    stdout.print(sum(picked(at, x=big) for at in parallel([at for at in range(4096) if at != 3000])))\n",
+        "index 1500 is out of range for length 1",
+    );
+    // The range from 0 overflows adding its halves, below the crash at 3000.
+    stopped(
+        "    stdout.print(sum(picked(at, x=big) for at in parallel([at for at in range(4096) if at != 1500])))\n",
+        "this calculation overflows an int",
     );
 }
 

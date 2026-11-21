@@ -12,9 +12,10 @@
 //! system, a `shared` value one round changes and another reaches, and a generator made outside
 //! the round. Each round is one of its own to the channels it uses (`actors.rs`), so which
 //! round's message comes first is tried every way, as two tasks' is; of a channel made outside
-//! it, a close is refused, as is any use in a stream's item. An int `sum` is
-//! refused where some way of splitting it could overflow, and a float `sum` outright, since it
-//! adds in a tree of its own.
+//! it, a close is refused, as is any use in a stream's item. A `sum` adds in the runtime's fixed
+//! tree where compiled code lifts it into ranges, and in order, as a plain `sum` does, where it
+//! doesn't, so a float `sum` gives the same bits and an int `sum` overflows where compiled code's
+//! does.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -22,8 +23,9 @@ use std::sync::{Arc, Mutex};
 use fennec_check::Type;
 use fennec_syntax::{Expr, ExprKind, Span, Stmt};
 
-use super::{Flow, Interp, Place, Run, Step, as_int, unsupported};
-use crate::value::Value;
+use super::calls::ArgVal;
+use super::{Flow, Interp, Place, Run, Step, as_int, crash, unsupported};
+use crate::value::{Held, Value};
 
 /// What runs beside something else now: a `parallel` call's rounds, or a `with launch`'s block
 /// and its task.
@@ -162,6 +164,63 @@ pub(crate) struct Written {
 pub(crate) struct Ran {
     made: Vec<Value>,
     stop: Option<Flow>,
+    /// How many of `made` the rounds before the one that stopped the call made: those after it
+    /// are rounds that may not run.
+    before: usize,
+}
+
+/// The most positions a leaf of a reduction's tree holds, as the runtime's `REDUCE_LEAF`: set by
+/// the list's length alone, so the tree is the same at any thread count.
+const REDUCE_LEAF: usize = 1024;
+
+/// What fails in a sum's tree: the round that stopped the call, or an add that overflowed.
+enum TreeFailure {
+    Round,
+    Add(Flow),
+}
+
+/// The parts `from..to` of a lifted `sum`, added as the runtime's tree adds them: a range of at
+/// most [`REDUCE_LEAF`] positions from its first part on, in order, and a longer one as its two
+/// halves, split at the middle, the earlier first. The parts end at the round that stopped the
+/// call, if one did. What fails comes with where its range starts, as the runtime passes up the
+/// failure of the range that starts lowest; a range from past the round that stopped the call
+/// starts higher than that round's own, so what it would do is never needed.
+fn tree_sum(parts: &[Value], (from, to): (usize, usize), span: Span) -> Result<Value, (usize, TreeFailure)> {
+    if to - from <= REDUCE_LEAF {
+        let mut total = parts.get(from).cloned().ok_or((from, TreeFailure::Round))?;
+        for at in from + 1..to {
+            let part = parts.get(at).ok_or((from, TreeFailure::Round))?;
+            total = added(total, part, span).map_err(|flow| (from, TreeFailure::Add(flow)))?;
+        }
+        return Ok(total);
+    }
+    let middle = from + (to - from) / 2;
+    match (tree_sum(parts, (from, middle), span), tree_sum(parts, (middle, to), span)) {
+        (Ok(left), Ok(right)) => added(left, &right, span).map_err(|flow| (from, TreeFailure::Add(flow))),
+        (Err(left), Err(right)) => Err(if right.0 < left.0 { right } else { left }),
+        (Err(failed), Ok(_)) | (Ok(_), Err(failed)) => Err(failed),
+    }
+}
+
+/// Two parts of a sum added, as compiled code adds them: ints checked, floats as they are.
+fn added(left: Value, right: &Value, span: Span) -> Run<Value> {
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => match a.checked_add(*b) {
+            Some(sum) => Ok(Value::Int(sum)),
+            None => crash("this calculation overflows an int", span),
+        },
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+        (other, _) => unsupported(format!("`sum` over `parallel` of a {}", other.kind())),
+    }
+}
+
+/// Whether `expr` uses `?` anywhere in it, as the IR asks before lifting a sum.
+fn tries(expr: &Expr) -> bool {
+    let mut found = false;
+    fennec_syntax::visit::in_expr(&mut expr.clone(), &mut |seen| {
+        found |= matches!(seen.kind, ExprKind::Try { .. });
+    });
+    found
 }
 
 /// What runs one round of a call, given the round and whether it may not run.
@@ -429,6 +488,7 @@ impl Interp {
     pub(crate) fn each_round(&mut self, from: usize, count: usize, each: &mut Each<'_>) -> Run<RoundsRan> {
         let mut made = Vec::with_capacity(count.saturating_sub(from));
         let mut stop: Option<Flow> = None;
+        let mut before = None;
         // The numbers of the rounds that used a channel, each one of its own to them.
         let mut numbered = Vec::new();
         for at in from..count {
@@ -448,6 +508,9 @@ impl Interp {
                 self.give_up_handed();
                 return Err(flow);
             }
+            if stop.is_some() && before.is_none() {
+                before = Some(made.len());
+            }
         }
         if let Some(handed) = self.handing.last_mut().and_then(|handing| handing.handed.take()) {
             // The round that handed the rest on stopped the call, but the rounds after it ran
@@ -459,11 +522,15 @@ impl Interp {
                 );
             }
             let (rest, rest_numbered) = self.rest_ended(&handed)?;
+            if rest.stop.is_some() {
+                before = Some(made.len() + rest.before);
+            }
             made.extend(rest.made);
             stop = rest.stop;
             numbered.extend(rest_numbered);
         }
-        Ok((Ran { made, stop }, numbered))
+        let before = before.unwrap_or(made.len());
+        Ok((Ran { made, stop, before }, numbered))
     }
 
     /// Gives up the run where a call's rounds were handed on and this thread can't take in what
@@ -593,11 +660,13 @@ impl Interp {
         names: &'static [String],
         call: Written,
         cond: Option<&'static Expr>,
-    ) -> Run<Ran> {
+    ) -> Run<(Ran, usize)> {
         let items = self.parallel_items(call)?;
         let count = items.len();
         let work = Arc::new(Work::Made { elem, names, cond, items });
-        self.rounds(count, Some(Arc::clone(&work)), &mut |interp, at, _| interp.run_round(&work, at))
+        let ran =
+            self.rounds(count, Some(Arc::clone(&work)), &mut |interp, at, _| interp.run_round(&work, at))?;
+        Ok((ran, count))
     }
 
     /// What `elem` makes of an item, or `None` when `cond` leaves it out.
@@ -628,7 +697,7 @@ impl Interp {
         call: Written,
         cond: Option<&'static Expr>,
     ) -> Run<Vec<Value>> {
-        let ran = self.parallel_made(elem, names, call, cond)?;
+        let (ran, _) = self.parallel_made(elem, names, call, cond)?;
         if let Some(stop) = ran.stop {
             return Err(stop);
         }
@@ -639,45 +708,58 @@ impl Interp {
         Ok(made)
     }
 
-    /// `sum(elem for names in parallel(source) if cond)`, with the start it may take. Its parts
-    /// add in a tree the runtime picks, so an int sum is modeled only where no way of adding them
-    /// could overflow: where the positive parts add up without overflowing, and the negative ones
-    /// too, every part of every tree lies between those two.
+    /// `sum(elem for names in parallel(source) if cond)`, with the start it may take.
+    ///
+    /// Where compiled code lifts it into ranges, as the IR's `parallel_value` does: an int or
+    /// float `sum` over a list, of one name, with no `if` and no `?`, its parts add in the
+    /// runtime's fixed tree (`tree_sum`), and the start is added to what that comes to. Any other
+    /// runs in order, as a plain `sum` adds, up to the round that stopped the call, whose failure
+    /// is passed up unless an add before it overflowed first.
     pub(crate) fn parallel_sum(
         &mut self,
         generator: &'static Expr,
         call: Written,
-        start: Option<&Value>,
-        span: Span,
+        start: Option<Value>,
+        expr: &'static Expr,
     ) -> Run<Value> {
         let ExprKind::Comprehension { elem, names, cond, .. } = &generator.kind else {
             return unsupported("a generator that isn't one");
         };
-        match self.program.type_at(span) {
-            Some(Type::Int) => {}
-            Some(Type::Float) => {
-                return unsupported("a float `sum` over `parallel`, which adds in a tree of its own");
-            }
-            _ => return unsupported("a `sum` over `parallel` of something other than ints"),
-        }
-        let ran = self.parallel_made(elem, names, call, cond.as_deref())?;
-        let (mut up, mut down) = (0_i64, 0_i64);
-        for part in start.into_iter().chain(ran.made.iter()) {
-            let Value::Int(n) = part else {
-                return unsupported(format!("`sum` over `parallel` of a {}", part.kind()));
+        let span = expr.span;
+        let float = match self.program.type_at(span) {
+            Some(Type::Int) => Some(false),
+            Some(Type::Float) => Some(true),
+            _ => None,
+        };
+        let lifted = float.is_some()
+            && cond.is_none()
+            && names.len() == 1
+            && call.limit.is_none()
+            && matches!(self.program.type_at(call.source.span), Some(Type::List(_)))
+            && !tries(elem);
+        let (Ran { mut made, stop, before }, count) =
+            self.parallel_made(elem, names, call, cond.as_deref())?;
+        made.truncate(before);
+        if !lifted {
+            let total = self.summed(ArgVal::Value(None, Value::List(Held::new(made))), start, expr)?;
+            return match stop {
+                Some(stop) => Err(stop),
+                None => Ok(total),
             };
-            let total = if *n >= 0 { &mut up } else { &mut down };
-            match total.checked_add(*n) {
-                Some(added) => *total = added,
-                None => {
-                    return unsupported("an int `sum` over `parallel` that may overflow, by how it's split");
-                }
+        }
+        let zero = if float == Some(true) { Value::Float(0.0) } else { Value::Int(0) };
+        let start = start.unwrap_or(zero);
+        // An empty list's sum is the start, with no tree to add it to.
+        if count == 0 {
+            return Ok(start);
+        }
+        match tree_sum(&made, (0, count), span) {
+            Ok(tree) => added(start, &tree, span),
+            Err((_, TreeFailure::Add(flow))) => Err(flow),
+            Err((_, TreeFailure::Round)) => {
+                Err(stop.unwrap_or_else(|| Flow::Unsupported("a `parallel` call was lost".to_owned())))
             }
         }
-        if let Some(stop) = ran.stop {
-            return Err(stop);
-        }
-        Ok(Value::Int(up + down))
     }
 
     /// In a stream's generator, `(elem for names in parallel(source) if cond)`: each item worked

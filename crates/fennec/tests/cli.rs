@@ -5974,6 +5974,7 @@ fn kept_analysis_reported(home: &Path, wait: bool) -> bool {
 }
 
 /// What the daemon says once it has found an analysis it kept wrong.
+#[cfg(unix)]
 const KEPT_ANALYSIS_NOTE: &str = "analyzed again what builds used the analyses of, and it disagreed";
 
 /// A build that used analyses kept from the build before is checked once it has answered: the

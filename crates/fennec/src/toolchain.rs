@@ -19,7 +19,7 @@ fn store() -> Option<&'static Cache> {
     static STORE: OnceLock<Option<Cache>> = OnceLock::new();
     STORE
         .get_or_init(|| {
-            if std::env::var_os("FENNEC_NO_CACHE").is_some() {
+            if crate::no_cache() {
                 return None;
             }
             let folder = match std::env::var_os("FENNEC_TOOLCHAIN_STORE") {

@@ -49,6 +49,32 @@ pub(crate) fn own_temp(what: &str) -> std::path::PathBuf {
 
 use std::process::ExitCode;
 
+/// Which of std's names a command lets a program import.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StdNames {
+    /// What std exports, for the `fennec` command.
+    Exported,
+    /// Its private names too, for `fennec-std-tests`, the repository's test build of the command,
+    /// which tests std's private parts from outside std. It works alone, with no build daemon and
+    /// no cache, so nothing it checks or builds is ever taken up by `fennec`.
+    PrivateToo,
+}
+
+/// Set for `StdNames::PrivateToo`: the command works alone, with no daemon and no cache.
+static ALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether nothing is kept in the cache or read from it: with `FENNEC_NO_CACHE` set, or for
+/// `fennec-std-tests`.
+pub(crate) fn no_cache() -> bool {
+    std::env::var_os("FENNEC_NO_CACHE").is_some() || ALONE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether the build daemon is left alone and the work done here: with `FENNEC_NO_DAEMON` set,
+/// or for `fennec-std-tests`, whose daemon would share `fennec`'s.
+pub(crate) fn no_daemon() -> bool {
+    std::env::var_os("FENNEC_NO_DAEMON").is_some() || ALONE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// What the environment asks of builds, to find the compiler's own mistakes with.
 fn builds_checking() {
     let on = |name: &str| std::env::var_os(name).is_some_and(|value| value == "1");
@@ -122,6 +148,20 @@ fn arguments() -> Option<Vec<String>> {
 
 /// Runs the `fennec` command on this process's arguments.
 pub fn main() -> ExitCode {
+    main_with(StdNames::Exported)
+}
+
+/// Runs the command on this process's arguments, letting a program import std's `names`.
+pub fn main_with(names: StdNames) -> ExitCode {
+    if names == StdNames::PrivateToo {
+        fennec_syntax::let_programs_import_std_private_names();
+        ALONE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    command()
+}
+
+/// The command, on this process's arguments.
+fn command() -> ExitCode {
     fennec_rt::use_tls();
     // Loading a kit parses only the files that changed since a parse of them was kept, and the
     // standard library is parsed by the first process of a build, and read by the rest.

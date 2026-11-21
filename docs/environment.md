@@ -86,6 +86,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 
 - `FENNEC_DEADLINE`: a constant in the tests, how long a child process may take.
 - `FENNEC_DATABASE_URL`, `FENNEC_FOX`, `FENNEC_NO_SUCH_VARIABLE`: names that Fennec programs in tests and examples read or set, to test `env`.
+- `FENNEC_STD_PRIVATE`: read by nothing. The test that `fennec` refuses to import std's private names sets it, to show that no variable lets a program in: only `fennec-std-tests`, a command only the repository's test builds have, imports them.
 
 ## Decided, not built yet
 

@@ -5539,7 +5539,8 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
 
 /// The daemon keeps each function's analysis from one build to the next: after a body edit it
 /// uses most of them again, each checked against analyzing it again, and makes the program a
-/// build here makes, byte for byte. A `fennec run` through it uses them again too.
+/// build here makes, byte for byte. A `fennec run` through it uses them again too. A release
+/// build uses none, and keeps its own for the build after.
 #[cfg(unix)]
 #[test]
 fn a_daemon_build_uses_the_last_builds_analyses_again() {
@@ -5608,6 +5609,22 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
         let (again, of) = used(&stderr);
         assert!(again > 0 && again < of, "{stderr}");
     }
+    // A release build uses nothing kept, being the build that ships, and the build after it uses
+    // what it kept.
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--release", ".", "-o", "prog"]).current_dir(&kit).env("FENNEC_HOME", &home);
+    command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+    command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+    let released = command.output().unwrap();
+    let stderr = text(&released.stderr);
+    assert_eq!(released.status.code(), Some(0), "{stderr}");
+    let (again, of) = used(&stderr);
+    assert!(again == 0 && of > 1, "{stderr}");
+    let made = build(&home, true);
+    let stderr = text(&made.stderr);
+    assert_eq!(made.status.code(), Some(0), "{stderr}");
+    let (again, of) = used(&stderr);
+    assert!(again == of && of > 1, "{stderr}");
     with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
     // The daemon wrote its index once each build had answered, and before it went: a build without

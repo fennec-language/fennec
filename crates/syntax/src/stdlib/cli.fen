@@ -32,8 +32,8 @@ struct CliArg:
 ## ```
 export struct CliArgs:
     flags: set[str] = set()
-    values: dict[str, str] = {}
-    rest: list[str] = []
+    values = dict[str, str]()
+    rest = list[str]()
     ## Whether `--help` or `-h` was given, so the program can print `cli.help()` and stop.
     wants_help = False
 
@@ -83,7 +83,7 @@ export struct CliArgs:
 export struct Cli:
     name: str
     about = ""
-    takes: list[CliArg] = []
+    takes = list[CliArg]()
 
     ## A flag, which is either given or not.
     ##

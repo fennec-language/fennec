@@ -9532,12 +9532,10 @@ fn deadlock_fixture_runs_with(
                 .env("FENNEC_THREADS", threads)
                 .envs(env.iter().copied())
                 .output_within()?;
-            let said = (
-                String::from_utf8_lossy(&ran.stdout),
-                String::from_utf8_lossy(&ran.stderr).replace(dir.to_string_lossy().as_ref(), "<dir>"),
-            );
+            // As `apart_from` writes it: `<dir>/`, whatever the system's separator.
+            let said = apart_from(&dir, outcome(&ran));
             assert_eq!(
-                (said.0.as_ref(), said.1.as_str(), ran.status.code()),
+                (said.0.as_str(), said.1.as_str(), said.2),
                 (out, err, Some(code)),
                 "{name} on {threads} threads"
             );

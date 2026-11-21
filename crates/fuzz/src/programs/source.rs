@@ -2827,7 +2827,10 @@ fn sized_written(sizing: &Sizing) -> String {
     );
     for step in steps {
         let SizedStep { way, operand } = *step;
-        let k = num.literal(operand);
+        // A literal takes the size it goes into, so one beside `x` needs no conversion, which is
+        // the plainer Fennec and keeps a program of hundreds from linting slowly (#2315). One past
+        // the largest int can't be written as a literal yet.
+        let k = if i64::try_from(operand).is_ok() { operand.to_string() } else { num.literal(operand) };
         let line = match way {
             SizedWay::Added => format!("x += {k}"),
             SizedWay::Taken => format!("x -= {k}"),
@@ -2847,8 +2850,9 @@ fn sized_written(sizing: &Sizing) -> String {
             SizedWay::Xored => format!("x = x ^ {k}"),
             SizedWay::Inverted => "x = ~x".to_owned(),
             SizedWay::Widened => "stdout.print(\"widened\", int(x) // 3)".to_owned(),
-            SizedWay::Summed => format!("stdout.print(\"summed\", sum([x, {k}]))"),
-            SizedWay::Looped => format!("for _ in range({operand}):\n        x += {convert}(1)"),
+            // A list's items have no size to take from beside them, so this one's written.
+            SizedWay::Summed => format!("stdout.print(\"summed\", sum([x, {}]))", num.literal(operand)),
+            SizedWay::Looped => format!("for _ in range({operand}):\n        x += 1"),
             SizedWay::Parsed => format!("parsed{id}(\"{operand}\", stdout)"),
         };
         let _ = writeln!(out, "    {line}\n    stdout.print(x)");

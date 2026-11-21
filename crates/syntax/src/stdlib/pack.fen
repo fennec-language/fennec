@@ -45,7 +45,10 @@ export struct Limits:
     empty = 65536
 
 ## `value` as bytes, which `loads` reads back into the same type. With `exact`, its `Table`s are
-## saved slot for slot.
+## saved slot for slot. A value nested deeper than the stack holds, about 2,800,000 levels in `main`
+## and 65,000 in a launched task, stops the program at the call, saying calls nested too deeply: a
+## value that deep, made in the program's own memory, is a bug in the program. `loads` reads at
+## most 64 levels.
 export def dumps[T: Serializable](value: T, exact = False) -> bytes:
     mut out = PackWriter(_exact=exact)
     out._header(shape_hash[T](), layout_unless_locked[T]())

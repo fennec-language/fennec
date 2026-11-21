@@ -13,7 +13,7 @@ use crate::{ParamType, Signature};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 30] = [
+const BUILTINS: [(&str, usize, usize); 32] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("all", 1, 1),
@@ -29,6 +29,9 @@ const BUILTINS: [(&str, usize, usize); 30] = [
     ("u32", 1, 1),
     ("u64", 1, 1),
     ("f32", 1, 1),
+    // `int` and `float` by the names of their sizes, as `i64(small)` widens.
+    ("i64", 1, 1),
+    ("f64", 1, 1),
     ("copy", 1, 1),
     ("int", 1, 1),
     ("list", 1, 1),
@@ -52,8 +55,8 @@ pub(crate) fn names() -> impl Iterator<Item = &'static str> {
 }
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 12] =
-    ["float", "int", "range", "round", "i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"];
+const NEEDS_VALUES: [&str; 14] =
+    ["float", "int", "range", "round", "i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32", "i64", "f64"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name) || stdlib::function(name).is_some()
@@ -791,7 +794,13 @@ impl FnCx<'_> {
                 Type::Bytes
             }
             name if let Some(num) = crate::types::Num::named(name) => self.sized_conversion(num, &first, at),
-            "int" | "float" => {
+            "int" | "float" | "i64" | "f64" => {
+                // `i64` is `int` and `f64` is `float`, so they're their conversions, and what's built
+                // from them is written as theirs.
+                let plain = if matches!(name, "int" | "i64") { "int" } else { "float" };
+                if plain != name {
+                    self.checker.std_calls.insert((span.start, span.end), plain.to_owned());
+                }
                 if !matches!(
                     first,
                     Type::Sized(_) | Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown
@@ -805,7 +814,7 @@ impl FnCx<'_> {
                     };
                     self.error(Diagnostic::new(message, at).with_help(help));
                 }
-                let number = if name == "int" { Type::Int } else { Type::Float };
+                let number = if plain == "int" { Type::Int } else { Type::Float };
                 // Text might not be a number, so reading one can fail.
                 if self.checker.settled(&first) == Type::Str {
                     return Type::result(number, Type::named("InvalidValue"));

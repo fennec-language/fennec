@@ -38,8 +38,10 @@ fn session(kit: &Path, home: &Path, daemon: bool) -> std::io::Result<(String, bo
         r#"{"jsonrpc":"2.0","method":"exit"}"#.to_owned(),
     ];
     let mut command = crate::executables::fennec_command();
-    command.arg("lsp").env("FENNEC_HOME", home).env("FENNEC_DAEMON_IDLE", "30");
+    command.arg("lsp").env("FENNEC_HOME", home);
     if daemon {
+        #[cfg(unix)]
+        command.env("FENNEC_DAEMON_IDLE", crate::executables::DAEMON_IDLE);
         command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
     } else {
         command.env("FENNEC_NO_DAEMON", "1");
@@ -71,6 +73,7 @@ fn the_language_server_runs_in_process_without_a_daemon() {
 #[test]
 fn the_language_server_runs_in_the_daemon() {
     let (_folder, kit, home) = broken_kit("daemon").unwrap();
+    let _stopped = crate::executables::DaemonsStopped { home: &home };
     let (output, clean) = session(&kit, &home, true).unwrap();
     check(&output);
     assert!(clean);

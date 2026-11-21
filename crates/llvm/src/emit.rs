@@ -2716,13 +2716,24 @@ impl Emit<'_, '_, '_> {
                 && self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind)))
     }
 
-    /// Whether a local holds an inline struct or enum with blocks in it, and owns them.
     /// Whether `dest = lhs + more` is a text growing, from a local that holds its only owner or
-    /// took it from a field.
+    /// took it from a field, or from a `ref` parameter. A parameter's slot is the caller's, which
+    /// holds its owner, so growing it there is the caller's text growing, as [`Self::assign`]
+    /// writes there too. Not where a change asks a lock's log first: the text may be in what the
+    /// lock holds, which has to be put back as it was if the lock's block fails.
     fn grows_in_place(&self, op: BinOp, lhs: &Operand, dest: LocalId) -> bool {
-        op == BinOp::Add && *lhs == Operand::Local(dest) && (self.owns(dest) || self.known.is_taken(dest))
+        let handed = || {
+            self.is_mut_param(dest)
+                && !self.asks_the_log()
+                && self.known.alias(dest).is_none()
+                && !self.known.is_borrowed(dest)
+        };
+        op == BinOp::Add
+            && *lhs == Operand::Local(dest)
+            && (self.owns(dest) || self.known.is_taken(dest) || handed())
     }
 
+    /// Whether a local holds an inline struct or enum with blocks in it, and owns them.
     pub(crate) fn owns_inline(&self, local: LocalId) -> bool {
         self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind))
             && !self.is_mut_param(local)

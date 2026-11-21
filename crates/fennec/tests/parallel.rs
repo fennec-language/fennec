@@ -620,7 +620,7 @@ fn a_crash_under_a_read_lock_ends_only_its_task() -> std::io::Result<()> {
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/crash_under_a_read_lock.fen");
     let built = build_on_threads(&dir, source, "crash_under_a_read_lock")?;
-    let wanted = "failed: Crashed(why=\"the task crashed\")\n2\n";
+    let wanted = "failed: the task crashed\n2\n";
     matches_on_workers(&built, "crash_under_a_read_lock", Some(0), wanted)?;
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -1140,8 +1140,8 @@ fn a_crash_of_a_launched_task_cuts_short_the_pieces_its_launcher_waits_for() -> 
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/crash_while_pieces_wait.fen");
     let built = build_on_threads(&dir, source, "crash_while_pieces_wait")?;
-    let wanted = "pieces gave [-1, -2]\nmain: Crashed(why=\"the task crashed\")\n\
-                  pieces gave [-1, -2]\ntask: Crashed(why=\"the task crashed\")\ndone\n";
+    let wanted = "pieces gave [-1, -2]\nmain: the task crashed\n\
+                  pieces gave [-1, -2]\ntask: the task crashed\ndone\n";
     for threads in ["1", "4", "16"] {
         let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
         assert_eq!(

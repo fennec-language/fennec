@@ -39,7 +39,7 @@ export error Timeout:
     ## stdout.print(Timeout(waited=2s))
     ## ```
     ## ```output
-    ## WORDS
+    ## gave up after 2s
     ## ```
     def message(self) -> str:
         return f"gave up after {self.waited}"

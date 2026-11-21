@@ -23173,7 +23173,7 @@ fn launched_tasks_run_beside_their_block_natively() -> std::io::Result<()> {
     assert_eq!(
         printed,
         format!(
-            "play jump\nstop\ntick\nfailed: Muted(why=\"boom too loud\")\nfailed: Crashed(why=\"the task crashed\")\n{sums}"
+            "play jump\nstop\ntick\nfailed: Muted(why=\"boom too loud\")\nfailed: the task crashed\n{sums}"
         )
     );
     Ok(())
@@ -23409,7 +23409,7 @@ fn a_channel_to_every_listener() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
-        "[5050, 5050]\n297\nfailed: Crashed(why=\"the task crashed\")\n",
+        "[5050, 5050]\n297\nfailed: the task crashed\n",
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
@@ -23532,7 +23532,7 @@ def main(stdout: Stdout) fails Closed | Timeout:
     )?;
     assert_eq!(
         printed,
-        "7 8\n-7\n-1.5\n18446744073709551615\n-0.1\nat once: -5ns\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: 2ms\nfull: Timeout(waited=Duration(nanos=2000000))\n"
+        "7 8\n-7\n-1.5\n18446744073709551615\n-0.1\nat once: -5ns\nhi 50\nfirst 3\n[1.5, 2.5]\nempty: 2ms\nfull: gave up after 2ms\n"
     );
     Ok(())
 }
@@ -23903,7 +23903,7 @@ def main(stdout: Stdout):
         )?,
         "{\"if\": 3, \"the \\\"label\\\"\": \"box\", \"sizes\": {\"a\": [[1, \"one\"]]}, \"shape\": {\"Square\": {\"side\": 2}}, \
          \"moves\": [\"Stay\", {\"Step\": {\"if\": 1, \"for\": \"x\"}}], \"for\": \"all\", \"note\": null}\n\
-         True 3 all box one\nTrue\nParseError(message=\"`the \\\"label\\\"` is missing\", line=0, column=0)\n"
+         True 3 all box one\nTrue\n`the \"label\"` is missing\n"
     );
     Ok(())
 }
@@ -23937,7 +23937,7 @@ def main(stdout: Stdout):
 "#
         )?,
         "{\"legs\": [[1, [[\"a\", {\"x\": 2}]]]], \"corner\": [3, [\"b\", null]]}\nTrue\n\
-         ParseError(message=\"`legs[0]` should be a (int, list[(str, dict[str, int])]), but it's a list\", line=0, column=0)\n"
+         `legs[0]` should be a (int, list[(str, dict[str, int])]), but it's a list\n"
     );
     Ok(())
 }
@@ -25227,7 +25227,7 @@ fn a_programs_type_named_like_a_std_module_leaves_it_its_functions() -> std::io:
          safe = Path(\"uploads\").inside(\"NUL\") except why:\n        stdout.print(f\"refused: {why}\")\n        return\n    \
          stdout.print(\"accepted\", safe)\n",
     )?;
-    assert_eq!(printed, "p\nrefused: InvalidValue(message=\"`NUL` can't be a path inside `uploads`\")\n");
+    assert_eq!(printed, "p\nrefused: `NUL` can't be a path inside `uploads`\n");
     Ok(())
 }
 

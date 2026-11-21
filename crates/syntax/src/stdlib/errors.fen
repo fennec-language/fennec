@@ -80,7 +80,7 @@ export error ParseError:
     ## assert len(items) == 0
     ## ```
     ## ```output
-    ## WORDS
+    ## `x` isn't a JSON value; the words JSON knows are true, false and null, at line 1, column 5
     ## ```
     def message(self) -> str:
         return self.message

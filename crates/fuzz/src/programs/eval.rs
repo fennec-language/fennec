@@ -2039,6 +2039,11 @@ impl Machine {
             Stmt::Sized(sizing) => self.sized(sizing)?,
             Stmt::Generated(generating) => self.generated(generating),
             Stmt::Ruled(ruling) => self.ruled(ruling)?,
+            Stmt::Saved(saving) => {
+                for line in super::saving::printed(saving) {
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,

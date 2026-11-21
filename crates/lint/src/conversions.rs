@@ -175,6 +175,8 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use fennec_syntax::{Expr, ExprKind, Sources, Span};
 
     use super::{TRIALS, fine_together, of, take_out};
@@ -184,7 +186,8 @@ mod tests {
     fn converting(functions: usize) -> (fennec_syntax::Module, Sources) {
         let mut source = String::new();
         for number in 0..functions {
-            source.push_str(&format!("def kept_{number}(count: int) -> int:\n    return int(count) + {number}\n\n"));
+            let _ =
+                write!(source, "def kept_{number}(count: int) -> int:\n    return int(count) + {number}\n\n");
         }
         let mut sources = Sources::new();
         let base = sources.add("many.fen", source.clone());

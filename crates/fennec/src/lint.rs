@@ -152,8 +152,10 @@ pub(crate) fn errors_shown(path: &str) -> String {
     else {
         return String::new();
     };
-    let errors: Vec<fennec_lint::Lint> =
-        lints_of(&program, false).into_iter().filter(|lint| lint.severity == fennec_lint::Severity::Error).collect();
+    let errors: Vec<fennec_lint::Lint> = lints_of(&program, false)
+        .into_iter()
+        .filter(|lint| lint.severity == fennec_lint::Severity::Error)
+        .collect();
     if errors.is_empty() {
         return String::new();
     }

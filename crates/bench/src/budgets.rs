@@ -94,11 +94,14 @@ const ERRORED_FUNCTIONS: usize = 5000;
 /// with it made, and they're all tried in one check: tried one at a time, a check each, a file of
 /// 467 took 49 s (#2315). Its count is held to well under twice what it was when that was fixed,
 /// which checking once for each conversion again goes far past.
-const MANY_CONVERSIONS: Budget =
-    Budget { name: "lint, 500 needless conversions in one file", limit: Duration::from_secs(2), enforced: true };
+const MANY_CONVERSIONS: Budget = Budget {
+    name: "lint, 500 needless conversions in one file",
+    limit: Duration::from_secs(2),
+    enforced: true,
+};
 
 /// What linting the file of `MANY_CONVERSIONS` may run.
-const MOST_MANY_CONVERSIONS_INSTRUCTIONS: u64 = 6_000_000_000;
+const MOST_MANY_CONVERSIONS_INSTRUCTIONS: u64 = 5_000_000_000;
 
 /// How many functions the file of `MANY_CONVERSIONS` has, each converting an int to an int.
 const CONVERTED_FUNCTIONS: usize = 500;
@@ -511,8 +514,8 @@ impl Kit {
             let _ = write!(text, "def short_{number}() -> int:\n    qz = {number}\n    return qz\n\n");
         }
         let errors = |said: &str| said.lines().filter(|line| line.starts_with("error: ")).count();
-        let expected = (2 * ERRORED_FUNCTIONS, "errors", &errors as &dyn Fn(&str) -> usize);
-        self.linted_file(runs, (MANY_ERRORS, MOST_MANY_ERRORS_INSTRUCTIONS), ("many.fen", &text), expected)
+        let expected = Expected { at_least: 2 * ERRORED_FUNCTIONS, what: "errors", count: &errors };
+        self.linted_file(runs, (MANY_ERRORS, MOST_MANY_ERRORS_INSTRUCTIONS), ("many.fen", &text), &expected)
     }
 
     /// `fennec lint` on a file of its own with hundreds of needless conversions, which it finds
@@ -520,12 +523,14 @@ impl Kit {
     fn many_conversions(&self, runs: usize) -> Result<Measured, String> {
         let mut text = String::new();
         for number in 0..CONVERTED_FUNCTIONS {
-            let _ = write!(text, "def kept_{number}(count: int) -> int:\n    return int(count) + {number}\n\n");
+            let _ =
+                write!(text, "def kept_{number}(count: int) -> int:\n    return int(count) + {number}\n\n");
         }
         let found = |said: &str| said.lines().filter(|line| line.contains("this is a int already")).count();
-        let expected = (CONVERTED_FUNCTIONS, "needless conversions", &found as &dyn Fn(&str) -> usize);
+        let expected =
+            Expected { at_least: CONVERTED_FUNCTIONS, what: "needless conversions", count: &found };
         let budget = (MANY_CONVERSIONS, MOST_MANY_CONVERSIONS_INSTRUCTIONS);
-        self.linted_file(runs, budget, ("conversions.fen", &text), expected)
+        self.linted_file(runs, budget, ("conversions.fen", &text), &expected)
     }
 
     /// `fennec lint` on a file of its own, `text`, which it should find lint errors in and so exit
@@ -535,7 +540,7 @@ impl Kit {
         runs: usize,
         (budget, most): (Budget, u64),
         (name, text): (&str, &str),
-        (expected, what, count): (usize, &str, &dyn Fn(&str) -> usize),
+        expected: &Expected<'_>,
     ) -> Result<Measured, String> {
         let folder = self.dir.join("errors");
         std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
@@ -558,9 +563,10 @@ impl Kit {
             }
         };
         let (cold, said) = linted()?;
-        let found = count(&said);
-        if found < expected {
-            return Err(format!("`fennec lint` should show {expected} {what}, but showed {found}"));
+        let found = (expected.count)(&said);
+        if found < expected.at_least {
+            let (at_least, what) = (expected.at_least, expected.what);
+            return Err(format!("`fennec lint` should show {at_least} {what}, but showed {found}"));
         }
         let times = (0..runs).map(|_| linted().map(|(took, _)| took)).collect::<Result<Vec<_>, _>>()?;
         let counting = self.dir.join("counting");
@@ -576,6 +582,14 @@ impl Kit {
         let counted = counted.map(|instructions| Counted { instructions, most });
         Ok(Measured { budget, warm: median(times), cold: Some(cold), counted, programs: Vec::new() })
     }
+}
+
+/// What a lint of a file of its own should show: at least `at_least` of `what`, by what `count`
+/// counts in what it said.
+struct Expected<'a> {
+    at_least: usize,
+    what: &'a str,
+    count: &'a dyn Fn(&str) -> usize,
 }
 
 /// Whether `fennec test` says it ran exactly one test and left the rest unchanged.

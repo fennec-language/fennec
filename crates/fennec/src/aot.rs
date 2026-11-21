@@ -1052,6 +1052,7 @@ pub(crate) mod later {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     /// One write: a program's index and its list of objects.
@@ -1145,6 +1146,7 @@ pub(crate) mod later {
     }
 
     /// Waits up to `most` for every write to be made, as the daemon does before it goes.
+    #[cfg(unix)]
     pub(crate) fn finish(most: Duration) {
         let started = Instant::now();
         while WAITING.load(Ordering::SeqCst) > 0 && started.elapsed() < most {

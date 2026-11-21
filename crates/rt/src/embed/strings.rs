@@ -430,33 +430,8 @@ fn ascii_part(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64
         let byte = word.to_le_bytes().get(from % 8).copied()?;
         return state.tables.ascii.get(usize::from(byte)).and_then(|at| i64::try_from(*at).ok());
     }
-    let words = size.div_ceil(8).max(1);
-    let mut made = state.heap.fresh(TEXT_HEADER_WORDS + words);
-    let number = |n: usize| u64::try_from(n).unwrap_or(0);
-    made.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&[
-        1,
-        state.tables.str_shape,
-        number(size),
-        number(size),
-        number(words * 8),
-        0,
-    ]);
-    let text = state.heap.block(source)?.get(TEXT_HEADER_WORDS..)?;
-    // Each word of the part is made of the end of one word and the start of the next.
-    let shift = u32::try_from(from % 8).unwrap_or(0) * 8;
-    for (at, to_word) in made.get_mut(TEXT_HEADER_WORDS..)?.iter_mut().enumerate().take(size.div_ceil(8)) {
-        let low = text.get(from / 8 + at).copied().unwrap_or(0) >> shift;
-        let high =
-            if shift == 0 { 0 } else { text.get(from / 8 + at + 1).copied().unwrap_or(0) << (64 - shift) };
-        *to_word = low | high;
-    }
-    // What's past the end of the part reads as zero, as native code expects.
-    if size % 8 != 0
-        && let Some(last) = made.get_mut(TEXT_HEADER_WORDS + size / 8)
-    {
-        *last &= (1_u64 << (u32::try_from(size % 8).unwrap_or(0) * 8)) - 1;
-    }
-    Some(state.heap.insert(made))
+    // An ASCII string's characters are its bytes.
+    ascii_part_of(state, source, (from, to), u64::try_from(size).ok()?)
 }
 
 /// `text[from:to]`, where a missing end is `i64::MIN`.
@@ -881,16 +856,28 @@ pub(super) fn ascii_part_of(
         return Some(text_from_bytes(state, &part, kept));
     }
     let words = kept.div_ceil(8);
-    let mut part = state.heap.fresh(TEXT_HEADER_WORDS + words);
+    // Every word is written below, the header's and the text's, so a reused block isn't zeroed first.
+    let mut part = state.heap.fresh_written(TEXT_HEADER_WORDS + words, TEXT_HEADER_WORDS + words);
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
     let header = [1, state.tables.str_shape, number(kept), chars, number(words * 8), 0];
     part.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&header);
     let source = state.heap.block(address)?.get(TEXT_HEADER_WORDS + from / 8..)?;
     let shift = u32::try_from(from % 8 * 8).ok()?;
-    for (at, word) in part.iter_mut().skip(TEXT_HEADER_WORDS).enumerate() {
-        let low = source.get(at).map_or(0, |word| word >> shift);
-        let high = if shift == 0 { 0 } else { source.get(at + 1).map_or(0, |word| word << (64 - shift)) };
-        *word = low | high;
+    let text = part.get_mut(TEXT_HEADER_WORDS..)?;
+    let mut read = source.iter().copied();
+    if shift == 0 {
+        for word in text {
+            *word = read.next().unwrap_or(0);
+        }
+    } else {
+        // Each word of the part is the end of one word and the start of the next, the next carried
+        // on as the following one's start.
+        let mut low = read.next().unwrap_or(0);
+        for word in text {
+            let high = read.next().unwrap_or(0);
+            *word = low >> shift | high << (64 - shift);
+            low = high;
+        }
     }
     let tail = u32::try_from(kept % 8 * 8).ok()?;
     if tail > 0
@@ -1470,6 +1457,50 @@ mod place_tests {
         with(|state| assert_eq!(super::text(state, tail).as_deref(), Some("own")));
         let empty = slice(text, 5, 2, 0, 0);
         with(|state| assert_eq!(super::text(state, empty).as_deref(), Some("")));
+        finish();
+    }
+
+    /// A slice made in a block freed before, of its size, every word of it set, holds its own
+    /// bytes and nothing else, zeros past its end: every word of the part is written, as the block
+    /// isn't zeroed first. From every place in a word it can start, at sizes either side of a word.
+    #[test]
+    fn a_slice_in_a_reused_block_holds_only_its_own_bytes() {
+        begin();
+        let ascii = "0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let text = with(|state| heap::text_address(state, ascii));
+        for from in 0..9 {
+            // Sizes either side of a word, and the rest of the text, which reads past its last word.
+            for size in [2_usize, 7, 8, 9, 16, 23, 24, 31, ascii.len() - from] {
+                let words = super::TEXT_HEADER_WORDS + size.div_ceil(8);
+                with(|state| {
+                    let mut block = state.heap.fresh(words);
+                    block.fill(u64::MAX);
+                    state.heap.recycle(block);
+                    Some(())
+                });
+                let part =
+                    slice(text, i64::try_from(from).unwrap(), i64::try_from(from + size).unwrap(), 0, 0);
+                let wanted = &ascii.as_bytes()[from..from + size];
+                with(|state| {
+                    let block = state.heap.block(part.cast_unsigned())?;
+                    let mut packed = wanted.to_vec();
+                    packed.resize(size.div_ceil(8) * 8, 0);
+                    let words: Vec<u64> = packed
+                        .chunks(8)
+                        .map(|eight| u64::from_le_bytes(eight.try_into().unwrap_or([0; 8])))
+                        .collect();
+                    assert_eq!(
+                        block.get(super::TEXT_HEADER_WORDS..),
+                        Some(words.as_slice()),
+                        "{from}..{}",
+                        from + size
+                    );
+                    Some(())
+                });
+                heap::free_text(part);
+            }
+        }
+        heap::free_text(text);
         finish();
     }
 }

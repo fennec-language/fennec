@@ -1110,6 +1110,115 @@ fn readers_of_two_values_at_once_replay_however_their_entries_crossed() -> std::
     Ok(())
 }
 
+const FLAT_NOTES: &str = "from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, Timeout, channel
+from std.time import Duration
+
+struct Note:
+    user: int
+    room: str
+    text: str
+
+# Counts `turns` turns, making way for others at the runtime's ticks.
+def counted(turns: int) -> int:
+    mut total = 0
+    for turn in range(turns):
+        total = (total + turn * turn) % 1_000_003
+    return total
+
+# A text long enough to need a block of its own.
+def long_text(user: int) -> str:
+    return f\"user {user} says something long enough to need a block of its own\"
+
+# Whether a note came within a millisecond, which none does: `main` sends nothing until it hears
+# that this one gave up.
+def waited(inbox: Inbox[Note]) -> str:
+    _ = inbox.receive_within(1ms) except Timeout(): return \"nothing came in time\"
+    return \"a note came early\"
+
+# Takes notes once `main` says to, which it does once its offers are done, so they find the inbox
+# full but for the first.
+def reader(inbox: Inbox[Note], heard: Sender[str], go: Channel[int], stdout: Stdout) fails Closed:
+    heard.send(waited(inbox))?
+    stdout.print(\"the reader may go:\", (go.receive() else 0) == 1)
+    for note in inbox:
+        stdout.print(\"got\", note.user, note.room, len(note.text), counted(20_000) >= 0)
+    stdout.print(\"the reader saw its inbox closed\")
+
+# Sends a note from `user` if there's room for it within `wait`, saying whether it went.
+def offered(to: Sender[Note], user: int, wait: Duration) -> str:
+    to.send_within(Note(user=user, room=\"lobby\", text=long_text(user)), wait) except Closed() | Timeout(): return \"full\"
+    return \"sent\"
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with channel[str](size=1) as heard:
+        back = heard.sender()
+        with channel[int](size=1) as go:
+            with launch((inbox) => reader(inbox, heard=back, go=go, stdout=stdout)?, inbox_size=1)? as to_reader:
+                stdout.print(\"main heard\", heard.receive() else \"nothing\")
+                for user in range(6):
+                    stdout.print(\"main\", user, offered(to_reader, user=user, wait=0ms if user % 2 == 0 else 1ms))
+                go.send(1)?
+                for user in range(6, 9):
+                    to_reader.send(Note(user=user, room=\"hall\", text=long_text(user)))?
+    stdout.print(\"over\")
+";
+
+/// Flat messages, a struct of a number and strings, replay as they ran: a timed receive with
+/// nothing sent, sends into a full inbox that give up, sends that wait for room, and a receive the
+/// inbox's closing ends. Recorded on 1 thread and replayed on 4, and the other way round. These
+/// are the messages cheap messages' step 2 sends as their words (`fennec_channel_send_words`),
+/// whose recording and replay `channels::words::replayed` checks in the runtime.
+#[test]
+fn flat_messages_replay_as_they_ran_on_one_thread_and_four() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("flat-notes")?;
+    let program = dir.join("notes.fen");
+    std::fs::write(&program, FLAT_NOTES)?;
+    let executable = dir.join("notes");
+    let built = fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_THREADS_RUNTIME", "1")
+        .output_within()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for (recording, (recorded_on, replayed_on)) in
+        [("1", "4"), ("4", "1")].into_iter().cycle().take(6).enumerate()
+    {
+        let log = dir.join(format!("notes-{recording}.log"));
+        fennec_rt::replay::start_log(&log, format!("native\0{}", program.display()).as_bytes())?;
+        let recorded = std::process::Command::new(&executable)
+            .env("FENNEC_RECORD", &log)
+            .env("FENNEC_THREADS", recorded_on)
+            .current_dir(&dir)
+            .output_within()?;
+        let recorded = outcome(&recorded);
+        assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+        for said in ["main heard nothing came in time", " full\n", "the reader saw its inbox closed\nover\n"]
+        {
+            assert!(
+                recorded.0.contains(said),
+                "the recording on {recorded_on} has `{said}`:\n{}",
+                recorded.0
+            );
+        }
+        let replayed = std::process::Command::new(&executable)
+            .env("FENNEC_REPLAY", &log)
+            .env("FENNEC_THREADS", replayed_on)
+            .current_dir(&dir)
+            .output_limited(DEADLINE, Duration::from_secs(60))?;
+        let replayed = outcome(&replayed);
+        let how = format!("recorded on {recorded_on} threads, replayed on {replayed_on}: {}", replayed.1);
+        assert_eq!(replayed.0, recorded.0, "{how}");
+        assert_eq!(replayed.2, Some(0), "{how}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A replay that can't follow its recording says where it first couldn't, once, and ends. Here
 /// `main` takes a lock its recording didn't. A replay of that waited out its patience, crashed, and
 /// then its connection's cleanup asked for a close where the recording read a line: the replay said

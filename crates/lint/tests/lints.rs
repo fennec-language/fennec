@@ -1150,6 +1150,23 @@ fn a_short_name_is_flagged_unless_it_says_enough() {
 }
 
 #[test]
+fn a_parameter_saying_only_which_comes_first_is_short_enough() {
+    // `positional-arguments` lets `dot(first, second)` go unnamed for these, so they have to pass.
+    assert_eq!(name_rules("def dot(a: int, b: int) -> int:\n    return a * b\n"), NONE);
+    assert_eq!(
+        name_rules("def mixed(c: int, d: int) -> int:\n    return c - d\n"),
+        NONE,
+        "`c` and `d` as well"
+    );
+    assert_eq!(
+        name_rules("def total(items: list[int]) -> int:\n    a = len(items)\n    return a\n"),
+        ["short-name"],
+        "a local isn't a placeholder"
+    );
+    assert_eq!(name_rules("def area(e: int) -> int:\n    return e\n"), ["short-name"], "nor is any letter");
+}
+
+#[test]
 fn a_local_named_like_a_builtin_is_flagged() {
     assert_eq!(
         name_rules("def count_them(items: list[int]) -> int:\n    sum = 0\n    return sum\n"),

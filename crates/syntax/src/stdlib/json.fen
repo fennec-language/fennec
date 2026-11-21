@@ -210,9 +210,8 @@ NO_TAGS = dict[str, int]()
 NO_TUPLES = list[(str, int, int, int)]()
 NO_TABLES = dict[str, dict[(int, int), int]]()
 
-## Writes JSON into one growing text. What's added to it is put in a name first: added straight
-## from a call or an operator, the text was copied whole each time, so writing grew with the
-## square of what was written.
+## Writes JSON into one growing text, added to in place. A sum, as `"\"" + name + "\": "`, is
+## added a piece at a time, with no text made to hold it first.
 struct JsonWriter:
     _text = ""
     _names = JsonNames.SnakeCase
@@ -390,11 +389,9 @@ struct JsonWriter:
         if self._indent < 0 and self._names == .SnakeCase:
             if self._first:
                 self._first = False
-                piece = "\"" + name + "\": "
-                self._text += piece
+                self._text += "\"" + name + "\": "
             else:
-                piece = ", \"" + name + "\": "
-                self._text += piece
+                self._text += ", \"" + name + "\": "
             x.serialize(ref self)
             return
         self._entry()
@@ -405,8 +402,7 @@ struct JsonWriter:
             case _:
                 piece = spelled_as(name, self._names)
                 self._text += piece
-        piece = "\": "
-        self._text += piece
+        self._text += "\": "
         x.serialize(ref self)
 
     def renamed[T: Serializable](ref self, name: str, x: T):
@@ -438,8 +434,7 @@ struct JsonWriter:
         self._entry()
         self._text += "\""
         self._text += case_name
-        piece = "\": "
-        self._text += piece
+        self._text += "\": "
         self._open("{")
 
     def member(ref self, name: str, at: int):

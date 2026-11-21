@@ -10,7 +10,17 @@ use fennec_syntax::{codec_fields, codec_units};
 use crate::shapes::Writer as Saver;
 use crate::{Body, Crossing, Enum, Num, ParamType, Signature, Signatures, Struct, Type, Types};
 
-codec_fields!(Signatures { functions, structs, enums, errors, locals, types, lock_verdicts, crossing, own_saving });
+codec_fields!(Signatures {
+    functions,
+    structs,
+    enums,
+    errors,
+    locals,
+    types,
+    lock_verdicts,
+    crossing,
+    own_saving
+});
 codec_fields!(Signature { params, returns, can_fail, generator, generics });
 codec_fields!(ParamType { name, ty, is_mut, default });
 codec_fields!(Struct { generics, fields, rules, annotations });
@@ -165,7 +175,11 @@ mod tests {
             let bytes = signatures.to_bytes();
             let back = Signatures::from_bytes(&bytes);
             assert!(back.as_ref() == Some(&signatures), "{} read back differently", path.display());
-            assert!(back.is_some_and(|back| back.to_bytes() == bytes), "{} wrote other bytes", path.display());
+            assert!(
+                back.is_some_and(|back| back.to_bytes() == bytes),
+                "{} wrote other bytes",
+                path.display()
+            );
             checked += 1;
         }
         assert!(checked > 50, "only {checked} examples checked");

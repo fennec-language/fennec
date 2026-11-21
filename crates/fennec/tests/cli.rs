@@ -2411,6 +2411,53 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A `_` field is its file's: a kit's own file reaches it, and a program that depends on the kit
+/// reaches none of it, to read, set or build the type with one. The same as another file of the
+/// kit would be told.
+#[test]
+fn another_kits_underscore_fields_are_out_of_reach() {
+    let dir = scratch("underscore_kits").unwrap();
+    let vault = "## A secret kept in its file.\nexport struct Vault:\n    label: str\n    _secret = \"\"\n\n\
+                 ## A vault holding `secret`, which only this file can set.\nexport def sealed(label: str, secret: str) -> Vault:\n    \
+                 return Vault(label=label, _secret=secret)\n\n## Whether `guess` is the secret.\n\
+                 export def opens(vault: Vault, guess: str) -> bool:\n    return vault._secret == guess\n";
+    write_kit(&dir.join("vault"), "vault", "", &[("lib.fen", vault)]).unwrap();
+    let check = |main: &str| {
+        write_kit(
+            &dir.join("app"),
+            "app",
+            "[dependencies]\nvault = { path = \"../vault\" }\n",
+            &[("main.fen", main)],
+        )
+        .unwrap();
+        crate::executables::fennec_command()
+            .args(["check"])
+            .current_dir(dir.join("app"))
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let fine = check(
+        "from vault import Vault, opens, sealed\n\ndef main(stdout: Stdout):\n    stdout.print(opens(sealed(\"a\", secret=\"b\"), \"b\"))\n",
+    );
+    assert!(fine.status.success(), "{}", text(&fine.stderr));
+    for body in [
+        "stdout.print(sealed(\"a\", secret=\"b\")._secret)",
+        "stdout.print(Vault(label=\"a\", _secret=\"b\").label)",
+    ] {
+        let refused = check(&format!(
+            "from vault import Vault, opens, sealed\n\ndef main(stdout: Stdout):\n    {body}\n"
+        ));
+        assert!(!refused.status.success(), "{body}");
+        assert!(
+            text(&refused.stderr).contains("`_secret` is private to `vault.Vault`'s file"),
+            "{}",
+            text(&refused.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// What each file imports is its own, in a program's files and in its kits'. A kit's
 /// `from std.html import escape as sha256` once made the program's own `sha256(...)` give escaped
 /// text, as one table of imports served every file and the last import of a name decided it for

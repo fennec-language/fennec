@@ -348,6 +348,17 @@ export struct Packed[T]:
 export error TreeCycle:
     message: str
 
+    ## Its `message`, which printing it prints.
+    ## ```fennec
+    ## from std.collections import TreeCycle
+    ## stdout.print(TreeCycle(message="a node can't move under itself"))
+    ## ```
+    ## ```output
+    ## a node can't move under itself
+    ## ```
+    def message(self) -> str:
+        return self.message
+
 ## A node of a `Tree`: its value and its links. `tree[id]` gives the value, so programs only
 ## name this type to write the type of an ID: `type NodeId = Id[TreeNode[Node]]`.
 export struct TreeNode[T]:

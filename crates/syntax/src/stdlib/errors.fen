@@ -41,6 +41,19 @@ export error IoError:
 export error InvalidValue:
     message: str
 
+    ## Its `message`, which printing it prints.
+    ## ```fennec
+    ## n = int.parse("seven") except why:
+    ##     stdout.print(f"not a number: {why}")
+    ##     0
+    ## assert n == 0
+    ## ```
+    ## ```output
+    ## not a number: "seven" isn't an int
+    ## ```
+    def message(self) -> str:
+        return self.message
+
 ## Text that isn't the format it was read as, with `message` saying why and `line` and `column`
 ## saying where.
 ## ```fennec
@@ -57,6 +70,20 @@ export error ParseError:
     message: str
     line: int
     column: int
+
+    ## Its `message`, which printing it prints.
+    ## ```fennec
+    ## from std import json
+    ## items = json.loads[list[int]]("[1, x]") except why:
+    ##     stdout.print(why)
+    ##     list[int]()
+    ## assert len(items) == 0
+    ## ```
+    ## ```output
+    ## WORDS
+    ## ```
+    def message(self) -> str:
+        return self.message
 
 ## What `run` fails with, or `None` when it doesn't, for a test that needs the failure as a value:
 ## `problem = failure_of(() => Time.parse(text)?)`. `assert Time.parse(text) fails InvalidValue()` is

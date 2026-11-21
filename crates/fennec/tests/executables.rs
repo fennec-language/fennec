@@ -386,6 +386,26 @@ pub(crate) fn daemons_of(home: &Path) -> PathBuf {
 #[cfg(unix)]
 pub(crate) const DAEMON_IDLE: &str = "600";
 
+/// Starts the build daemon `serve` starts, and waits until `status` finds it running. A command
+/// that starts one itself waits only 2 seconds for it, and on a loaded machine does its work in its
+/// own process instead, keeping nothing: a test whose first build has to be the daemon's starts the
+/// daemon first. `serve` and `status` are made as the test's commands are, with the same
+/// environment, or they'd look for another daemon's socket.
+#[cfg(unix)]
+pub(crate) fn daemon_started(mut serve: Command, status: &dyn Fn() -> Output) -> std::io::Result<()> {
+    let mut daemon = serve.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    // It's waited for once it ends, which `DaemonsStopped` sees to when the test does.
+    std::thread::spawn(move || daemon.wait());
+    let waiting = Instant::now();
+    while !String::from_utf8_lossy(&status().stdout).starts_with("running") {
+        if waiting.elapsed() > Duration::from_secs(120) {
+            return Err(std::io::Error::other("the build daemon didn't start in 2 minutes"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
 /// Stops every build daemon of the Fennec folder `home` when it's dropped: at the end of the test
 /// that holds it, however the test ends, so one that fails leaves none to wait out `DAEMON_IDLE`.
 #[cfg(unix)]

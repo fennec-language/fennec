@@ -162,6 +162,17 @@ pub(crate) fn workers_wanted() -> usize {
     workers
 }
 
+/// What the program says as it stops when worker `at` of `threads` couldn't start, those before it
+/// having: the system's reason, and how many to ask for to run within what it gave (runtime
+/// exhaustion audit, 2026-11-20).
+fn couldnt_start(at: usize, threads: usize, error: &std::io::Error) -> String {
+    format!(
+        "error: couldn't start worker thread {} of {threads}: {error}\n  = help: {at} started; ask for no more \
+         with FENNEC_THREADS={at}\n",
+        at + 1
+    )
+}
+
 /// How many workers to make for `asked`, from `FENNEC_THREADS`, on a machine with `cores`, and
 /// what to say when that's fewer than was asked for.
 fn workers_for(asked: Option<usize>, cores: usize) -> (usize, Option<String>) {
@@ -231,11 +242,7 @@ impl Pool {
                 // Work is already sent to every worker by number, so one missing would leave its
                 // share waiting forever: the program stops and says why instead.
                 Err(error) => {
-                    let _ = writeln!(
-                        std::io::stderr(),
-                        "error: couldn't start worker thread {} of {threads}: {error}",
-                        at + 1
-                    );
+                    let _ = std::io::stderr().write_all(couldnt_start(at, threads, &error).as_bytes());
                     crate::embed::aot::stop_now(1);
                 }
             }
@@ -543,6 +550,19 @@ fn the_workers_asked_for_are_held_to_the_most() {
     assert_eq!(workers_for(None, 12), (12, None));
     assert_eq!(workers_for(Some(0), 12), (12, None), "0 asks for none, so the cores are taken");
     assert_eq!(workers_for(None, 1024), (MOST_WORKERS, None));
+}
+
+/// A worker past the first that can't start stops the program saying the system's reason, how many
+/// started, and what to ask for to run within that.
+#[cfg(test)]
+#[test]
+fn a_worker_that_cant_start_says_how_many_to_ask_for() {
+    let error = std::io::Error::other("Resource temporarily unavailable (os error 11)");
+    assert_eq!(
+        couldnt_start(7, 16, &error),
+        "error: couldn't start worker thread 8 of 16: Resource temporarily unavailable (os error 11)\n  = help: 7 \
+         started; ask for no more with FENNEC_THREADS=7\n"
+    );
 }
 
 /// A pool of its own with `threads` workers, set up as the shared pool's are, for tests.

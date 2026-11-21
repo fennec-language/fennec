@@ -954,11 +954,6 @@ fn llvm_objects(
     let compiled = compile_emitted(&emitted, release, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::entry(lowered, shared, image, bytes)
     })?;
-    // What it used again of the analyses the build before kept is checked once it has answered,
-    // in the daemon.
-    if known.is_some() {
-        crate::kept::analyses_to_check();
-    }
     // Kept for compiling again any kept object a cleanup takes before the link, with what the
     // objects it found are known under.
     Ok((compiled, emitted.units, known))
@@ -989,7 +984,6 @@ fn emitted_reusing(
     cache.mark(fennec_build::HOLDS, &key);
     let (has_object, known) = fennec_llvm::has_object(&cache, &tools)?;
     later::say_failure();
-    crate::kept::say_analyses_notice();
     // An index the daemon hasn't written yet is the newest there is.
     let kept = later::pending(&key).map(|index| index.as_ref().clone()).or_else(|| cache.read(UNITS, &key));
     let reuse = std::cell::RefCell::new(fennec_llvm::Reuse {

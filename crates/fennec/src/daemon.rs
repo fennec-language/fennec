@@ -801,8 +801,10 @@ mod unix {
             noted: noted.clone(),
         }));
         let ended = listen(&listener, home, &state, &replaced);
-        // What builds left to write is written before it goes.
+        // What builds left to write is written before it goes, and what they used again of the
+        // analyses kept is checked.
         crate::aot::later::finish(Duration::from_secs(60));
+        crate::kept::finish_analyses_check(home);
         if ended == Ended::Replaced {
             gone(&noted);
             return ExitCode::SUCCESS;
@@ -1061,12 +1063,13 @@ mod unix {
                 .stack_size(crate::STACK_BYTES)
                 .spawn(move || crate::kept::verify_pending(&home));
         }
-        // So are the analyses a build used again of the ones the build before kept.
-        if crate::kept::analyses_pending() {
+        // So are the analyses its builds used again of the ones the builds before kept: taken now,
+        // so the next build waits for the check rather than using what it may let go of.
+        if let Some(check) = fennec_llvm::AnalysesCheck::take() {
             let home = home.clone();
             let _ = std::thread::Builder::new()
                 .stack_size(crate::STACK_BYTES)
-                .spawn(move || crate::kept::verify_analyses(&home));
+                .spawn(move || crate::kept::verify_analyses(&home, check));
         }
         outcome
     }

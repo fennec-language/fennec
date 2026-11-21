@@ -4832,7 +4832,7 @@ pub(crate) fn whole_kept(program: &Program) -> (Whole<'_>, Vec<String>) {
 type ParamRanges<'p> = HashMap<&'p str, Vec<Range>>;
 
 /// What the check after a build needs to analyze again what the build used again, taken while the
-/// build has it (`kept::verify_pending_analyses`): each function checked, with its parameters'
+/// build has it (`kept::AnalysesCheck`): each function checked, with its parameters'
 /// ranges and the key of the analysis used, and what `analyze` is told of the rest of the program.
 /// The functions checked, and a few words for each other: far less than the program.
 pub(crate) struct CheckPack {
@@ -4876,6 +4876,11 @@ impl CheckPack {
     /// Whether there's anything to check.
     pub(crate) fn is_empty(&self) -> bool {
         self.checked.is_empty()
+    }
+
+    /// Each function checked, by its name, with the key of the analysis that was used.
+    pub(crate) fn checked(&self) -> impl Iterator<Item = (&str, Key)> {
+        self.checked.iter().map(|(function, _, key)| (function.name.as_str(), *key))
     }
 
     /// Those whose analysis worked out afresh has another key than the one used, sorted.
@@ -4962,8 +4967,7 @@ pub(crate) fn whole_keeping<'p>(
         // What's checked after the build of what it used again goes with what analyzing it is told,
         // taken now, while the build has it, rather than the program.
         if keeping.checks_after() {
-            let (checked, _) =
-                crate::kept::to_check_after(program, keeping.take_used(), keeping.build_number());
+            let (checked, _) = crate::kept::to_check_after(program, keeping.take_used());
             crate::kept::note_pack(CheckPack::of(&checked, &functions, (&kept, &params), &held));
         }
         let mut generators = HashMap::new();

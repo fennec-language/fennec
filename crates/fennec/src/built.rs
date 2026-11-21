@@ -29,7 +29,9 @@ fn name_of(path: &str) -> String {
 /// - each file by name and text, which a failure quotes;
 /// - this build of Fennec, which covers its standard library and runtimes;
 /// - the machine it builds for, and release or dev;
-/// - the dev build's settings: the runtime, linking on its own, `--cpu` and every output switch.
+/// - the dev build's settings: the runtime, linking on its own, `--cpu` and every output switch;
+/// - how many times the build daemon has found an analysis it kept wrong, so a program stored
+///   before it did is never put out again (`kept::analyses_found_wrong`).
 ///
 /// With all the same, a build makes the same program.
 fn key(path: &str, files: &[KitFile], release: bool) -> String {
@@ -37,11 +39,12 @@ fn key(path: &str, files: &[KitFile], release: bool) -> String {
     hasher.update(format!("{path}\0{}\0", crate::run::absolute(path)).as_bytes());
     hasher.update(
         format!(
-            "{BUILD}\n{}\n{}\n{}\nrelease={release}\n{}\n",
+            "{BUILD}\n{}\n{}\n{}\nrelease={release}\n{}\nfound wrong {}\n",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::ARCH,
             std::env::consts::OS,
-            crate::aot::dev_build_settings()
+            crate::aot::dev_build_settings(),
+            crate::kept::analyses_found_wrong()
         )
         .as_bytes(),
     );
@@ -72,6 +75,7 @@ pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> ExitCode
 /// `fennec build` in this process: the program the store has for these files and settings, when
 /// it has one, or else a build, noted for next time.
 pub(crate) fn build_here(path: &str, output: Option<&str>, release: bool) -> ExitCode {
+    crate::kept::say_analyses_notice();
     let Some(cache) = crate::run::cache() else { return crate::aot::build(path, output, release) };
     let name = name_of(path);
     let state = cache.kit_state(&name, BUILD);
@@ -89,8 +93,6 @@ pub(crate) fn build_here(path: &str, output: Option<&str>, release: bool) -> Exi
     crate::kept::building_as(Some(name.clone()));
     let built = crate::aot::build_kept(path, output, release);
     crate::kept::building_as(None);
-    #[cfg(unix)]
-    crate::kept::built_while_keeping(crate::kept::TakenBack::Build(name.clone()));
     match built {
         Err(code) => code,
         Ok((program, built)) => {

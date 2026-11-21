@@ -139,6 +139,10 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
 
 /// `fennec test` in this process.
 pub(crate) fn test_here(path: &str, options: Options) -> ExitCode {
+    crate::kept::say_analyses_notice();
+    // What its tests pass with is taken back if the build daemon finds an analysis it used wrong.
+    #[cfg(unix)]
+    crate::kept::built_while_keeping(crate::kept::TakenBack::Tests(crate::run::absolute(path)));
     let results = Results::open(path, options.run != Run::Affected);
     let cached = results.cache.as_ref().map(|(cache, name)| (cache, name.as_str()));
     let state = cached.and_then(crate::verdict::last_state);
@@ -323,6 +327,20 @@ fn say_how_llvm_went(through_llvm: &crate::llvm_tests::LlvmTests, wanted: usize)
         eprintln!("note: some tests fail, since LLVM can't build what they reach yet: {why}");
     }
     eprintln!("note: {} of {wanted} tests ran through LLVM", through_llvm.outcomes.len());
+}
+
+/// Forgets which of the tests of the program at `path`, absolute, passed, and that all of them did,
+/// so they all run again: the build daemon found an analysis that building them may have used
+/// wrong. It says nothing if it can't, as it's done on the daemon's own thread.
+#[cfg(unix)]
+pub(crate) fn forget_passed(path: &str) {
+    let Some(cache) = crate::run::cache() else { return };
+    crate::verdict::forget((&cache, path));
+    let _ = cache.store_test_records(path, &[]);
+    if let Some(named) = kit_named(path) {
+        let _ = cache.store_test_records(&named, &[]);
+    }
+    let _ = std::fs::remove_file(cache.path("tested", &crate::run::passed_name(path)));
 }
 
 /// What names a kit wherever it is: its name in `kit.toml`. `None` for a program that isn't a kit.

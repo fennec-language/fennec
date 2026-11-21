@@ -105,13 +105,21 @@ fn built(
     path: &str,
     executable: &std::path::Path,
 ) -> Result<Option<ExitCode>, String> {
+    crate::kept::say_analyses_notice();
     // A program the same as a run before had, kept as an image, starts from what that run built,
-    // with nothing lowered or compiled to find it again.
+    // with nothing lowered or compiled to find it again: never one built before the build daemon
+    // last found an analysis it kept wrong (`kept::analyses_found_wrong`).
     let started_from = kept.zip(cache()).map(|(kept, cache)| {
         let name = format!(
             "{}.root",
             fennec_blake3::hash(
-                format!("{kept} {} {}", env!("FENNEC_BUILD"), crate::aot::dev_build_settings()).as_bytes()
+                format!(
+                    "{kept} {} {} {}",
+                    env!("FENNEC_BUILD"),
+                    crate::aot::dev_build_settings(),
+                    crate::kept::analyses_found_wrong()
+                )
+                .as_bytes()
             )
             .to_hex()
         );
@@ -140,10 +148,6 @@ fn built(
             },
         };
         let built = build_for_run((&program, checked), path, executable)?;
-        #[cfg(unix)]
-        if let Some((_, name)) = &started_from {
-            crate::kept::built_while_keeping(crate::kept::TakenBack::Run(name.clone()));
-        }
         if let (Some((cache, name)), Some(root)) = (&started_from, &built.root) {
             // A store that can't be written only means building it again next time.
             fennec_build::kept(
@@ -157,16 +161,6 @@ fn built(
 
 /// Where the root of what a kept image built is kept, by the image and what else the build read.
 const RUN_ROOTS: &str = "run-roots";
-
-/// Forgets which program a run kept as `name` built, so the next run of it builds again: the
-/// daemon found an analysis it may have used wrong. It says nothing if it can't, as it's done on the
-/// daemon's own thread, where what's printed would be another build's.
-#[cfg(unix)]
-pub(crate) fn forget_run(name: &str) {
-    if let Some(cache) = cache() {
-        let _ = std::fs::remove_file(cache.path(RUN_ROOTS, name));
-    }
-}
 
 /// Builds the program to `executable` through LLVM's cached dev build.
 /// What the run's check worked out, when it's what a build of the program would check again.

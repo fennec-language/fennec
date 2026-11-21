@@ -57,8 +57,8 @@ mod index;
 mod json;
 mod kept;
 pub use kept::{
-    KeptForNext, analyses_kept_and_checked, analyses_pending, analyses_used_again, check_later,
-    keep_analyses_between_builds, keeps_between_builds, verify_pending_analyses,
+    AnalysesCheck, KeptForNext, analyses_kept_and_checked, analyses_used_again, keep_analyses_between_builds,
+    keeps_between_builds, wait_for_analyses_check,
 };
 mod keys;
 mod kinds;

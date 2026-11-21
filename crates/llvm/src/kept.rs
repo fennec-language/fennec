@@ -57,6 +57,9 @@ pub(crate) struct Kept {
     key: Key,
     /// The build that last worked it out or used it, by its number.
     built: u64,
+    /// How many builds have used it again since it was worked out or last checked after a build:
+    /// it's checked by the [`TURNS`]th (see [`to_check_after`]).
+    unchecked: u32,
 }
 
 /// The last two builds' analyses, by function.
@@ -93,8 +96,9 @@ pub(crate) struct Keeping {
     used_again: std::sync::atomic::AtomicUsize,
     /// Whether anything is kept at all: not in a process that builds once.
     keeps: bool,
-    /// Each analysis used again, by function, with its key: what's checked after the build.
-    used: Mutex<Vec<(String, Key)>>,
+    /// Each analysis used again, by function, with its key and how many builds have used it again
+    /// since it was last checked, this one too: what's checked after the build is picked from these.
+    used: Mutex<Vec<(String, Key, u32)>>,
     /// Whether what this build used again is checked after it: a daemon's build's is.
     checks_after: bool,
     /// Whether every analysis used again is checked against analyzing it again, whatever
@@ -137,6 +141,9 @@ impl Keeping {
         if !KEEPS.load(std::sync::atomic::Ordering::Relaxed) {
             return Keeping::off();
         }
+        // A check of what the builds before used again may yet find one wrong: the store is taken
+        // once it's done, so no build uses what it's about to let go of.
+        wait_for_a_running_check();
         let found = KEPT.lock().ok().and_then(|mut kept| kept.take());
         // Checking a build again found an analysis it used wrong: nothing kept since is used, as a
         // build that held the store while it was checked put back what it used.
@@ -151,13 +158,9 @@ impl Keeping {
         self.checks_after
     }
 
-    /// This build's number, by which what's checked after it turns about (see [`to_check_after`]).
-    pub(crate) fn build_number(&self) -> u64 {
-        self.build
-    }
-
-    /// Each analysis this build used again, by function, with its key.
-    pub(crate) fn take_used(&self) -> Vec<(String, Key)> {
+    /// Each analysis this build used again, by function, with its key and how many builds have
+    /// used it again since it was last checked.
+    pub(crate) fn take_used(&self) -> Vec<(String, Key, u32)> {
         self.used.lock().map(|mut used| std::mem::take(&mut *used)).unwrap_or_default()
     }
 
@@ -215,7 +218,7 @@ impl Keeping {
         if same {
             self.used_again.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if let Ok(mut used) = self.used.lock() {
-                used.push((function.name.clone(), kept.key));
+                used.push((function.name.clone(), kept.key, kept.unchecked.saturating_add(1)));
             }
         }
         same.then(|| (Arc::clone(&kept.analysis), kept.key))
@@ -236,6 +239,7 @@ impl Keeping {
             analysis: Arc::clone(analysis),
             key,
             built: self.build,
+            unchecked: 0,
         };
         if let Ok(mut kept_now) = self.kept_now.lock() {
             kept_now.insert(function.name.clone(), kept);
@@ -254,6 +258,7 @@ impl Keeping {
             analysis: Arc::clone(&kept.analysis),
             key: kept.key,
             built: self.build,
+            unchecked: kept.unchecked.saturating_add(1),
         };
         if let Ok(mut kept_now) = self.kept_now.lock() {
             kept_now.insert(function.name.clone(), again);
@@ -347,41 +352,66 @@ pub(crate) fn compares(inputs: u64) -> bool {
 
 /// Whether a test has turned part of the rule for using an analysis again off
 /// (`FENNEC_KEPT_ANALYSIS_RULE_OFF`), so that a wrong one is used, for the check after the build
-/// to find.
+/// to find. Only in a dev compiler: a release compiler leaves out none.
 fn rule_off(part: &str) -> bool {
-    std::env::var("FENNEC_KEPT_ANALYSIS_RULE_OFF").is_ok_and(|off| off.split(',').any(|named| named == part))
+    cfg!(debug_assertions)
+        && std::env::var("FENNEC_KEPT_ANALYSIS_RULE_OFF")
+            .is_ok_and(|off| off.split(',').any(|named| named == part))
 }
 
 /// Whether checking a build again found an analysis it used wrong, since the store was last taken.
 static FOUND_WRONG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// What the last build in this process used again that's to be checked after it, with what
-/// analyzing it was told, till a check is waiting for it.
-static LAST_PACK: Mutex<Option<CheckPack>> = Mutex::new(None);
+/// What's waiting to be checked of what builds used again, and whether a check is running.
+struct Checks {
+    /// Each build's pick, with what analyzing it was told, in the order they were made: every
+    /// build that used anything again, a program's, a test's or a run's, hands its own.
+    waiting: Vec<CheckPack>,
+    running: bool,
+}
 
-/// Notes what a build used again that's to be checked after it, for [`check_later`].
+static CHECKS: Mutex<Checks> = Mutex::new(Checks { waiting: Vec::new(), running: false });
+
+/// Told when a running check ends.
+static CHECK_ENDED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Notes what a build used again that's to be checked after it (see [`AnalysesCheck`]).
 pub(crate) fn note_pack(pack: CheckPack) {
-    if let Ok(mut last) = LAST_PACK.lock() {
-        *last = Some(pack);
+    if pack.is_empty() {
+        return;
+    }
+    if let Ok(mut checks) = CHECKS.lock() {
+        checks.waiting.push(pack);
     }
 }
 
-/// How many functions there are in a turn of the analyses checked after builds: each is checked at
-/// least once in this many builds.
-const TURNS: u64 = 16;
+/// Waits till no check of what builds used again is running, as the daemon does before it ends.
+pub fn wait_for_analyses_check() {
+    wait_for_a_running_check();
+}
+
+/// Waits till no check is running: one that finds an analysis wrong lets the store go, and the
+/// build that waited takes nothing of it.
+fn wait_for_a_running_check() {
+    let Ok(mut checks) = CHECKS.lock() else { return };
+    while checks.running {
+        let Ok(waited) = CHECK_ENDED.wait(checks) else { return };
+        checks = waited;
+    }
+}
+
+/// How many builds may use an analysis again before it's checked after one: each is checked by
+/// the time this many have used it, whatever else the daemon builds.
+const TURNS: u32 = 16;
 
 /// Of what a build used again, what's checked after it, and how many of those are near the edit:
 /// - every function a call away from one analyzed afresh, a caller or a callee, as a stale
 ///   analysis almost always comes of a dependency near the edit that the rule missed (a function
 ///   asks only of its callees, so its callers cover what it was asked);
-/// - of the rest, those whose turn it is: one in [`TURNS`], by a hash of the name and the build's
-///   number, so each is checked within that many builds.
-pub(crate) fn to_check_after(
-    program: &fennec_ir::Program,
-    used: Vec<(String, Key)>,
-    build: u64,
-) -> (Used, usize) {
-    let reused: std::collections::HashSet<String> = used.iter().map(|(name, _)| name.clone()).collect();
+/// - every other whose [`TURNS`]th use since it was last checked this is, so each analysis is
+///   checked by its sixteenth use, counted by its own uses, not the builds around them.
+pub(crate) fn to_check_after(program: &fennec_ir::Program, used: Vec<(String, Key, u32)>) -> (Used, usize) {
+    let reused: std::collections::HashSet<String> = used.iter().map(|(name, ..)| name.clone()).collect();
     let mut near: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for function in program.functions.iter().chain(&program.constants) {
         let afresh = !reused.contains(&function.name);
@@ -392,60 +422,74 @@ pub(crate) fn to_check_after(
             near.insert(function.name.as_str());
         }
     }
-    let turn = build % TURNS;
-    let in_turn = |name: &str| {
-        let hash = crate::keys::key_of("fennec analysis checked in turn", &name);
-        u64::from(hash.first().copied().unwrap_or(0)) % TURNS == turn
-    };
-    let near_count = used.iter().filter(|(name, _)| near.contains(name.as_str())).count();
-    let checked =
-        used.into_iter().filter(|(name, _)| near.contains(name.as_str()) || in_turn(name)).collect();
+    let near_count = used.iter().filter(|(name, ..)| near.contains(name.as_str())).count();
+    let checked = used
+        .into_iter()
+        .filter(|(name, _, uses)| near.contains(name.as_str()) || *uses >= TURNS)
+        .map(|(name, key, _)| (name, key))
+        .collect();
     (checked, near_count)
 }
-
-/// A check waiting to be made of what a build used again: the program it built, and each
-/// analysis it used again, by function, with its key.
-static PENDING: Mutex<Option<CheckPack>> = Mutex::new(None);
 
 /// Each analysis a build used again, by function, with its key.
 type Used = Vec<(String, Key)>;
 
-/// Has what the build just made used again of the analyses kept checked later
-/// ([`verify_pending_analyses`]): in the daemon, after a build that used any. A release compiler
-/// has no other check of them. Whether a check is waiting.
-pub fn check_later() -> bool {
-    if !keeps_between_builds() {
-        return false;
-    }
-    let Some(pack) = LAST_PACK.lock().ok().and_then(|mut last| last.take()).filter(|pack| !pack.is_empty())
-    else {
-        return false;
-    };
-    PENDING.lock().map(|mut pending| *pending = Some(pack)).is_ok()
+/// What's waiting to be checked of what builds used again, taken to check: no build takes the
+/// store till it's done, and dropped, the check is ended.
+pub struct AnalysesCheck {
+    packs: Vec<CheckPack>,
 }
 
-/// Whether a check of what a build used again is waiting.
-#[must_use]
-pub fn analyses_pending() -> bool {
-    PENDING.lock().is_ok_and(|pending| pending.is_some())
-}
-
-/// Analyzes again each function whose analysis the last build used again, if a check is waiting,
-/// and gives back those whose analysis now differs, sorted. Any is the compiler's mistake: every
-/// kept analysis goes, and the next build works each out.
-#[must_use]
-pub fn verify_pending_analyses() -> Vec<String> {
-    let Some(pack) = PENDING.lock().ok().and_then(|mut pending| pending.take()) else {
-        return Vec::new();
-    };
-    let differ = pack.differ();
-    if !differ.is_empty() {
-        FOUND_WRONG.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(mut kept) = KEPT.lock() {
-            *kept = None;
+impl AnalysesCheck {
+    /// Takes what's waiting, if anything is, with the check marked running from now: before its
+    /// thread starts, so a build after this one waits for it.
+    #[must_use]
+    pub fn take() -> Option<AnalysesCheck> {
+        let mut checks = CHECKS.lock().ok()?;
+        if checks.waiting.is_empty() {
+            return None;
         }
+        checks.running = true;
+        Some(AnalysesCheck { packs: std::mem::take(&mut checks.waiting) })
     }
-    differ
+
+    /// Analyzes again each function picked, and gives back those whose analysis now differs,
+    /// sorted. Any is the compiler's mistake: every kept analysis goes, and the next build works
+    /// each out. Where none differs, each analysis checked starts its count of uses again.
+    #[must_use]
+    pub fn run(self) -> Vec<String> {
+        let mut differ: Vec<String> = self.packs.iter().flat_map(CheckPack::differ).collect();
+        differ.sort();
+        differ.dedup();
+        if differ.is_empty() {
+            if let Ok(mut kept) = KEPT.lock()
+                && let Some(kept) = kept.as_mut()
+            {
+                for (name, key) in self.packs.iter().flat_map(CheckPack::checked) {
+                    if let Some(entry) = kept.by_function.get_mut(name)
+                        && entry.key == key
+                    {
+                        entry.unchecked = 0;
+                    }
+                }
+            }
+        } else {
+            FOUND_WRONG.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(mut kept) = KEPT.lock() {
+                *kept = None;
+            }
+        }
+        differ
+    }
+}
+
+impl Drop for AnalysesCheck {
+    fn drop(&mut self) {
+        if let Ok(mut checks) = CHECKS.lock() {
+            checks.running = false;
+        }
+        CHECK_ENDED.notify_all();
+    }
 }
 
 #[cfg(all(test, not(windows)))]
@@ -464,7 +508,8 @@ mod tests {
         let _ = crate::analysis::whole_keeping(&program, &first);
         let again = Keeping::from(Some(first.into_kept()));
         let _ = crate::analysis::whole_keeping(&program, &again);
-        let used = again.take_used();
+        let used: Vec<(String, Key)> =
+            again.take_used().into_iter().map(|(name, key, _)| (name, key)).collect();
         assert!(used.len() >= 2, "{used:?}");
         assert_eq!(crate::analysis::analyses_again(&program, &used), Vec::<String>::new());
         let mut wrong = used.clone();
@@ -473,6 +518,47 @@ mod tests {
         let name = name.clone();
         assert_eq!(crate::analysis::analyses_again(&program, &wrong), [name]);
         Ok(())
+    }
+
+    /// An analysis used again build after build, with nothing near it edited, is picked to be
+    /// checked at its sixteenth use since it was worked out, counted by its own uses: never
+    /// before, whatever else is built between.
+    #[test]
+    fn an_analysis_used_again_is_checked_by_its_sixteenth_use() -> Result<(), String> {
+        let text = "def doubled(count: int) -> int:\n    return count * 2\n\ndef main(stdout: Stdout):\n    stdout.print(doubled(2))\n    return\n";
+        let mut module = fennec_syntax::parse(text).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let mut keeping = Keeping::from(None);
+        let _ = crate::analysis::whole_keeping(&program, &keeping);
+        for uses in 1..=TURNS {
+            keeping = Keeping::from(Some(keeping.into_kept()));
+            let _ = crate::analysis::whole_keeping(&program, &keeping);
+            let (picked, near) = to_check_after(&program, keeping.take_used());
+            assert_eq!(near, 0);
+            let doubled = picked.iter().any(|(name, _)| name == "doubled");
+            assert_eq!(doubled, uses == TURNS, "use {uses}: {picked:?}");
+        }
+        Ok(())
+    }
+
+    /// A build waits for a check that's running before it takes the store, and goes on once it ends.
+    #[test]
+    fn a_build_waits_for_a_running_check() {
+        CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = true;
+        let waited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waiting = {
+            let waited = Arc::clone(&waited);
+            std::thread::spawn(move || {
+                wait_for_a_running_check();
+                waited.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!waited.load(std::sync::atomic::Ordering::SeqCst), "it didn't wait for the check");
+        drop(AnalysesCheck { packs: Vec::new() });
+        assert!(waiting.join().is_ok());
+        assert!(waited.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     /// A kept analysis the check finds isn't what analyzing again gives is handed to no later build:

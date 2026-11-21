@@ -653,7 +653,8 @@ fn report(notes: &[Note]) {
     // A replay's task waiting for its turn, with every context stuck, waits for a turn no one left
     // can come to: the replay can't follow its recording, and says so now, however long the work
     // before a turn took, rather than after a turn's wait ran out (#2276).
-    if let Some(why) = notes.iter().find_map(Note::turn_never_comes) {
+    // The least, as several may wait: the same replay says the same line every run.
+    if let Some(why) = notes.iter().filter_map(Note::turn_never_comes).min() {
         let said = format!("error: {}{}\n", super::aot::COULDNT_FOLLOW, crate::replay::diverged(why));
         let _ = std::io::stderr().write_all(said.as_bytes());
         super::aot::stop_now(1);

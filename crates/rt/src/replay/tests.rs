@@ -474,3 +474,20 @@ fn only_a_log_new_enough_has_a_deadlock() {
     assert!(older.deadlock.is_none());
     assert_eq!(older.streams.get("0").map(VecDeque::len), Some(1));
 }
+
+/// A thread waiting for its turn at a place whose log has nothing more goes back to `turn_in` to say
+/// so, rather than waiting for a turn that's no one's. One that asked only whether its own entry was
+/// next went on into its wait, and slept for good: the place running out told it nothing more
+/// (Fable 5.2's review of #2276).
+#[test]
+fn a_thread_waiting_for_a_turn_where_the_log_ran_out_goes_back_to_say_so() {
+    let player = Arc::new(player(&[("0:c1", "0.1 send", &0_i64.to_le_bytes())]));
+    let (done, finished) = std::sync::mpsc::channel();
+    let waiting = Arc::clone(&player);
+    std::thread::spawn(move || {
+        let held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        wait_for_turn(&waiting, held, "0:c0", "0 receive");
+        let _ = done.send(());
+    });
+    assert!(finished.recv_timeout(Duration::from_secs(60)).is_ok(), "it waited for a turn that's no one's");
+}

@@ -367,7 +367,7 @@ fn wait_for_turn(held: &Mutex<Player>, player: MutexGuard<'_, Player>, place: &s
     // A moment first: most turns come by then, and cost the check nothing.
     let (player, waited) =
         TURN_MOVED.wait_timeout(player, deadlock::PATIENCE).unwrap_or_else(PoisonError::into_inner);
-    if !waited.timed_out() || front_is(&player, place, asked) {
+    if !waited.timed_out() || !another_is_next(&player, place, asked) {
         return;
     }
     let player = if deadlock::thread_waits(note.blocking(), false) {
@@ -375,7 +375,7 @@ fn wait_for_turn(held: &Mutex<Player>, player: MutexGuard<'_, Player>, place: &s
         drop(player);
         deadlock::look();
         let player = held.lock().unwrap_or_else(PoisonError::into_inner);
-        if front_is(&player, place, asked) {
+        if !another_is_next(&player, place, asked) {
             deadlock::thread_woke();
             return;
         }
@@ -387,9 +387,12 @@ fn wait_for_turn(held: &Mutex<Player>, player: MutexGuard<'_, Player>, place: &s
     deadlock::thread_woke();
 }
 
-/// Whether the front of `place`'s stream in `player` is `asked`: the running task's turn there.
-fn front_is(player: &Player, place: &str, asked: &str) -> bool {
-    player.streams.get(place).and_then(VecDeque::front).is_some_and(|(next, _)| next == asked)
+/// Whether another's entry than `asked` is next at `place` in `player`: what a turn waits on, as
+/// `TurnWait::holds` asks. Anything else goes back to `turn_in` to say: the running task's turn, or
+/// a place with nothing more. A thread that asked only whether its own entry was next slept for
+/// good when the place ran out instead (Fable 5.2's review of #2276).
+fn another_is_next(player: &Player, place: &str, asked: &str) -> bool {
+    player.streams.get(place).and_then(VecDeque::front).is_some_and(|(next, _)| next != asked)
 }
 
 /// A replay's wait for its turn to do `asked` at `place`, for the deadlock check.
@@ -403,8 +406,7 @@ impl crate::embed::deadlock::Awaited for TurnWait {
     fn holds(&self, _: crate::embed::deadlock::Kind) -> bool {
         let Mode::Replay(player) = mode() else { return false };
         let player = player.lock().unwrap_or_else(PoisonError::into_inner);
-        let front = player.streams.get(&self.place).and_then(VecDeque::front);
-        front.is_some_and(|(next, _)| *next != self.asked)
+        another_is_next(&player, &self.place, &self.asked)
     }
 
     /// What the replay says, when its turn never comes.

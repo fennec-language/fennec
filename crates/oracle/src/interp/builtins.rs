@@ -98,7 +98,11 @@ impl Interp {
                 Value::Str(text) => parsed_int(&text, span),
                 Value::Sized(_, n) => match i64::try_from(n) {
                     Ok(n) => Ok(Value::Int(n)),
-                    Err(_) => crash("this doesn't fit in an int", span),
+                    // In compiled code's words, which say what an int holds.
+                    Err(_) => crash(
+                        format!("it doesn't fit in int, which holds {} to {}: {n}", i64::MIN, i64::MAX),
+                        span,
+                    ),
                 },
                 other => unsupported(format!("`int` of a {}", other.kind())),
             },
@@ -584,7 +588,8 @@ fn fitting(num: Num, n: i128, span: Span) -> Run<Value> {
     if (least..=most).contains(&n) {
         Ok(Value::Sized(num, n))
     } else {
-        crash(format!("{n} doesn't fit in a {}", num.name()), span)
+        // In compiled code's words, which say what the size holds.
+        crash(format!("it doesn't fit in {}, which holds {least} to {most}: {n}", num.name()), span)
     }
 }
 

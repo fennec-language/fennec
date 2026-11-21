@@ -436,7 +436,7 @@ thread_local! {
     static OUTPUT: RefCell<Option<Output>> = const { RefCell::new(None) };
 }
 
-/// Lets others run for a moment, for a replay's task waiting its turn: a task makes way for the
+/// Lets others run for a moment, for a replay's task waiting for a lock's readers to give it back: a task makes way for the
 /// others on its thread, and a thread that isn't one sleeps briefly.
 pub(crate) fn make_way() {
     #[cfg(any(test, feature = "threads"))]
@@ -882,7 +882,9 @@ fn report_failure() {
     let followed = crate::replay::divergence().is_none();
     if let Some(failure) = failure.filter(|_| followed) {
         write_kept_output();
-        let _ = writeln!(std::io::stderr(), "error: {}", failure.message);
+        // Where it happened, as `main`'s failure and a range's say it (#2045).
+        let said = aot::rendered_here(&failure).unwrap_or_else(|| format!("error: {}\n", failure.message));
+        let _ = std::io::stderr().write_all(said.as_bytes());
     }
 }
 

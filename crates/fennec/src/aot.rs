@@ -954,15 +954,14 @@ fn llvm_objects(
     let compiled = compile_emitted(&emitted, release, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::entry(lowered, shared, image, bytes)
     })?;
-    let Emitted { lowered, units, .. } = emitted;
     // What it used again of the analyses the build before kept is checked once it has answered,
-    // against the program it built, in the daemon.
+    // in the daemon.
     if known.is_some() {
-        crate::kept::analyses_to_check(lowered);
+        crate::kept::analyses_to_check();
     }
     // Kept for compiling again any kept object a cleanup takes before the link, with what the
     // objects it found are known under.
-    Ok((compiled, units, known))
+    Ok((compiled, emitted.units, known))
 }
 
 /// A dev build's text, using again each unit the last build of this program kept whose function,

@@ -4820,8 +4820,6 @@ pub(crate) fn whole_kept(program: &Program) -> (Whole<'_>, Vec<String>) {
     let keeping = crate::kept::Keeping::start();
     let found = whole_keeping(program, &keeping);
     crate::kept::note_used_again(keeping.used_again(), found.0.analyses.len());
-    let (checked, _) = crate::kept::to_check_after(program, keeping.take_used(), keeping.build_number());
-    crate::kept::note_used(checked);
     // A kept analysis that analyzing again doesn't give: nothing is handed on, the wrong one least
     // of all, so the build after this one works every analysis out.
     if found.1.is_empty() {
@@ -4830,10 +4828,84 @@ pub(crate) fn whole_kept(program: &Program) -> (Whole<'_>, Vec<String>) {
     found
 }
 
+/// Each function's parameters' ranges, by its name.
+type ParamRanges<'p> = HashMap<&'p str, Vec<Range>>;
+
+/// What the check after a build needs to analyze again what the build used again, taken while the
+/// build has it (`kept::verify_pending_analyses`): each function checked, with its parameters'
+/// ranges and the key of the analysis used, and what `analyze` is told of the rest of the program.
+/// The functions checked, and a few words for each other: far less than the program.
+pub(crate) struct CheckPack {
+    checked: Vec<(Function, Vec<Range>, Key)>,
+    /// The parameters each function changes, for those that change any.
+    changes: HashMap<String, Vec<usize>>,
+    /// Which parameters each function keeps.
+    kept: HashMap<String, Vec<bool>>,
+    /// Whether each kind of dict holds its values in its entries.
+    held: Vec<(Type, bool)>,
+}
+
+impl CheckPack {
+    /// What's checked of `checked`, functions of `functions`, as analyzing them was told:
+    /// `kept` and `params` say which parameters each callee keeps and each function's ranges, and
+    /// `held` which dicts hold their values in their entries.
+    fn of(
+        checked: &[(String, Key)],
+        functions: &HashMap<&str, &Function>,
+        (kept, params): (&HashMap<&str, Vec<bool>>, &ParamRanges<'_>),
+        held: &[(&Type, bool)],
+    ) -> CheckPack {
+        CheckPack {
+            checked: checked
+                .iter()
+                .filter_map(|(name, key)| {
+                    let function = (*functions.get(name.as_str())?).clone();
+                    Some((function, params.get(name.as_str()).cloned().unwrap_or_default(), *key))
+                })
+                .collect(),
+            changes: functions
+                .iter()
+                .filter(|(_, function)| !function.mut_params.is_empty())
+                .map(|(name, function)| ((*name).to_owned(), function.mut_params.clone()))
+                .collect(),
+            kept: kept.iter().map(|(name, kept)| ((*name).to_owned(), kept.clone())).collect(),
+            held: held.iter().map(|(ty, held)| ((*ty).clone(), *held)).collect(),
+        }
+    }
+
+    /// Whether there's anything to check.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.checked.is_empty()
+    }
+
+    /// Those whose analysis worked out afresh has another key than the one used, sorted.
+    pub(crate) fn differ(&self) -> Vec<String> {
+        let changes = |callee: &str| self.changes.get(callee).cloned().unwrap_or_default();
+        let keeps = |callee: &str, at: usize| {
+            self.kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
+        };
+        let in_entries = |dict: &Type| {
+            self.held
+                .iter()
+                .find(|(ty, _)| ty == dict)
+                .map_or_else(fennec_layout::dict_values_in_place, |(_, held)| *held)
+        };
+        let mut differ: Vec<String> = self
+            .checked
+            .iter()
+            .filter(|(function, given, key)| {
+                analysis_key(&analyze(function, &changes, &keeps, given, &in_entries)) != *key
+            })
+            .map(|(function, ..)| function.name.clone())
+            .collect();
+        differ.sort();
+        differ
+    }
+}
+
 /// The functions in `used`, each with the key of the analysis a build used again for it, whose
-/// analysis worked out afresh now has another key, sorted: the check after a build that used
-/// analyses again (`kept::verify_pending_analyses`). Only what `analyze` is told is worked out, and
-/// only those functions are analyzed.
+/// analysis worked out afresh now has another key, sorted, as the check after a build finds them.
+#[cfg(test)]
 pub(crate) fn analyses_again(program: &Program, used: &[(String, Key)]) -> Vec<String> {
     let functions: HashMap<&str, &Function> = program
         .functions
@@ -4849,23 +4921,7 @@ pub(crate) fn analyses_again(program: &Program, used: &[(String, Key)]) -> Vec<S
     let params = param_ranges(program, &changes, &keeps);
     let layouts = crate::layouts_of(program).ok();
     let held = in_entries_of(program, layouts.as_ref());
-    let in_entries = |dict: &Type| {
-        held.iter()
-            .find(|(ty, _)| *ty == dict)
-            .map_or_else(fennec_layout::dict_values_in_place, |(_, held)| *held)
-    };
-    let mut differ: Vec<String> = used
-        .iter()
-        .filter(|(name, key)| {
-            functions.get(name.as_str()).is_some_and(|function| {
-                let given = params.get(name.as_str()).map_or(&[][..], Vec::as_slice);
-                analysis_key(&analyze(function, &changes, &keeps, given, &in_entries)) != *key
-            })
-        })
-        .map(|(name, _)| name.clone())
-        .collect();
-    differ.sort();
-    differ
+    CheckPack::of(used, &functions, (&kept, &params), &held).differ()
 }
 
 /// [`whole_kept`], using again what `keeping` found and keeping in it what's worked out.
@@ -4902,6 +4958,13 @@ pub(crate) fn whole_keeping<'p>(
         };
         let (analyses, (ir_keys, analysis_keys), differ) =
             analyzed(program, (&changes, &keeps), &params, &in_entries, keeping);
+        // What's checked after the build of what it used again goes with what analyzing it is told,
+        // taken now, while the build has it, rather than the program.
+        if keeping.checks_after() {
+            let (checked, _) =
+                crate::kept::to_check_after(program, keeping.take_used(), keeping.build_number());
+            crate::kept::note_pack(CheckPack::of(&checked, &functions, (&kept, &params), &held));
+        }
         let mut generators = HashMap::new();
         for def in &program.generators {
             generators.insert(def.name.as_str(), def);

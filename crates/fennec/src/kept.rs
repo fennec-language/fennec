@@ -135,11 +135,10 @@ pub(crate) fn built_while_keeping(built: TakenBack) {
 /// What the next build says, once checking the analyses a build used again disagreed.
 static ANALYSES_NOTICE: Mutex<Option<String>> = Mutex::new(None);
 
-/// Has the analyses this build used again of the ones the build before kept checked once it has
-/// answered, against `lowered`, the program it built and needs no more
-/// (`fennec_llvm::check_later`): a release compiler has no other check of them.
-pub(crate) fn analyses_to_check(lowered: fennec_ir::Program) {
-    let _ = fennec_llvm::check_later(lowered);
+/// Has what this build used again of the analyses the build before kept checked once it has
+/// answered (`fennec_llvm::check_later`): a release compiler has no other check of them.
+pub(crate) fn analyses_to_check() {
+    let _ = fennec_llvm::check_later();
 }
 
 /// Whether a check of the analyses a build used again is waiting.

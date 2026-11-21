@@ -545,7 +545,7 @@ impl SavedBox {
 pub(crate) fn printed(saving: &Saving) -> Vec<String> {
     let id = saving.id;
     let mut held = SavedBox::new(id);
-    let mut lines = vec![format!("Unit{id}(name=\"seen\", target=None) Tag{id}(name=\"seen\", near=[])")];
+    let mut lines = Vec::new();
     for (n, step) in saving.steps.iter().enumerate() {
         lines.extend(held.step(n, step));
     }
@@ -610,9 +610,7 @@ pub(crate) fn picked_steps(id: usize, pick: &mut dyn FnMut(usize) -> usize) -> V
 }
 
 /// The types a `Saved` statement `id` saves, the functions it loads texts and packed gauges with,
-/// and the start of `saved{id}`, making the box and its lists of `Id`s. It prints a unit and a
-/// tag first: until #2334 is fixed, `ids()` on a `Table` of a type no value of was made doesn't
-/// build.
+/// and the start of `saved{id}`, making the box and its lists of `Id`s.
 fn types_written(id: usize) -> String {
     format!(
         "struct Pt{id}:\n    x: int\n    tag = \"p\"\n\nstruct Disc{id}:\n    radius: float\n\n\
@@ -630,8 +628,7 @@ fn types_written(id: usize) -> String {
          got = pack.loads[Gauge{id}](pack.dumps(Loose{id}(level=level))) except why:\n        \
          stdout.print(\"refused\", why)\n        return\n    stdout.print(got)\n\n\
          def saved{id}(stdout: Stdout):\n    mut box = Box{id}()\n    mut units = list[Id[Unit{id}]]()\n    \
-         mut tags = list[Id[Tag{id}]]()\n    \
-         stdout.print(Unit{id}(name=\"seen\"), Tag{id}(name=\"seen\"))\n"
+         mut tags = list[Id[Tag{id}]]()\n"
     )
 }
 

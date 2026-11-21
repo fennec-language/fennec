@@ -1027,7 +1027,9 @@ fn reads_and_prints_inside_locks_of_two_values_replay_as_they_ran() -> std::io::
 /// A replay that can't follow its recording says where it first couldn't, once, and ends. Here
 /// `main` takes a lock its recording didn't. A replay of that waited out its patience, crashed, and
 /// then its connection's cleanup asked for a close where the recording read a line: the replay said
-/// only that, "while cleaning up after a crash", and hung.
+/// only that, "while cleaning up after a crash", and hung. A turn has no clock now (#2276): it's the
+/// deadlock check that finds no turn waited for can come, once every context is stuck, so a replay
+/// that didn't would run into the time limit.
 #[test]
 fn a_replay_that_cant_follow_its_recording_says_where_it_first_couldnt() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -1059,10 +1061,11 @@ fn a_replay_that_cant_follow_its_recording_says_where_it_first_couldnt() -> std:
         .output_limited(DEADLINE, Duration::from_secs(60))?;
     let (_, said, code) = outcome(&replayed);
     assert_eq!(code, Some(1), "{said}");
-    // Which task finds it first, and where, depends on the order the tasks run in: `main` at its
-    // lock, or a task waiting at a channel for what `main`, held up, never does. Several may run
-    // out of patience at once, but only the first is said.
+    // Which waiting turn it names depends on the order the tasks ran in, `main` at its lock or a
+    // task at a channel waiting for what `main`, held up, never does, but it's said once: the least
+    // turn that can't come.
     assert_eq!(said.matches("the replay couldn't follow its recording: ").count(), 1, "{said}");
+    assert!(said.contains("` next, and nothing left running can come to it"), "{said}");
     assert_eq!(said.matches("isn't the run that was recorded").count(), 1, "{said}");
     assert!(!said.contains("while cleaning up after a crash"), "{said}");
     std::fs::remove_dir_all(&dir)?;

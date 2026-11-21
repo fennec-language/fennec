@@ -1,6 +1,7 @@
 //! `fennec-oracle`: runs a Fennec program the oracle's way, compares it with the compiled
 //! program, or reports how much of the examples it covers.
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -16,8 +17,23 @@ const USAGE: &str = "usage:
 exit codes: run gives the program's own; compare gives 0 when they agree and 1 when they differ;
 3 means the oracle doesn't model something the program uses";
 
-/// How long a compiled program, or a build of one, may take.
-const CHILD_SECONDS: u64 = 60;
+/// How much a step of a compare may take before it's stopped.
+///
+/// A build is held to the CPU time it uses. On a busy machine it waits its turn for a core, so its
+/// wall-clock time says more about the machine than about the build. A generous wall-clock limit
+/// beside it still stops a build that's stuck. A run of a built program is held to a short
+/// wall-clock limit as well, since a program that's stuck waiting on itself uses no CPU at all.
+#[derive(Clone, Copy)]
+struct Limits {
+    cpu_seconds: f64,
+    wall_seconds: u64,
+}
+
+/// For a build, and for `fennec run`, which builds the program before it runs it.
+const BUILD: Limits = Limits { cpu_seconds: 300.0, wall_seconds: 900 };
+
+/// For a run of a built program.
+const RUN: Limits = Limits { cpu_seconds: 60.0, wall_seconds: 120 };
 
 /// How much memory a compiled program, with what it starts, may hold.
 const CHILD_MEGABYTES: u64 = 4000;
@@ -132,20 +148,25 @@ fn compare(path: &str, fennec: Option<&str>) -> ExitCode {
     let debug = in_fresh(
         &work,
         Command::new(&fennec).env("FENNEC_NO_DAEMON", "1").arg("run").arg("--no-test").arg(&program),
+        BUILD,
     );
     agree &= judged("debug", &outcome, code, debug, sorted);
     let built = std::env::temp_dir().join(format!("fennec-oracle-{}", std::process::id()));
     let shown_built = built.to_string_lossy().into_owned();
-    let release = limited(Command::new(&fennec).env("FENNEC_NO_DAEMON", "1").args([
-        "build",
-        "--release",
-        path,
-        "-o",
-        &shown_built,
-    ]))
+    let release = limited(
+        Command::new(&fennec).env("FENNEC_NO_DAEMON", "1").args([
+            "build",
+            "--release",
+            path,
+            "-o",
+            &shown_built,
+        ]),
+        BUILD,
+    )
+    .map_err(|why| format!("the release build stopped: {why}"))
     .and_then(|build| {
         if build.code == Some(0) {
-            in_fresh(&work, &mut Command::new(&built))
+            in_fresh(&work, &mut Command::new(&built), RUN)
         } else {
             Err(format!("the release build failed:\n{}", String::from_utf8_lossy(&build.stderr)))
         }
@@ -164,13 +185,13 @@ fn fresh(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path).ok()
 }
 
-/// Runs a command in a fresh empty folder at `work`.
-fn in_fresh(work: &Path, command: &mut Command) -> Result<Compiled, String> {
+/// Runs a command in a fresh empty folder at `work`, within `limits`.
+fn in_fresh(work: &Path, command: &mut Command, limits: Limits) -> Result<Compiled, String> {
     let made = fresh(work).filter(|made| made == work);
     if made.is_none() {
         return Err(format!("couldn't make an empty folder at {} to run it in", work.display()));
     }
-    limited(command.current_dir(work))
+    limited(command.current_dir(work), limits)
 }
 
 /// Holds one compiled run to the oracle's, saying how they differ if they do.
@@ -238,8 +259,8 @@ fn default_fennec() -> PathBuf {
 }
 
 /// Runs a command in a process group of its own, with empty input, stopping the whole group past
-/// the time or memory limit.
-fn limited(command: &mut Command) -> Result<Compiled, String> {
+/// its CPU-time, wall-clock or memory limit, and saying which.
+fn limited(command: &mut Command, limits: Limits) -> Result<Compiled, String> {
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(command, 0);
     let mut child = command
@@ -253,6 +274,7 @@ fn limited(command: &mut Command) -> Result<Compiled, String> {
     let stderr = child.stderr.take().map(read_all);
     let started = Instant::now();
     let mut stopped = None;
+    let mut seen = Seen::default();
     let mut polls: u32 = 0;
     let status = loop {
         match child.try_wait() {
@@ -260,10 +282,23 @@ fn limited(command: &mut Command) -> Result<Compiled, String> {
             Ok(None) => {}
             Err(err) => return Err(err.to_string()),
         }
-        if started.elapsed() > Duration::from_secs(CHILD_SECONDS) {
-            stopped = Some(format!("it ran past {CHILD_SECONDS} seconds"));
-        } else if polls.is_multiple_of(10) && group_megabytes(group) > CHILD_MEGABYTES {
-            stopped = Some(format!("it held more than {CHILD_MEGABYTES} MB"));
+        if started.elapsed() > Duration::from_secs(limits.wall_seconds) {
+            stopped = Some(format!(
+                "it went past its wall-clock limit of {} seconds, having used {:.1} seconds of CPU",
+                limits.wall_seconds,
+                seen.cpu_seconds()
+            ));
+        } else if polls.is_multiple_of(10) {
+            let megabytes = seen.read(&group_listing(), group);
+            if seen.cpu_seconds() > limits.cpu_seconds {
+                stopped = Some(format!(
+                    "it went past its limit of {:.0} seconds of CPU, {} seconds in",
+                    limits.cpu_seconds,
+                    started.elapsed().as_secs()
+                ));
+            } else if megabytes > CHILD_MEGABYTES {
+                stopped = Some(format!("it held more than {CHILD_MEGABYTES} MB"));
+            }
         }
         if stopped.is_some() {
             kill_group(group);
@@ -290,18 +325,112 @@ fn read_all(mut from: impl std::io::Read + Send + 'static) -> std::thread::JoinH
     })
 }
 
-/// How many megabytes a process group holds, as `ps` says.
-fn group_megabytes(group: u32) -> u64 {
-    let Ok(listed) = Command::new("ps").args(["-o", "rss=", "-g", &group.to_string()]).output() else {
-        return 0;
+/// Every process, as `ps` lists it: its group, its id, the kilobytes it holds and the CPU time it
+/// has used, a line each. It lists them all and the group is picked out after, since on Linux
+/// `ps -g` picks a session, not a process group. Where there's no `ps` the listing is empty.
+fn group_listing() -> String {
+    let listed =
+        Command::new("ps").args(["-A", "-o", "pgid=", "-o", "pid=", "-o", "rss=", "-o", "time="]).output();
+    listed.map(|listed| String::from_utf8_lossy(&listed.stdout).into_owned()).unwrap_or_default()
+}
+
+/// What a process group's processes have used, as listings of them come in.
+#[derive(Default)]
+struct Seen {
+    /// The CPU seconds each process had used when last listed. A process that has ended keeps
+    /// what it used here, so a build's tools count after they're done.
+    cpu_by_process: HashMap<u32, f64>,
+}
+
+impl Seen {
+    /// Reads a listing from [`group_listing`], keeping the CPU time of each process in `group`,
+    /// and gives the megabytes the group's processes hold now.
+    fn read(&mut self, listing: &str, group: u32) -> u64 {
+        let mut kilobytes: u64 = 0;
+        for line in listing.lines() {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let [in_group, process, held, time] = words.as_slice() else { continue };
+            let (Ok(in_group), Ok(process)) = (in_group.parse::<u32>(), process.parse::<u32>()) else {
+                continue;
+            };
+            if in_group != group {
+                continue;
+            }
+            kilobytes = kilobytes.saturating_add(held.parse::<u64>().unwrap_or(0));
+            if let Some(seconds) = cpu_seconds(time) {
+                let kept = self.cpu_by_process.entry(process).or_insert(0.0);
+                *kept = kept.max(seconds);
+            }
+        }
+        kilobytes / 1024
+    }
+
+    /// The CPU seconds the group's processes have used, those that have ended included.
+    fn cpu_seconds(&self) -> f64 {
+        self.cpu_by_process.values().sum()
+    }
+}
+
+/// The seconds in a CPU time as `ps` writes it: `[[dd-]hh:]mm:ss.cc` on macOS, `[dd-]hh:mm:ss` on
+/// Linux.
+fn cpu_seconds(time: &str) -> Option<f64> {
+    let (days, clock) = match time.split_once('-') {
+        Some((days, clock)) => (days.parse::<f64>().ok()?, clock),
+        None => (0.0, time),
     };
-    let kilobytes: u64 = String::from_utf8_lossy(&listed.stdout)
-        .lines()
-        .filter_map(|line| line.trim().parse::<u64>().ok())
-        .sum();
-    kilobytes / 1024
+    let mut seconds = 0.0;
+    for part in clock.split(':') {
+        seconds = seconds * 60.0 + part.parse::<f64>().ok()?;
+    }
+    Some(days * 86_400.0 + seconds)
 }
 
 fn kill_group(group: u32) {
     let _ = Command::new("kill").args(["-9", &format!("-{group}")]).stderr(Stdio::null()).status();
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{Command, Limits, Seen, cpu_seconds, limited};
+
+    #[test]
+    fn cpu_time_is_read_as_macos_and_linux_write_it() {
+        assert_eq!(cpu_seconds("0:20.13"), Some(20.13));
+        assert_eq!(cpu_seconds("1:02:03.50"), Some(3723.5));
+        assert_eq!(cpu_seconds("00:01:15"), Some(75.0));
+        assert_eq!(cpu_seconds("2-00:00:01"), Some(172_801.0));
+        assert_eq!(cpu_seconds("TIME"), None);
+    }
+
+    #[test]
+    fn a_process_that_has_ended_keeps_counting_the_cpu_it_used() {
+        let mut seen = Seen::default();
+        assert_eq!(seen.read("  7 7 2048 0:01.00\n  7 8 1024 0:02.00\n  9 9 999999 9:00.00\n", 7), 3);
+        assert!((seen.cpu_seconds() - 3.0).abs() < 1e-9);
+        // The tool that was 8 has ended, and 7 has used more since.
+        assert_eq!(seen.read("  7 7 2048 0:01.50\n", 7), 2);
+        assert!((seen.cpu_seconds() - 3.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_busy_loop_two_processes_down_stops_at_its_cpu_limit() {
+        let limits = Limits { cpu_seconds: 1.0, wall_seconds: 120 };
+        let ran = limited(Command::new("sh").args(["-c", "sh -c 'while :; do :; done'; true"]), limits);
+        let why = ran.err().unwrap_or_default();
+        assert!(why.starts_with("it went past its limit of 1 seconds of CPU"), "{why}");
+    }
+
+    #[test]
+    fn a_stuck_run_using_no_cpu_stops_at_its_wall_clock_limit() {
+        let limits = Limits { cpu_seconds: 60.0, wall_seconds: 1 };
+        let why = limited(Command::new("sleep").arg("60"), limits).err().unwrap_or_default();
+        assert!(why.starts_with("it went past its wall-clock limit of 1 seconds, having used 0."), "{why}");
+    }
+
+    #[test]
+    fn a_wait_that_uses_little_cpu_is_held_only_to_the_wall_clock_limit() {
+        let limits = Limits { cpu_seconds: 1.0, wall_seconds: 60 };
+        let ran = limited(Command::new("sh").args(["-c", "sleep 2; echo done"]), limits);
+        assert!(ran.is_ok_and(|ran| ran.code == Some(0) && ran.stdout == b"done\n"));
+    }
 }

@@ -7,6 +7,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+# `cargo run -p fennec` runs `fennec`, not `fennec-std-tests`, the test build's own command.
+default-run = "fennec"
 # The tests are one binary, tests/main.rs, not one per file.
 autotests = false
 

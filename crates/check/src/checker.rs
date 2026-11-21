@@ -411,8 +411,8 @@ pub(crate) struct Checker {
     /// The functions that name a `with` source's own function, constant or module where it's
     /// written in, with something in sight there named the same (`sight::outer`).
     pub(crate) names_outer: BTreeSet<String>,
-    /// The calls a standard library function written in Fennec makes instead, by the call's
-    /// span, like `crypto.blake3(chunks)` of many chunks.
+    /// The calls sent to another function, by the call's span: a standard library function written
+    /// in Fennec, like `crypto.blake3(chunks)` of many chunks, or a builtin's, as `i64(x)` is `int(x)`.
     pub(crate) std_calls: BTreeMap<(u32, u32), String>,
     /// The field each value given by position goes to, by the value's span, where that isn't
     /// the field at its position: from outside a type, the `_` fields are skipped.
@@ -2136,11 +2136,22 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
 }
 
 /// Whether lowering may call a standard library method that a program never names: an
-/// operator's, a protocol's like `str`, `iter` or `len`, or any of `StrWriter`'s, which a type's
-/// own `str` is given.
+/// operator's, a protocol's like `str`, `iter` or `len`, an error's `message`, which printing it
+/// calls, or any of `StrWriter`'s, which a type's own `str` is given.
 fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
-    const PROTOCOLS: [&str; 10] =
-        ["str", "iter", "len", "is_live", "hash", "serialize", "deserialize", "contains", "in", "own_text"];
+    const PROTOCOLS: [&str; 11] = [
+        "str",
+        "iter",
+        "len",
+        "is_live",
+        "hash",
+        "serialize",
+        "deserialize",
+        "contains",
+        "in",
+        "own_text",
+        "message",
+    ];
     if entry.owner.as_deref() == Some("StrWriter") {
         return true;
     }

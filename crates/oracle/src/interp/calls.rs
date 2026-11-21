@@ -102,6 +102,7 @@ const BUILTINS: &[&str] = &[
     "len",
     "abs",
     "str",
+    "repr",
     "int",
     "float",
     "range",
@@ -924,6 +925,15 @@ impl Interp {
         given: Vec<ArgVal>,
         span: Span,
     ) -> Run<Value> {
+        let instance = match self.made_unruled(ty, case, given)? {
+            Value::Instance(instance) => instance.into_inner(),
+            other => return Ok(other),
+        };
+        self.ruled(instance, span)
+    }
+
+    /// A value made as [`construct`] makes it, before its `where` rules are looked at.
+    pub(crate) fn made_unruled(&mut self, ty: &str, case: Option<&str>, given: Vec<ArgVal>) -> Run<Value> {
         if ty == "IoError" && self.is_std_type(ty) {
             return self.io_case(case, given);
         }
@@ -970,7 +980,7 @@ impl Interp {
             fields: made,
             notes: Vec::new(),
         };
-        self.ruled(instance, span)
+        Ok(Value::Instance(Held::new(instance)))
     }
 
     /// A value just made, if its `where` rules hold. Where the checker typed it as something that

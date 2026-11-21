@@ -11,11 +11,12 @@ pub(crate) fn display(value: &Value) -> String {
     }
 }
 
-/// A failure as it's shown when nothing handled it: the error, then each of its notes on a
-/// line of its own under it, as `note: ...`, a note's later lines indented under its first. The
-/// places of its call chain, which native code keeps among its notes, aren't notes to show.
-pub(crate) fn failure(error: &Value) -> String {
-    let mut text = repr(error);
+/// A failure as it's shown when nothing handled it: the error, as `shown` says when it's given,
+/// its words then itself, then each of its notes on a line of its own under it, as `note: ...`,
+/// a note's later lines indented under its first. The places of its call chain, which native code
+/// keeps among its notes, aren't notes to show.
+pub(crate) fn failure(error: &Value, shown: Option<String>) -> String {
+    let mut text = shown.unwrap_or_else(|| repr(error));
     if let Value::Instance(instance) = error
         && let Some(notes) = &instance.notes
     {

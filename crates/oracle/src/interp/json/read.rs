@@ -187,10 +187,32 @@ impl Interp {
             }
             (Type::Named(name), _) => self.read_declared(node, name, &[], reading),
             (Type::Generic(name, args), _) => self.read_declared(node, name, args, reading),
-            (Type::Union(_), _) => unsupported("loading a union from JSON"),
+            (Type::Union(members), _) => self.read_union(node, members, reading),
             (Type::Bytes, _) => unsupported("loading bytes from JSON"),
             (other, _) => unsupported(format!("loading a {} from JSON", type_name(other))),
         }
+    }
+
+    /// A union's value, as std's JSON reads one: an object whose first key names a member, by its
+    /// type's name, and whose value is that member's. A key after it fails with no words, as
+    /// std's reader does today.
+    fn read_union(&mut self, node: &Node, members: &[Type], reading: &mut Reading) -> Run<Value> {
+        let names: Vec<String> = members.iter().map(member_name).collect();
+        let union = names.join(" | ");
+        let Node::Object(entries) = node else { return Err(reading.misfit(&union, node)) };
+        let Some(first) = entries.first() else { return Err(reading.misfit(&union, node)) };
+        let Some(member) = names.iter().position(|name| *name == first.key).and_then(|at| members.get(at))
+        else {
+            return Err(says(format!("{} is \"{}\", which is none of `{union}`", reading.here(), first.key)));
+        };
+        reading.path.push(cut_input(&first.key));
+        let value = self.read(&first.value, member, reading, false);
+        reading.path.pop();
+        let value = value?;
+        if entries.len() > 1 {
+            return Err(says(String::new()));
+        }
+        Ok(value)
     }
 
     /// The tag this read gives the `Table` of items of the type named `kind`.
@@ -709,4 +731,12 @@ pub(crate) fn twice_key(shown: &str) -> String {
         format!("{}…", shown.chars().take(20).collect::<String>())
     };
     format!("`{}`", parse::escaped(&cut))
+}
+
+/// A union's member as a union names it, saved or read: its type as written.
+pub(crate) fn member_name(member: &Type) -> String {
+    member.source().map_or_else(
+        || type_name(member),
+        |source| fennec_syntax::rename::shown_type_name(&source).to_owned(),
+    )
 }

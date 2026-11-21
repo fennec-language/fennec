@@ -306,6 +306,7 @@ export! {
     fennec_with_cause(a0: i64, a1: i64) -> i64 => temps::with_cause(a0, a1);
     fennec_input(a0: i64) => eval::input(a0);
     fennec_main_result(a0: i64, a1: i64, a2: i64) => temps::main_result(a0, a1, a2);
+    fennec_main_result_shown(a0: i64, a1: i64, a2: i64, a3: i64) => temps::main_result_shown(a0, a1, a2, a3);
     fennec_main_exit(a0: i64) => temps::main_exit(a0);
     fennec_no_match(a0: i64, a1: i64, a2: i64) => eval::no_match(a0, a1, a2);
     fennec_lock_note(a0: u64) -> i64 => threads::lock_note(a0);

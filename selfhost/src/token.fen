@@ -53,9 +53,9 @@ def is_two_char_punct(text: str) -> bool:
         text
         in [
             "->", "=>", "==", "!=", "<=", ">=", "//", "**", "+=", "-=", "*=", "/=", "<<", ">>",
-            "&=", "|=", "^=",
+            "&=", "|=", "^=", "%=",
         ]
     )
 
 def is_three_char_punct(text: str) -> bool:
-    return text == "<<=" or text == ">>="
+    return text in ["<<=", ">>=", "//=", "**="]

@@ -818,9 +818,10 @@ impl FnCx<'_> {
                         let takes_self = entry.def.takes_self();
                         self.call_method(call, ty, (&key, takes_self))
                     }
-                    // Every error's notes, which the language gives each `error` type.
-                    None if matches!(method, "notes" | "add_note") && self.checker.is_error_type(ty) => {
-                        self.note_method(object, method, args, span)
+                    // What the language gives each `error` type that doesn't write its own: its
+                    // words, and its notes.
+                    None if is_errors_own(method) && self.checker.is_error_type(ty) => {
+                        self.note_method((object, ty), method, args, span)
                     }
                     // A route written with a method, as `router.get(...)`, checked against its
                     // handler here and written in as a call to `handle`.
@@ -832,10 +833,8 @@ impl FnCx<'_> {
                 }
             }
             Type::Param(name) => self.interface_call(call, name),
-            // A failure that's one of several errors has notes too: each error does.
-            Type::Errors(_) if matches!(method, "notes" | "add_note") => {
-                self.note_method(object, method, args, span)
-            }
+            // A failure that's one of several errors has words and notes too: each error does.
+            Type::Errors(_) if is_errors_own(method) => self.note_method((object, ty), method, args, span),
             Type::Union(members) => self.union_method(call, members),
             Type::Unknown | Type::Var(_) => {
                 self.ignore_args(args);
@@ -970,7 +969,9 @@ impl FnCx<'_> {
     /// Whether a type has a method by this name, its own or one std or the engines give it.
     pub(crate) fn has_method(&self, ty: &Type, method: &str) -> bool {
         let own = ty.type_name().is_some_and(|name| self.checker.program.method(name, method).is_some());
-        own || self.std_method(ty, method).is_some() || builtins::method(ty, method).is_some()
+        let errors_own =
+            is_errors_own(method) && (matches!(ty, Type::Errors(_)) || self.checker.is_error_type(ty));
+        own || errors_own || self.std_method(ty, method).is_some() || builtins::method(ty, method).is_some()
     }
 
     /// The method the standard library gives a built-in type, if it has one by that name,
@@ -1175,22 +1176,27 @@ impl FnCx<'_> {
         }
     }
 
-    /// `failure.notes()`, the notes an error carries, as Python's exceptions do, or
-    /// `failure.add_note(text)`, which adds one and so needs the error in a mut name.
-    fn note_method(&mut self, object: &Expr, method: &str, args: &[Arg], span: Span) -> Type {
-        if method == "notes" {
+    /// What the language gives every error that doesn't write its own:
+    /// - `failure.message()`, its words, which are the failure as it prints when it has no
+    ///   `def message`;
+    /// - `failure.notes()`, the notes it carries, as Python's exceptions do;
+    /// - `failure.add_note(text)`, which adds one and so needs the error in a mut name;
+    /// - `failure.with_note(text)`, a copy of it carrying one more.
+    fn note_method(&mut self, (object, ty): (&Expr, &Type), method: &str, args: &[Arg], span: Span) -> Type {
+        if matches!(method, "notes" | "message") {
             if !args.is_empty() {
                 self.error(
-                    Diagnostic::new("`notes()` takes nothing", span).with_help("call it as `notes()`"),
+                    Diagnostic::new(format!("`{method}()` takes nothing"), span)
+                        .with_help(format!("call it as `{method}()`")),
                 );
                 self.ignore_args(args);
             }
-            return Type::list(Type::Str);
+            return if method == "notes" { Type::list(Type::Str) } else { Type::Str };
         }
         if let [Arg { name: None, value, .. }] = args {
             let given = self.expr_as(value, &Type::Str);
             if !self.checker.fits(&Type::Str, &given) {
-                let message = format!("`add_note` takes the note's text, a str, but this is {}", a(&given));
+                let message = format!("`{method}` takes the note's text, a str, but this is {}", a(&given));
                 self.error(
                     Diagnostic::new(message, value.span)
                         .with_help("write it as text, like `f\"while {what}\"`"),
@@ -1198,10 +1204,13 @@ impl FnCx<'_> {
             }
         } else {
             self.error(
-                Diagnostic::new("`add_note` takes the note's text", span)
-                    .with_help("give it one str, like `add_note(f\"while {what}\")`"),
+                Diagnostic::new(format!("`{method}` takes the note's text"), span)
+                    .with_help(format!("give it one str, like `{method}(f\"while {{what}}\")`")),
             );
             self.ignore_args(args);
+        }
+        if method == "with_note" {
+            return ty.clone();
         }
         self.mut_place(object, "`add_note` changes its error, so call it on something held in a mut name");
         Type::Unit
@@ -1827,4 +1836,9 @@ enum UnionSource {
 fn sends(ty: &Type, method: &str) -> bool {
     method == "send"
         && ty.type_name().is_some_and(|name| matches!(name.rsplit('.').next(), Some("Channel" | "Sender")))
+}
+
+/// Whether a method is one the language gives every error that doesn't write its own.
+pub(crate) fn is_errors_own(method: &str) -> bool {
+    matches!(method, "message" | "notes" | "add_note" | "with_note")
 }

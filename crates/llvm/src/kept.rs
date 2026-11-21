@@ -65,6 +65,17 @@ static KEPT: Mutex<Option<KeptAnalyses>> = Mutex::new(None);
 /// Whether this process keeps analyses from one build to the next.
 static KEEPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Whether the builds from here on may use what the build before kept (see [`use_kept_analyses`]).
+static USES_KEPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Has the builds from here on use the analyses the build before kept, or not. A `--release`
+/// build doesn't: it's the build that ships, not one of the edit loop's, so it trusts nothing a
+/// build before it worked out, and works every analysis out itself. It still keeps its own for
+/// the build after.
+pub fn use_kept_analyses(uses: bool) {
+    USES_KEPT.store(uses, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Has this process keep each build's analyses for the next, as the daemon does: it builds one
 /// program after another. A process that builds once doesn't, and pays nothing for it.
 pub fn keep_analyses_between_builds() {
@@ -133,7 +144,12 @@ impl Keeping {
         if !KEEPS.load(std::sync::atomic::Ordering::Relaxed) {
             return Keeping::off();
         }
-        Keeping::from(KEPT.lock().ok().and_then(|mut kept| kept.take()))
+        let found = KEPT.lock().ok().and_then(|mut kept| kept.take());
+        if !USES_KEPT.load(std::sync::atomic::Ordering::Relaxed) {
+            // Numbered on from the build before, but with nothing of it to use.
+            return Keeping { found: None, ..Keeping::from(found) };
+        }
+        Keeping::from(found)
     }
 
     /// Using nothing kept, and keeping nothing.

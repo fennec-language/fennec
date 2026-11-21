@@ -934,6 +934,8 @@ fn llvm_objects(
     // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
     // the runtime of each, for it to stop if it's ever given one.
     fennec_llvm::trust_native_blocks(release);
+    // Nor does a release build use an analysis a build before it kept: it's the build that ships.
+    fennec_llvm::use_kept_analyses(!release);
     let reached = main_reaches(&program.module);
     // Cutting it down only lets items go, so what was checked holds for what's left once what was
     // cut is let go of too.
@@ -943,6 +945,14 @@ fn llvm_objects(
     } else {
         (emitted_with(&reached, &fennec_llvm::emit_for, false, checked)?, None)
     };
+    // Asked to check what's kept, a build says how much of it it used, each checked against
+    // working it out again: none, for a release build.
+    if std::env::var("FENNEC_CHECK_WHOLE").as_deref() == Ok("1") {
+        let (used, of) = fennec_llvm::analyses_used_again();
+        eprintln!(
+            "note: used {used} of {of} functions' analyses again, each checked against analyzing it again"
+        );
+    }
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
             sources: if release { portable_sources(program) } else { program.sources.clone() },
@@ -996,14 +1006,6 @@ fn emitted_reusing(
         fennec_llvm::emit_reusing(lowered, cpu, &mut reuse.borrow_mut())
     };
     let emitted = emitted_with(reached, &emit, false, checked)?;
-    // Asked to check what's kept, a build says how much of it it used, each checked against
-    // working it out again.
-    if std::env::var("FENNEC_CHECK_WHOLE").as_deref() == Ok("1") {
-        let (used, of) = fennec_llvm::analyses_used_again();
-        eprintln!(
-            "note: used {used} of {of} functions' analyses again, each checked against analyzing it again"
-        );
-    }
     if let Some(index) = reuse.borrow_mut().keep.take() {
         // Every unit's object, as the next build may use any of them again: those compiled this
         // build are new, and so used now, till this list is marked.

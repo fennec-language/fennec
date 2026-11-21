@@ -508,8 +508,13 @@ impl Interp {
             && let ExprKind::Comprehension { iter, .. } = &generator.kind
             && let Some(call) = self.parallel_call(iter)?
         {
-            return self.parallel_sum(generator, call, start.as_ref(), expr.span);
+            return self.parallel_sum(generator, call, start, expr);
         }
+        self.summed(over, start, expr)
+    }
+
+    /// The items of `over` added up from `start`, in order, as `sum` adds them.
+    pub(crate) fn summed(&mut self, over: ArgVal, start: Option<Value>, expr: &'static Expr) -> Run<Value> {
         let floats = match self.program.type_at(expr.span) {
             Some(Type::Float) => true,
             Some(Type::Sized(num)) if num.is_float() => return unsupported("f32"),

@@ -101,6 +101,11 @@ jobs:
             cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
             cp target/release/fennec-fuzz fennec-fuzz
             echo "FENNEC=$PWD/target/release/fennec" >> "$GITHUB_ENV"
+            if [[ " $ONLY " == *" postgres "* ]]; then
+              # The postgres reader reads std's private `PgReader`, which a program imports only
+              # through `fennec-std-tests`, the test build's own command, built here beside `fennec`.
+              cargo build --release --locked -p fennec --features std-private --bin fennec-std-tests
+            fi
             if [[ " $ONLY " == *" fault-writes "* ]]; then
               # A runtime that fails std.fs's work where FENNEC_FAULTS says, in a folder of its own
               # beside a copy of `fennec`, with no bitcode, so a --release build links it too.

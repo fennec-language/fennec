@@ -22,6 +22,7 @@ mod paths;
 mod rewrites;
 mod sizes;
 mod stale;
+mod typed;
 
 use fennec_syntax::{Diagnostic, Item, Module, Sources};
 
@@ -173,13 +174,34 @@ pub fn kit_lints(module: &Module) -> Vec<Lint> {
     asserts::in_kit(module, asserts::declares_expect(module))
 }
 
+/// What the four lints that need the program's types find, from one typed check of it shared among
+/// them, rather than one each: `needless_conversions` and `double_lookups` when `trials` says to,
+/// then `stale_copies` and `self_compares`. Those two try their fixes by checking the program
+/// again with them made, which a run leaves out so it never waits on that (#2315). A program
+/// none of them finds anything to ask about in isn't checked at all.
+#[must_use]
+pub fn typed_lints(module: &Module, sources: &Sources, trials: bool) -> Vec<Lint> {
+    typed_lints_with(module, sources, trials, &typed::Types::new(module))
+}
+
+fn typed_lints_with(module: &Module, sources: &Sources, trials: bool, types: &typed::Types<'_>) -> Vec<Lint> {
+    let mut found = Vec::new();
+    if trials {
+        found.extend(conversions::of(module, sources, types));
+        found.extend(lookups::of(module, sources, types));
+    }
+    found.extend(stale::of(module, sources, types));
+    found.extend(compares::of(module, sources, types));
+    found
+}
+
 /// Each struct copied from one place into another while what it came from can still change, as
 /// a hint: `world.selected = world.units[i]` is a snapshot, which a program that meant a link
 /// would write as a `ref`. It needs the typed tree, so it's asked for where the whole program is
 /// checked anyway.
 #[must_use]
 pub fn stale_copies(module: &Module, sources: &Sources) -> Vec<Lint> {
-    stale::of(module, sources)
+    stale::of(module, sources, &typed::Types::new(module))
 }
 
 /// Every conversion to the type a value has already, in a module that checks: `str(s)` on text,
@@ -187,7 +209,7 @@ pub fn stale_copies(module: &Module, sources: &Sources) -> Vec<Lint> {
 /// tried, so they're asked for where the whole program is checked anyway.
 #[must_use]
 pub fn needless_conversions(module: &Module, sources: &Sources) -> Vec<Lint> {
-    conversions::of(module, sources)
+    conversions::of(module, sources, &typed::Types::new(module))
 }
 
 /// Every `table[key] if key in table else default` on a dict, in a module that checks, which
@@ -195,14 +217,14 @@ pub fn needless_conversions(module: &Module, sources: &Sources) -> Vec<Lint> {
 /// so they're asked for where the whole program is checked anyway.
 #[must_use]
 pub fn double_lookups(module: &Module, sources: &Sources) -> Vec<Lint> {
-    lookups::of(module, sources)
+    lookups::of(module, sources, &typed::Types::new(module))
 }
 
 /// Every `x == x` and `x != x` on a name or field of a plain type, in a module that checks. It
 /// needs the types, so it's asked for where the whole program is checked anyway, apart from `lint`.
 #[must_use]
 pub fn self_compares(module: &Module, sources: &Sources) -> Vec<Lint> {
-    compares::of(module, sources)
+    compares::of(module, sources, &typed::Types::new(module))
 }
 
 /// A hint for each place a lowered program may copy, and each it may allocate in code that runs
@@ -217,4 +239,43 @@ pub fn costs(findings: &[fennec_ir::Finding]) -> Vec<Lint> {
 #[must_use]
 pub fn hot_costs(findings: &[fennec_ir::Finding], reach: &fennec_ir::HotReach) -> Vec<Diagnostic> {
     costs::hot(findings, reach)
+}
+
+#[cfg(test)]
+mod tests {
+    use fennec_syntax::{Sources, parse_at};
+
+    use super::{typed::Types, typed_lints_with};
+
+    fn typed_rules(source: &str, trials: bool) -> (Vec<&'static str>, usize) {
+        let mut sources = Sources::new();
+        let base = sources.add("shared.fen", source);
+        let module = parse_at(source, base).unwrap();
+        let types = Types::new(&module);
+        let rules =
+            typed_lints_with(&module, &sources, trials, &types).iter().map(|lint| lint.rule).collect();
+        (rules, types.checks())
+    }
+
+    #[test]
+    fn the_typed_lints_share_one_check() {
+        let source = "def total(table: dict[str, int], count: int) -> int:\n    \
+                      same = count == count\n    \
+                      looked = table[\"a\"] if \"a\" in table else 0\n    \
+                      return int(count) + looked + int(same)\n";
+        let (rules, checks) = typed_rules(source, true);
+        for rule in ["needless-conversion", "double-lookup", "self-compare"] {
+            assert!(rules.contains(&rule), "{rule} in {rules:?}");
+        }
+        assert_eq!(checks, 1, "one typed check for all of them");
+        let (rules, checks) = typed_rules(source, false);
+        assert_eq!(rules, ["self-compare"], "a run's lints leave out the ones that try fixes");
+        assert_eq!(checks, 1);
+    }
+
+    #[test]
+    fn a_program_none_asks_about_is_not_checked() {
+        let (rules, checks) = typed_rules("def total(count: int) -> int:\n    return count + 1\n", true);
+        assert_eq!((rules.len(), checks), (0, 0));
+    }
 }

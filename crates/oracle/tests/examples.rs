@@ -9,6 +9,9 @@ use fennec_oracle::report::{Example, Verdict, examples, judge};
 /// The examples, and the programs that test std's private parts from outside it, which
 /// `fennec-std-tests` builds: each is held to its `.out` file the same way.
 fn every_example(here: &Path) -> std::io::Result<Vec<Example>> {
+    // Those programs import std's private names, as `fennec-std-tests` lets them: the oracle, a
+    // test-only crate, takes them too.
+    fennec_syntax::let_programs_import_std_private_names();
     let mut all = examples(&here.join("../../examples"))?;
     all.extend(examples(&here.join("../fennec/tests/fixtures/std_private"))?);
     Ok(all)

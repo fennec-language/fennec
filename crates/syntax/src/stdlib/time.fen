@@ -401,17 +401,13 @@ export struct Time:
                 at += 1
                 continue
             code = pattern[at + 1]
-            out.write(self.directive(code) else "%" + code)
+            out.write(self._directive(code) else "%" + code)
             at += 2
         return out.text()
 
-    ## What a `format` directive writes, without its `%`.
-    ##
-    ## ```fennec
-    ## from std.time import Time
-    ## assert Time.parse("2026-11-06T21:55:56Z")?.directive("B") == "November"
-    ## ```
-    def directive(self, code: str) -> str?:
+    ## What a `format` directive writes, given without its `%`, as "November" for `B`, or
+    ## `None` for one `format` writes as it is.
+    def _directive(self, code: str) -> str?:
         if code == "Y": return Time._padded(self.year(), width=4)
         if code == "y": return Time._padded(self.year() % 100, width=2)
         if code == "m": return Time._padded(self.month(), width=2)

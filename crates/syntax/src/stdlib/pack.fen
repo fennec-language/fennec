@@ -385,7 +385,7 @@ def read_value[T: Deserializable](ref src: PackReader) -> T fails ParseError:
 LOW_63 = 9223372036854775807
 
 ## Writes what a value's `serialize` gives it as bytes.
-export struct PackWriter:
+struct PackWriter:
     ## What's written so far, in a builder with room to grow.
     _out = bytes_builder()
     _exact = False
@@ -540,7 +540,7 @@ export struct PackWriter:
             bytes_set(ref self._out, self._some_at, 0)
 
 ## Reads bytes `PackWriter` wrote, for a value's `deserialize`.
-export struct PackReader:
+struct PackReader:
     _data: bytes
     _at = 0
     _depth = 0
@@ -556,7 +556,7 @@ export struct PackReader:
     _field = 0
     _exact = False
     ## Each `Id` and `Table` read, checked once everything has been.
-    _ids = IdsSeen(_whole="the data")
+    _ids = IdsSeen.called("the data")
     ## The tag each `Table` of a type gets, new for each load.
     _tags = dict[str, int]()
     ## Whether to keep track of where it is, for a message, and where.

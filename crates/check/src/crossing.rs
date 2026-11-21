@@ -55,9 +55,9 @@ pub(crate) fn wanted() -> bool {
 /// Which types can cross to another task, as the backend reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Crossing {
-    types: BTreeSet<Type>,
+    pub(crate) types: BTreeSet<Type>,
     /// Whether it was worked out: if not, every type is said to cross.
-    worked_out: bool,
+    pub(crate) worked_out: bool,
 }
 
 impl Default for Crossing {

@@ -104,6 +104,16 @@ impl Taken {
             Self::BA => "lock b, a as ref y, ref x:",
         }
     }
+
+    /// The `lock` line that takes them to read.
+    fn reading(self) -> &'static str {
+        match self {
+            Self::A => "lock a as x:",
+            Self::B => "lock b as y:",
+            Self::AB => "lock a, b as x, y:",
+            Self::BA => "lock b, a as y, x:",
+        }
+    }
 }
 
 /// How a lock's body ends.
@@ -115,6 +125,9 @@ enum Ending {
     Failed,
     /// It crashes, in a task of its own, which undoes its changes.
     Crashed,
+    /// It reads, changing nothing, and prints the total it saw. Readers hold a value together, so
+    /// two readers of both accounts can log their takes crossed (#2313).
+    Read,
 }
 
 /// A lock a task or `main` takes.
@@ -267,6 +280,32 @@ impl Bytes<'_> {
     }
 }
 
+/// The locks an input asks for, each put among a task's steps or `main`'s.
+fn locks_among(bytes: &mut Bytes<'_>, tasks: &mut [Vec<Step>], main: &mut Vec<MainStep>) -> Vec<Lock> {
+    (0..bytes.below(MOST_LOCKS + 1))
+        .map(|number| {
+            let taken = match bytes.below(4) {
+                0 => Taken::A,
+                1 => Taken::B,
+                2 => Taken::AB,
+                _ => Taken::BA,
+            };
+            let ending = match bytes.below(4) {
+                0 | 1 => Ending::Kept,
+                2 => Ending::Failed,
+                _ => Ending::Crashed,
+            };
+            // A task's, or `main`'s, past the last task.
+            let owner = bytes.below(tasks.len() + 1);
+            match tasks.get_mut(owner) {
+                Some(steps) => steps.insert(bytes.below(steps.len() + 1), Step::Lock(number)),
+                None => main.insert(bytes.below(main.len() + 1), MainStep::Lock(number)),
+            }
+            Lock { taken, ending }
+        })
+        .collect()
+}
+
 fn plan(input: &[u8]) -> Plan {
     let mut bytes = Bytes { bytes: input, at: 0 };
     let tasks: Vec<Vec<Step>> = (0..bytes.below(MOST_TASKS + 1)).map(|_| bytes.steps(true)).collect();
@@ -309,28 +348,7 @@ fn plan(input: &[u8]) -> Plan {
         pieces
     });
     let mut tasks = tasks;
-    let locks = (0..bytes.below(MOST_LOCKS + 1))
-        .map(|number| {
-            let taken = match bytes.below(4) {
-                0 => Taken::A,
-                1 => Taken::B,
-                2 => Taken::AB,
-                _ => Taken::BA,
-            };
-            let ending = match bytes.below(4) {
-                0 | 1 => Ending::Kept,
-                2 => Ending::Failed,
-                _ => Ending::Crashed,
-            };
-            // A task's, or `main`'s, past the last task.
-            let owner = bytes.below(tasks.len() + 1);
-            match tasks.get_mut(owner) {
-                Some(steps) => steps.insert(bytes.below(steps.len() + 1), Step::Lock(number)),
-                None => main.insert(bytes.below(main.len() + 1), MainStep::Lock(number)),
-            }
-            Lock { taken, ending }
-        })
-        .collect();
+    let mut locks = locks_among(&mut bytes, &mut tasks, &mut main);
     let pieces_lock = pieces.is_some() && bytes.below(2) == 1;
     let senders = bytes.below(MOST_SENDERS + 1);
     let gather = (senders > 0).then(|| {
@@ -348,6 +366,13 @@ fn plan(input: &[u8]) -> Plan {
     };
     if let Some(stuck) = stuck.filter(|_| rounds.is_empty()) {
         main.insert(bytes.below(main.len() + 1), MainStep::Stuck(stuck));
+    }
+    // Which of the locks that would be kept read instead, by their numbers' bits.
+    let reads = bytes.next();
+    for (number, lock) in locks.iter_mut().enumerate() {
+        if reads >> number & 1 == 1 && lock.ending == Ending::Kept {
+            lock.ending = Ending::Read;
+        }
     }
     Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather }
 }
@@ -419,21 +444,21 @@ impl Plan {
         }
     }
 
-    /// The name a task or `main` prints its lock with, and how many it keeps.
-    fn kept_locks(&self) -> Vec<(String, usize)> {
-        let kept = |number: usize| self.lock(number).ending == Ending::Kept;
+    /// The name a task or `main` prints its locks with, and how many of them end as `ending` does.
+    fn locks_ending(&self, ending: Ending) -> Vec<(String, usize)> {
+        let ends = |number: usize| self.lock(number).ending == ending;
         let mut each: Vec<(String, usize)> = self
             .tasks
             .iter()
             .enumerate()
             .map(|(task, steps)| {
                 let count =
-                    steps.iter().filter(|step| matches!(step, Step::Lock(number) if kept(*number))).count();
+                    steps.iter().filter(|step| matches!(step, Step::Lock(number) if ends(*number))).count();
                 (format!("t{task}"), count)
             })
             .collect();
         let main =
-            self.main.iter().filter(|step| matches!(step, MainStep::Lock(number) if kept(*number))).count();
+            self.main.iter().filter(|step| matches!(step, MainStep::Lock(number) if ends(*number))).count();
         each.push(("main".to_owned(), main));
         each
     }
@@ -460,7 +485,7 @@ impl Plan {
                         printed.push(format!("{who} got {}\n", sent(&who, taken)));
                         taken += 1;
                     }
-                    Step::Lock(lock) if self.lock(*lock).ending == Ending::Kept => {}
+                    Step::Lock(lock) if matches!(self.lock(*lock).ending, Ending::Kept | Ending::Read) => {}
                     Step::Lock(lock) => printed.push(format!("{who} undone {lock}\n")),
                 }
             }
@@ -468,7 +493,9 @@ impl Plan {
         for (number, step) in self.main.iter().enumerate() {
             match step {
                 MainStep::Print => printed.push(format!("main s{number}\n")),
-                MainStep::Lock(lock) if self.lock(*lock).ending != Ending::Kept => {
+                MainStep::Lock(lock)
+                    if matches!(self.lock(*lock).ending, Ending::Failed | Ending::Crashed) =>
+                {
                     printed.push(format!("main undone {lock}\n"));
                 }
                 _ => {}
@@ -512,6 +539,9 @@ impl Plan {
                     Step::Lock(lock) if self.lock(*lock).ending == Ending::Kept => {
                         lines.push(format!("{who} locked ?"));
                     }
+                    Step::Lock(lock) if self.lock(*lock).ending == Ending::Read => {
+                        lines.push(format!("{who} saw ?"));
+                    }
                     Step::Lock(lock) => lines.push(format!("{who} undone {lock}")),
                 }
             }
@@ -521,6 +551,9 @@ impl Plan {
                 MainStep::Print => lines.push(format!("main s{number}")),
                 MainStep::Lock(lock) if self.lock(*lock).ending == Ending::Kept => {
                     lines.push("main locked ?".to_owned());
+                }
+                MainStep::Lock(lock) if self.lock(*lock).ending == Ending::Read => {
+                    lines.push("main saw ?".to_owned());
                 }
                 MainStep::Lock(lock) => lines.push(format!("main undone {lock}")),
                 _ => {}
@@ -556,6 +589,9 @@ impl Plan {
         }
         if let Some((who, _)) = line.split_once(" locked ") {
             return Some(format!("{who} locked ?"));
+        }
+        if let Some((who, _)) = line.split_once(" saw ") {
+            return Some(format!("{who} saw ?"));
         }
         if self.pieces_lock
             && let Some(agree) = line.strip_prefix("total a ").and_then(|rest| rest.rsplit(' ').next())
@@ -594,10 +630,16 @@ impl Plan {
         if let Some(range) = (0..count).find(|range| text.matches(&format!("p {range}\n")).count() > 1) {
             return Err(format!("range {range} printed twice"));
         }
-        for (who, kept) in self.kept_locks() {
+        for (who, kept) in self.locks_ending(Ending::Kept) {
             let printed = text.matches(&format!("{who} locked ")).count();
             if printed != kept {
                 return Err(format!("{who} printed {printed} kept locks, not {kept}"));
+            }
+        }
+        for (who, read) in self.locks_ending(Ending::Read) {
+            let printed = text.matches(&format!("{who} saw ")).count();
+            if printed != read {
+                return Err(format!("{who} printed {printed} reads, not {read}"));
             }
         }
         Ok(())
@@ -607,12 +649,8 @@ impl Plan {
     /// with the length of moves they found, which the order decides.
     fn crashes_said(&self, said: &str) -> bool {
         let crashes = self.locks.iter().filter(|lock| lock.ending == Ending::Crashed).count();
-        let lines: Vec<&str> = said.lines().collect();
-        lines.len() == crashes
+        crash_reports(said).is_some_and(|reports| reports == crashes)
             && (said.is_empty() || said.ends_with('\n'))
-            && lines
-                .iter()
-                .all(|line| line.strip_prefix(CRASHED).is_some_and(|length| length.parse::<usize>().is_ok()))
     }
 
     /// Checks a recording of a program that deadlocks: it ended with 1, saying its deadlock once,
@@ -622,8 +660,7 @@ impl Plan {
         let at = said.find(DEADLOCKED);
         let before = at.and_then(|at| said.get(..at)).unwrap_or(said);
         let crashed = self.locks.iter().filter(|lock| lock.ending == Ending::Crashed).count();
-        let crashes_before =
-            before.lines().all(|line| line.starts_with(CRASHED)) && before.lines().count() <= crashed;
+        let crashes_before = crash_reports(before).is_some_and(|reports| reports <= crashed);
         if *code != Some(1) || at.is_none() || said.matches(DEADLOCKED).count() != 1 || !crashes_before {
             return Err(format!("where it deadlocks, it ended with {code:?}, saying:\n{said}"));
         }
@@ -727,6 +764,10 @@ fn locking(plan: &Plan, number: usize, who: &str, indent: &str) -> String {
                 changing(taken, number + 1, number + 1, &inner)
             )
         }
+        Ending::Read => {
+            let first = if taken.a() { "x" } else { "y" };
+            format!("{indent}{}\n{inner}stdout.print(\"{who} saw\", {first}.total)\n", taken.reading())
+        }
         Ending::Failed => format!(
             "{indent}undone_{number}({arguments}) except Undone():\n{inner}stdout.print(\"{who} undone {number}\")\n"
         ),
@@ -747,7 +788,7 @@ fn undone(plan: &Plan) -> String {
         let changes = changing(*taken, 100, 1000, "        ");
         let first = if taken.a() { "x" } else { "y" };
         match ending {
-            Ending::Kept => {}
+            Ending::Kept | Ending::Read => {}
             Ending::Failed => {
                 let _ = write!(
                     out,
@@ -1173,6 +1214,29 @@ const DEADLOCKED: &str = "error: a deadlock";
 
 /// What a lock that crashes says on standard error, before the length of the moves it read past.
 const CRASHED: &str = "error: index 99 is out of range for length ";
+
+/// How many crash reports `said` is, if it's only crash reports: each a [`CRASHED`] line with the
+/// length of the moves, then the lines saying where it happened, ` --> file:line:column` and the
+/// source line under a `|` margin.
+fn crash_reports(said: &str) -> Option<usize> {
+    let mut reports = 0;
+    for line in said.lines() {
+        if let Some(length) = line.strip_prefix(CRASHED) {
+            length.parse::<usize>().ok()?;
+            reports += 1;
+        } else if reports == 0 || !says_where(line) {
+            return None;
+        }
+    }
+    Some(reports)
+}
+
+/// Whether `line` is one of the lines under an error saying where it happened.
+fn says_where(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("--> ")
+        || line.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start().starts_with('|')
+}
 
 /// What a replay of a server says when the recording's end stops it, and all it may say.
 const SERVER_STOPPED: &str = "replay: the recording ends here, so the server is stopped\n";

@@ -119,6 +119,12 @@ const FAILING_GENERATORS: bool = true;
 /// `list[str?]` stopped crashing native code (#2282, fixed by #2292).
 const POPPED_OPTIONALS: bool = true;
 
+/// Whether a statement saves a box of the program's own values and loads it back (`Saved`):
+/// unions, an enum, a `where` rule, two `Table`s with `Id`s into them and optionals, through JSON,
+/// `std.pack` (in order and exact) and TOML, between steps changing it, and texts that don't hold
+/// one refused.
+const SAVED_VALUES: bool = true;
+
 /// Whether random programs change a number of each of the eight integer sizes every way
 /// (`Sized`): checked arithmetic, `wrapping_` and `saturating_`, shifts past the top and at the
 /// width, bits, `sum`, widening, `parse`, and a loop whose bound the proofs can't see past. A
@@ -807,6 +813,7 @@ impl Writer<'_> {
             27 if FAILING_GENERATORS && self.choice(4) == 0 => self.failing_generators(body),
             27 if WHERE_RULES && self.choice(4) == 0 => self.where_rules(body),
             27 if POPPED_OPTIONALS && self.choice(4) == 0 => self.popped_optionals(body),
+            27 if SAVED_VALUES && self.choice(4) == 0 => self.saved_values(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1639,6 +1646,14 @@ impl Writer<'_> {
             steps.push((way, self.choice(3)));
         }
         body.push(Stmt::Popped(Popping { id, ty, in_field, steps }));
+    }
+
+    /// A `Saved` statement: 3 to 14 steps, each naming only units and tags that are in the box.
+    fn saved_values(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let steps = super::saving::picked_steps(id, &mut |n| self.choice(n));
+        body.push(Stmt::Saved(super::saving::Saving { id, steps }));
     }
 
     /// A `Sized` statement: one size, a start near its middle or either end, then 3 to 12 steps,

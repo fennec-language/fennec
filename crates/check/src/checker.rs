@@ -615,7 +615,7 @@ impl Checker {
             }
         }
         let mut diagnostics = std::mem::take(&mut program.problems);
-        diagnostics.extend(crate::privacy::in_module(module));
+        diagnostics.extend(crate::privacy::top_level_underscores(module));
         Checker {
             program,
             states: BTreeMap::new(),
@@ -1566,15 +1566,9 @@ impl Checker {
         self.scope == Scope::Library
     }
 
-    /// Starts a check of `scope`. `Scope::Library`'s holds the library's own types to the rule a
-    /// program's module was held to when it was added: a type with a `_` field something builds.
+    /// Starts a check of `scope`.
     fn start(&mut self, scope: Scope) {
         self.scope = scope;
-        if self.in_library() {
-            for module in fennec_syntax::prelude_modules().unwrap_or_default() {
-                self.diagnostics.extend(crate::privacy::unbuildable_in(module, true));
-            }
-        }
     }
 
     /// Whether what's at `span` is let off a rule that holds a program: the library's own code

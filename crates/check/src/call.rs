@@ -1417,7 +1417,7 @@ impl FnCx<'_> {
             [] => Type::named(type_name),
             given => Type::Generic(type_name.to_owned(), given.iter().map(|(_, ty)| ty.clone()).collect()),
         };
-        self.private_fields_given(type_name, &fields, args);
+        self.private_fields_given(type_name, &fields, args, span);
         let literal = self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
         self.check_bounds(chosen, span);
         crate::stdlib::construct(self, type_name, args);
@@ -1673,11 +1673,11 @@ impl FnCx<'_> {
         built
     }
 
-    /// Building a type from outside it when one of its `_` fields has no default, which only its
-    /// own methods can set: it's built through one of its named constructors.
+    /// Building a type from outside its file when one of its `_` fields has no default, which
+    /// only code in its file can set: it's built through one of its named constructors.
     fn built_elsewhere(&self, type_name: &str, field: &str, span: Span) -> Diagnostic {
         let message = format!(
-            "`{type_name}` is built through its named constructors: only its own methods can set `{field}`"
+            "`{type_name}` is built through its named constructors: only code in its file can set `{field}`"
         );
         let named: Vec<String> = self
             .checker
@@ -1711,7 +1711,7 @@ impl FnCx<'_> {
         let mut unmatched_args = false;
         // From outside the type, its automatic constructor sets only its public fields, so
         // values given by position go to those.
-        let outside = !self.inside(type_name);
+        let outside = !self.inside(type_name, span);
         let settable: Vec<usize> = (0..fields.len())
             .filter(|&at| !(outside && fields.get(at).is_some_and(|field| field.name.starts_with('_'))))
             .collect();

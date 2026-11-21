@@ -6,7 +6,7 @@
 //! alone: `mut y = str(s)` makes a value of `y`'s own, and `mut y = s` would make `y` stand for
 //! `s`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use fennec_check::Type;
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FStrPart, Module, Sources, Span};
@@ -14,6 +14,7 @@ use fennec_syntax::{Diagnostic, Expr, ExprKind, FStrPart, Module, Sources, Span}
 use crate::Lint;
 use crate::copies::{places, redefined};
 use crate::rewrites::{operand, replaceable};
+use crate::typed::Types;
 
 /// The builtins this looks at.
 const CONVERSIONS: [&str; 5] = ["str", "int", "float", "i64", "f64"];
@@ -105,7 +106,7 @@ fn lint(sources: &Sources, (call, argument): (Span, bool), value: &Expr, message
     Some(Lint::new("needless-conversion", diagnostic))
 }
 
-pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
+pub(crate) fn of(module: &Module, sources: &Sources, types: &Types<'_>) -> Vec<Lint> {
     let mut calls: Vec<(String, Span, Expr)> = Vec::new();
     let mut shown: HashSet<(u32, u32)> = HashSet::new();
     fennec_syntax::read::exprs(module, &mut |expr| {
@@ -133,13 +134,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     if calls.is_empty() {
         return Vec::new();
     }
-    let Ok(checked) = fennec_check::check_typed(module) else { return Vec::new() };
-    let types: HashMap<(u32, u32), &Type> = checked
-        .types
-        .iter()
-        .flat_map(|(_, body)| body.exprs())
-        .map(|(span, ty)| ((span.start, span.end), ty))
-        .collect();
+    let Some(types) = types.by_span() else { return Vec::new() };
     let places = places(module);
     // The conversions that are a call's argument, where what's left needs no brackets.
     let mut arguments: HashSet<(u32, u32)> = HashSet::new();
@@ -218,7 +213,7 @@ mod tests {
     fn needless_conversions_are_all_tried_in_one_check() {
         let (module, sources) = converting(40);
         trials();
-        assert_eq!(of(&module, &sources).len(), 40);
+        assert_eq!(of(&module, &sources, &crate::typed::Types::new(&module)).len(), 40);
         assert_eq!(trials(), 1);
     }
 

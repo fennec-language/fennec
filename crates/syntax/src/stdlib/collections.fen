@@ -28,13 +28,13 @@ export struct Deque[T]:
 
     ## Adds an item at the back.
     def append(ref self, item: T):
-        self.make_room(item)
+        self._make_room(item)
         self.slots[(self.head + self.count) % len(self.slots)] = item
         self.count += 1
 
     ## Adds an item at the front.
     def appendleft(ref self, item: T):
-        self.make_room(item)
+        self._make_room(item)
         self.head = (self.head - 1) % len(self.slots)
         self.slots[self.head] = item
         self.count += 1
@@ -78,7 +78,7 @@ export struct Deque[T]:
 
     ## Makes room for one more item, doubling the slots when they're full. `filler` fills
     ## the new slots.
-    def make_room(ref self, filler: T):
+    def _make_room(ref self, filler: T):
         if self.count < len(self.slots): return
         mut slots = self.items()
         for _ in range(len(slots) + 1):
@@ -108,7 +108,7 @@ export struct Heap[T: Ordered]:
     def of(items: list[T]) -> Heap[T]:
         mut heap = Heap(items=items)
         for at in range(len(items) // 2 - 1, -1, -1):
-            heap.sift_down(at)
+            heap._sift_down(at)
         return heap
 
     def len(self) -> int:
@@ -163,7 +163,7 @@ export struct Heap[T: Ordered]:
         self.items = []
 
     ## Moves the item at `start` down until it's no bigger than the items below it.
-    def sift_down(ref self, start: int):
+    def _sift_down(ref self, start: int):
         mut at = start
         while True:
             left = 2 * at + 1
@@ -172,10 +172,10 @@ export struct Heap[T: Ordered]:
             if left + 1 < len(self.items) and self.items[left + 1] < self.items[left]:
                 child = left + 1
             if not self.items[child] < self.items[at]: break
-            self.swap(at, child)
+            self._swap(at, child)
             at = child
 
-    def swap(ref self, a: int, b: int):
+    def _swap(ref self, a: int, b: int):
         item = self.items[a]
         self.items[a] = self.items[b]
         self.items[b] = item

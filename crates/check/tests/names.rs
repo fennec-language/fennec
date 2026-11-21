@@ -372,37 +372,105 @@ fn a_types_own_methods_reach_its_underscore_names() {
     assert_eq!(problems(&text), Vec::<String>::new());
 }
 
+/// What the checker says of a program in several files, each a name and its text, with where
+/// each problem is in its own file's text.
+fn problems_in_files(files: &[(&str, &str)]) -> Vec<String> {
+    let mut sources = fennec_syntax::Sources::new();
+    let mut module = fennec_syntax::Module::default();
+    for (path, text) in files {
+        let base = sources.add(*path, *text);
+        match fennec_syntax::parse_at(text, base) {
+            Ok(parsed) => module.items.extend(parsed.items),
+            Err(problem) => return vec![format!("parse: {}", problem.message)],
+        }
+    }
+    module.files = sources.spans();
+    let Err(diagnostics) = fennec_check::check(&module) else { return Vec::new() };
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let at = sources.file_at(diagnostic.span).and_then(|(_, text, base)| {
+                let start = usize::try_from(diagnostic.span.start.checked_sub(base)?).ok()?;
+                let end = usize::try_from(diagnostic.span.end.checked_sub(base)?).ok()?;
+                text.get(start..end)
+            });
+            format!("{} @ {}", diagnostic.message, at.unwrap_or("?"))
+        })
+        .collect()
+}
+
+/// A `_` field or method is its file's: a function, another type, an `extend` and a test written
+/// in the file that declares the type read, set and call one, build the type with one, and match
+/// it in a `case`, as its own methods do.
 #[test]
-fn nothing_outside_a_type_reaches_its_underscore_names() {
+fn code_in_a_types_file_reaches_its_underscore_names() {
     let in_main = |body: &str| {
         problems(&format!("{ACCOUNT}def main(stdout: Stdout):\n    mut account = Account(\"ash\")\n{body}"))
     };
-    let private = "`_balance` is private to `Account`";
+    let empty: [&str; 0] = [];
+    assert_eq!(in_main("    stdout.print(account._balance)\n"), empty);
+    assert_eq!(in_main("    account._balance = 1\n    stdout.print(account._balance)\n"), empty);
+    assert_eq!(in_main("    stdout.print(account._audit())\n"), empty);
+    assert_eq!(
+        in_main("    made = Account(owner=\"x\", _balance=100)\n    stdout.print(made.owner)\n"),
+        empty
+    );
+    assert_eq!(in_main("    made = copy(account, _balance=9)\n    stdout.print(made.owner)\n"), empty);
+    assert_eq!(
+        in_main("    match account:\n        case Account(owner, balance): stdout.print(owner, balance)\n"),
+        empty
+    );
+    let more = format!(
+        "{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        return self._balance\n\n\
+         struct Bank:\n    first: Account\n\n    def held(self) -> int:\n        return self.first._balance\n\n\
+         test \"an account starts empty\":\n    assert Account(\"ash\")._balance == 0\n"
+    );
+    assert_eq!(problems(&more), empty);
+}
+
+/// No other file reaches a type's `_` names, of the same kit or another: it reads, sets and
+/// calls none, sets none when it builds or copies one, matches none in a `case`, and an
+/// `extend` written there reaches none either.
+#[test]
+fn no_other_file_reaches_a_types_underscore_names() {
+    let in_main = |body: &str| {
+        let main = format!("def main(stdout: Stdout):\n    mut account = Account(\"ash\")\n{body}");
+        problems_in_files(&[("account.fen", ACCOUNT), ("main.fen", &main)])
+    };
+    let private = "`_balance` is private to `Account`'s file";
     assert_eq!(in_main("    stdout.print(account._balance)\n"), [format!("{private} @ account._balance")]);
     assert_eq!(in_main("    account._balance = 1\n"), [format!("{private} @ account._balance")]);
     assert_eq!(
         in_main("    stdout.print(account._audit())\n"),
-        ["`_audit` is private to `Account` @ account._audit()"]
+        ["`_audit` is private to `Account`'s file @ account._audit()"]
     );
-    assert_eq!(in_main("    forged = Account(owner=\"x\", _balance=100)\n"), [format!("{private} @ 100")]);
+    assert_eq!(
+        in_main("    forged = Account(owner=\"x\", _balance=100)\n    stdout.print(forged.owner)\n"),
+        [format!("{private} @ 100")]
+    );
     // By position, values go to the public fields alone, so there's none left for `100`.
-    assert_eq!(in_main("    forged = Account(\"x\", 100)\n"), ["`Account` takes 1 value(s) @ 100"]);
-    assert_eq!(in_main("    forged = copy(account, _balance=9)\n"), [format!("{private} @ 9")]);
     assert_eq!(
-        in_main("    match account:\n        case Account(owner, balance): stdout.print(balance)\n"),
-        [format!("{private} @ case Account(owner, balance): stdout.print(balance)\n")]
+        in_main("    forged = Account(\"x\", 100)\n    stdout.print(forged.owner)\n"),
+        ["`Account` takes 1 value(s) @ 100"]
     );
     assert_eq!(
-        problems(&format!(
-            "{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        return self._balance\n"
-        )),
+        in_main("    forged = copy(account, _balance=9)\n    stdout.print(forged.owner)\n"),
+        [format!("{private} @ 9")]
+    );
+    assert_eq!(
+        in_main("    match account:\n        case Account(owner, balance): stdout.print(owner, balance)\n"),
+        [format!("{private} @ case Account(owner, balance): stdout.print(owner, balance)\n")]
+    );
+    let peek = "extend Account:\n    def peek(self) -> int:\n        return self._balance\n";
+    assert_eq!(
+        problems_in_files(&[("account.fen", ACCOUNT), ("peek.fen", peek)]),
         [format!("{private} @ self._balance")]
     );
 }
 
-/// From outside a type, its automatic constructor sets its public fields, and its `_` fields
-/// take their defaults. One with no default is set by a named constructor, a method without
-/// `self` that builds one, and a type with neither can't be built at all.
+/// From outside a type's file, its automatic constructor sets its public fields, and its `_`
+/// fields take their defaults. One with no default is set by a named constructor, a method
+/// without `self` that builds one, or by code in its file.
 #[test]
 fn a_private_field_with_no_default_needs_a_named_constructor() {
     let account = "struct Account:
@@ -423,24 +491,28 @@ struct Counter:
         in_main("    stdout.print(Account.open(\"ana\", 7).owner, Counter(2).step)\n"),
         Vec::<String>::new()
     );
+    let elsewhere = |body: &str| {
+        problems_in_files(&[
+            ("account.fen", account),
+            ("main.fen", &format!("def main(stdout: Stdout):\n{body}")),
+        ])
+    };
     assert_eq!(
-        in_main("    stdout.print(Account(owner=\"bo\").owner)\n"),
+        elsewhere("    stdout.print(Account(owner=\"bo\").owner)\n"),
         [
-            "`Account` is built through its named constructors: only its own methods can set `_id` @ Account(owner=\"bo\")"
+            "`Account` is built through its named constructors: only code in its file can set `_id` @ Account(owner=\"bo\")"
         ]
     );
+    // In its own file, nothing stops it.
+    assert_eq!(in_main("    stdout.print(Account(_id=1, owner=\"bo\").owner)\n"), Vec::<String>::new());
+    // A type with neither a default nor a named constructor is built in its own file alone.
+    let sealed = "struct Sealed:\n    _key: str\n\n    def key(self) -> str:\n        return self._key\n\n\
+                  def sealed(key: str) -> Sealed:\n    return Sealed(_key=key)\n";
+    assert_eq!(problems(sealed), Vec::<String>::new());
+    let opened = "def main(stdout: Stdout):\n    stdout.print(Sealed(_key=\"k\").key())\n";
     assert_eq!(
-        helps(&format!(
-            "{account}def main(stdout: Stdout):\n    stdout.print(Account(owner=\"bo\").owner)\n"
-        )),
-        ["use `Account.open(...)`"]
-    );
-    let sealed = "struct Sealed:\n    _key: str\n\n    def key(self) -> str:\n        return self._key\n";
-    assert_eq!(
-        problems(sealed),
-        [
-            "nothing can build `Sealed`: `_key` has no default, and `Sealed` has no named constructor @ struct Sealed"
-        ]
+        problems_in_files(&[("sealed.fen", sealed), ("main.fen", opened)]),
+        ["`_key` is private to `Sealed`'s file @ \"k\""]
     );
 }
 
@@ -500,7 +572,8 @@ fn a_top_level_name_doesnt_start_with_an_underscore() {
     let source = "_LIMIT = 3\n\nstruct _Box:\n    _size = 1\n\n    def _grown(self) -> int:\n        return self._size + _LIMIT\n\ninterface _Sized:\n    def size(self) -> int\n\ntype _Count = int\n\ndef _helper() -> _Box:\n    return _Box()\n\ndef main(stdout: Stdout):\n    stdout.print(_helper()._size)\n";
     let found = problems(source);
     let named: Vec<&str> = found.iter().filter_map(|problem| problem.split('`').nth(1)).collect();
-    assert_eq!(named, ["_LIMIT", "_Box", "_Sized", "_Count", "_helper", "_size"], "{found:?}");
+    // `main` reads `_size` in the file that declares `_Box`, which a `_` field allows.
+    assert_eq!(named, ["_LIMIT", "_Box", "_Sized", "_Count", "_helper"], "{found:?}");
     assert!(found[0].starts_with("`_LIMIT` is a top-level name, so it doesn't start with `_`"), "{found:?}");
     assert_eq!(
         helps("_LIMIT = 3\n\ndef main(stdout: Stdout):\n    stdout.print(_LIMIT)\n"),

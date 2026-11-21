@@ -549,6 +549,10 @@ struct IdsSeen:
     _ids = NO_SEEN
     _tables = NO_SEEN
 
+    ## A record of nothing read yet, whose messages call everything read `whole`, as "the data".
+    def called(whole: str) -> IdsSeen:
+        return IdsSeen(_whole=whole)
+
     def id(ref self, kind: str, at: str, position: int):
         self._ids.append((kind, at, position))
 

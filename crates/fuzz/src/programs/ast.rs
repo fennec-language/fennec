@@ -2473,6 +2473,9 @@ pub(crate) enum Stmt {
     Generated(Generating),
     /// `ruled{id}(stdout)`: fields with `where` rules, written every way, lent by `ref` and copied.
     Ruled(Ruling),
+    /// `saved{id}(stdout)`: a box of the program's own values saved and loaded back through JSON,
+    /// `std.pack` and TOML, and texts that don't hold one refused.
+    Saved(super::saving::Saving),
     /// `interfaced{id}(stdout)`: two types with one interface, through generic functions bounded by it.
     Interfaced(Interfacing),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.

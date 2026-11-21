@@ -3,18 +3,18 @@
 //! `dict` is sure to mean the same by `in`, `[]` and `get`, so this looks at a program that
 //! checks, and at names and fields, which give the same thing each time they're read. A dict of
 //! optional values is left alone: there a key holding `None` gives `None` written the first way,
-//! and the default written the second. Each fix is tried, as `needless-conversion`'s is. Where a
+//! and the default written the second. The fixes are tried together, as `needless-conversion`'s
+//! are (`fine_together`). Where a
 //! place is named it's left alone too, as `needless-conversion` leaves it.
-
-use std::collections::HashMap;
 
 use fennec_check::Type;
 use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Module, Sources, Span};
 
 use crate::Lint;
-use crate::conversions::still_fine;
+use crate::conversions::fine_together;
 use crate::copies::places;
 use crate::rewrites::{replaceable, written};
+use crate::typed::Types;
 
 /// Whether reading an expression twice gives the same thing and does nothing else.
 pub(crate) fn pure(expr: &Expr) -> bool {
@@ -61,16 +61,10 @@ fn get(sources: &Sources, (table, key, default): (&Expr, &Expr, &Expr), span: Sp
 }
 
 /// The module with the conditional at `span` written with `get`.
-fn with_get(module: &Module, sources: &Sources, span: Span) -> Module {
-    let mut trial = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut trial, &mut |expr| {
-        if expr.span == span
-            && let Some(parts) = lookup(expr, sources)
-        {
-            *expr = get(sources, parts, span);
-        }
-    });
-    trial
+fn with_get(sources: &Sources, expr: &mut Expr) {
+    if let Some(parts) = lookup(expr, sources) {
+        *expr = get(sources, parts, expr.span);
+    }
 }
 
 /// The conditional as `get` writes it, unless a bracket or a comment would be lost.
@@ -97,7 +91,7 @@ fn rewritten(sources: &Sources, whole: &Expr, table: &Expr, key: &Expr, default:
     Some(format!("{call} else {rest}"))
 }
 
-pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
+pub(crate) fn of(module: &Module, sources: &Sources, types: &Types<'_>) -> Vec<Lint> {
     let mut candidates: Vec<(Expr, Span, String, String)> = Vec::new();
     fennec_syntax::read::exprs(module, &mut |expr| {
         if !expr.span.in_prelude()
@@ -111,23 +105,23 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     if candidates.is_empty() {
         return Vec::new();
     }
-    let Ok(checked) = fennec_check::check_typed(module) else { return Vec::new() };
-    let types: HashMap<(u32, u32), &Type> = checked
-        .types
-        .iter()
-        .flat_map(|(_, body)| body.exprs())
-        .map(|(span, ty)| ((span.start, span.end), ty))
-        .collect();
+    let Some(types) = types.by_span() else { return Vec::new() };
     let places = places(module);
-    let mut found = Vec::new();
-    for (table, span, key, fixed) in candidates {
-        let dict = types.get(&(table.span.start, table.span.end)).is_some_and(|ty| {
-            matches!(ty, Type::Dict(_, value) if !matches!(**value, Type::Optional(_) | Type::None | Type::Unknown))
-        });
-        if dict && !places.contains(&(span.start, span.end)) && still_fine(with_get(module, sources, span)) {
+    let dicts: Vec<(Span, String, String)> = candidates
+        .into_iter()
+        .filter(|(table, span, ..)| {
+            let dict = types.get(&(table.span.start, table.span.end)).is_some_and(|ty| {
+                matches!(ty, Type::Dict(_, value) if !matches!(**value, Type::Optional(_) | Type::None | Type::Unknown))
+            });
+            dict && !places.contains(&(span.start, span.end))
+        })
+        .map(|(_, span, key, fixed)| (span, key, fixed))
+        .collect();
+    fine_together(module, dicts, &|(span, ..)| *span, &|expr| with_get(sources, expr))
+        .into_iter()
+        .map(|(span, key, fixed)| {
             let message = format!("this looks `{key}` up twice: write `{fixed}`");
-            found.push(Lint::new("double-lookup", Diagnostic::new(message, span).with_fix(span, fixed)));
-        }
-    }
-    found
+            Lint::new("double-lookup", Diagnostic::new(message, span).with_fix(span, fixed))
+        })
+        .collect()
 }

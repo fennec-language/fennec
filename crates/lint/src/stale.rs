@@ -4,7 +4,7 @@
 //! `ref`, or the item's position or `Id`. It's a hint, since a snapshot may be what's meant, and
 //! there's nothing else to write to say so.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use fennec_check::Type;
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Module, Sources, Span, Stmt, StmtKind};
@@ -12,6 +12,7 @@ use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Module, Sources, Span, St
 use crate::Lint;
 use crate::rewrites::written;
 use crate::sizes::{blocks, functions};
+use crate::typed::Types;
 
 /// A field or an item, reached from a name: `world.units[i]`, but not `world`.
 fn stepped(expr: &Expr) -> Option<&str> {
@@ -77,7 +78,7 @@ fn copies<'a>(stmts: &'a [Stmt], found: &mut Vec<(&'a Expr, &'a Expr)>) {
     }
 }
 
-pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
+pub(crate) fn of(module: &Module, sources: &Sources, types: &Types<'_>) -> Vec<Lint> {
     let mut candidates = Vec::new();
     for def in functions(module).into_iter().filter(|def| !def.span.in_prelude()) {
         let changes = changeable(def);
@@ -98,13 +99,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     if candidates.is_empty() {
         return Vec::new();
     }
-    let Ok(checked) = fennec_check::check_typed(module) else { return Vec::new() };
-    let types: HashMap<(u32, u32), &Type> = checked
-        .types
-        .iter()
-        .flat_map(|(_, body)| body.exprs())
-        .map(|(span, ty)| ((span.start, span.end), ty))
-        .collect();
+    let Some(types) = types.by_span() else { return Vec::new() };
     let mut lints = Vec::new();
     for (target, value) in candidates {
         let Some(Type::Named(_)) = types.get(&(value.span.start, value.span.end)) else { continue };

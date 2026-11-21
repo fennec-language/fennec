@@ -418,7 +418,28 @@ pub(crate) fn emit_keeping(
     // they're written, and put in `shared` after, for the entry.
     let reads = Reads::new(&everything, &native, (&waiting, !waiting_closures.is_empty()), keeping);
     let build = build_key(&shared, (header, &attributes), (threads, &reads), &layouts);
-    let mut using = reuse.map(|reuse| Using::new(reuse, build, &reads, &layouts));
+    // Each unit's IR key, worked out once, where units are used again: what their reuse checks
+    // compare, and, together, which builds check the index they bring up to date, as an edit
+    // changes them (see `index::compares_index`).
+    let irs: Option<Vec<Key>> = reuse.is_some().then(|| {
+        program
+            .functions
+            .iter()
+            .chain(&program.constants)
+            .map(|function| {
+                everything
+                    .ir_keys
+                    .get(function.name.as_str())
+                    .copied()
+                    .unwrap_or_else(|| crate::keys::ir_key(function))
+            })
+            .collect()
+    });
+    let picked = irs
+        .iter()
+        .flatten()
+        .fold(0_u64, |picked, ir| picked ^ u64::from_le_bytes(*ir.first_chunk::<8>().unwrap_or(&[0; 8])));
+    let mut using = reuse.map(|reuse| Using::new(reuse, (build, picked), &reads, &layouts));
     let functions: HashMap<&str, &Function> = program
         .functions
         .iter()
@@ -431,23 +452,18 @@ pub(crate) fn emit_keeping(
     let mut kept = Vec::new();
     // Each written unit's IR key, by its place in `units`, for the index.
     let mut written = Vec::new();
-    for function in program.functions.iter().chain(&program.constants) {
+    for (at, function) in program.functions.iter().chain(&program.constants).enumerate() {
         // A build asked to stop writes no more (`fennec_build::cancel`).
         if fennec_build::cancelled() {
             return Err(crate::STOPPED.to_owned());
         }
-        let ir = using.as_ref().map(|_| {
-            everything
-                .ir_keys
-                .get(function.name.as_str())
-                .copied()
-                .unwrap_or_else(|| crate::keys::ir_key(function))
-        });
+        let ir = irs.as_ref().and_then(|irs| irs.get(at)).copied();
         if let (Some(using), Some(ir)) = (&mut using, ir)
-            && let Some(record) = using.usable(&function.name, &ir)
+            && let Some(at) = using.usable(&function.name, &ir)
+            && let Some(record) = using.record(at).cloned()
         {
             if using.audit {
-                let kept_reads = using.reads_of(&record);
+                let kept_reads = using.reads_of(at);
                 let unit_in = (&reads, threads, kept_reads.as_slice());
                 audit_unit(function, &record, unit_in, &layouts, &shared, (header, &attributes))?;
             }
@@ -471,13 +487,13 @@ pub(crate) fn emit_keeping(
                 if checking {
                     kept.push(Kept {
                         function: function.name.clone(),
-                        reads: using.reads_of(&record),
+                        reads: using.reads_of(at),
                         share,
                         asked: Some(record.asked.clone()),
                         wrote,
                     });
                 }
-                using.keep(record);
+                using.keep(at);
                 continue;
             }
         }
@@ -543,7 +559,7 @@ pub(crate) fn emit_keeping(
             let Some(unit) = units.get(at) else { continue };
             using.keep_written(unit, ir, &unit_reads, share, asked);
         }
-        using.finish();
+        using.finish()?;
     }
     shared.native = native;
     shared.waiting_closures = waiting_closures;
@@ -2700,8 +2716,8 @@ impl Emit<'_, '_, '_> {
                 && self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind)))
     }
 
-    /// Whether `dest = lhs + more` is a text growing, from a local that holds its only owner or
-    /// took it from a field, or from a `ref` parameter. A parameter's slot is the caller's, which
+    /// Whether `dest = lhs + more` is a text, a list or bytes growing, from a local that holds its
+    /// only owner or took it from a field, or from a `ref` parameter. A parameter's slot is the caller's, which
     /// holds its owner, so growing it there is the caller's text growing, as [`Self::assign`]
     /// writes there too. Not where a change asks a lock's log first: the text may be in what the
     /// lock holds, which has to be put back as it was if the lock's block fails.
@@ -2983,7 +2999,18 @@ impl Emit<'_, '_, '_> {
                 self.same_blocks(op, (&a, &b))
             }
             Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
+            Kind::List(_) if self.grows_in_place(op, lhs, dest) => {
+                // `items += more` takes over the owner the local had, and grows in place if it can.
+                let grown = self.extended_list(&a, &b);
+                let slot = self.slot(dest);
+                self.line(&format!("store ptr {grown}, ptr {slot}"));
+                return Ok(());
+            }
             Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::Bytes if self.grows_in_place(op, lhs, dest) => {
+                self.bytes_grown(dest, &b);
+                return Ok(());
+            }
             Kind::Bytes => self.bytes_binary(op, (&a, &b))?,
             Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.lists_in_order(op, item, (&a, &b), span)?

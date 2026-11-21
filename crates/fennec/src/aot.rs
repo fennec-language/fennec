@@ -385,7 +385,7 @@ fn built_and_linked(
     (checked, reusing): (Option<fennec_check::Signatures>, bool),
 ) -> Result<Built, String> {
     let started = Instant::now();
-    let (built, units) = llvm_objects(program, release, (checked, reusing))?;
+    let (built, units, known) = llvm_objects(program, release, (checked, reusing))?;
     let compiled = started.elapsed();
     if fennec_build::cancelled() {
         return Err(fennec_llvm::STOPPED.to_owned());
@@ -395,6 +395,8 @@ fn built_and_linked(
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
     let linked = finish(&built, output, runtime_in, &units)?;
+    // Every object it linked is in the cache, for the daemon's next build to know without looking.
+    fennec_llvm::objects_known(known, &units);
     let root = built.stored.as_ref().map(|stored| stored.root.clone());
     Ok(Built { total: built.total, fresh: built.fresh, reused: built.reused, compiled, linked, root })
 }
@@ -928,7 +930,7 @@ fn llvm_objects(
     program: &fennec_kit::Program,
     release: bool,
     (checked, reusing): (Option<fennec_check::Signatures>, bool),
-) -> Result<(Compiled, Vec<fennec_llvm::Unit>), String> {
+) -> Result<(Compiled, Vec<fennec_llvm::Unit>, Option<fennec_llvm::KnownUnder>), String> {
     // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
     // the runtime of each, for it to stop if it's ever given one.
     fennec_llvm::trust_native_blocks(release);
@@ -936,10 +938,10 @@ fn llvm_objects(
     // Cutting it down only lets items go, so what was checked holds for what's left once what was
     // cut is let go of too.
     let checked = checked.map(|checked| checked.cut_to(&cut_keys(&program.module, &reached)));
-    let emitted = if !release && reusing {
+    let (emitted, known) = if !release && reusing {
         emitted_reusing(program, &reached, checked)?
     } else {
-        emitted_with(&reached, &fennec_llvm::emit_for, false, checked)?
+        (emitted_with(&reached, &fennec_llvm::emit_for, false, checked)?, None)
     };
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
@@ -952,8 +954,9 @@ fn llvm_objects(
     let compiled = compile_emitted(&emitted, release, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::entry(lowered, shared, image, bytes)
     })?;
-    // Kept for compiling again any kept object a cleanup takes before the link.
-    Ok((compiled, emitted.units))
+    // Kept for compiling again any kept object a cleanup takes before the link, with what the
+    // objects it found are known under.
+    Ok((compiled, emitted.units, known))
 }
 
 /// A dev build's text, using again each unit the last build of this program kept whose function,
@@ -965,23 +968,26 @@ fn emitted_reusing(
     program: &fennec_kit::Program,
     reached: &fennec_syntax::Module,
     checked: Option<fennec_check::Signatures>,
-) -> Result<Emitted, String> {
+) -> Result<(Emitted, Option<fennec_llvm::KnownUnder>), String> {
     let cache = fennec_build::fennec_home()
         .filter(|_| !crate::no_cache())
         .map(|home| fennec_build::Cache::new(&home));
     let first = program.sources.files().next().map(|(shown, _)| shown.to_owned());
     let named = first.and_then(|shown| std::fs::canonicalize(shown).ok());
     let (Some(cache), Some(named)) = (cache, named) else {
-        return emitted_with(reached, &fennec_llvm::emit_for, false, checked);
+        return emitted_with(reached, &fennec_llvm::emit_for, false, checked).map(|emitted| (emitted, None));
     };
     let key = units_key(program, &named);
     let tools = fennec_llvm::Tools::find()?;
     // Every object the program held last time is marked used at once, by marking its list: the
     // units used again are found without marking each (`fennec_llvm::has_object`).
     cache.mark(fennec_build::HOLDS, &key);
-    let has_object = fennec_llvm::has_object(&cache, &tools)?;
+    let (has_object, known) = fennec_llvm::has_object(&cache, &tools)?;
+    later::say_failure();
+    // An index the daemon hasn't written yet is the newest there is.
+    let kept = later::pending(&key).map(|index| index.as_ref().clone()).or_else(|| cache.read(UNITS, &key));
     let reuse = std::cell::RefCell::new(fennec_llvm::Reuse {
-        kept: cache.read(UNITS, &key),
+        kept,
         has_object: &has_object,
         audit: std::env::var("FENNEC_CACHE_AUDIT").as_deref() == Ok("1"),
         keep: None,
@@ -999,14 +1005,20 @@ fn emitted_reusing(
         );
     }
     if let Some(index) = reuse.borrow_mut().keep.take() {
-        fennec_build::kept("keep what the build's units read", cache.write(UNITS, &key, &index));
         // Every unit's object, as the next build may use any of them again: those compiled this
         // build are new, and so used now, till this list is marked.
-        let held =
-            fennec_llvm::hold_objects(&cache, &tools, &key, &emitted.units).map_err(std::io::Error::other);
-        fennec_build::kept("keep the program's list of objects", held);
+        let holding = fennec_llvm::holding(&tools, &emitted.units);
+        if fennec_llvm::keeps_between_builds()
+            && let Ok(holding) = holding
+        {
+            later::write(&cache, &key, index, holding);
+        } else {
+            fennec_build::kept("keep what the build's units read", cache.write(UNITS, &key, &index));
+            let held = holding.and_then(|holding| holding.hold(&cache, &key).map_err(|err| err.to_string()));
+            fennec_build::kept("keep the program's list of objects", held.map_err(std::io::Error::other));
+        }
     }
-    Ok(emitted)
+    Ok((emitted, known))
 }
 
 /// What names a program's index of kept units, and its list of objects, in the cache. For a kit,
@@ -1026,6 +1038,121 @@ fn units_key(program: &fennec_kit::Program, entry: &Path) -> String {
     });
     let named = in_kit.unwrap_or_else(|| format!("file {}", entry.display()));
     fennec_blake3::hash(named.as_bytes()).to_hex()
+}
+
+/// What an edit build keeps for the next, its index of units and its list of objects, written
+/// once the build is made, on a thread of the daemon's own: an edit doesn't wait for 35 MB to be
+/// written at 200,000 lines. A build that comes before the write is done uses the index waiting
+/// to be written, which is the newest. A write a later one has overtaken isn't made, so the cache
+/// ends with the last. One that's lost, as when the daemon is killed, costs the cache only being a
+/// build behind, which costs reuse, never a wrong program: every unit's record says when it can be
+/// used again, and each use is checked against it. A command without the daemon writes them
+/// itself, before it ends.
+pub(crate) mod later {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
+    #[cfg(unix)]
+    use std::time::{Duration, Instant};
+
+    /// One write: a program's index and its list of objects.
+    struct Job {
+        cache: fennec_build::Cache,
+        key: String,
+        index: Arc<Vec<u8>>,
+        holding: fennec_llvm::Holding,
+    }
+
+    /// Each program's index waiting to be written, by its name in the cache.
+    static PENDING: Mutex<Option<HashMap<String, Arc<Vec<u8>>>>> = Mutex::new(None);
+
+    /// Where writes go, to the thread that makes them, started by the first.
+    static QUEUE: Mutex<Option<mpsc::Sender<Job>>> = Mutex::new(None);
+
+    /// How many writes are waiting or being made.
+    static WAITING: AtomicUsize = AtomicUsize::new(0);
+
+    /// A write that failed, to be said by the next build: the thread can't say it itself, since
+    /// what's printed while a build runs is that build's.
+    static FAILED: Mutex<Option<(&'static str, std::io::Error)>> = Mutex::new(None);
+
+    /// The index of the program the cache names `key` waiting to be written, if there's one.
+    pub(crate) fn pending(key: &str) -> Option<Arc<Vec<u8>>> {
+        PENDING.lock().ok()?.as_ref()?.get(key).cloned()
+    }
+
+    /// Says, in this build, a write that failed since the last.
+    pub(crate) fn say_failure() {
+        if let Some((what, err)) = FAILED.lock().ok().and_then(|mut failed| failed.take()) {
+            fennec_build::kept(what, Err::<(), _>(err));
+        }
+    }
+
+    /// Writes `index` and the list `holding` makes as the program `key`'s, on the writing thread.
+    pub(crate) fn write(
+        cache: &fennec_build::Cache,
+        key: &str,
+        index: Vec<u8>,
+        holding: fennec_llvm::Holding,
+    ) {
+        let index = Arc::new(index);
+        if let Ok(mut pending) = PENDING.lock() {
+            pending.get_or_insert_with(HashMap::new).insert(key.to_owned(), Arc::clone(&index));
+        }
+        let job = Job { cache: cache.clone(), key: key.to_owned(), index, holding };
+        WAITING.fetch_add(1, Ordering::SeqCst);
+        let Ok(mut queue) = QUEUE.lock() else { return };
+        let sender = queue.get_or_insert_with(|| {
+            let (sender, jobs) = mpsc::channel::<Job>();
+            std::thread::spawn(move || {
+                for job in jobs {
+                    made(job);
+                    WAITING.fetch_sub(1, Ordering::SeqCst);
+                }
+            });
+            sender
+        });
+        if let Err(mpsc::SendError(job)) = sender.send(job) {
+            made(job);
+            WAITING.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Makes one write, unless a later one for the same program has taken its place.
+    fn made(job: Job) {
+        let latest = |pending: &HashMap<String, Arc<Vec<u8>>>| {
+            pending.get(&job.key).is_some_and(|newest| Arc::ptr_eq(newest, &job.index))
+        };
+        if !PENDING.lock().ok().and_then(|pending| pending.as_ref().map(latest)).unwrap_or(false) {
+            return;
+        }
+        if let Err(err) = job.cache.write(super::UNITS, &job.key, &job.index) {
+            failed("keep what the build's units read", err);
+        } else if let Err(err) = job.holding.hold(&job.cache, &job.key) {
+            failed("keep the program's list of objects", err);
+        }
+        if let Ok(mut pending) = PENDING.lock()
+            && let Some(pending) = pending.as_mut()
+            && latest(pending)
+        {
+            pending.remove(&job.key);
+        }
+    }
+
+    fn failed(what: &'static str, err: std::io::Error) {
+        if let Ok(mut failed) = FAILED.lock() {
+            *failed = Some((what, err));
+        }
+    }
+
+    /// Waits up to `most` for every write to be made, as the daemon does before it goes.
+    #[cfg(unix)]
+    pub(crate) fn finish(most: Duration) {
+        let started = Instant::now();
+        while WAITING.load(Ordering::SeqCst) > 0 && started.elapsed() < most {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 /// The store's kind for each program's index of kept units (see [`emitted_reusing`]).

@@ -2,7 +2,6 @@
 # held by crates/lint/tests/lints.rs: fix one and it leaves this list, which only shrinks.
 # A function's length and how deep code goes may only fall. Written with FENNEC_PIN_OUTPUTS=1.
 base64.fen: [short-name] `b` is too short to say what it is: write a word
-base64.fen: [short-name] `b` is too short to say what it is: write a word
 cli.fen: [assert-outside-tests] `assert` is for tests
 cli.fen: [deep-nesting] this is 5 blocks deep in `parse`, and code can go 4
 collections.fen: [assert-outside-tests] `assert` is for tests
@@ -46,10 +45,7 @@ collections.fen: [missing-doc] the exported method `len` has no doc comment
 collections.fen: [missing-doc] the exported method `len` has no doc comment
 collections.fen: [missing-doc] the exported method `len` has no doc comment
 collections.fen: [missing-doc] the exported method `push` has no doc comment
-collections.fen: [missing-doc] the exported method `swap` has no doc comment
 collections.fen: [missing-doc] the exported method `values` has no doc comment
-collections.fen: [short-name] `a` is too short to say what it is: write a word
-collections.fen: [short-name] `b` is too short to say what it is: write a word
 concurrent.fen: [missing-doc] the exported method `message` has no doc comment
 concurrent.fen: [missing-doc] the exported method `message` has no doc comment
 csv.fen: [long-function] `rows_in` is 81 lines, and a function can be 80
@@ -59,13 +55,6 @@ html.fen: [long-function] `step` is 120 lines, and a function can be 80
 html.fen: [short-name] `c` is too short to say what it is: write a word
 html.fen: [short-name] `c` is too short to say what it is: write a word
 html.fen: [short-name] `c` is too short to say what it is: write a word
-html.fen: [short-name] `c` is too short to say what it is: write a word
-html.fen: [short-name] `c` is too short to say what it is: write a word
-html.fen: [short-name] `c` is too short to say what it is: write a word
-html.fen: [short-name] `c` is too short to say what it is: write a word
-html.fen: [short-name] `c` is too short to say what it is: write a word
-html.fen: [short-name] `c` is too short to say what it is: write a word
-json.fen: [short-name] `b` is too short to say what it is: write a word
 json.fen: [short-name] `b` is too short to say what it is: write a word
 json.fen: [short-name] `b` is too short to say what it is: write a word
 json.fen: [short-name] `b` is too short to say what it is: write a word
@@ -153,8 +142,6 @@ math.fen: [short-name] `a6` is too short to say what it is: write a word
 math.fen: [short-name] `a6` is too short to say what it is: write a word
 math.fen: [short-name] `a7` is too short to say what it is: write a word
 math.fen: [short-name] `a7` is too short to say what it is: write a word
-math.fen: [short-name] `a` is too short to say what it is: write a word
-math.fen: [short-name] `b` is too short to say what it is: write a word
 math.fen: [short-name] `w` is too short to say what it is: write a word
 math.fen: [short-name] `w` is too short to say what it is: write a word
 math.fen: [short-name] `w` is too short to say what it is: write a word
@@ -189,62 +176,6 @@ net.fen: [short-name] `b` is too short to say what it is: write a word
 net.fen: [short-name] `b` is too short to say what it is: write a word
 net.fen: [short-name] `b` is too short to say what it is: write a word
 net.fen: [short-name] `b` is too short to say what it is: write a word
-pack.fen: [missing-doc] the exported method `at_item` has no doc comment
-pack.fen: [missing-doc] the exported method `bool` has no doc comment
-pack.fen: [missing-doc] the exported method `bool` has no doc comment
-pack.fen: [missing-doc] the exported method `bytes` has no doc comment
-pack.fen: [missing-doc] the exported method `bytes` has no doc comment
-pack.fen: [missing-doc] the exported method `case_record` has no doc comment
-pack.fen: [missing-doc] the exported method `end_case` has no doc comment
-pack.fen: [missing-doc] the exported method `end_items` has no doc comment
-pack.fen: [missing-doc] the exported method `end_items` has no doc comment
-pack.fen: [missing-doc] the exported method `end_map` has no doc comment
-pack.fen: [missing-doc] the exported method `end_member` has no doc comment
-pack.fen: [missing-doc] the exported method `end_member` has no doc comment
-pack.fen: [missing-doc] the exported method `end_ordered` has no doc comment
-pack.fen: [missing-doc] the exported method `end` has no doc comment
-pack.fen: [missing-doc] the exported method `enum_case` has no doc comment
-pack.fen: [missing-doc] the exported method `enum_case` has no doc comment
-pack.fen: [missing-doc] the exported method `exact` has no doc comment
-pack.fen: [missing-doc] the exported method `exact` has no doc comment
-pack.fen: [missing-doc] the exported method `field_at` has no doc comment
-pack.fen: [missing-doc] the exported method `field` has no doc comment
-pack.fen: [missing-doc] the exported method `float` has no doc comment
-pack.fen: [missing-doc] the exported method `float` has no doc comment
-pack.fen: [missing-doc] the exported method `here` has no doc comment
-pack.fen: [missing-doc] the exported method `id` has no doc comment
-pack.fen: [missing-doc] the exported method `int` has no doc comment
-pack.fen: [missing-doc] the exported method `int` has no doc comment
-pack.fen: [missing-doc] the exported method `item` has no doc comment
-pack.fen: [missing-doc] the exported method `item` has no doc comment
-pack.fen: [missing-doc] the exported method `items` has no doc comment
-pack.fen: [missing-doc] the exported method `map_count` has no doc comment
-pack.fen: [missing-doc] the exported method `map` has no doc comment
-pack.fen: [missing-doc] the exported method `map` has no doc comment
-pack.fen: [missing-doc] the exported method `member` has no doc comment
-pack.fen: [missing-doc] the exported method `member` has no doc comment
-pack.fen: [missing-doc] the exported method `missing` has no doc comment
-pack.fen: [missing-doc] the exported method `next_field` has no doc comment
-pack.fen: [missing-doc] the exported method `none_next` has no doc comment
-pack.fen: [missing-doc] the exported method `none` has no doc comment
-pack.fen: [missing-doc] the exported method `none` has no doc comment
-pack.fen: [missing-doc] the exported method `ordered` has no doc comment
-pack.fen: [missing-doc] the exported method `record` has no doc comment
-pack.fen: [missing-doc] the exported method `record` has no doc comment
-pack.fen: [missing-doc] the exported method `renamed` has no doc comment
-pack.fen: [missing-doc] the exported method `rule` has no doc comment
-pack.fen: [missing-doc] the exported method `saw_id` has no doc comment
-pack.fen: [missing-doc] the exported method `saw_table` has no doc comment
-pack.fen: [missing-doc] the exported method `sequence` has no doc comment
-pack.fen: [missing-doc] the exported method `sequence` has no doc comment
-pack.fen: [missing-doc] the exported method `slots` has no doc comment
-pack.fen: [missing-doc] the exported method `some` has no doc comment
-pack.fen: [missing-doc] the exported method `table` has no doc comment
-pack.fen: [missing-doc] the exported method `tag` has no doc comment
-pack.fen: [missing-doc] the exported method `text` has no doc comment
-pack.fen: [missing-doc] the exported method `text` has no doc comment
-pack.fen: [missing-doc] the exported method `value` has no doc comment
-pack.fen: [missing-doc] the exported method `value` has no doc comment
 pack.fen: [missing-doc] the exported struct `Packer` has no doc comment
 pack.fen: [short-name] `ID` is too short to say what it is: write a word
 pack.fen: [short-name] `b` is too short to say what it is: write a word
@@ -284,13 +215,9 @@ sized.fen: [short-name] `b` is too short to say what it is: write a word
 sized.fen: [short-name] `b` is too short to say what it is: write a word
 str.fen: [short-name] `c` is too short to say what it is: write a word
 str.fen: [short-name] `c` is too short to say what it is: write a word
-str.fen: [short-name] `c` is too short to say what it is: write a word
 string.fen: [short-name] `c` is too short to say what it is: write a word
 toml.fen: [assert-outside-tests] `assert` is for tests
 toml.fen: [assert-outside-tests] `assert` is for tests
-toml.fen: [short-name] `a` is too short to say what it is: write a word
-toml.fen: [short-name] `b` is too short to say what it is: write a word
-toml.fen: [short-name] `b` is too short to say what it is: write a word
 toml.fen: [short-name] `b` is too short to say what it is: write a word
 toml.fen: [short-name] `b` is too short to say what it is: write a word
 toml.fen: [short-name] `b` is too short to say what it is: write a word
@@ -317,10 +244,6 @@ toml.fen: [short-name] `b` is too short to say what it is: write a word
 toml.fen: [short-name] `c` is too short to say what it is: write a word
 toml.fen: [short-name] `c` is too short to say what it is: write a word
 toml.fen: [short-name] `c` is too short to say what it is: write a word
-toml.fen: [short-name] `c` is too short to say what it is: write a word
-url.fen: [short-name] `b` is too short to say what it is: write a word
-url.fen: [short-name] `b` is too short to say what it is: write a word
-url.fen: [short-name] `b` is too short to say what it is: write a word
 url.fen: [short-name] `b` is too short to say what it is: write a word
 url.fen: [short-name] `b` is too short to say what it is: write a word
 url.fen: [short-name] `c` is too short to say what it is: write a word
@@ -329,5 +252,4 @@ url.fen: [short-name] `c` is too short to say what it is: write a word
 url.fen: [short-name] `c` is too short to say what it is: write a word
 url.fen: [short-name] `c` is too short to say what it is: write a word
 url.fen: [short-name] `c` is too short to say what it is: write a word
-uuid.fen: [short-name] `c` is too short to say what it is: write a word
 uuid.fen: [short-name] `c` is too short to say what it is: write a word

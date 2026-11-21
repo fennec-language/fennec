@@ -453,7 +453,7 @@ struct JsonWriter:
 ## as text from outside may be anything.
 ## Native code runs `json.dumps` through this. Its options' defaults are `None` and `-1`, since the
 ## default a call leaves out is written into the program calling it, which may not import `JsonNames`.
-export def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent = -1) -> str:
+def native_dumps[T: Serializable](value: T, names: JsonNames? = None, indent = -1) -> str:
     spelled = names else JsonNames.SnakeCase
     mut out = JsonWriter(_names=spelled, _indent=indent)
     value.serialize(ref out)
@@ -547,6 +547,10 @@ struct IdsSeen:
     _whole = "the text"
     _ids = NO_SEEN
     _tables = NO_SEEN
+
+    ## A record of nothing read yet, whose messages call everything read `whole`, as "the data".
+    def called(whole: str) -> IdsSeen:
+        return IdsSeen(_whole=whole)
 
     def id(ref self, kind: str, at: str, position: int):
         self._ids.append((kind, at, position))
@@ -1885,7 +1889,7 @@ struct JsonReader:
 
 ## `text` read as a `T`, through its own `def deserialize`.
 ## Native code runs `json.loads` through this, with `None` for the options' defaults, as `native_dumps`.
-export def native_loads[T: Deserializable](
+def native_loads[T: Deserializable](
     text: str,
     names: JsonNames? = None,
     extra: JsonExtra? = None,

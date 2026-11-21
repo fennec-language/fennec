@@ -2411,6 +2411,53 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A `_` field is its file's: a kit's own file reaches it, and a program that depends on the kit
+/// reaches none of it, to read, set or build the type with one. The same as another file of the
+/// kit would be told.
+#[test]
+fn another_kits_underscore_fields_are_out_of_reach() {
+    let dir = scratch("underscore_kits").unwrap();
+    let vault = "## A secret kept in its file.\nexport struct Vault:\n    label: str\n    _secret = \"\"\n\n\
+                 ## A vault holding `secret`, which only this file can set.\nexport def sealed(label: str, secret: str) -> Vault:\n    \
+                 return Vault(label=label, _secret=secret)\n\n## Whether `guess` is the secret.\n\
+                 export def opens(vault: Vault, guess: str) -> bool:\n    return vault._secret == guess\n";
+    write_kit(&dir.join("vault"), "vault", "", &[("lib.fen", vault)]).unwrap();
+    let check = |main: &str| {
+        write_kit(
+            &dir.join("app"),
+            "app",
+            "[dependencies]\nvault = { path = \"../vault\" }\n",
+            &[("main.fen", main)],
+        )
+        .unwrap();
+        crate::executables::fennec_command()
+            .args(["check"])
+            .current_dir(dir.join("app"))
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let fine = check(
+        "from vault import Vault, opens, sealed\n\ndef main(stdout: Stdout):\n    stdout.print(opens(sealed(\"a\", secret=\"b\"), \"b\"))\n",
+    );
+    assert!(fine.status.success(), "{}", text(&fine.stderr));
+    for body in [
+        "stdout.print(sealed(\"a\", secret=\"b\")._secret)",
+        "stdout.print(Vault(label=\"a\", _secret=\"b\").label)",
+    ] {
+        let refused = check(&format!(
+            "from vault import Vault, opens, sealed\n\ndef main(stdout: Stdout):\n    {body}\n"
+        ));
+        assert!(!refused.status.success(), "{body}");
+        assert!(
+            text(&refused.stderr).contains("`_secret` is private to `vault.Vault`'s file"),
+            "{}",
+            text(&refused.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// What each file imports is its own, in a program's files and in its kits'. A kit's
 /// `from std.html import escape as sha256` once made the program's own `sha256(...)` give escaped
 /// text, as one table of imports served every file and the last import of a name decided it for
@@ -5610,6 +5657,14 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
     }
     with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
+    // The daemon wrote its index once each build had answered, and before it went: a build without
+    // it uses the units the last one kept, compiling only the function edited since.
+    std::fs::write(kit.join("src/main.fen"), program(7)).unwrap();
+    let made = build(&home, false);
+    let said = text(&made.stdout);
+    let compiled =
+        said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next()?.parse::<usize>().ok());
+    assert!(compiled.is_some_and(|compiled| compiled <= 2), "{said}");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
@@ -5756,6 +5811,79 @@ fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
     let refused = fennec(&["build", ".", "-o", "prog"], false);
     assert_eq!(refused.status.code(), Some(1), "{}", text(&refused.stderr));
     fennec(&["daemon", "stop"], true);
+}
+
+/// The daemon knows the objects its last build found or made, and doesn't look for them again
+/// while no cleanup has taken anything. Gone anyway, as deleted by hand, the link finds that and
+/// the build writes every unit again, saying so. A cleanup that took anything is counted, and
+/// the next build looks for every object again, writing only the units whose objects are gone.
+#[cfg(unix)]
+#[test]
+fn a_daemon_build_knows_its_objects_till_a_cleanup_takes_any() {
+    let (folder, kit, home) = small_kit("known-objects").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let build = |printed: u32| {
+        let source = format!(
+            "def doubled(number: int) -> int:\n    return number * 2\n\n\
+             def main(stdout: Stdout):\n    stdout.print(doubled(3))\n    stdout.print({printed})\n"
+        );
+        std::fs::write(kit.join("src/main.fen"), source).unwrap();
+        let mut command = crate::executables::fennec_command();
+        command.args(["run", "."]).current_dir(&kit).env("FENNEC_HOME", &home);
+        command.env("FENNEC_DAEMON_IDLE", "30").env_remove("CI").env_remove("FENNEC_NO_DAEMON");
+        // A test's own daemons, which start for a Fennec folder in the temp folder.
+        command.env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+        let ran = command.output().unwrap();
+        assert_eq!(ran.status.code(), Some(0), "{}", text(&ran.stderr));
+        assert!(text(&ran.stdout).ends_with(&format!("6\n{printed}\n")), "{}", text(&ran.stdout));
+        text(&ran.stderr)
+    };
+    // Every compiled object in the cache, and the cache's own folder.
+    let objects = || -> (Vec<PathBuf>, Option<PathBuf>) {
+        let mut found = Vec::new();
+        let mut root = None;
+        let mut folders = vec![home.clone()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "o")
+                    && path.parent().and_then(Path::file_name).is_some_and(|kind| kind == "llvm")
+                {
+                    root = path.parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf);
+                    found.push(path);
+                }
+            }
+        }
+        (found, root)
+    };
+    let said = "wrote every function again";
+    build(1);
+    // Gone by hand, with no cleanup counted: the link finds it, and every unit is written again.
+    let (gone, root) = objects();
+    assert!(!gone.is_empty(), "no objects in the cache");
+    for object in &gone {
+        std::fs::remove_file(object).unwrap();
+    }
+    let stderr = build(2);
+    assert!(stderr.contains(said), "{stderr}");
+    // Gone with a cleanup counted: every object is looked for, and only the missing ones written.
+    let (gone, _) = objects();
+    for object in &gone {
+        std::fs::remove_file(object).unwrap();
+    }
+    let root = root.unwrap();
+    let count = std::fs::read_to_string(root.join("removals")).unwrap_or_default();
+    let next = count.trim().parse::<u64>().unwrap_or(0) + 1;
+    std::fs::write(root.join("removals"), next.to_string()).unwrap();
+    let stderr = build(3);
+    assert!(!stderr.contains(said), "{stderr}");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(folder.join("kit")).unwrap();
 }
 
 /// Two builds of one kit at once through the daemon queue, so neither's output takes in the

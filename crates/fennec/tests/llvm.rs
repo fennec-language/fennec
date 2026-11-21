@@ -29786,6 +29786,39 @@ fn a_field_grown_by_a_calls_text_grows_where_it_is() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `out += piece` on a `ref out: str` parameter grows the caller's text where it is, as on a
+/// local, so a function called once a piece builds a text with about as much work as the pieces:
+/// counted, not timed. The parameter's slot is the caller's, and `+=` there once made a new text
+/// and copied all of the old into it each time, so four times the pieces did sixteen times the
+/// work (#2322). A field handed by `ref`, which was copied the same way, grows where it is too,
+/// and a copy the caller kept first keeps what it had.
+#[test]
+fn a_ref_str_parameter_grows_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let counted = |pieces: usize| -> std::io::Result<(u64, u64)> {
+        let source = format!(
+            "struct Text:\n    text = \"\"\n\ndef put(ref out: str, piece: str):\n    out += piece\n\ndef main(stdout: Stdout):\n    mut held = \"\"\n    for at in range({pieces}):\n        put(ref held, str(at % 10))\n    mut whole = Text()\n    for at in range({pieces}):\n        put(ref whole.text, str(at % 7))\n    stdout.print(len(held), len(whole.text))\n    return\n"
+        );
+        let said = counts_of(&format!("ref_str_grown_{pieces}"), &source)?;
+        let number = |name: &str| count(&said, name).unwrap_or(u64::MAX);
+        Ok((number("allocations"), number("allocated_bytes")))
+    };
+    let (small, small_bytes) = counted(10_000)?;
+    let (big, big_bytes) = counted(40_000)?;
+    // A handful, whatever the count: each text's few regrowths, and the pieces' own texts.
+    assert!(small < 200 && big < 200, "{small} and {big} allocations");
+    // Four times the pieces, at most about four times the bytes, where copying the text for each
+    // piece made it sixteen times.
+    assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
+    prints_in_both_builds(
+        "ref_str_grown_kept",
+        "def put(ref out: str, piece: str):\n    out += piece\n\ndef main(stdout: Stdout):\n    mut held = \"ab\"\n    kept = held\n    for at in range(3):\n        put(ref held, str(at))\n    stdout.print(held, kept)\n    return\n",
+        "ab012 ab\n",
+    )
+}
+
 /// A field grown by a call that fails keeps what it had: the call runs before the field is read,
 /// so a failure out of it leaves the field as the last `+=` that finished left it, and what the
 /// calls print comes out in order.

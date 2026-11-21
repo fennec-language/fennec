@@ -1377,9 +1377,12 @@ def all_tables(items: list[TomlValue]) -> list[TomlTable]?:
     return tables
 
 ## A table's plain keys under its header, then its tables and arrays of tables.
-## `text`, followed by a table, and the tables it holds, as TOML text under the header `path`.
-def write_table(text: str, path: list[str], table: TomlTable, array: bool) -> str:
-    mut out = text
+## Writes a table, and the tables it holds, onto `out`'s pieces of TOML text under the header
+## `path`, joined once at the end. It keeps the one list of pieces and the one path, a key added for
+## each table below and taken off after: each level once took the text so far and gave back a
+## longer copy, and copied the path for each table below, so 800 levels deep took half a gigabyte
+## to write 1.6 MB, and adding to one text copied it whole each time (#2318).
+def write_table(ref out: list[str], ref path: list[str], table: TomlTable, array: bool):
     mut plain = list[int]()
     mut nested = list[int]()
     mut at = 0
@@ -1398,29 +1401,26 @@ def write_table(text: str, path: list[str], table: TomlTable, array: bool) -> st
                 plain.append(at)
         at += 1
     if len(path) > 0 and (array or len(plain) > 0 or len(nested) == 0):
-        if out != "":
-            out += "\n"
+        if len(out) > 0:
+            out.append("\n")
         name = ".".join([table_key(key) for key in path])
-        out += f"[[{name}]]\n" if array else f"[{name}]\n"
+        out.append(f"[[{name}]]\n" if array else f"[{name}]\n")
     for place in plain:
-        out += f"{table_key(table.keys[place])} = {one_line(table.values[place])}\n"
+        out.append(f"{table_key(table.keys[place])} = {one_line(table.values[place])}\n")
     for place in nested:
-        mut under = list[str]()
-        for key in path:
-            under.append(key)
-        under.append(table.keys[place])
+        path.append(table.keys[place])
         match table.values[place]:
             case .Table(inner):
-                out = write_table(out, under, inner, False)
+                write_table(ref out, ref path, inner, False)
             case .Tables(tables):
                 for inner in tables:
-                    out = write_table(out, under, inner, True)
+                    write_table(ref out, ref path, inner, True)
             case .List(items):
                 for inner in all_tables(items) else list[TomlTable]():
-                    out = write_table(out, under, inner, True)
+                    write_table(ref out, ref path, inner, True)
             case _:
                 pass
-    return out
+        _ = path.pop()
 
 ## `value` as TOML text, through its own `def serialize`.
 export def native_dumps[T: Serializable](value: T) -> str:
@@ -1429,13 +1429,14 @@ export def native_dumps[T: Serializable](value: T) -> str:
     if out._wants_tables:
         out = TomlWriter(_id_tables=tables_in(value), _found=True)
         value.serialize(ref out)
-    mut text = ""
+    mut pieces = list[str]()
     match out._done:
         case .Table(table):
-            text = write_table(text, list[str](), table, False)
+            mut path = list[str]()
+            write_table(ref pieces, ref path, table, False)
         case _:
             assert False
-    return text
+    return "".join(pieces)
 
 ## Whether a `YYYY-MM-DD` that's in range is a day its month really has.
 def real_day(date: str) -> bool:

@@ -1144,7 +1144,7 @@ pub(super) fn place_from(
 }
 
 /// Copies `length` bytes, packed in `words`, into `bytes` a word at a time.
-fn copy_words((words, length): (&[u64], usize), bytes: &mut Vec<u8>) {
+pub(super) fn copy_words((words, length): (&[u64], usize), bytes: &mut Vec<u8>) {
     bytes.clear();
     for word in words.iter().take(length.div_ceil(8)) {
         bytes.extend_from_slice(&word.to_le_bytes());
@@ -1218,7 +1218,12 @@ pub extern "C" fn split_header(
 /// A part of 23 bytes or fewer is held inline in its header, with no block, when lists hold
 /// headers. The items go into a list kept from one call to the next, then into the list made, so
 /// the list is made once at its size.
-fn split_bytes(state: &mut State, whole: &[u8], between: Option<&[u8]>, at: Span) -> Result<i64, Diagnostic> {
+pub(super) fn split_bytes(
+    state: &mut State,
+    whole: &[u8],
+    between: Option<&[u8]>,
+    at: Span,
+) -> Result<i64, Diagnostic> {
     let mut items = SPLIT_ITEMS.take();
     items.clear();
     let headers = state.tables.text_headers;

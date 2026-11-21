@@ -513,6 +513,10 @@ export! {
     fennec_str_find_header(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 => text::find_header(a0, a1, a2, a3, a4, a5);
     fennec_str_split_at_header(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: i64) -> i64 => text::split_at_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_text_starts_with(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::starts_with(a0, a1, a2, a3, a4, a5);
+    fennec_str_split_range(a0: u64, a1: u64, a2: u64, a3: i64, a4: i64, a5: u64, a6: u64, a7: u64, a8: i64, a9: i64) -> i64 => text::split_range(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+    fennec_str_find_range(a0: u64, a1: u64, a2: u64, a3: i64, a4: i64, a5: u64, a6: u64, a7: u64) -> i64 => text::find_range(a0, a1, a2, a3, a4, a5, a6, a7);
+    fennec_text_starts_with_range(a0: u64, a1: u64, a2: u64, a3: i64, a4: i64, a5: u64, a6: u64, a7: u64) -> i8 => text::starts_with_range(a0, a1, a2, a3, a4, a5, a6, a7);
+    fennec_text_equals_range(a0: u64, a1: u64, a2: u64, a3: i64, a4: i64, a5: u64, a6: u64, a7: u64) -> i8 => text::equals_range(a0, a1, a2, a3, a4, a5, a6, a7);
     fennec_text_ends_with(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::ends_with(a0, a1, a2, a3, a4, a5);
     fennec_text_of(a0: i64) -> text::Text => text::of(a0);
     fennec_int_header(a0: i64) -> text::Text => text::int_header(a0);

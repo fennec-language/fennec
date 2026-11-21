@@ -93,7 +93,7 @@ pub extern "C" fn channel_send_words(channel: i64, kind: i64, width: i64, done: 
 /// `fennec_channel_receive_words(channel, kind, width, timeout_ns)`: takes the next message, of
 /// kind `kind`, `width` words wide, into this thread's buffer, the blocks its words name now the
 /// receiver's, each with one owner, and gives back 0. Gives back what `fennec_channel_receive` does
-/// otherwise, but [`NO_MESSAGE`] where that gives 0 with no message, as for a stop. A message that
+/// otherwise, but 3, `NO_MESSAGE`, where that gives 0 with no message, as for a stop. A message that
 /// was sent as one word, or as another kind, stops the program as a bug in Fennec.
 pub extern "C" fn channel_receive_words(channel: i64, kind: i64, width: i64, timeout_ns: i64) -> i64 {
     let Some(kind) = with(|state| Some(flat_kind(state, kind, width).0)) else { return CLOSED };

@@ -1958,6 +1958,37 @@ pub(crate) fn park_stuck(token: Token, note: super::deadlock::Note) -> Parked {
     park_on_token(token, None, true, Some(note))
 }
 
+/// Where a replay's task waiting for its turn at a place parks, when it can (`replay::turn_in`):
+/// it's woken by the waker it hands out, which whoever moves that place's turn on calls.
+pub(crate) struct TurnPark {
+    pool: &'static Pool,
+    at: usize,
+    token: Token,
+}
+
+impl TurnPark {
+    /// The running task's, when it can park, on its worker.
+    pub(crate) fn here() -> Option<TurnPark> {
+        if !can_park() {
+            return None;
+        }
+        let (pool, at) = super::parallel::here()?;
+        Some(TurnPark { pool, at, token: next_token() })
+    }
+
+    /// What wakes it, from any thread: mail to its worker, read only once it has parked.
+    pub(crate) fn waker(&self) -> Box<dyn FnOnce() + Send> {
+        let (pool, at, token) = (self.pool, self.at, self.token);
+        Box::new(move || pool.run_on(at, Box::new(move |io: &mut Io| io.wake_token(token))))
+    }
+
+    /// Parks until it's woken, as a stuck wait with `note`. A stop wakes it without ending the wait:
+    /// a replay's stops come as their own turns, as its recording had them.
+    pub(crate) fn park(self, note: super::deadlock::Note) {
+        let _ = park_through_a_stop(self.token, Some(note));
+    }
+}
+
 /// Parks this task on `token` until `wake_token` is sent it, whatever it's told meanwhile: a stop
 /// wakes it, as cancelled, without failing it. For a task waiting for work it handed to other
 /// threads, which read what it lent them until they've finished. A `stuck` wait, a waiting

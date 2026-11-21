@@ -5647,8 +5647,7 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
         |daemon: bool, home: &Path| fennec(&["build", ".", "-o", "prog"], daemon, home).output().unwrap();
     // The first build is the daemon's, so the edit's has a kept check to carry over.
     let status = || fennec(&["daemon", "status"], true, &home).output().unwrap();
-    let _daemon =
-        crate::executables::daemon_started(fennec(&["daemon", "serve"], true, &home), &status).unwrap();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"], true, &home), &status).unwrap();
     for source in [before, after.as_str()] {
         std::fs::write(&main, source).unwrap();
         let _ = std::fs::remove_file(kit.join("prog"));
@@ -5728,7 +5727,7 @@ fn a_build_the_daemon_finds_wrong_later_is_taken_back() {
     // made in the command's own process, as one is when a daemon it starts is slow to answer,
     // keeps nothing, and the edit's build then refuses the program, rightly.
     let status = || command(&["daemon", "status"], true).output().unwrap();
-    let _daemon = crate::executables::daemon_started(command(&["daemon", "serve"], true), &status).unwrap();
+    crate::executables::daemon_started(command(&["daemon", "serve"], true), &status).unwrap();
     std::fs::write(&main, before).unwrap();
     let first = fennec(&["build", ".", "-o", "prog"], true);
     assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));

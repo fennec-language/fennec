@@ -392,8 +392,10 @@ pub(crate) const DAEMON_IDLE: &str = "600";
 /// daemon first. `serve` and `status` are made as the test's commands are, with the same
 /// environment, or they'd look for another daemon's socket.
 #[cfg(unix)]
-pub(crate) fn daemon_started(mut serve: Command, status: &dyn Fn() -> Output) -> std::io::Result<Child> {
-    let child = serve.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+pub(crate) fn daemon_started(mut serve: Command, status: &dyn Fn() -> Output) -> std::io::Result<()> {
+    let mut daemon = serve.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    // It's waited for once it ends, which `DaemonsStopped` sees to when the test does.
+    std::thread::spawn(move || daemon.wait());
     let waiting = Instant::now();
     while !String::from_utf8_lossy(&status().stdout).starts_with("running") {
         if waiting.elapsed() > Duration::from_secs(120) {
@@ -401,7 +403,7 @@ pub(crate) fn daemon_started(mut serve: Command, status: &dyn Fn() -> Output) ->
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(child)
+    Ok(())
 }
 
 /// Stops every build daemon of the Fennec folder `home` when it's dropped: at the end of the test

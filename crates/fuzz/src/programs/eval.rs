@@ -3414,10 +3414,7 @@ impl Machine {
                 }
                 RuleWay::Made => {
                     if breaks {
-                        let _ = writeln!(
-                            self.out,
-                            "refused InvalidValue(message=\"Gauge{id}.level breaks its `where` rule\")"
-                        );
+                        let _ = writeln!(self.out, "refused Gauge{id}.level breaks its `where` rule");
                     } else {
                         let _ = writeln!(self.out, "made {}", shown(&made(v)));
                     }
@@ -3524,7 +3521,7 @@ impl Machine {
                 SizedWay::Parsed => {
                     let _ = writeln!(
                         self.out,
-                        "refused InvalidValue(message=\"{k} doesn't fit in {}, which holds {least} to {most}\")",
+                        "refused {k} doesn't fit in {}, which holds {least} to {most}",
                         num.name()
                     );
                 }

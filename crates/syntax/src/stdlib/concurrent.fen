@@ -361,7 +361,7 @@ GAVE_UP = 5
 ## What `open` gives, or its failure as a `PoolError`.
 def opened[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
     value = open() except failure:
-        fail PoolError.Open(reason=failure.message())
+        fail .Open(reason=failure.message())
     return value
 
 ## Sends `message` if `to` still takes it: the other side may have gone, which is fine.
@@ -378,13 +378,13 @@ def delivered[T](to: Sender[T], message: T) -> bool:
 def opened_safely[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
     with channel[T](size=1) as made, channel[str](size=1) as refused:
         _ = opening[T, E](open, made.sender(), refused.sender()) except Crashed():
-            fail PoolError.Open(reason="opening one crashed")
+            fail .Open(reason="opening one crashed")
         said: str? = refused.receive_within(Duration()) except Timeout(): None
-        if said is not None: fail PoolError.Open(reason=said)
+        if said is not None: fail .Open(reason=said)
         got: T? = made.receive_within(Duration()) except Timeout(): None
-        value = got else fail PoolError.Open(reason="opening one gave nothing")
+        value = got else fail .Open(reason="opening one gave nothing")
         return value
-    fail PoolError.Closed
+    fail .Closed
 
 ## Runs `open` in a task, sending what it gives to `to`, or why it failed to `refused`.
 def opening[T, E: Explained](

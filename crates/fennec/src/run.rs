@@ -452,9 +452,7 @@ fn refused_as_a_whole(
 
 /// The cache, unless `FENNEC_NO_CACHE` is set.
 pub(crate) fn cache() -> Option<fennec_build::Cache> {
-    fennec_build::fennec_home()
-        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
-        .map(|home| fennec_build::Cache::new(&home))
+    fennec_build::fennec_home().filter(|_| !crate::no_cache()).map(|home| fennec_build::Cache::new(&home))
 }
 
 /// A program's name in the cache: a hash of its absolute path.

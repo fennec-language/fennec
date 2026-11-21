@@ -121,12 +121,17 @@ fn locked_layout_problems(program: &fennec_kit::Program) -> Vec<String> {
     fennec_ir::lower(&module, &signatures).layout_problems
 }
 
-/// Every lint the linter finds in a program, in the order they're written.
-fn lints_of(program: &fennec_kit::Program) -> Vec<fennec_lint::Lint> {
+/// Every lint the linter finds in a program, in the order they're written. Without `trials`, it
+/// leaves out the two that check the program again with their fixes made, `needless-conversion`
+/// and `double-lookup`, as a run does: a run never waits on a fix being tried (#2315), and the
+/// lints of a kit's files leave them out too.
+fn lints_of(program: &fennec_kit::Program, trials: bool) -> Vec<fennec_lint::Lint> {
     let mut found = fennec_lint::lint(&program.module, &program.sources);
-    found.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
+    if trials {
+        found.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
+        found.extend(fennec_lint::double_lookups(&program.module, &program.sources));
+    }
     found.extend(fennec_lint::stale_copies(&program.module, &program.sources));
-    found.extend(fennec_lint::double_lookups(&program.module, &program.sources));
     found.extend(fennec_lint::self_compares(&program.module, &program.sources));
     if program.manifest.is_some() {
         found.extend(fennec_lint::kit_lints(&program.module));
@@ -138,7 +143,8 @@ fn lints_of(program: &fennec_kit::Program) -> Vec<fennec_lint::Lint> {
 
 /// The lint errors in all of the program at `path`, rendered as `fennec lint` shows them, with a
 /// line counting them: nothing when there are none, or when it doesn't load or check, which
-/// whatever's running reports itself.
+/// whatever's running reports itself. Those whose fixes are tried by checking the program again
+/// are `fennec lint`'s alone (see `lints_of`).
 pub(crate) fn errors_shown(path: &str) -> String {
     let overlay = fennec_kit::Overlay::new();
     let Ok(program) =
@@ -147,7 +153,7 @@ pub(crate) fn errors_shown(path: &str) -> String {
         return String::new();
     };
     let errors: Vec<fennec_lint::Lint> =
-        lints_of(&program).into_iter().filter(|lint| lint.severity == fennec_lint::Severity::Error).collect();
+        lints_of(&program, false).into_iter().filter(|lint| lint.severity == fennec_lint::Severity::Error).collect();
     if errors.is_empty() {
         return String::new();
     }
@@ -512,7 +518,7 @@ fn linted(path: &str, json: bool) -> ExitCode {
     if let Some((run, diagnostics)) = what_a_run_rejects(path, &program) {
         return rejected(&run, &diagnostics, json);
     }
-    let found = lints_of(&program);
+    let found = lints_of(&program, true);
     let costs = fennec_ir::costs(&fennec_ir::lower(&resolved, &signatures));
     // A lint that's a hint flags correct code, so it's shown with the hints and fails nothing.
     let (found, mut hints): (Vec<_>, Vec<_>) =

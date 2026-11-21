@@ -90,6 +90,19 @@ const MOST_MANY_ERRORS_INSTRUCTIONS: u64 = 3_000_000_000;
 /// to say what it is, and nothing that uses the function.
 const ERRORED_FUNCTIONS: usize = 5000;
 
+/// Linting a file with hundreds of needless conversions. Each fix is tried by checking the program
+/// with it made, and they're all tried in one check: tried one at a time, a check each, a file of
+/// 467 took 49 s (#2315). Its count is held to well under twice what it was when that was fixed,
+/// which checking once for each conversion again goes far past.
+const MANY_CONVERSIONS: Budget =
+    Budget { name: "lint, 500 needless conversions in one file", limit: Duration::from_secs(2), enforced: true };
+
+/// What linting the file of `MANY_CONVERSIONS` may run.
+const MOST_MANY_CONVERSIONS_INSTRUCTIONS: u64 = 6_000_000_000;
+
+/// How many functions the file of `MANY_CONVERSIONS` has, each converting an int to an int.
+const CONVERTED_FUNCTIONS: usize = 500;
+
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
 
@@ -289,6 +302,7 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     measured.push(run);
     measured.push(kit.edit_to_run(runs)?);
     measured.push(kit.many_errors(runs)?);
+    measured.push(kit.many_conversions(runs)?);
     Ok(measured)
 }
 
@@ -492,13 +506,40 @@ impl Kit {
     /// `fennec lint` on a file of its own with thousands of lint errors, which it shows, so it exits
     /// with 1.
     fn many_errors(&self, runs: usize) -> Result<Measured, String> {
-        let folder = self.dir.join("errors");
-        std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
-        let file = folder.join("many.fen");
         let mut text = String::new();
         for number in 0..ERRORED_FUNCTIONS {
             let _ = write!(text, "def short_{number}() -> int:\n    qz = {number}\n    return qz\n\n");
         }
+        let errors = |said: &str| said.lines().filter(|line| line.starts_with("error: ")).count();
+        let expected = (2 * ERRORED_FUNCTIONS, "errors", &errors as &dyn Fn(&str) -> usize);
+        self.linted_file(runs, (MANY_ERRORS, MOST_MANY_ERRORS_INSTRUCTIONS), ("many.fen", &text), expected)
+    }
+
+    /// `fennec lint` on a file of its own with hundreds of needless conversions, which it finds
+    /// trying every fix in one check.
+    fn many_conversions(&self, runs: usize) -> Result<Measured, String> {
+        let mut text = String::new();
+        for number in 0..CONVERTED_FUNCTIONS {
+            let _ = write!(text, "def kept_{number}(count: int) -> int:\n    return int(count) + {number}\n\n");
+        }
+        let found = |said: &str| said.lines().filter(|line| line.contains("this is a int already")).count();
+        let expected = (CONVERTED_FUNCTIONS, "needless conversions", &found as &dyn Fn(&str) -> usize);
+        let budget = (MANY_CONVERSIONS, MOST_MANY_CONVERSIONS_INSTRUCTIONS);
+        self.linted_file(runs, budget, ("conversions.fen", &text), expected)
+    }
+
+    /// `fennec lint` on a file of its own, `text`, which it should find lint errors in and so exit
+    /// with 1: at least as many as `expected` says, by what it counts in what's shown.
+    fn linted_file(
+        &self,
+        runs: usize,
+        (budget, most): (Budget, u64),
+        (name, text): (&str, &str),
+        (expected, what, count): (usize, &str, &dyn Fn(&str) -> usize),
+    ) -> Result<Measured, String> {
+        let folder = self.dir.join("errors");
+        std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+        let file = folder.join(name);
         std::fs::write(&file, text).map_err(|err| err.to_string())?;
         let path = file.to_string_lossy().into_owned();
         let linted = || -> Result<(Duration, String), String> {
@@ -517,12 +558,9 @@ impl Kit {
             }
         };
         let (cold, said) = linted()?;
-        let errors = said.lines().filter(|line| line.starts_with("error: ")).count();
-        if errors < 2 * ERRORED_FUNCTIONS {
-            return Err(format!(
-                "`fennec lint` should show {} errors, but showed {errors}",
-                2 * ERRORED_FUNCTIONS
-            ));
+        let found = count(&said);
+        if found < expected {
+            return Err(format!("`fennec lint` should show {expected} {what}, but showed {found}"));
         }
         let times = (0..runs).map(|_| linted().map(|(took, _)| took)).collect::<Result<Vec<_>, _>>()?;
         let counting = self.dir.join("counting");
@@ -535,15 +573,8 @@ impl Kit {
             };
             counter.count_exiting(&program, 1, |command| self.set_up(command))
         });
-        let counted =
-            counted.map(|instructions| Counted { instructions, most: MOST_MANY_ERRORS_INSTRUCTIONS });
-        Ok(Measured {
-            budget: MANY_ERRORS,
-            warm: median(times),
-            cold: Some(cold),
-            counted,
-            programs: Vec::new(),
-        })
+        let counted = counted.map(|instructions| Counted { instructions, most });
+        Ok(Measured { budget, warm: median(times), cold: Some(cold), counted, programs: Vec::new() })
     }
 }
 

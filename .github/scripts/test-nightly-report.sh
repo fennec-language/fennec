@@ -168,6 +168,22 @@ green
 runs CI "$(run 12 completed failure 600)"
 check "main's CI red fails the report" 1 "$(report)"
 
+# Run 12's job failed already, in a run still going: that's red now, not when the run ends.
+green
+runs CI "$(run 12 in_progress "" 300)" "$(run 40 completed success 600)"
+check "a job failed in main's CI run still going fails the report" 1 "$(report)"
+check "it names the run still going and its job" yes "$(said 'main CI: red at 012345678 (run 12, still going): Build since 012345678')"
+
+green
+runs CI "$(run 42 in_progress "" 300)" "$(run 40 completed success 600)"
+check "main's CI run still going with no job failed yet leaves it green" 0 "$(report)"
+check "it goes by the run that finished" yes "$(said 'main CI: green at 012345678 (run 40)')"
+
+# A run going that's older than one that finished says nothing new.
+green
+runs CI "$(run 40 completed success 300)" "$(run 12 in_progress "" 600)"
+check "a run still going behind one that finished isn't read" 0 "$(report)"
+
 green
 check "with no night of mutants yet, the report says so" yes "$(said 'mutants: no nightly run yet')"
 

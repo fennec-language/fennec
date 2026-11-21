@@ -11809,7 +11809,7 @@ fn a_function_ending_in_a_with_that_fails_builds_natively() -> std::io::Result<(
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 []\n0\n")?;
+    prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 [\"Refused(code=1)\"]\n0\n")?;
     prints_in_both_builds("with_fails_last_ways", WITH_FAILS_LAST_WAYS, "unguard 7\nunguard 2\n7 -2 8\n")?;
     // A function ending in a `match` whose `ref` case always fails, which ends failing too.
     prints_in_both_builds("ref_case_fails_last", REF_CASE_FAILS_LAST, "5 Kind.Slider(value=5)\n")
@@ -14586,7 +14586,8 @@ def main(stdout: Stdout):
     stdout.print(said(() => nested(5)?), said(() => nested(2)?))
     stdout.print(said(() => listed(5)?), said(() => listed(2)?))
 ";
-    let stop = "IoError.Other(reason=\"stop\")";
+    // Printed, an `IoError` gives its words: what it holds as its reason.
+    let stop = "stop";
     let wanted = format!("{stop} 1\n{stop} 3\n{stop} 5\n{stop} [0, 2]\n");
     let dir = folder("generator_failure")?;
     let program = dir.join("failing.fen");

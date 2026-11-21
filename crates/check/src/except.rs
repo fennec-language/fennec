@@ -160,8 +160,8 @@ fn alternatives(pattern: &Pattern) -> Vec<&Pattern> {
 }
 
 /// The first way out of `body` on which `name` hasn't been used yet, or where it ends without
-/// having used it: `at` when it's the block's end. A `fail` is a way out that's fine as it is,
-/// since it carries the failure along as a note.
+/// having used it: `at` when it's the block's end. A `fail` of a new failure is a way out that's
+/// fine as it is, since that carries the failure's words along as a note (`Expr::made_already`).
 fn unused_way_out(body: &[Stmt], name: &str, at: Span) -> Option<Span> {
     match ways_out(body, name, false) {
         Err(span) => Some(span),
@@ -175,7 +175,15 @@ fn unused_way_out(body: &[Stmt], name: &str, at: Span) -> Option<Span> {
 fn ways_out(body: &[Stmt], name: &str, mut used: bool) -> Result<bool, Span> {
     for stmt in body {
         match &stmt.kind {
-            StmtKind::Fail(_) => return Ok(true),
+            // A new failure carries this one's words as a note. One made already carries what it
+            // had, so it uses the failure only when it's made from it, as `why.with_note(...)` is.
+            StmtKind::Fail(raised) => {
+                let carries = raised
+                    .raised_sides()
+                    .iter()
+                    .all(|side| !side.made_already() || side.made_from() == Some(name));
+                return if used || carries { Ok(true) } else { Err(stmt.span) };
+            }
             StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => {
                 return if used || stmt_uses(stmt, name) { Ok(true) } else { Err(stmt.span) };
             }

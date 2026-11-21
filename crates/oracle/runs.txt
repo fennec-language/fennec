@@ -39,6 +39,7 @@ enums.fen
 env.fen
 equality.fen
 error_cases.fen
+error_words.fen
 errors_and_none.fen
 extend.fen
 fails.fen

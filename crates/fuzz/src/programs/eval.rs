@@ -2986,10 +2986,8 @@ impl Machine {
                 }
                 FileWay::ReadOnly => {
                     let name = if step.second { "g" } else { "f" };
-                    lines.push(format!(
-                        "refused IoError.PermissionDenied(reason=\"this Fs only reads, so it can't change \
-                         `d{id}/{name}.txt`\")"
-                    ));
+                    // Printed, an `IoError` gives its words: its reason.
+                    lines.push(format!("refused this Fs only reads, so it can't change `d{id}/{name}.txt`"));
                 }
                 FileWay::Outside => lines.push("refused outside".to_owned()),
                 FileWay::Removed => match files.get_mut(at) {

@@ -102,6 +102,7 @@ const BUILTINS: &[&str] = &[
     "len",
     "abs",
     "str",
+    "repr",
     "int",
     "float",
     "range",

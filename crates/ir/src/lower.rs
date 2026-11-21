@@ -22,6 +22,9 @@ mod places;
 mod positions;
 mod structs;
 mod tuples;
+mod words;
+
+pub use words::MAIN_SHOWN;
 
 use std::collections::{HashMap, HashSet};
 
@@ -474,6 +477,9 @@ struct Lowering<'a> {
     /// Types that stand in for what the typed tree says, innermost last: a union's receiver,
     /// read as one member while that member's method is called.
     retyped: Vec<(Span, Type)>,
+    /// The failures `except name:` blocks being lowered name, innermost last: a new failure raised
+    /// in one carries that one's words as a note.
+    excepts: Vec<(String, LocalId)>,
 }
 
 /// The name a place is reached from: `text` for `text`, `self` for `self._text` or `self.parts[0]`.
@@ -624,6 +630,7 @@ impl<'a> Lowering<'a> {
             on_failure: Vec::new(),
             plain_rounds: 0,
             retyped: Vec::new(),
+            excepts: Vec::new(),
         }
     }
 
@@ -671,6 +678,12 @@ impl<'a> Lowering<'a> {
                     lowering.own_texts_within(&error, &mut Vec::new(), def.span)?;
                 }
             }
+        }
+        // How what it fails with is shown, its words first, when that ends the program.
+        if key == "main"
+            && let Type::Result(_, error) = &signature.returns
+        {
+            lowering.main_shown(error, def.span)?;
         }
         let plain = lowering.returns == Type::Unit;
         lowering.stmts(&stmts, if plain { Tail::Drop } else { Tail::Return })?;

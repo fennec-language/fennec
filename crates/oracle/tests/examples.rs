@@ -4,7 +4,15 @@
 
 use std::path::Path;
 
-use fennec_oracle::report::{Verdict, examples, judge};
+use fennec_oracle::report::{Example, Verdict, examples, judge};
+
+/// The examples, and the programs that test std's private parts from outside it, which
+/// `fennec-std-tests` builds: each is held to its `.out` file the same way.
+fn every_example(here: &Path) -> std::io::Result<Vec<Example>> {
+    let mut all = examples(&here.join("../../examples"))?;
+    all.extend(examples(&here.join("../fennec/tests/fixtures/std_private"))?);
+    Ok(all)
+}
 
 #[test]
 fn every_example_listed_as_running_matches_its_out_file() {
@@ -13,7 +21,7 @@ fn every_example_listed_as_running_matches_its_out_file() {
     let listed: Vec<&str> =
         listed.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect();
     assert!(listed.len() >= 80, "only {} examples are listed as running", listed.len());
-    let all = examples(&here.join("../../examples")).unwrap();
+    let all = every_example(here).unwrap();
     let mut wrong = Vec::new();
     for name in listed {
         let Some(example) = all.iter().find(|example| example.name == name) else {
@@ -36,7 +44,7 @@ fn every_example_listed_as_running_matches_its_out_file() {
 fn the_examples_left_out_of_the_useful_set_are_examples_it_doesnt_run() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let running = std::fs::read_to_string(here.join("runs.txt")).unwrap();
-    let all = examples(&here.join("../../examples")).unwrap();
+    let all = every_example(here).unwrap();
     let never = fennec_oracle::report::never();
     let excluded = fennec_oracle::report::excluded();
     assert!(!excluded.is_empty(), "excluded.txt lists nothing");
@@ -57,7 +65,7 @@ fn the_examples_left_out_of_the_useful_set_are_examples_it_doesnt_run() {
 fn the_examples_it_can_never_model_are_examples_it_doesnt_run() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let running = std::fs::read_to_string(here.join("runs.txt")).unwrap();
-    let all = examples(&here.join("../../examples")).unwrap();
+    let all = every_example(here).unwrap();
     let never = fennec_oracle::report::never();
     assert!(!never.is_empty(), "never.txt lists nothing");
     for (name, why) in never {

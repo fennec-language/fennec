@@ -291,15 +291,17 @@ pub(crate) fn met(place: Option<&str>, what: &str, outcome: i64) {
     }
 }
 
-/// Ends the turn at the front of `place`'s stream. A step that takes effect where the recording
-/// has nothing more, past where its run deadlocked, is a divergence: past there a task may only
-/// wait.
+/// Ends the running task's turn at `place`: the front of its stream, or for a read, the reader's
+/// own entry, wherever it is (see [`turn_at`]). A step that takes effect where the recording has
+/// nothing more, past where its run deadlocked, is a divergence: past there a task may only wait.
 fn end_turn(player: &Mutex<Player>, place: &str, what: &str) {
     let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
-    if player.streams.get_mut(place).and_then(VecDeque::pop_front).is_none()
-        && player.deadlock.is_some()
-        && player.past.is_none()
-    {
+    let asked = format!("{} {what}", running());
+    let ended = player.streams.get_mut(place).and_then(|stream| {
+        let at = turn_at(stream, &asked)?;
+        stream.remove(at)
+    });
+    if ended.is_none() && player.deadlock.is_some() && player.past.is_none() {
         player.past = Some(diverged(format!(
             "this replay's `{} {what}` at {place} went through past where its recording ended in a \
              deadlock, where it only waited, so it isn't the run that was recorded: something it \
@@ -307,6 +309,26 @@ fn end_turn(player: &Mutex<Player>, place: &str, what: &str) {
             running()
         )));
     }
+}
+
+/// Where in a place's stream the turn `asked` for is, if it's that task's turn now: at the front,
+/// or, for a lock taken to read, anywhere with no write ahead of it. Readers between two writes held
+/// the value together, so the order their entries were logged in says nothing: two readers of two
+/// values at once can log them crossed, and a replay that gave each its turn in the log's order
+/// had each wait for the other (#2313).
+fn turn_at(stream: &VecDeque<(String, Vec<u8>)>, asked: &str) -> Option<usize> {
+    if !asked.ends_with(" read") {
+        return stream.front().is_some_and(|(next, _)| next == asked).then_some(0);
+    }
+    for (at, (entry, _)) in stream.iter().enumerate() {
+        if entry == asked {
+            return Some(at);
+        }
+        if entry.ends_with(" write") {
+            return None;
+        }
+    }
+    None
 }
 
 /// How long a replay waits for its turn at a place before saying it's diverged: long enough for
@@ -386,6 +408,12 @@ fn turn_in(
         let waiting_for = {
             let player = player.lock().unwrap_or_else(PoisonError::into_inner);
             let stream = player.streams.get(place);
+            let ours = stream.and_then(|stream| stream.get(turn_at(stream, &asked)?));
+            if let Some((_, payload)) = ours {
+                let bytes: [u8; 8] =
+                    payload.clone().try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
+                return Ok(i64::from_le_bytes(bytes));
+            }
             let front = stream.and_then(|stream| stream.front());
             match front.map(|(next, payload)| (next.clone(), payload.clone())) {
                 None if waits && player.whole && player.deadlock.is_some() => return Ok(PAST_THE_END),
@@ -396,11 +424,6 @@ fn turn_in(
                          more, so it isn't the run that was recorded: something it depends on wasn't \
                          recorded, or the program has changed"
                     ));
-                }
-                Some((next, payload)) if next == asked => {
-                    let bytes: [u8; 8] =
-                        payload.try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
-                    return Ok(i64::from_le_bytes(bytes));
                 }
                 Some((next, _)) => {
                     // Where the place has got to: its next entry moves on as each turn ends.

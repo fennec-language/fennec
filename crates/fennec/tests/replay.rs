@@ -1024,6 +1024,92 @@ fn reads_and_prints_inside_locks_of_two_values_replay_as_they_ran() -> std::io::
     Ok(())
 }
 
+/// Four tasks each read two shared values at once, 200 times, and `main` writes both 20 times
+/// (Fable 5.2's review of #2276). Readers hold both together, so two can log their reads of `a` in
+/// one order and of `b` in the other. A replay gave each reader its turn at `a` in the log's order
+/// and kept it until it had taken `b`: the first held `a`'s turn waiting for the second's at `b`,
+/// and the second waited at `a` behind the first, so every replay was refused (#2313).
+const TWO_READERS: &str = "from std.concurrent import Crashed
+
+struct Account:
+    total: int
+
+def reads_both(a: shared Account, b: shared Account) -> int:
+    mut seen = 0
+    for turn in range(200):
+        lock a, b as x, y:
+            seen += x.total + y.total
+    return seen
+
+def reading(a: shared Account, b: shared Account, stdout: Stdout):
+    stdout.print(\"a reader saw\", reads_both(a=a, b=b) >= 0)
+
+def writes_both(a: shared Account, b: shared Account):
+    for turn in range(20):
+        lock a, b as ref x, ref y:
+            x.total += 1
+            y.total += 2
+
+def main(stdout: Stdout) fails Crashed:
+    shared a = Account(total=0)
+    shared b = Account(total=0)
+    with launch(() => reading(a=a, b=b, stdout=stdout))?:
+        with launch(() => reading(a=a, b=b, stdout=stdout))?:
+            with launch(() => reading(a=a, b=b, stdout=stdout))?:
+                with launch(() => reading(a=a, b=b, stdout=stdout))?:
+                    writes_both(a=a, b=b)
+    lock a, b as x, y:
+        stdout.print(\"a\", x.total, \"b\", y.total)
+";
+
+/// A read's turn comes whenever no write is ahead of it, so readers that held a value together
+/// replay in whatever order their entries crossed in.
+#[test]
+fn readers_of_two_values_at_once_replay_however_their_entries_crossed() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("two-readers")?;
+    let program = dir.join("readers.fen");
+    std::fs::write(&program, TWO_READERS)?;
+    let executable = dir.join("readers");
+    let built = fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_THREADS_RUNTIME", "1")
+        .output_within()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // Recorded on 8 threads, where readers cross most; each recording Fable made had hundreds of
+    // crossed pairs.
+    for recording in 0..3 {
+        let log = dir.join(format!("readers-{recording}.log"));
+        fennec_rt::replay::start_log(&log, format!("native\0{}", program.display()).as_bytes())?;
+        let recorded = std::process::Command::new(&executable)
+            .env("FENNEC_RECORD", &log)
+            .env("FENNEC_THREADS", "8")
+            .current_dir(&dir)
+            .output_within()?;
+        let recorded = outcome(&recorded);
+        assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+        assert!(recorded.0.ends_with("a 20 b 40\n"), "{}", recorded.0);
+        for threads in ["4", "1"] {
+            let replayed = std::process::Command::new(&executable)
+                .env("FENNEC_REPLAY", &log)
+                .env("FENNEC_THREADS", threads)
+                .current_dir(&dir)
+                .output_limited(DEADLINE, Duration::from_secs(60))?;
+            let replayed = outcome(&replayed);
+            let how = format!("recording {recording} replayed on {threads} threads: {}", replayed.1);
+            assert_eq!(replayed.0, recorded.0, "{how}");
+            assert_eq!(replayed.2, Some(0), "{how}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A replay that can't follow its recording at a lock says so, naming the lock, and ends. It waited
 /// out its patience, crashed, and then its connection's cleanup asked for a close where the
 /// recording read a line: the replay said only that, "while cleaning up after a crash", and hung.

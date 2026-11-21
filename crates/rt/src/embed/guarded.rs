@@ -64,9 +64,6 @@ struct Slot {
     handles: AtomicU64,
     /// Its name as a place where tasks meet, in a recording or a replay.
     replay: Option<Arc<str>>,
-    /// In a replay, how many tasks hold it to read: a turn to read ends as it's taken, so readers
-    /// hold it together as they did, and a turn to write waits until they've all given it back.
-    replay_readers: AtomicU64,
 }
 
 type Slots = HashMap<u64, Arc<Slot>, BuildHasherDefault<AddressHasher>>;
@@ -413,7 +410,6 @@ pub extern "C" fn shared_new(cell: i64) -> i64 {
             held: RwLock::new(Held::Free(table)),
             handles: AtomicU64::new(count),
             replay: crate::replay::place("s"),
-            replay_readers: AtomicU64::new(0),
         };
         // A value kept at this address before, by a run that ended without letting go of it, has
         // gone: what any thread remembers of it goes too.
@@ -592,64 +588,42 @@ fn taking(write: i64) -> &'static str {
 }
 
 /// `fennec_replay_lock(cell, write)`: in a replay, waits for this task's turn to take `cell`'s
-/// lock, to write if `write` is 1. A turn to write is this task's until it gives the lock back, at
-/// `fennec_replay_unlocked`, and a turn to read until it's taken it, at `fennec_replay_locked`. So
-/// once a task's turn comes, the lock is free for it, or held only to read when it reads: it never
-/// waits on the lock itself. A task waiting on a lock can't make way for others on its worker, and
-/// the one holding it may be waiting for a turn that's theirs: a replay hung there, where its
-/// recording ran. Native code calls it before trying for the lock, only while the run is recorded
-/// or replayed. A replay that's diverged fails.
+/// lock, to write if `write` is 1. The turn is this task's until it gives the lock back, at
+/// `fennec_replay_unlocked`. A turn to write comes once every task before it has given the lock
+/// back, and a turn to read once every writer before it has, as readers held it together. So once
+/// a task's turn comes, the lock is free for it, or held only to read when it reads: it never waits
+/// on the lock itself. A task waiting on a lock can't make way for others on its worker, and the one
+/// holding it may be waiting for a turn that's theirs: a replay hung there, where its recording
+/// ran. Native code calls it before trying for the lock, only while the run is recorded or
+/// replayed. A replay that's diverged fails.
 pub extern "C" fn replay_lock(cell: i64, write: i64) {
-    let cell = u64::try_from(cell).unwrap_or(0);
-    let place = with_slot(cell, |slot| slot.replay.clone()).flatten();
+    let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| slot.replay.clone()).flatten();
     if let Err(why) = crate::replay::turn(place.as_deref(), taking(write)) {
         super::fail_with(Diagnostic::new(why, Span::default()));
-        return;
-    }
-    // Readers before it have had their turns, and may hold it still. Each look takes the slot
-    // afresh, since making way can run another task on this thread.
-    if write != 0 && crate::replay::replaying() {
-        while with_slot(cell, |slot| slot.replay_readers.load(Ordering::Acquire)).is_some_and(|held| held > 0)
-        {
-            super::make_way();
-        }
     }
 }
 
 /// `fennec_replay_locked(cell, write)`: called with `cell`'s lock held. In a recording, logs that
-/// this task has taken it, so the log has the order it was taken in. In a replay, a turn to read
-/// ends here, so the next reader's can start, and a turn to write goes on until it's given back.
+/// this task has taken it, so the log has the order it was taken in. In a replay, the turn goes on
+/// until the lock is given back.
 pub extern "C" fn replay_locked(cell: i64, write: i64) {
-    let reading = write == 0 && crate::replay::replaying();
-    let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| {
-        if reading {
-            slot.replay_readers.fetch_add(1, Ordering::AcqRel);
-        }
-        slot.replay.clone()
-    })
-    .flatten();
-    if reading || !crate::replay::replaying() {
-        crate::replay::met(place.as_deref(), taking(write), 0);
+    if crate::replay::replaying() {
+        return;
     }
+    let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| slot.replay.clone()).flatten();
+    crate::replay::met(place.as_deref(), taking(write), 0);
 }
 
 /// `fennec_replay_unlocked(cell, write)`: called once `cell`'s lock is given back, however the
-/// block ended, a crash included. In a replay, a turn to write ends here, so the next task's starts
-/// with the lock free, and a reader is counted off. A recording logged the lock as it was taken.
+/// block ended, a crash included. In a replay, the task's turn ends here, so the next task's starts
+/// with the lock free, or held only by readers when it reads. A recording logged the lock as it was
+/// taken.
 pub extern "C" fn replay_unlocked(cell: i64, write: i64) {
     if !crate::replay::replaying() {
         return;
     }
-    let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| {
-        if write == 0 {
-            slot.replay_readers.fetch_sub(1, Ordering::AcqRel);
-        }
-        slot.replay.clone()
-    })
-    .flatten();
-    if write != 0 {
-        crate::replay::met(place.as_deref(), taking(write), 0);
-    }
+    let place = with_slot(u64::try_from(cell).unwrap_or(0), |slot| slot.replay.clone()).flatten();
+    crate::replay::met(place.as_deref(), taking(write), 0);
 }
 
 /// `fennec_shared_wait()`: a lock's word is taken, and native code has tried for a while. What this

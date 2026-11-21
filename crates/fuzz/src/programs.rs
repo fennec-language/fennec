@@ -81,7 +81,34 @@ impl std::fmt::Display for OracleShare {
     }
 }
 
-/// The target: the two builds agree with each other and with the evaluator.
+/// What a watching build caught, as `said` says it, if it caught something: a block a heap audit
+/// found left or miscounted (`FENNEC_AUDIT=1`), a native block handed to the runtime, a false
+/// proof (`FENNEC_CHECK_PROOFS=1`) or memory touched that the program doesn't own
+/// (`FENNEC_SANITIZE=address`). Each fails the program whether or not every build says the same.
+fn caught(how: &str, said: &str) -> Option<String> {
+    if said.contains(crate::llvm::AUDIT) {
+        return Some(format!("the {how} build's heap audit found a block left or miscounted:\n{said}"));
+    }
+    if said.contains("handed a native block") {
+        return Some(format!("the {how} build handed a native block to the runtime: {said}"));
+    }
+    if said.contains("proof broken") {
+        return Some(format!("a proof the compiler made is false, in the {how} build: {said}"));
+    }
+    if said.contains("AddressSanitizer") {
+        return Some(format!("the {how} build touched memory it doesn't own: {said}"));
+    }
+    None
+}
+
+/// Whether `input`'s program is built a third time with every type boxed: a quarter of them, by
+/// their bytes.
+fn boxed_too(input: &[u8]) -> bool {
+    input.iter().fold(0_u8, |sum, byte| sum.wrapping_add(*byte)) % 4 == 1
+}
+
+/// The target: the two builds agree with each other and with the evaluator, and a boxed third
+/// build, where there's one, with them.
 pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     if crate::llvm::ready().is_err() {
         return Ok(());
@@ -113,30 +140,31 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
         ));
     }
     let release = crate::llvm::built_and_run(&source, "programs", true).map_err(with_program)?;
+    // A quarter of the programs are built a third time with every type in a block of its own
+    // (`FENNEC_BOXED_TYPES=1`), as the edit fuzzer's boxed versions are: a value taken out of
+    // a list, a struct or an optional has to come out the same whichever way it's laid out, which
+    // #2282 found it didn't for an optional popped out of a list.
+    let boxed = if boxed_too(input) {
+        Some(
+            crate::llvm::built_and_run_laid_out(&source, "programs-boxed", false, true)
+                .map_err(with_program)?,
+        )
+    } else {
+        None
+    };
     // Built checking proofs (`FENNEC_CHECK_PROOFS=1`), a stop on one is a false proof, whether or
     // not both builds stop the same way. Built with AddressSanitizer (`FENNEC_SANITIZE=address`),
     // a report is memory touched that the program doesn't own, which both builds can share. A
     // dev build stops when a native block reaches the runtime. Built for a heap audit
     // (`FENNEC_AUDIT=1`), a line of the audit's is a block left with no holder or counted
     // otherwise than its holders, which both builds can share too.
-    for (how, (_, said, _)) in [("dev", &dev), ("--release", &release)] {
-        if said.contains(crate::llvm::AUDIT) {
-            return Err(with_program(format!(
-                "the {how} build's heap audit found a block left or miscounted:\n{said}"
-            )));
-        }
-        if said.contains("handed a native block") {
-            return Err(with_program(format!(
-                "the {how} build handed a native block to the runtime: {said}"
-            )));
-        }
-        if said.contains("proof broken") {
-            return Err(with_program(format!(
-                "a proof the compiler made is false, in the {how} build: {said}"
-            )));
-        }
-        if said.contains("AddressSanitizer") {
-            return Err(with_program(format!("the {how} build touched memory it doesn't own: {said}")));
+    let mut builds = vec![("dev", &dev), ("--release", &release)];
+    if let Some(boxed) = &boxed {
+        builds.push(("boxed dev", boxed));
+    }
+    for (how, (_, said, _)) in builds {
+        if let Some(caught) = caught(how, said) {
+            return Err(with_program(caught));
         }
     }
     // A program that runs `parallel` does the same on one thread as on several.
@@ -157,6 +185,16 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
             "the dev build and the --release build disagree:\n--- dev\n{}\n--- release\n{}",
             shown(&dev),
             shown(&release)
+        )));
+    }
+    if let Some(boxed) = &boxed
+        && *boxed != dev
+    {
+        return Err(with_program(format!(
+            "the dev build with every type boxed (FENNEC_BOXED_TYPES=1) and the one laid out in place \
+             disagree:\n--- boxed\n{}\n--- in place\n{}",
+            shown(boxed),
+            shown(&dev)
         )));
     }
     agrees_with_the_evaluators(&program, &source, &dev).map_err(with_program)
@@ -1465,6 +1503,14 @@ mod tests {
         };
         assert!(printed.contains("listened [3, 4, 5, 6]\n"), "{printed}");
         assert!(printed.contains("behind\nbehind\n"), "{printed}");
+    }
+
+    /// A quarter of the inputs are built boxed as well: 64 of the 256 inputs of one byte.
+    #[test]
+    fn a_quarter_of_the_programs_are_built_boxed_too() {
+        let boxed = (0_u8..=255).filter(|byte| super::boxed_too(&[*byte])).count();
+        assert_eq!(boxed, 64);
+        assert!(super::boxed_too(&[200, 5]) && !super::boxed_too(&[200, 6]));
     }
 
     #[test]

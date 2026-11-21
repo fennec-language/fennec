@@ -1,7 +1,8 @@
-//! `_name` fields and methods: hidden from everything but their own type. Only the type's own
-//! methods, and the functions nested in them, can read, write or set one, or call one. Code
-//! outside can't forge a value with a `_` field set to whatever it likes, which capabilities
-//! like a network connection rely on.
+//! `_name` fields and methods: private to the file that declares their type. Code written in
+//! that file can read, write, set or call one: the type's methods, the file's functions and other
+//! types, an `extend` and the tests written there. Code in any other file, of the same kit or
+//! another, can't, so it can't forge a value with a `_` field set to whatever it likes, which
+//! capabilities like a network connection rely on.
 
 use fennec_syntax::{Arg, Diagnostic, Edit, Field, Item, Module, Sources, Span, TokenKind, TypeDef};
 
@@ -30,46 +31,6 @@ pub(crate) fn top_level_underscores(module: &Module) -> Vec<Diagnostic> {
             let message = format!("`{name}` is a top-level name, so it doesn't start with `_`");
             found.push(Diagnostic::new(message, span).with_help(TOP_LEVEL_HELP));
         }
-    }
-    found
-}
-
-/// Reports each `struct` or `shared` nothing can build: one with a `_` field that has no
-/// default, which its automatic constructor can't set from outside it, and no named constructor,
-/// a method without `self` that gives one back, to set it.
-fn unbuildable(module: &Module) -> Vec<Diagnostic> {
-    unbuildable_in(module, false)
-}
-
-/// What a program's module is told about `_` when it's added: `top_level_underscores` and
-/// `unbuildable`.
-pub(crate) fn in_module(module: &Module) -> Vec<Diagnostic> {
-    let mut found = top_level_underscores(module);
-    found.extend(unbuildable(module));
-    found
-}
-
-/// `unbuildable`, for the library's own types too when `library`.
-pub(crate) fn unbuildable_in(module: &Module, library: bool) -> Vec<Diagnostic> {
-    let mut found = Vec::new();
-    for item in &module.items {
-        let Item::Struct(def) = item else { continue };
-        let Some(hidden) =
-            def.fields.iter().find(|field| field.name.starts_with('_') && field.default.is_none())
-        else {
-            continue;
-        };
-        if (def.span.in_prelude() && !library) || !named_constructors(def).is_empty() {
-            continue;
-        }
-        let (name, field) = (&def.name, &hidden.name);
-        let message = format!(
-            "nothing can build `{name}`: `{field}` has no default, and `{name}` has no named constructor"
-        );
-        let help = format!(
-            "only `{name}`'s own methods can set `{field}`: give it a default, or add a method that builds one, like `def new(...) -> {name}:`"
-        );
-        found.push(Diagnostic::new(message, def.span).with_help(help));
     }
     found
 }
@@ -158,48 +119,64 @@ fn has_word(text: &str, name: &str) -> bool {
     })
 }
 
+/// Whether `declared` and `used` are in the same file: one of a program's `files`, or one of
+/// the standard library's. A program checked as one text, with no files listed, is one file.
+/// A span the compiler wrote at no place of its own, `0..0`, is in no file, as
+/// [`crate::import_place`] has it, so it never counts as the first file's code.
+fn same_file(files: &[Span], declared: Span, used: Span) -> bool {
+    match (crate::import_place(files, declared), crate::import_place(files, used)) {
+        (crate::Place::File(declared), crate::Place::File(used)) => declared == used,
+        (crate::Place::Std, crate::Place::Std) => {
+            let file = |span: Span| fennec_syntax::prelude_file_at(span).map(|(name, _, _)| name);
+            file(declared).is_some_and(|name| file(used) == Some(name))
+        }
+        _ => false,
+    }
+}
+
 impl FnCx<'_> {
-    /// Whether the code being checked is inside `owner`: one of the methods written in its own
-    /// declaration, or a function nested in one. A method an `extend` adds is outside it, or
-    /// any program could extend a type to reach what it hides.
-    pub(crate) fn inside(&self, owner: &str) -> bool {
-        let Some(rest) = self.key.strip_prefix(owner).and_then(|rest| rest.strip_prefix('.')) else {
-            return false;
-        };
-        let method = rest.split('.').next().unwrap_or(rest);
-        // The methods generated to save a type save all of it, and no program can write them.
-        let generated = self
-            .checker
-            .program
-            .functions
-            .get(&format!("{owner}.{method}"))
-            .is_some_and(|entry| !entry.prelude && entry.def.span.in_prelude());
-        generated
-            || self
-                .checker
-                .program
-                .type_info(owner)
-                .is_some_and(|info| info.def.methods.iter().any(|def| def.name == method))
+    /// Whether code at `span` reaches `owner`'s `_` names: code written in the file that declares
+    /// `owner`, its methods and the functions nested in them included, or a method generated to
+    /// save it, which no program writes.
+    pub(crate) fn inside(&self, owner: &str, span: Span) -> bool {
+        let program = &self.checker.program;
+        let own_method =
+            self.key.strip_prefix(owner).and_then(|rest| rest.strip_prefix('.')).is_some_and(|rest| {
+                let method = rest.split('.').next().unwrap_or(rest);
+                // The methods generated to save a type save all of it, and no program can write them.
+                let generated = program
+                    .functions
+                    .get(&format!("{owner}.{method}"))
+                    .is_some_and(|entry| !entry.prelude && entry.def.span.in_prelude());
+                generated
+                    || program
+                        .type_info(owner)
+                        .is_some_and(|info| info.def.methods.iter().any(|def| def.name == method))
+            });
+        own_method
+            || program.type_info(owner).is_some_and(|info| {
+                same_file(&program.files, info.def.span, span.copied_from(&program.copied))
+            })
     }
 
     /// Reports a use of `owner`'s `_` field or method from outside it. One written in the
     /// standard library's own text is a std type's method's, as when a `with` source like
     /// `channel[T]` is written in where it's used: what reaches the name is still its own code.
     pub(crate) fn private_member(&mut self, owner: &str, member: &str, span: Span) {
-        if !member.starts_with('_') || self.checker.lets_off(span) || self.inside(owner) {
+        if !member.starts_with('_') || self.checker.lets_off(span) || self.inside(owner, span) {
             return;
         }
         let what = if self.checker.program.method(owner, member).is_some() { "call" } else { "reach" };
-        self.error(Diagnostic::new(format!("`{member}` is private to `{owner}`"), span).with_help(format!(
-            "only `{owner}`'s own methods can {what} `_` names: go through one of its other methods"
+        self.error(Diagnostic::new(format!("`{member}` is private to `{owner}`'s file"), span).with_help(format!(
+            "only code in the file that declares `{owner}` can {what} `_` names: go through one of its other methods"
         )));
     }
 
     /// Reports arguments that set `owner`'s `_` fields when it's made from outside it, by name
     /// or by position.
-    pub(crate) fn private_fields_given(&mut self, owner: &str, fields: &[Field], args: &[Arg]) {
+    pub(crate) fn private_fields_given(&mut self, owner: &str, fields: &[Field], args: &[Arg], span: Span) {
         // From outside, values given by position go to the public fields alone.
-        let outside = !self.inside(owner);
+        let outside = !self.inside(owner, span);
         let mut settable = fields.iter().filter(|field| !(outside && field.name.starts_with('_')));
         for arg in args {
             let field = if let Some(name) = &arg.name {

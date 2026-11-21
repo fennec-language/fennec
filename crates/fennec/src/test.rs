@@ -344,7 +344,7 @@ impl Results {
         let program =
             std::fs::canonicalize(path).map_or_else(|_| path.to_owned(), |path| path.display().to_string());
         let cache = fennec_build::fennec_home()
-            .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
+            .filter(|_| !crate::no_cache())
             .map(|home| (Cache::new(&home), program));
         let passed = match &cache {
             Some((cache, program)) if !all => {

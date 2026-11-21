@@ -1,10 +1,23 @@
 //! Imports of the standard library's modules, which are listed in `stdlib`. The checker and
 //! the compiler both read imports through here, so they agree on what an import brings in.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::ast::{Expr, ExprKind, Import};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 use crate::stdlib::MODULES;
+
+/// Whether this process's programs can import what std keeps for its own code, as std's code can.
+/// Only `fennec-std-tests`, the repository's test build of the command, sets it, so std's private
+/// parts can be tested from outside std. `fennec` itself never does.
+static PRIVATE_IMPORTABLE: AtomicBool = AtomicBool::new(false);
+
+/// Lets this process's programs import std's private names. Only `fennec-std-tests` calls it,
+/// before anything's checked.
+pub fn let_programs_import_std_private_names() {
+    PRIVATE_IMPORTABLE.store(true, Ordering::Relaxed);
+}
 
 /// Names that a module provides but that are available everywhere too. `Clock`, `Env`, `Fs`,
 /// `Net`, `Process`, `Signals`, `Stdout`, `Stdin` and `Stderr` are capabilities, which `main` names like `Stdout`. `ParseError` and
@@ -98,10 +111,11 @@ pub fn std_import(import: &Import) -> Result<Vec<Imported>, Diagnostic> {
 }
 
 /// Checks `module.name` is something the module provides: to a program, what it exports, and to
-/// the standard library's own code, any of its names.
+/// the standard library's own code, any of its names, as to a program `fennec-std-tests` checks.
 pub fn member(module: &str, name: &str, span: Span) -> Result<(), Diagnostic> {
     let names = names(module);
-    if names.contains(&name) && (span.in_prelude() || !kept_inside(module, name)) {
+    let private_too = span.in_prelude() || PRIVATE_IMPORTABLE.load(Ordering::Relaxed);
+    if names.contains(&name) && (private_too || !kept_inside(module, name)) {
         return Ok(());
     }
     Err(Diagnostic::new(format!("`std.{module}` has nothing called `{name}`"), span)

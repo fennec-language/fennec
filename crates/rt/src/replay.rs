@@ -80,7 +80,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
 
@@ -301,6 +301,7 @@ fn end_turn(player: &Mutex<Player>, place: &str, what: &str) {
         let at = turn_at(stream, &asked)?;
         stream.remove(at)
     });
+    moved(&mut player, place);
     if ended.is_none() && player.deadlock.is_some() && player.past.is_none() {
         player.past = Some(diverged(format!(
             "this replay's `{} {what}` at {place} went through past where its recording ended in a \
@@ -331,9 +332,129 @@ fn turn_at(stream: &VecDeque<(String, Vec<u8>)>, asked: &str) -> Option<usize> {
     None
 }
 
-/// How long a replay waits for its turn at a place before saying it's diverged: long enough for
-/// any task the turn is waiting on to get there.
-const TURN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Told whenever a place's turn moves on, for a thread waiting for its turn that can't park.
+static TURN_MOVED: Condvar = Condvar::new();
+
+/// A parked task waiting for its turn at a place: its number among every waiter the run has had, and
+/// what wakes it. Not its park's token, which each worker counts on its own: two tasks on two
+/// workers can share one, and taking one's waker back took the other's, which then slept for good.
+type TurnWaiter = (u64, Box<dyn FnOnce() + Send>);
+
+/// The number the next waiter for a turn has.
+#[cfg(any(test, feature = "threads"))]
+static NEXT_TURN_WAITER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The parked tasks waiting for their turns at each place: whoever moves the place's turn on wakes
+/// them all to look again (`moved`). Taken only with the player held, after it.
+static TURN_WAITERS: Mutex<Option<HashMap<String, Vec<TurnWaiter>>>> = Mutex::new(None);
+
+/// How `turn_in` waits while another's turn is next at its place (`wait_for_turn`).
+type WaitForTurn<'w> = dyn for<'g> FnMut(MutexGuard<'g, Player>, &str, &str) -> Result<(), String> + 'w;
+
+/// `place`'s turn has moved on, with the player held: each task and thread waiting for its turn
+/// there looks again.
+fn moved(_held: &mut Player, place: &str) {
+    let waiters =
+        TURN_WAITERS.lock().unwrap_or_else(PoisonError::into_inner).as_mut().and_then(|by| by.remove(place));
+    for (_, wake) in waiters.unwrap_or_default() {
+        wake();
+    }
+    TURN_MOVED.notify_all();
+}
+
+/// Waits, with `player` held, until `place`'s turn moves on, for a task whose turn to do `asked`
+/// there isn't next: as a stuck wait, so that when every context is stuck the deadlock check finds
+/// none of those turns can come, and says the replay couldn't follow its recording. There's no
+/// clock: a turn waits however long the work before it takes (#2276). A task parks, woken through
+/// `turn_waiters`; a thread that can't park blocks, as a channel's wait does.
+fn wait_for_turn(held: &Mutex<Player>, player: MutexGuard<'_, Player>, place: &str, asked: &str) {
+    use crate::embed::deadlock::{self, Kind, Note};
+    let note =
+        Note::parked(Arc::new(TurnWait { place: place.to_owned(), asked: asked.to_owned() }), Kind::Turn);
+    #[cfg(any(test, feature = "threads"))]
+    if let Some(park) = crate::embed::serve::TurnPark::here() {
+        let me = NEXT_TURN_WAITER.fetch_add(1, Ordering::Relaxed);
+        let mut waiters = TURN_WAITERS.lock().unwrap_or_else(PoisonError::into_inner);
+        waiters.get_or_insert_default().entry(place.to_owned()).or_default().push((me, park.waker()));
+        drop(waiters);
+        drop(player);
+        park.park(note);
+        // Woken by a stop, or with others, its waker may still be there.
+        let player = held.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut waiters = TURN_WAITERS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(here) = waiters.as_mut().and_then(|by| by.get_mut(place)) {
+            here.retain(|(waiter, _)| *waiter != me);
+        }
+        drop((waiters, player));
+        return;
+    }
+    // A moment first: most turns come by then, and cost the check nothing.
+    let (player, waited) =
+        TURN_MOVED.wait_timeout(player, deadlock::PATIENCE).unwrap_or_else(PoisonError::into_inner);
+    if !waited.timed_out() || !another_is_next(&player, place, asked) {
+        return;
+    }
+    let player = if deadlock::thread_waits(note.blocking(), false) {
+        // Every context may be stuck: the check looks, with the player let go of, as it reads it.
+        drop(player);
+        deadlock::look();
+        let player = held.lock().unwrap_or_else(PoisonError::into_inner);
+        if !another_is_next(&player, place, asked) {
+            deadlock::thread_woke();
+            return;
+        }
+        player
+    } else {
+        player
+    };
+    drop(TURN_MOVED.wait(player).unwrap_or_else(PoisonError::into_inner));
+    deadlock::thread_woke();
+}
+
+/// Whether others' entries than `asked` are ahead of its turn at `place` in `player`: what a turn
+/// waits on, as `TurnWait::holds` asks. Anything else goes back to `turn_in` to say: the running
+/// task's turn ([`turn_at`]), or a place with nothing more. A thread that asked only whether its
+/// own entry was next slept for good when the place ran out instead (Fable 5.2's review of #2276).
+fn another_is_next(player: &Player, place: &str, asked: &str) -> bool {
+    player.streams.get(place).is_some_and(|stream| !stream.is_empty() && turn_at(stream, asked).is_none())
+}
+
+/// A replay's wait for its turn to do `asked` at `place`, for the deadlock check.
+struct TurnWait {
+    place: String,
+    asked: String,
+}
+
+impl crate::embed::deadlock::Awaited for TurnWait {
+    /// Whether its turn still isn't next, with something else next there.
+    fn holds(&self, _: crate::embed::deadlock::Kind) -> bool {
+        let Mode::Replay(player) = mode() else { return false };
+        let player = player.lock().unwrap_or_else(PoisonError::into_inner);
+        another_is_next(&player, &self.place, &self.asked)
+    }
+
+    /// What the replay says, when its turn never comes.
+    fn said(&self, _: crate::embed::deadlock::Kind) -> String {
+        never_comes(&self.asked, &self.place, &mode_front(&self.place).unwrap_or_default())
+    }
+}
+
+/// What a replay says when the running task's turn to do `asked` at `place` never comes: `front` is
+/// next there, and nothing left running can come to it.
+fn never_comes(asked: &str, place: &str, front: &str) -> String {
+    format!(
+        "this replay asked for `{asked}` at {place}, where its recording has `{front}` next, and nothing \
+         left running can come to it, so it isn't the run that was recorded: something it depends on \
+         wasn't recorded, or the program has changed"
+    )
+}
+
+/// The entry next at `place` in a replay, if there is one.
+fn mode_front(place: &str) -> Option<String> {
+    let Mode::Replay(player) = mode() else { return None };
+    let player = player.lock().unwrap_or_else(PoisonError::into_inner);
+    player.streams.get(place).and_then(VecDeque::front).map(|(next, _)| next.clone())
+}
 
 /// In a replay, waits until it's the running task's turn to do `what` at `place`, and gives back
 /// what it came to in the recording. The turn stays this task's until `met` ends it. `Ok(None)`
@@ -351,7 +472,11 @@ fn followed(player: &Mutex<Player>, place: &str, what: &str, waits: bool) -> Res
     if let Some(first) = divergence() {
         return Err(first.to_owned());
     }
-    turn_in(player, (place, what, waits), TURN_PATIENCE, crate::embed::make_way).map(Some).map_err(|why| {
+    let mut wait = |held: MutexGuard<'_, Player>, place: &str, asked: &str| {
+        wait_for_turn(player, held, place, asked);
+        Ok(())
+    };
+    turn_in(player, (place, what, waits), &mut wait).map(Some).map_err(|why| {
         // Another task's turn was next there: the replay can't follow its recording. A place with
         // nothing more for it, as a round cancelled at its end asks for, is said as it was.
         let others = player
@@ -372,7 +497,7 @@ static DIVERGED: OnceLock<String> = OnceLock::new();
 
 /// Notes `why` as where the replay couldn't follow its recording, if it's the first, and gives it
 /// back.
-fn diverged(why: String) -> String {
+pub(crate) fn diverged(why: String) -> String {
     let _ = DIVERGED.set(why.clone());
     why
 }
@@ -390,60 +515,37 @@ pub(crate) fn turn_to_wait(place: Option<&str>, what: &str) -> Result<Option<i64
     followed(player, place, what, true)
 }
 
-/// Waits for the running task's turn to do `what` at `place` in `player`'s log, calling `make_way`
-/// between looks, and gives back what it came to. It waits up to `patience` from when the place's
-/// next entry last changed, so a place that a long line of other tasks' turns are going through
-/// isn't taken for one that's stuck. A wait (`waits`) the recording has nothing more for, where it
-/// ended in a deadlock, comes to [`PAST_THE_END`].
+/// Waits for the running task's turn to do `what` at `place` in `player`'s log, and gives back what
+/// it came to. While another's turn is next there, it waits with `wait` (`wait_for_turn`), which
+/// gives back once the place's turn has moved on, however long that takes: never with a failure,
+/// as a turn that can't come ends the program from the deadlock check. A wait (`waits`) the
+/// recording has nothing more for, where it ended in a deadlock, comes to [`PAST_THE_END`].
 fn turn_in(
     player: &Mutex<Player>,
     (place, what, waits): (&str, &str, bool),
-    patience: std::time::Duration,
-    make_way: fn(),
+    wait: &mut WaitForTurn<'_>,
 ) -> Result<i64, String> {
     let asked = format!("{} {what}", running());
-    let mut started = std::time::Instant::now();
-    let mut last_seen = None;
     loop {
-        let waiting_for = {
-            let player = player.lock().unwrap_or_else(PoisonError::into_inner);
-            let stream = player.streams.get(place);
-            let ours = stream.and_then(|stream| stream.get(turn_at(stream, &asked)?));
-            if let Some((_, payload)) = ours {
-                let bytes: [u8; 8] =
-                    payload.clone().try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
-                return Ok(i64::from_le_bytes(bytes));
-            }
-            let front = stream.and_then(|stream| stream.front());
-            match front.map(|(next, payload)| (next.clone(), payload.clone())) {
-                None if waits && player.whole && player.deadlock.is_some() => return Ok(PAST_THE_END),
-                None if !player.whole => return Err(cut_short(what, place)),
-                None => {
-                    return Err(format!(
-                        "this replay's task asked for `{asked}` at {place}, where its recording had nothing \
-                         more, so it isn't the run that was recorded: something it depends on wasn't \
-                         recorded, or the program has changed"
-                    ));
-                }
-                Some((next, _)) => {
-                    // Where the place has got to: its next entry moves on as each turn ends.
-                    let now = stream.map(VecDeque::len);
-                    if last_seen != Some(now) {
-                        last_seen = Some(now);
-                        started = std::time::Instant::now();
-                    }
-                    next
-                }
-            }
-        };
-        if started.elapsed() > patience {
-            return Err(format!(
-                "this replay asked for `{asked}` at {place}, where its recording has `{waiting_for}` next, \
-                 so it isn't the run that was recorded: something it depends on wasn't recorded, or the \
-                 program has changed"
-            ));
+        let held = player.lock().unwrap_or_else(PoisonError::into_inner);
+        let stream = held.streams.get(place);
+        if let Some((_, payload)) = stream.and_then(|stream| stream.get(turn_at(stream, &asked)?)) {
+            let bytes: [u8; 8] =
+                payload.clone().try_into().map_err(|_| format!("this replay's {place} is damaged"))?;
+            return Ok(i64::from_le_bytes(bytes));
         }
-        make_way();
+        match stream.and_then(VecDeque::front) {
+            None if waits && held.whole && held.deadlock.is_some() => return Ok(PAST_THE_END),
+            None if !held.whole => return Err(cut_short(what, place)),
+            None => {
+                return Err(format!(
+                    "this replay's task asked for `{asked}` at {place}, where its recording had nothing more, \
+                     so it isn't the run that was recorded: something it depends on wasn't recorded, or the \
+                     program has changed"
+                ));
+            }
+            Some(_) => wait(held, place, &asked)?,
+        }
     }
 }
 

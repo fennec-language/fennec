@@ -198,7 +198,7 @@ pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::Analys
         } else {
             "no stored program, as the count that names them couldn't be written"
         },
-        named.iter().map(|what| format!(", {what}")).collect::<String>(),
+        if named.is_empty() { String::new() } else { format!(", {}", named.join(", ")) },
         env!("CARGO_PKG_VERSION"),
     );
     let written = std::fs::write(&report, text);

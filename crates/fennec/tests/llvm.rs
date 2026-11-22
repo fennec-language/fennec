@@ -8072,6 +8072,23 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Each sized integer's `wrapping_add`, `wrapping_sub` and `wrapping_mul`, and its `saturating_`
+/// forms, are worked out natively: the operation on the word cut to the size's bits, LLVM's `*.sat`,
+/// or a product held to the size's ends. Each gives what the standard library's own Fennec for it
+/// gives, copied into the program as plain functions: every pair of a size's edge values and a
+/// spread between, for every size, in dev and release.
+#[test]
+fn sized_wrapping_and_saturating_arithmetic_is_native_and_the_same() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "sized_wrapping",
+        include_str!("fixtures/sized_wrapping.fen"),
+        include_str!("fixtures/sized_wrapping.out"),
+    )
+}
+
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
 /// largest `int` a digit at a time, failing cleanly past the top, from the same text `int` reads:
 /// with space around it and a `+` before it. And `u64`'s `wrapping_` and

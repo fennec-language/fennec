@@ -9,6 +9,100 @@ use fennec_syntax::{BinOp, Span};
 use crate::emit::{DIVISION_BY_ZERO, Emit};
 
 impl Emit<'_, '_, '_> {
+    /// A sized integer's `wrapping_add`, `wrapping_sub` or `wrapping_mul`, or its `saturating_` forms,
+    /// done natively, when `name` is one: `None` for any other call. The standard library writes each
+    /// in Fennec (`sized.fen`), which a backend gives the same answers as. Wrapping is the operation
+    /// on the word, cut to the size's bits after, as the low bits of a sum or product are the same
+    /// whatever the sign. Saturating `+` and `-` are LLVM's `*.sat` at the size's width. A saturating
+    /// `*` below 64 bits is the whole product, which fits a word (unsigned, for a `u32`'s), held to
+    /// the size's ends; a `u64`'s stops at its top when the product overflows.
+    pub(crate) fn sized_arithmetic(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        name: &str,
+        (a, b): (&Operand, &Operand),
+    ) -> Option<Result<(), String>> {
+        let (size, method) = name.split_once('.')?;
+        let num = fennec_check::Num::named(size).filter(|num| *num != fennec_check::Num::F32)?;
+        let (saturating, op) = match method.split_once('_')? {
+            ("wrapping", op) => (false, op),
+            ("saturating", op) => (true, op),
+            _ => return None,
+        };
+        let op = match op {
+            "add" => "add",
+            "sub" => "sub",
+            "mul" => "mul",
+            _ => return None,
+        };
+        Some(self.sized_arithmetic_on(dest, (num, saturating, op), (a, b)))
+    }
+
+    fn sized_arithmetic_on(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        (num, saturating, op): (fennec_check::Num, bool, &str),
+        (a, b): (&Operand, &Operand),
+    ) -> Result<(), String> {
+        let ((a, _), (b, _)) = (self.operand(a)?, self.operand(b)?);
+        let (bits, sign) = (num.bits(), if num.is_unsigned() { "u" } else { "s" });
+        let value = if !saturating {
+            let whole = self.temp();
+            self.line(&format!("{whole} = {op} i64 {a}, {b}"));
+            self.within_width(&whole, num)
+        } else if op == "mul" && bits < 64 && num.is_unsigned() {
+            // Each side is below 2^32, so their product is below 2^64: whole as an unsigned word,
+            // held to the top.
+            let (_, most) = num.range().ok_or("a size with no range")?;
+            let (whole, held) = (self.temp(), self.temp());
+            self.line(&format!("{whole} = mul i64 {a}, {b}"));
+            self.declare("declare i64 @llvm.umin.i64(i64, i64)");
+            self.line(&format!("{held} = call i64 @llvm.umin.i64(i64 {whole}, i64 {most})"));
+            held
+        } else if op == "mul" && bits < 64 {
+            // Each side is at least -2^31 and below 2^31, so their product fits a signed word, and
+            // is held to the ends.
+            let (least, most) = num.range().ok_or("a size with no range")?;
+            let (whole, low, high) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{whole} = mul i64 {a}, {b}"));
+            self.declare("declare i64 @llvm.smax.i64(i64, i64)");
+            self.declare("declare i64 @llvm.smin.i64(i64, i64)");
+            self.line(&format!("{low} = call i64 @llvm.smax.i64(i64 {whole}, i64 {least})"));
+            self.line(&format!("{high} = call i64 @llvm.smin.i64(i64 {low}, i64 {most})"));
+            high
+        } else if op == "mul" {
+            // A `u64`, its top when the product doesn't fit.
+            self.declare("declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)");
+            let (both, product, over, value) = (self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{both} = call {{ i64, i1 }} @llvm.umul.with.overflow.i64(i64 {a}, i64 {b})"));
+            self.line(&format!("{product} = extractvalue {{ i64, i1 }} {both}, 0"));
+            self.line(&format!("{over} = extractvalue {{ i64, i1 }} {both}, 1"));
+            self.line(&format!("{value} = select i1 {over}, i64 -1, i64 {product}"));
+            value
+        } else {
+            let intrinsic = format!("llvm.{sign}{op}.sat.i{bits}");
+            self.declare(&format!("declare i{bits} @{intrinsic}(i{bits}, i{bits})"));
+            let (x, y) = if bits < 64 {
+                let (x, y) = (self.temp(), self.temp());
+                self.line(&format!("{x} = trunc i64 {a} to i{bits}"));
+                self.line(&format!("{y} = trunc i64 {b} to i{bits}"));
+                (x, y)
+            } else {
+                (a, b)
+            };
+            let narrow = self.temp();
+            self.line(&format!("{narrow} = call i{bits} @{intrinsic}(i{bits} {x}, i{bits} {y})"));
+            if bits < 64 {
+                let (wide, extend) = (self.temp(), if num.is_unsigned() { "zext" } else { "sext" });
+                self.line(&format!("{wide} = {extend} i{bits} {narrow} to i64"));
+                wide
+            } else {
+                narrow
+            }
+        };
+        self.assign(dest, &value)
+    }
+
     /// An operator on two `u64`s: unsigned arithmetic, each checked, and unsigned comparisons.
     pub(crate) fn u64_binary(
         &mut self,

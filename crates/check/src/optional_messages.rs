@@ -2,6 +2,7 @@
 //! `None` sent would read as the channel closing, and `T?` of an optional `T` is that same `T?`:
 //! a message of `int?` would be taken as an `int`. Refused where a channel's message is chosen,
 //! at std's `channel[T]` and at a `launch` task's `Inbox[T]`, with the way to send one anyway.
+//! It comes out once `T??` stays apart from `T?` (#2413).
 
 use fennec_syntax::{Diagnostic, Span};
 

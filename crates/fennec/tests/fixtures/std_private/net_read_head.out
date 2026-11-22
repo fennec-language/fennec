@@ -1,0 +1,9 @@
+lines: GET / HTTP/1.1 | host: a, then body
+lines: GET / HTTP/1.1
+ended
+ended
+unended
+long first line
+too big
+too big
+failed: a line ended without a carriage return

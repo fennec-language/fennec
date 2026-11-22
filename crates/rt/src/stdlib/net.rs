@@ -18,6 +18,8 @@ use super::http;
 use crate::methods::no_method;
 use crate::value::{Capability, Value};
 
+pub(crate) mod head;
+
 /// How long connecting waits unless told otherwise.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const SENT_BEFORE_TLS: &str =
@@ -452,6 +454,15 @@ impl Fake {
             ("Connection", "read_line", []) => or_timed_out(self.read_line(handle, false, span), timeout)?,
             ("Connection", "read_line.crlf", [Value::Bool(crlf)]) => {
                 or_timed_out(self.read_line(handle, *crlf, span), timeout)?
+            }
+            ("Connection", "_read_head", given) if let Some(limits) = head::Limits::of(given) => {
+                head::read(limits, || {
+                    let line = or_timed_out(self.read_line(handle, true, span), timeout)?;
+                    Ok(line.map(|line| match line {
+                        Value::Str(text) => Some(text.to_string()),
+                        _ => None,
+                    }))
+                })?
             }
             ("Connection", "start_tls", [Value::Str(_)]) => self.start_tls(handle).map(|()| Value::Unit),
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
@@ -905,6 +916,12 @@ pub(crate) fn real_connection(
         ("read_line", []) => read_line(handle, timeout).map(|line| line_value(line.as_deref())),
         ("read_line.crlf", [Value::Bool(crlf)]) => {
             read_line_crlf(handle, timeout, *crlf).map(|line| line_value(line.as_deref()))
+        }
+        ("_read_head", given) if let Some(limits) = head::Limits::of(given) => {
+            head::read_lines(limits, || {
+                let line = read_line_crlf(handle, timeout, true)?;
+                Ok(line.map(|line| String::from_utf8_lossy(trim_line(&line)).into_owned()))
+            })
         }
         ("start_tls", [Value::Str(host)]) => {
             start_tls(handle, host, timeout.unwrap_or(CONNECT_TIMEOUT)).map(|()| Value::Unit)

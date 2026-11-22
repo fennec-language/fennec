@@ -29,20 +29,65 @@ enum Whither {
     Beneath(Vec<String>, Vec<String>),
 }
 
-/// An `IoError` of this case, saying this.
-pub(crate) fn io_error(case: &str, reason: String) -> Value {
-    Value::instance("IoError", Some(case), vec![("reason".to_owned(), Value::Str(Text::from(reason)))])
+/// The fields each case of `IoError` holds, in order, as crates/syntax/src/stdlib/errors.fen
+/// declares them.
+fn io_fields(case: &str) -> &'static [&'static str] {
+    match case {
+        "NotFound" | "AlreadyExists" => &["path"],
+        "PermissionDenied" => &["path", "reason"],
+        _ => &["reason"],
+    }
 }
 
-fn failing<T>(case: &str, reason: String, span: Span) -> Run<T> {
-    Err(Flow::Fail(io_error(case, reason), span))
+/// An `IoError` of this case, at `path` and saying `reason`, each kept where the case has it.
+pub(crate) fn io_error(case: &str, path: &str, reason: &str) -> Value {
+    let fields = io_fields(case)
+        .iter()
+        .map(|&field| {
+            let text = if field == "path" { path } else { reason };
+            (field.to_owned(), Value::Str(Text::from(text.to_owned())))
+        })
+        .collect();
+    Value::instance("IoError", Some(case), fields)
+}
+
+/// An `IoError` the disk gave, as the runtime gives it: at no path yet, which `at_path` fills.
+fn failing<T>(case: &str, reason: &str, span: Span) -> Run<T> {
+    Err(Flow::Fail(io_error(case, "", reason), span))
+}
+
+/// What a method of an `Fs` gave, with `path`, as the program wrote it, in an `IoError` that
+/// holds a path and doesn't have one yet, as the runtime fills it once the work is done.
+fn at_path<T>(run: Run<T>, path: &str) -> Run<T> {
+    match run {
+        Err(Flow::Fail(Value::Instance(error), span))
+            if error.ty == "IoError"
+                && matches!(error.field("path"), Some(Value::Str(held)) if held.as_str().is_empty()) =>
+        {
+            let fields = error
+                .fields
+                .iter()
+                .map(|(name, value)| {
+                    let value =
+                        if name == "path" { Value::Str(Text::from(path.to_owned())) } else { value.clone() };
+                    (name.clone(), value)
+                })
+                .collect();
+            let mut filled = Value::instance("IoError", error.case.as_deref(), fields);
+            if let Value::Instance(made) = &mut filled {
+                made.notes.clone_from(&error.notes);
+            }
+            Err(Flow::Fail(filled, span))
+        }
+        other => other,
+    }
 }
 
 /// What a call on the file system gave, made into what the program gets.
 pub(crate) fn done<T>(done: Done<T>, span: Span) -> Run<T> {
     match done {
         Ok(value) => Ok(value),
-        Err(Fault::Fails(case, reason)) => failing(case, reason, span),
+        Err(Fault::Fails(case, reason)) => failing(case, &reason, span),
         Err(Fault::Refused(why)) => unsupported(why),
     }
 }
@@ -78,6 +123,19 @@ impl Interp {
         if !named.is_empty() && !durable_only {
             return unsupported(format!("the Fs method `{name}` with a named argument"));
         }
+        let path = match args.first() {
+            Some(path) if name != "only" => Some(self.path_text(path)?),
+            _ => None,
+        };
+        let done = self.fs_method_at(reach, name, args, span);
+        match path {
+            Some(path) => at_path(done, &path),
+            None => done,
+        }
+    }
+
+    /// `fs_method`, but for the path a failure was at.
+    fn fs_method_at(&mut self, reach: &Reach, name: &str, args: &[Value], span: Span) -> Run<Value> {
         match (name, args) {
             ("read_only", []) => Ok(Value::Cap(Cap::Fs(Reach { read_only: true, ..reach.clone() }))),
             ("only", [path]) => {
@@ -200,8 +258,8 @@ impl Interp {
     fn whither(&self, reach: &Reach, method: &str, path: &Value, span: Span) -> Run<Whither> {
         let text = self.path_text(path)?;
         if reach.read_only && CHANGES.contains(&method) {
-            let reason = format!("this Fs only reads, so it can't change `{}`", cut(&text));
-            return failing("PermissionDenied", reason, span);
+            let reason = "this Fs only reads, so it can't change it";
+            return Err(Flow::Fail(io_error("PermissionDenied", &text, reason), span));
         }
         let Some(folders) = &reach.folders else {
             holding_nul(&text, span)?;
@@ -213,31 +271,38 @@ impl Interp {
                 Ok(folders.iter().map(|folder| format!("`{}`", disk.shown(folder))).collect())
             })?;
             let listed = if listed.is_empty() { "nothing".to_owned() } else { listed.join(" or ") };
-            return failing(
-                "PermissionDenied",
-                format!("`{text}` is outside what this Fs can reach: {listed}"),
-                span,
-            );
+            let reason = format!("it's outside what this Fs can reach: {listed}");
+            return Err(Flow::Fail(io_error("PermissionDenied", &text, &reason), span));
         };
         holding_nul(&text, span)?;
         let inside = full.get(folder.len()..).unwrap_or_default().to_vec();
         Ok(Whither::Beneath(folder.clone(), inside))
     }
 
-    /// A case of `IoError` the program makes, with its reason.
+    /// A case of `IoError` the program makes, with each of the case's fields, in order or by name.
     pub(crate) fn io_case(&mut self, case: Option<&str>, given: Vec<super::calls::ArgVal>) -> Run<Value> {
         let Some(case) = case.filter(|case| IO_CASES.contains(case)) else {
             return unsupported("making an `IoError` without a case it has");
         };
-        let [arg] = <[_; 1]>::try_from(given)
-            .map_err(|_| Flow::Unsupported("an `IoError` with these fields".to_owned()))?;
-        if arg.name().is_some_and(|name| name != "reason") {
+        let names = io_fields(case);
+        if given.len() != names.len() {
             return unsupported("an `IoError` with these fields");
         }
-        match self.arg_as_value(arg)? {
-            Value::Str(reason) => Ok(io_error(case, reason.into_string())),
-            other => unsupported(format!("an `IoError` whose reason is a {}", other.kind())),
+        let mut fields: Vec<(String, Value)> = Vec::new();
+        for (at, arg) in given.into_iter().enumerate() {
+            let name = arg
+                .name()
+                .map_or_else(|| names.get(at).copied().unwrap_or_default().to_owned(), str::to_owned);
+            if !names.contains(&name.as_str()) || fields.iter().any(|(had, _)| *had == name) {
+                return unsupported("an `IoError` with these fields");
+            }
+            match self.arg_as_value(arg)? {
+                text @ Value::Str(_) => fields.push((name, text)),
+                other => return unsupported(format!("an `IoError` whose `{name}` is a {}", other.kind())),
+            }
         }
+        fields.sort_by_key(|(name, _)| names.iter().position(|known| known == name));
+        Ok(Value::instance("IoError", Some(case), fields))
     }
 
     /// Whether a call is `fs.create(...)` or `fs.open(...)`, a source a `with` lends a file from.
@@ -280,6 +345,19 @@ impl Interp {
             return unsupported("a program's own type named `File`, as `std.fs` names its own");
         }
         let method = if create { "create" } else { "open" };
+        let text = self.path_text(path)?;
+        at_path(self.file_source_at(reach, create, method, path, span), &text)
+    }
+
+    /// `file_source`, but for the path a failure was at.
+    fn file_source_at(
+        &mut self,
+        reach: &Reach,
+        create: bool,
+        method: &str,
+        path: &Value,
+        span: Span,
+    ) -> Run<i64> {
         let whither = self.whither(reach, method, path, span)?;
         let shown = match &whither {
             Whither::Whole(text) if create && text.ends_with('/') => {
@@ -394,16 +472,5 @@ fn holding_nul(text: &str, span: Span) -> Run<()> {
     if text.chars().count() > 80 {
         shown.push('…');
     }
-    failing("Other", format!("`{shown}` can't be a path: it holds a NUL"), span)
-}
-
-/// A path from outside as a message shows it: whole, or past 40 characters its first 20 and `…`,
-/// with what isn't printable escaped as Rust's debug form escapes it.
-fn cut(text: &str) -> String {
-    let kept: String = if text.chars().count() <= 40 {
-        text.to_owned()
-    } else {
-        text.chars().take(20).chain(['…']).collect()
-    };
-    kept.escape_debug().to_string()
+    failing("Other", &format!("`{shown}` can't be a path: it holds a NUL"), span)
 }

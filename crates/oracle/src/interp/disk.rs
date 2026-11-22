@@ -111,7 +111,8 @@ enum Open {
 /// Why a call on the file system didn't do what it was asked.
 #[derive(Debug)]
 pub(crate) enum Fault {
-    /// It fails, with this case of `IoError`, saying this.
+    /// It fails, with this case of `IoError`, saying this: nothing, for a case that holds only
+    /// its path, which the call on `Fs` fills in.
     Fails(&'static str, String),
     /// It reaches something the oracle doesn't model, named.
     Refused(String),
@@ -128,7 +129,7 @@ fn refused<T>(why: impl Into<String>) -> Done<T> {
 }
 
 fn nothing_there<T>() -> Done<T> {
-    fails("NotFound", "nothing is there")
+    fails("NotFound", "")
 }
 
 fn a_folder<T>() -> Done<T> {
@@ -505,7 +506,7 @@ impl Disk {
                     break;
                 }
                 Entry::File(_) | Entry::Found if count + 1 == names.len() => {
-                    return fails("AlreadyExists", "something is there already");
+                    return fails("AlreadyExists", "");
                 }
                 Entry::File(_) | Entry::Found => return through_a_file(),
             }

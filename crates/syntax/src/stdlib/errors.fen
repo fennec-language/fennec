@@ -1,31 +1,37 @@
 ## A failure of the file system or a stream, with a case for each way a caller might handle
-## differently, each saying what went wrong in `reason`. `message()` gives it.
+## differently. Each but `Other` holds the path it was at, and `message()` says it in words.
 ##
 ## ```fennec
-## assert fs.read_text("nowhere.txt") fails .NotFound()
+## assert fs.read_text("nowhere.txt") fails .NotFound(path="nowhere.txt")
 ## ```
 export error IoError:
     ## Nothing is at the path.
-    NotFound(reason: str)
-    ## The system, or an `Fs` narrowed with `only`, won't let the program do that there.
-    PermissionDenied(reason: str)
+    NotFound(path: str)
+    ## Something won't let the program do that at the path: the system, said in `reason` as "the
+    ## system won't allow it", or an `Fs` narrowed with `only` or `read_only`, saying why in its own
+    ## words.
+    PermissionDenied(path: str, reason: str)
     ## Something is at the path already.
-    AlreadyExists(reason: str)
+    AlreadyExists(path: str)
     ## Any other failure, said in words.
     Other(reason: str)
 
-    ## What went wrong, in words.
+    ## What went wrong, in words, with the path it was at.
     ##
     ## ```fennec
     ## said = fs.read_text("nowhere.txt") except why:
     ##     why.message()
-    ## assert "nowhere.txt" in said
+    ## assert said == "nothing is at `nowhere.txt`"
     ## ```
     def message(self) -> str:
         return match self:
-            case NotFound(reason) | PermissionDenied(reason):
-                reason
-            case AlreadyExists(reason) | Other(reason):
+            case .NotFound(path):
+                f"nothing is at `{path}`" if path != "" else "nothing is there"
+            case .PermissionDenied(path, reason):
+                f"`{path}`: {reason}" if path != "" else reason
+            case .AlreadyExists(path):
+                f"something is at `{path}` already" if path != "" else "something is there already"
+            case .Other(reason):
                 reason
 
 ## A value that isn't what was asked for, like text that isn't a number, with `message` saying why.

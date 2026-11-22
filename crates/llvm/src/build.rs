@@ -1151,3 +1151,32 @@ mod tests {
         Ok(())
     }
 }
+
+fennec_syntax::codec_fields!(Objects { removals, version, pipeline });
+
+/// The objects this process's last build found or made, with what they were known under, as bytes,
+/// for a daemon whose builds are each made in a process of their own: it holds them between
+/// builds and hands them to the next (see [`has_object`]). Empty when nothing is known.
+#[must_use]
+pub fn known_objects_to_bytes() -> Vec<u8> {
+    use fennec_syntax::codec::Encode as _;
+    let known = KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(known) = known.as_ref() else { return Vec::new() };
+    let mut to = fennec_syntax::codec::Writer::default();
+    known.encode(&mut to);
+    to.into_bytes()
+}
+
+/// Knows what [`known_objects_to_bytes`] wrote, for this process's next build. Bytes that don't
+/// read know nothing, so that build looks for every object, and give `false`.
+pub fn know_objects_from_bytes(bytes: &[u8]) -> bool {
+    use fennec_syntax::codec::Decode as _;
+    if bytes.is_empty() {
+        return true;
+    }
+    let mut from = fennec_syntax::codec::Reader::new(bytes);
+    let read = <(Objects, HashSet<[u8; 32]>)>::decode(&mut from).filter(|_| from.is_done());
+    let read_it = read.is_some();
+    *KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = read;
+    read_it
+}

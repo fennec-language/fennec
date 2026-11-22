@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
 use super::{CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, children_into, is_text, shape_word};
+use crate::embed::dicts::Entries;
 use crate::embed::plans::{Holds, Plan};
 use crate::embed::table::Released;
 use crate::embed::{State, with};
@@ -400,8 +401,22 @@ fn free_unplanned(state: &mut State, block: &[u64], pending: &mut Vec<u64>, take
 /// holds every block it can reach.
 fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>, taken: &mut Vec<Box<[u64]>>) {
     let direct = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
-    if release_planned_items(state, block, direct, pending, taken) {
-        return;
+    // A dict's keys and values are let go of as they're read, as a list's items are by their plan:
+    // gathered into a list first, then let go of, cost api_handler a dict's walk twice over. Its
+    // shape is read once here, so nothing after asks again whether it's a dict's.
+    match crate::embed::dicts::held_entries(state, block) {
+        Entries::Words(layout) => {
+            crate::embed::dicts::each_child(layout, block, |child| {
+                release_child(state, child, direct, pending, taken);
+            });
+            return;
+        }
+        Entries::InPlace => {}
+        Entries::NotADict => {
+            if release_planned_items(state, block, direct, pending, taken) {
+                return;
+            }
+        }
     }
     let mut found = std::mem::take(&mut state.heap.found);
     children_into(state, block, &mut found);
@@ -448,7 +463,8 @@ fn release_child(
 
 /// Gives up what a list's in-place items hold, item by item as their kind's plan says, with no
 /// list of the addresses gathered first: json's arrays of values, say, whose strings and lists
-/// are freed with them. False, having done nothing, for a block that isn't such a list.
+/// are freed with them. False, having done nothing, for a block that isn't such a list. A dict's
+/// is never given here: [`release_children`] has let go of its entries already.
 fn release_planned_items(
     state: &mut State,
     block: &[u64],
@@ -456,10 +472,7 @@ fn release_planned_items(
     pending: &mut Vec<u64>,
     taken: &mut Vec<Box<[u64]>>,
 ) -> bool {
-    if shape_word(block).is_none_or(|shape| shape < state.tables.str_shape)
-        || is_text(state, block)
-        || crate::embed::dicts::is_dict(state, block)
-    {
+    if shape_word(block).is_none_or(|shape| shape < state.tables.str_shape) || is_text(state, block) {
         return false;
     }
     let Some(number) = crate::embed::lists::element_number(state, block) else { return false };

@@ -46,6 +46,8 @@ pub enum NamedWord {
     F32,
     /// A plain type held in the entry, by its name.
     InPlace(String),
+    /// A string held in the entry as its header.
+    TextInPlace,
 }
 
 /// What the layouts were asked to number while they noted it (see [`Layouts::note_asked`]).
@@ -55,6 +57,8 @@ pub enum Asked {
     Block(Named),
     /// A plain type a dict holds in its entries.
     DictValue(String),
+    /// A string a dict holds in its entries as its header.
+    DictText,
 }
 
 impl Layouts {
@@ -99,7 +103,11 @@ impl Layouts {
             Word::Block(number) => NamedWord::Block(Box::new(self.named(self.block(number)?)?)),
             Word::U64 => NamedWord::U64,
             Word::F32 => NamedWord::F32,
-            Word::InPlace(number) => NamedWord::InPlace(self.get(self.dict_value(number)?)?.name.clone()),
+            Word::InPlace(number) => match self.dict_value(number)? {
+                Ty::Struct(id) => NamedWord::InPlace(self.get(id)?.name.clone()),
+                Ty::Str => NamedWord::TextInPlace,
+                _ => return None,
+            },
         })
     }
 
@@ -174,12 +182,15 @@ impl Layouts {
             }
             NamedWord::U64 => Word::U64,
             NamedWord::F32 => Word::F32,
-            NamedWord::InPlace(name) => {
-                let id = self.id(name)?;
+            NamedWord::InPlace(_) | NamedWord::TextInPlace => {
+                let value = match word {
+                    NamedWord::InPlace(name) => Ty::Struct(self.id(name)?),
+                    _ => Ty::Str,
+                };
                 Word::InPlace(if numbering {
-                    self.dict_value_number(id)?
+                    self.dict_value_number(value)?
                 } else {
-                    self.dict_value_found(id)?
+                    self.dict_value_found(value)?
                 })
             }
         })
@@ -197,7 +208,10 @@ impl Layouts {
                     self.block_number(ty)?;
                 }
                 Asked::DictValue(name) => {
-                    self.dict_value_number(self.id(name)?)?;
+                    self.dict_value_number(Ty::Struct(self.id(name)?))?;
+                }
+                Asked::DictText => {
+                    self.dict_value_number(Ty::Str)?;
                 }
             }
         }

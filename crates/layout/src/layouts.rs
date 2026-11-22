@@ -69,10 +69,11 @@ pub struct Layouts {
     /// The types laid out by `add_through_lists`, whose items a list's description names by
     /// their place here.
     through_lists: Vec<u32>,
-    /// The plain types a dict holds in its entries, in the order each was first asked for, which
-    /// is the number a dict's value word names one by here. The runtime's tables give each the
-    /// kind of item that many after the types laid out through lists (see `Registry::numbered`).
-    dict_values: std::cell::RefCell<Vec<u32>>,
+    /// The types a dict holds in its entries, in the order each was first asked for, which is the
+    /// number a dict's value word names one by here: a plain struct, or a string as its header.
+    /// The runtime's tables give each the kind of item that many after the types laid out through
+    /// lists (see `Registry::numbered`).
+    dict_values: std::cell::RefCell<Vec<Ty>>,
     /// What's been asked for a number since [`Self::note_asked`], each the first time, in order,
     /// while that's being noted.
     noting: std::cell::RefCell<Option<Vec<AskedNow>>>,
@@ -112,7 +113,7 @@ fn layout_line(out: &mut String, layout: &Layout, kind: &dyn Fn(Ty) -> String) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AskedNow {
     Block(Ty),
-    DictValue(u32),
+    DictValue(Ty),
 }
 
 /// What a backend holds in place, where others hold the address of a block.
@@ -825,9 +826,9 @@ impl Layouts {
         u32::try_from(at).ok()
     }
 
-    /// The number a plain type a dict holds in its entries has already, if it has one.
-    pub(crate) fn dict_value_found(&self, id: u32) -> Option<u32> {
-        let at = self.dict_values.borrow().iter().position(|known| *known == id)?;
+    /// The number a type a dict holds in its entries has already, if it has one.
+    pub(crate) fn dict_value_found(&self, value: Ty) -> Option<u32> {
+        let at = self.dict_values.borrow().iter().position(|known| *known == value)?;
         u32::try_from(at).ok()
     }
 
@@ -850,8 +851,8 @@ impl Layouts {
             return None;
         }
         match value {
-            Ty::Struct(id) if dict_values_in_place() && !has_no_words(written, &self.wordless) => {
-                self.dict_value_number(id).map(Word::InPlace)
+            Ty::Struct(_) if dict_values_in_place() && !has_no_words(written, &self.wordless) => {
+                self.dict_value_number(value).map(Word::InPlace)
             }
             Ty::Struct(id) => Some(Word::Plain(id)),
             // An optional string is three words, where strings are headers.
@@ -861,15 +862,24 @@ impl Layouts {
         }
     }
 
-    /// The number a plain type goes by here as a dict's value held in the entry: its place in the
-    /// order such types were first asked for. It's asked for while types are still being laid
+    /// How a dict holds a string value: as its header in the entry, as a key is, where strings
+    /// are headers, so one of 23 bytes or fewer needs no block at all; or as its block's address.
+    fn str_value_word(&self) -> Option<Word> {
+        if self.native_buffers && self.text_headers() && dict_values_in_place() {
+            return self.dict_value_number(Ty::Str).map(Word::InPlace);
+        }
+        Some(Word::Str)
+    }
+
+    /// The number a type goes by here as a dict's value held in the entry, a plain struct or a
+    /// string as its header: its place in the order such types were first asked for. It's asked for while types are still being laid
     /// out, so it can't lean on how many are laid out through lists; the runtime's number for it
     /// is worked out from this one once they all are (`dict_value_for_runtime`).
-    pub(crate) fn dict_value_number(&self, id: u32) -> Option<u32> {
-        self.noted(AskedNow::DictValue(id));
+    pub(crate) fn dict_value_number(&self, value: Ty) -> Option<u32> {
+        self.noted(AskedNow::DictValue(value));
         let mut values = self.dict_values.borrow_mut();
-        let at = values.iter().position(|known| *known == id).unwrap_or_else(|| {
-            values.push(id);
+        let at = values.iter().position(|known| *known == value).unwrap_or_else(|| {
+            values.push(value);
             values.len() - 1
         });
         u32::try_from(at).ok()
@@ -980,7 +990,11 @@ impl Layouts {
             .into_iter()
             .map(|asked| match asked {
                 AskedNow::Block(ty) => self.named(ty).map(Asked::Block),
-                AskedNow::DictValue(id) => self.get(id).map(|layout| Asked::DictValue(layout.name.clone())),
+                AskedNow::DictValue(Ty::Struct(id)) => {
+                    self.get(id).map(|layout| Asked::DictValue(layout.name.clone()))
+                }
+                AskedNow::DictValue(Ty::Str) => Some(Asked::DictText),
+                AskedNow::DictValue(_) => None,
             })
             .collect()
     }
@@ -994,9 +1008,10 @@ impl Layouts {
         }
     }
 
-    /// The plain type a dict holds in its entries under this number.
+    /// The type a dict holds in its entries under this number: a plain struct, or a string as its
+    /// header.
     #[must_use]
-    pub fn dict_value(&self, number: u32) -> Option<u32> {
+    pub fn dict_value(&self, number: u32) -> Option<Ty> {
         self.dict_values.borrow().get(usize::try_from(number).ok()?).copied()
     }
 
@@ -1014,9 +1029,9 @@ impl Layouts {
         }
     }
 
-    /// The plain types dicts hold in their entries, in the order of their numbers.
+    /// The types dicts hold in their entries, in the order of their numbers.
     #[must_use]
-    pub fn dict_values(&self) -> Vec<u32> {
+    pub fn dict_values(&self) -> Vec<Ty> {
         self.dict_values.borrow().clone()
     }
 
@@ -1262,7 +1277,7 @@ fn in_place_field_ty(
                 Type::Sized(num) => Some(sized_word(*num)),
                 Type::Float => Some(Word::Float),
                 Type::Bool => Some(Word::Bool),
-                Type::Str => Some(Word::Str),
+                Type::Str => layouts.str_value_word(),
                 other => layouts.value_word(held(other), other),
             };
             match (key(key_ty), word) {
@@ -1561,7 +1576,7 @@ fn dict_ty(layouts: &Layouts, key: &Type, value: &Type, held: &dyn Fn(&Type) -> 
         Type::Sized(num) => Some(sized_word(*num)),
         Type::Float => Some(Word::Float),
         Type::Bool => Some(Word::Bool),
-        Type::Str => Some(Word::Str),
+        Type::Str => layouts.str_value_word(),
         other => layouts.value_word(held(other), other),
     };
     match (key_word(layouts, key), word) {

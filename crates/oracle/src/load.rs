@@ -265,6 +265,7 @@ const RUN_FROM_SOURCE: &[&str] = &[
     "re",
     "template",
     "sql",
+    "sqlite",
     "io",
     "toml",
     "json",

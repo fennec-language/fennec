@@ -1477,14 +1477,22 @@ impl Emit<'_, '_, '_> {
         let (name, signature, width, written, added, refused) = match in_entry {
             None => {
                 let name = format!("fen_add_short_{}", from.name());
-                let signature = format!("define internal i1 @{name}(ptr %d, ptr %bytes, i64 %length, i64 %value) #0 {{");
+                let signature =
+                    format!("define internal i1 @{name}(ptr %d, ptr %bytes, i64 %length, i64 %value) #0 {{");
                 let written = "  %value_to = getelementptr inbounds i64, ptr %added, i64 4\n  store i64 %value, ptr %value_to\n";
                 (name, signature, entry_words(Word::Text), written, "  ret i1 true", "  ret i1 false")
             }
             Some(width) => {
                 let name = format!("fen_add_short_{}_e{width}", from.name());
                 let signature = format!("define internal ptr @{name}(ptr %d, ptr %bytes, i64 %length) #0 {{");
-                (name, signature, width, "", "  %value_to = getelementptr inbounds i64, ptr %added, i64 4\n  ret ptr %value_to", "  ret ptr null")
+                (
+                    name,
+                    signature,
+                    width,
+                    "",
+                    "  %value_to = getelementptr inbounds i64, ptr %added, i64 4\n  ret ptr %value_to",
+                    "  ret ptr null",
+                )
             }
         };
         self.module.add_helper(
@@ -1797,7 +1805,13 @@ found:
 
     /// The address of the value `dict` holds for the key that's the `size` ASCII bytes at
     /// `first`, hashed where they are as a stored key's are, or null.
-    fn slice_entry_value(&mut self, dict: &str, (key_word, value_word): (Word, Word), first: &str, size: &str) -> String {
+    fn slice_entry_value(
+        &mut self,
+        dict: &str,
+        (key_word, value_word): (Word, Word),
+        first: &str,
+        size: &str,
+    ) -> String {
         let entry = if key_word == Word::Text {
             let width = self.stride(key_word, value_word);
             self.find_text_key(dict, (first, KeyBytes::InBlock), size, width)
@@ -1935,7 +1949,8 @@ found:
         self.line(&format!("{dict} = load ptr, ptr {place}"));
         // A key that's there, in a dict nothing else holds, just gets its new value. The lookup is
         // left out where a `get` just before found the entry.
-        let value_at = self.found_in(&dict, found, |emit| emit.slice_value_at(&dict, (key_word, value_word), &sliced));
+        let value_at =
+            self.found_in(&dict, found, |emit| emit.slice_value_at(&dict, (key_word, value_word), &sliced));
         let alone = self.alone(&dict);
         let (there, quick) = (self.temp(), self.temp());
         self.line(&format!("{there} = icmp ne ptr {value_at}, null"));
@@ -2055,7 +2070,8 @@ found:
         self.line(&format!("{missing} = xor i1 {there}, true"));
         self.line(&format!("{both} = and i1 {alone}, {missing}"));
         self.line(&format!("{try_it} = and i1 {both}, {ok}"));
-        let (native, write, runtime) = (self.label("add_here"), self.label("write_new"), self.label("add_runtime"));
+        let (native, write, runtime) =
+            (self.label("add_here"), self.label("write_new"), self.label("add_runtime"));
         self.line(&format!("br i1 {try_it}, label %{native}, label %{runtime}"));
         self.start_block(&native);
         let add_here = self.add_short_key_helper(KeyBytes::InBlock, Some(self.stride(key_word, value_word)));

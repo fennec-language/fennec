@@ -2,7 +2,7 @@
 # Tries `mutants-ranked.sh` and `mutants-verdict.sh` on lists like those cargo-mutants writes: the
 # counts are each said, a timeout counts as neither caught nor missed, and a run where most mutants
 # that built timed out fails, since it checked next to nothing. And `mutants-equivalent.sh`: a
-# missed mutant the list names, by its file, what it does and its line's text, isn't missed.
+# missed mutant the list names, by its file, what it does and its line's whole text, isn't missed.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d)"
@@ -114,6 +114,13 @@ echo "crates/ir/src/lower.rs:3:15: replace && with || in Lowering::assign" > "$w
 equivalent same
 check "a line that moved is matched by its text" 1 "$(grep -c . "$work/same/equivalent.txt")"
 check "and isn't missed" 0 "$(grep -c . "$work/same/missed.txt")"
+
+# The line changed only past what the entry names, as a comment added: still a changed line, so
+# missed again. A skip is the whole line or nothing.
+printf 'fn assign() {\n    let a = b && c; // now with a note\n}\n' > "$work/source/crates/ir/src/lower.rs"
+echo "crates/ir/src/lower.rs:2:15: replace && with || in Lowering::assign" > "$work/same/missed.txt"
+equivalent same
+check "a line changed anywhere on it is missed again" 1 "$(grep -c . "$work/same/missed.txt")"
 
 # The line changed: missed again, to be looked at afresh.
 printf 'fn assign() {\n    let a = b && g;\n}\n' > "$work/source/crates/ir/src/lower.rs"

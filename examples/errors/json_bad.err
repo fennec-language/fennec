@@ -1,4 +1,5 @@
-error: `main` failed: ParseError(message="expected `,` or `}` after the value, but found `\"`, at line 4, column 3", line=4, column=3)
+error: `main` failed: expected `,` or `}` after the value, but found `"`, at line 4, column 3
+  ParseError(message="expected `,` or `}` after the value, but found `\"`, at line 4, column 3", line=4, column=3)
  --> examples/errors/json_bad.fen:9:12
   |
 9 |     save = loads[Save]("{\n  \"level\": 3,\n  \"name\": \"Ash\"\n  \"coins\": 10\n}")?

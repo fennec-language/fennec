@@ -49,6 +49,7 @@ pub(crate) fn live_loops(checker: &Checker, key: &str, def: &FnDef) -> Vec<((u32
     let body = checker.typed.get(key);
     loops_in(&def.body, &mut |each| {
         let StmtKind::For { names, is_mut: true, iter, body: block } = &each.kind else { return };
+        let iter = looped_over(iter);
         let ([item], Some(looped)) = (names.as_slice(), place(iter)) else { return };
         let through = match body.and_then(|body| body.expr(iter.span)) {
             Some(Type::List(_) | Type::Array(..) | Type::Buffer(_)) => Through::Positions,
@@ -62,6 +63,13 @@ pub(crate) fn live_loops(checker: &Checker, key: &str, def: &FnDef) -> Vec<((u32
         }
     });
     found
+}
+
+/// What a `for ref` goes over: `items` in `parallel(items)` too. A `parallel` one that reads what
+/// it goes over is written in by position like any other, so its rounds run one after another and
+/// each sees the items as they are now, as a plain loop's do (#2356).
+fn looped_over(iter: &Expr) -> &Expr {
+    crate::parallel::parallel_items(iter).unwrap_or(iter)
 }
 
 /// Calls `each` on every statement in a body, those in nested blocks and functions included.
@@ -278,7 +286,7 @@ fn by_place(each: &Stmt, through: Through) -> Option<Vec<Stmt>> {
     let [item] = names.as_slice() else { return None };
     let tag = format!("{item}__live{}", each.span.start);
     let mut held = Vec::new();
-    let items = indexes_held(iter, &|count| format!("{tag}_{count}"), &mut held);
+    let items = indexes_held(looped_over(iter), &|count| format!("{tag}_{count}"), &mut held);
     let count = format!("{tag}_at");
     let span = each.span;
     let looped = match through {

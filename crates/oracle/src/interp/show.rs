@@ -34,8 +34,9 @@ impl Interp {
     }
 
     /// An error's own words, when it has a `def message`: the program's, or for an error the
-    /// oracle models, std's. `IoError`'s gives what each case holds as `reason`
-    /// (crates/syntax/src/stdlib/errors.fen).
+    /// oracle models, std's, as crates/syntax/src/stdlib/errors.fen writes them. `IoError`'s
+    /// gives what each case holds as `reason`, and `InvalidValue`'s and `ParseError`'s their
+    /// `message`.
     fn own_words(&mut self, instance: &Instance) -> Option<Run<String>> {
         if let Some(def) = self.program.method(&instance.ty, "message") {
             let receiver = Receiver::Value(Value::Instance(Held::new(instance.clone())));
@@ -45,12 +46,14 @@ impl Interp {
                 Err(flow) => Err(flow),
             });
         }
-        if instance.ty != "IoError" {
-            return None;
-        }
-        Some(match instance.field("reason") {
-            Some(Value::Str(reason)) => Ok(reason.as_str().to_owned()),
-            _ => unsupported("an `IoError` without its reason"),
+        let field = match instance.ty.as_str() {
+            "IoError" => "reason",
+            "InvalidValue" | "ParseError" => "message",
+            _ => return None,
+        };
+        Some(match instance.field(field) {
+            Some(Value::Str(words)) => Ok(words.as_str().to_owned()),
+            _ => unsupported(format!("an `{}` without its `{field}`", instance.ty)),
         })
     }
 

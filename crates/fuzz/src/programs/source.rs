@@ -4031,6 +4031,14 @@ impl Writer {
                 let (by, list) = (self.expr(by, false), self.expr(list, false));
                 format!("sum({item} * {by} for {item} in parallel({list}))")
             }
+            Expr::FloatSum(list, scale, filtered) => {
+                self.made += 1;
+                let item = format!("item{}", self.made);
+                let (scale, list) = (self.expr(scale, false), self.expr(list, false));
+                let kept = if *filtered { format!(" if {item} % 2 == 0") } else { String::new() };
+                format!("sum(float({item}) * {scale} for {item} in parallel({list}){kept})")
+            }
+            Expr::Upto(count) => format!("list(range({count}))"),
             Expr::Len(list) => format!("len({})", self.expr(list, false)),
             Expr::Index(list, at) => format!("{}[{}]", self.expr(list, false), self.expr(at, false)),
             Expr::AtOrZero(list, at) => {

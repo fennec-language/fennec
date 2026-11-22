@@ -688,10 +688,36 @@ impl Interp {
         cond: Option<&'static Expr>,
     ) -> Run<Value> {
         if let Some(call) = self.parallel_call(iter)? {
-            if kind != CompKind::List {
-                return unsupported("a set or dict comprehension over `parallel`");
-            }
-            return self.parallel_list(elem, names, call, cond).map(|items| Value::List(Held::new(items)));
+            return match kind {
+                CompKind::List => self
+                    .parallel_list((elem, None), names, call, cond)
+                    .map(|items| Value::List(Held::new(items))),
+                // Its rounds' items go in in the list's order, as a plain one's do, so the first
+                // of equal ones is kept where it came.
+                CompKind::Set => {
+                    let mut made = Vec::new();
+                    for item in self.parallel_list((elem, None), names, call, cond)? {
+                        set_insert(&mut made, item)?;
+                    }
+                    Ok(Value::Set(Held::new(made)))
+                }
+                // Each round's key and value go in in the list's order too, so a key keeps its
+                // first place and its last value.
+                CompKind::Dict => {
+                    let Some(value) = value else { return unsupported("a dict comprehension with no value") };
+                    let mut pairs = Vec::new();
+                    for pair in self.parallel_list((elem, Some(value)), names, call, cond)? {
+                        let Value::Tuple(pair) = pair else {
+                            return unsupported("a dict comprehension's pair");
+                        };
+                        let [key, made] = <[Value; 2]>::try_from(pair.into_inner())
+                            .map_err(|_| Flow::Unsupported("a dict comprehension's pair".to_owned()))?;
+                        dict_insert(&mut pairs, key, made)?;
+                    }
+                    Ok(Value::Dict(Held::new(pairs)))
+                }
+                CompKind::Generator => unsupported("a generator comprehension here"),
+            };
         }
         let over = self.eval(iter)?;
         let mut items = self.items_of(over, iter.span)?;

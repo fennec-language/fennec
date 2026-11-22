@@ -23,7 +23,6 @@ fennec_list_contains unchecked 0
 fennec_native_freed in-cant-fail 0
 fennec_native_made in-cant-fail 0
 fennec_native_made unchecked 0
-fennec_notes_add in-cant-fail 0
 fennec_notes_add unchecked 0
 fennec_notes_frame in-cant-fail 0
 fennec_notes_frame unchecked 2

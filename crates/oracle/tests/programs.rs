@@ -1026,14 +1026,14 @@ fn saving_holds_unions_tables_ids_and_rules_through_every_format() {
         (
             SAVED_UNION_JSON_LOADS,
             r#"Holder(shape=Square(side=2.0))
-refused ParseError(message="`shape` is \"Triangle\", which is none of `Circle | Square`", line=0, column=0)
-refused ParseError(message="", line=0, column=0)
-refused ParseError(message="`shape` should be a Circle | Square, but it's an object", line=0, column=0)
-refused ParseError(message="`shape.Circle` should be a Circle, but it's an int", line=0, column=0)
-refused ParseError(message="`shape` should be a Circle | Square, but it's a str", line=0, column=0)
-refused ParseError(message="`Circle` has no field \"side\", but `shape.Circle` has one", line=0, column=0)
-refused ParseError(message="`shape` should be a Circle | Square, but it's null", line=0, column=0)
-refused ParseError(message="`shape` should be a Circle | Square, but it's a list", line=0, column=0)
+refused `shape` is "Triangle", which is none of `Circle | Square`
+refused 
+refused `shape` should be a Circle | Square, but it's an object
+refused `shape.Circle` should be a Circle, but it's an int
+refused `shape` should be a Circle | Square, but it's a str
+refused `Circle` has no field "side", but `shape.Circle` has one
+refused `shape` should be a Circle | Square, but it's null
+refused `shape` should be a Circle | Square, but it's a list
 "#,
         ),
         (
@@ -1066,8 +1066,8 @@ Holder(order=Order.Move(steps=2), orders=[Order.Wait, Order.Move(steps=5)])
         ),
         (
             SAVED_RULE_THROUGH_PACK,
-            r#"refused ParseError(message="Gauge.level breaks its `where` rule, at byte 25", line=0, column=0)
-"#,
+            r"refused Gauge.level breaks its `where` rule, at byte 25
+",
         ),
     ] {
         let (got, ended) = ran(program);
@@ -4433,7 +4433,7 @@ fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
                     stdout.print(f'{why}')
             stdout.print('done')
         ",
-        "block gave -1\nCrashed(why=\"the task crashed\")\ndone\n",
+        "block gave -1\nthe task crashed\ndone\n",
     );
     // A send waiting for room is cut short as a closed channel's: it fails with `Closed`.
     prints(
@@ -4459,7 +4459,7 @@ fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
                     stdout.print(f'{why}')
             stdout.print('done')
         ",
-        "second send closed\nblock ends\nCrashed(why=\"the task crashed\")\ndone\n",
+        "second send closed\nblock ends\nthe task crashed\ndone\n",
     );
 }
 
@@ -5682,9 +5682,155 @@ fn parallel_rounds_give_what_every_order_gives() {
     );
 }
 
+/// A `for` over `parallel` whose body has a `return` in it runs one round after another, as a
+/// plain loop over the list: it prints in order, and the `return`, written as a statement or in an
+/// `except` block, leaves the function at the round it's in, with no round after it run. What's
+/// printed is what the compiled program printed.
+#[test]
+fn a_parallel_loop_with_a_return_runs_as_a_plain_loop() {
+    prints(
+        "
+        error Odd:
+            number: int
+
+        def halved(number: int) -> int fails Odd:
+            if number % 2 == 1:
+                fail Odd(number)
+            return number // 2
+
+        def first_big(items: list[int], stdout: Stdout) -> int:
+            for item in parallel(items):
+                stdout.print('looking', item)
+                if item > 10:
+                    return item
+            return -1
+
+        def first_odd(items: list[int], stdout: Stdout) -> int:
+            for item in parallel(items):
+                half = halved(item) except why:
+                    stdout.print('odd', why.number)
+                    return item
+                stdout.print('half', half)
+            return 0
+
+        def main(stdout: Stdout):
+            stdout.print(first_big([1, 5, 20, 3, 40], stdout))
+            stdout.print(first_big([1, 2], stdout))
+            stdout.print(first_odd([4, 8, 3, 6], stdout))
+        ",
+        "looking 1\nlooking 5\nlooking 20\n20\nlooking 1\nlooking 2\n-1\nhalf 2\nhalf 4\nodd 3\n3\n",
+    );
+}
+
+/// A `for ref` over `parallel` whose round reads the list it goes over runs as a plain loop, as
+/// the checker writes it in to go by position (#2356): each round sees the items as they are now,
+/// its own change included, prints in order, and a `return`, written as a statement, in an
+/// `except` block or in a loop inside the round, keeps the change the round made. A loop that
+/// reads another field of what holds its list still runs as rounds, so printing in it is
+/// refused. What's printed is what the compiled program printed.
+#[test]
+fn a_parallel_for_ref_that_reads_its_list_runs_as_a_plain_loop() {
+    prints(
+        "
+        error Odd:
+            number: int
+
+        struct Spot:
+            x: int
+
+        def halved(number: int) -> int fails Odd:
+            if number % 2 == 1:
+                fail Odd(number)
+            return number // 2
+
+        def returned(spots: list[Spot]) -> list[Spot]:
+            mut kept = spots
+            for ref spot in parallel(kept):
+                spot.x += 1
+                if spot.x > 2:
+                    return kept
+            return kept
+
+        def returned_from_except(spots: list[Spot]) -> list[Spot]:
+            mut kept = spots
+            for ref spot in parallel(kept):
+                spot.x += 1
+                _ = halved(spot.x) except why:
+                    spot.x += why.number * 100
+                    return kept
+            return kept
+
+        def returned_from_inner_loop(spots: list[Spot]) -> list[Spot]:
+            mut kept = spots
+            for ref spot in parallel(kept):
+                spot.x += 1
+                for step in range(2):
+                    if spot.x + step > 3:
+                        return kept
+            return kept
+
+        def read_in_round(spots: list[Spot], stdout: Stdout) -> list[Spot]:
+            mut kept = spots
+            for ref spot in parallel(kept):
+                spot.x = spot.x * 10 + 1
+                stdout.print('first is', kept[0].x, 'last is', kept[len(kept) - 1].x)
+            return kept
+
+        def main(stdout: Stdout):
+            stdout.print(returned([Spot(x=0), Spot(x=2), Spot(x=5)]))
+            stdout.print(returned_from_except([Spot(x=1), Spot(x=4), Spot(x=6)]))
+            stdout.print(returned_from_inner_loop([Spot(x=0), Spot(x=1), Spot(x=7)]))
+            stdout.print(read_in_round([Spot(x=1), Spot(x=2), Spot(x=3)], stdout))
+        ",
+        "[Spot(x=1), Spot(x=3), Spot(x=5)]\n[Spot(x=2), Spot(x=505), Spot(x=6)]\n[Spot(x=1), Spot(x=2), Spot(x=8)]\n\
+         first is 11 last is 3\nfirst is 11 last is 3\nfirst is 11 last is 31\n[Spot(x=11), Spot(x=21), Spot(x=31)]\n",
+    );
+    let (_, ended) = ran("
+        struct Spot:
+            x: int
+
+        struct World:
+            spots: list[Spot]
+            score: int
+
+        def main(stdout: Stdout):
+            mut world = World(spots=[Spot(x=1), Spot(x=2)], score=7)
+            for ref spot in parallel(world.spots):
+                spot.x += world.score
+            stdout.print(world.spots)
+            for ref spot in parallel(world.spots):
+                stdout.print(spot.x)
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported("printing inside a `parallel` round, whose order isn't promised".to_owned())
+    );
+}
+
+/// A set or dict comprehension over `parallel` takes its rounds' items in the list's order, as a
+/// plain one does: the first of equal items is kept where it came, and a key keeps its first place
+/// and its last value. What's printed is what the compiled program printed.
+#[test]
+fn a_set_or_dict_made_over_parallel_holds_its_items_in_the_lists_order() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            stdout.print({item % 5 for item in parallel([7, 3, 12, 8, 2, 7])})
+            stdout.print({item for item in parallel(list(range(3000))) if item % 1000 == 7})
+            stdout.print({(left, right % 2) for left, right in parallel([(1, 4), (2, 5), (1, 6)])})
+            stdout.print(len({item // 3 for item in parallel(list(range(5000)))}))
+            stdout.print({item % 5: item for item in parallel([7, 3, 12, 8, 2, 7])})
+            stdout.print({item: item * 2 for item in parallel(list(range(3000))) if item % 1000 == 7})
+            stdout.print({left: right for left, right in parallel([(1, 4), (2, 5), (1, 6)])})
+            stdout.print(len({item // 3: item for item in parallel(list(range(5000)))}))
+        ",
+        "{2, 3}\n{7, 1007, 2007}\n{(1, 0), (2, 1)}\n1667\n{2: 7, 3: 8}\n{7: 14, 1007: 2014, 2007: 4014}\n\
+         {1: 6, 2: 5}\n1667\n",
+    );
+}
+
 /// What `parallel` doesn't promise an order for is refused: printing in a round, a `shared` value
-/// one round changes and another reaches, a round that may not run changing something, and a sum
-/// added in a tree of the runtime's own, of floats or of ints that could overflow.
+/// one round changes and another reaches, and a round that may not run changing something.
 #[test]
 fn what_parallel_rounds_could_do_in_another_order_is_refused() {
     let refused = |body: &str, why: &str| {
@@ -5708,13 +5854,58 @@ fn what_parallel_rounds_could_do_in_another_order_is_refused() {
          lock total as ref held:\n                held.count += number\n",
         "a `parallel` round that may not run changing a `shared` value",
     );
-    refused(
-        "    stdout.print(sum(number / 2 for number in parallel(range(3))))\n",
-        "a float `sum` over `parallel`, which adds in a tree of its own",
+}
+
+/// A `sum` over `parallel(xs)` that compiled code lifts into ranges, of one name with no `if` and
+/// no `?`, adds in the runtime's fixed tree: ranges of at most 1,024 positions, each from its
+/// first part on, halved at the middle, the earlier half first, and the start added last. So a
+/// float sum gives the tree's bits, not the eight running totals a plain `sum` keeps, and an int
+/// sum overflows where the tree does, not where adding in order would. Any other form adds in
+/// order, as a plain `sum` does. What's printed is what the compiled program printed.
+#[test]
+fn a_sum_over_parallel_adds_in_the_runtimes_tree_where_its_lifted_and_in_order_where_not() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            floats = [float(at % 7) * 0.1 + (1.0e16 if at % 1000 == 3 else 0.0) - (1.0e16 if at % 1000 == 501 else 0.0) for at in range(3000)]
+            stdout.print(sum(x for x in parallel(floats)), sum(x for x in floats))
+            stdout.print(sum((x for x in parallel(floats)), start=0.5))
+            stdout.print(sum(x for x in parallel(floats) if True))
+            stdout.print(sum(x for x in parallel([-0.0])), sum(x for x in parallel(list[float]())))
+            ints = list(range(5000))
+            stdout.print(sum(x * x for x in parallel(ints)), sum(x for x in parallel(ints) if x % 3 == 0))
+            stdout.print(sum((x for x in parallel(ints)), start=100))
+            pairs = [(at, at * 2) for at in range(2000)]
+            stdout.print(sum(left * right for left, right in parallel(pairs)))
+            stdout.print(sum((x for x in parallel(list[int]())), start=4))
+            big = 9223372036854775807 // 1024
+            stdout.print(sum(x for x in parallel([big if at <= 1024 else -big for at in range(2048)])))
+        ",
+        "300.0 688.0\n300.5\n688.0\n0.0 0.0\n41654167500 4165833\n12497600\n5329334000\n4\n18014398509481982\n",
     );
-    refused(
-        "    stdout.print(sum(number for number in parallel([9223372036854775807, 1, -1])))\n",
-        "an int `sum` over `parallel` that may overflow, by how it's split",
+    let stopped = |body: &str, said: &str| {
+        let (printed, ended) = ran(&format!(
+            "def picked(at: int, x: int) -> int:\n    if at == 1500 or at == 3000:\n        return [7][at]\n    \
+             return x\n\ndef main(stdout: Stdout):\n    big = 9223372036854775807 // 1024\n{body}"
+        ));
+        assert_eq!(printed, "", "{body}");
+        assert!(matches!(&ended, Ended::Stopped(stopped) if stopped.contains(said)), "{body}: {ended:?}");
+    };
+    // Adding in order overflows at the 1,025th part, where the tree adds the two leaves' totals.
+    stopped(
+        "    stdout.print(sum(x for x in parallel([big if at <= 1024 else -big for at in range(2048)]) if True))\n",
+        "this calculation overflows an int",
+    );
+    // The crash at 1500 is in the range from 1024, below the range from 2048 whose halves' total
+    // overflows, so it's the one passed up.
+    stopped(
+        "    stdout.print(sum(picked(at, x=big) for at in parallel([at for at in range(4096) if at != 3000])))\n",
+        "index 1500 is out of range for length 1",
+    );
+    // The range from 0 overflows adding its halves, below the crash at 3000.
+    stopped(
+        "    stdout.print(sum(picked(at, x=big) for at in parallel([at for at in range(4096) if at != 1500])))\n",
+        "this calculation overflows an int",
     );
 }
 

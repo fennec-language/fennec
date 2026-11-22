@@ -1348,6 +1348,57 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 
+    /// A sum over `parallel` checks and the evaluator prints what the oracle prints: floats added in
+    /// the runtime's tree and, with an `if`, in order into eight totals, over short lists, an empty
+    /// one and ones longer than a leaf, and an int sum over a long list. An int sum the tree
+    /// overflows stops the program in both.
+    #[test]
+    fn the_parallel_sum_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Expr, Program, Stmt, Ty};
+        let run = |printed: Vec<Expr>| {
+            let body = vec![Stmt::Print(printed.into_iter().map(|expr| (expr, Ty::Float)).collect())];
+            let program = Program { body, threadless: false };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            (eval::run_saying(&program), oracle, source)
+        };
+        let floats = |list: Expr, scale: f64, filtered: bool| {
+            Expr::FloatSum(Box::new(list), Box::new(Expr::Float(scale)), filtered)
+        };
+        let short = || Expr::Ints(vec![Expr::Int(3), Expr::Int(-7), Expr::Int(10), Expr::Int(4)]);
+        let (ran, oracle, source) = run(vec![
+            floats(Expr::Upto(3000), 0.1, false),
+            floats(Expr::Upto(3000), 0.1, true),
+            floats(Expr::Upto(1025), 1e300, false),
+            floats(short(), 0.1, false),
+            floats(short(), 0.1, true),
+            floats(Expr::Ints(Vec::new()), 2.5, false),
+            floats(Expr::Ints(Vec::new()), 2.5, true),
+        ]);
+        let Some((printed, true, _)) = ran else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+        // The tree's bits and the eight totals' differ.
+        let lines: Vec<&str> = printed.lines().collect();
+        assert_ne!(lines.first(), lines.get(1), "{printed}");
+        let ints = |by: i64| Expr::ParallelSum(Box::new(Expr::Upto(3000)), Box::new(Expr::Int(by)));
+        let (ran, oracle, source) = run(vec![Expr::FloatOf(Box::new(ints(1_000_000_007)))]);
+        let Some((printed, true, _)) = ran else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+        let (ran, oracle, source) = run(vec![Expr::FloatOf(Box::new(ints(i64::MAX / 3000)))]);
+        assert!(matches!(ran, Some((_, false, _))), "{ran:?}\n{source}");
+        assert_eq!(oracle.exit_code(), Some(1), "{:?}\n{source}", oracle.ended);
+    }
+
     /// Every way of a `Sized` step, for each of the eight sizes, from each start, checks, and the
     /// evaluator prints what the oracle prints. Then each way that can stop the program does, for
     /// each size, saying in compiled code's words what the evaluator says.

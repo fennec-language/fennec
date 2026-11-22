@@ -105,24 +105,35 @@ fn built(
     path: &str,
     executable: &std::path::Path,
 ) -> Result<Option<ExitCode>, String> {
+    crate::kept::say_analyses_notice();
     // A program the same as a run before had, kept as an image, starts from what that run built,
-    // with nothing lowered or compiled to find it again.
+    // with nothing lowered or compiled to find it again: never one built before the build daemon
+    // last found an analysis it kept wrong (`kept::analyses_found_wrong`).
     let started_from = kept.zip(cache()).map(|(kept, cache)| {
         let name = format!(
             "{}.root",
             fennec_blake3::hash(
-                format!("{kept} {} {}", env!("FENNEC_BUILD"), crate::aot::dev_build_settings()).as_bytes()
+                format!(
+                    "{kept} {} {} {}",
+                    env!("FENNEC_BUILD"),
+                    crate::aot::dev_build_settings(),
+                    crate::kept::analyses_found_wrong()
+                )
+                .as_bytes()
             )
             .to_hex()
         );
         (cache, name)
     });
-    let ready = started_from.as_ref().is_some_and(|(cache, name)| {
-        cache
-            .read(RUN_ROOTS, name)
-            .and_then(|root| String::from_utf8(root).ok())
-            .is_some_and(|root| crate::aot::stored_executable(cache, &root, executable).is_some())
-    });
+    // A count of analyses found wrong that can't be read names nothing that can be trusted.
+    let trusted = crate::kept::analyses_found_wrong() != u64::MAX;
+    let ready = trusted
+        && started_from.as_ref().is_some_and(|(cache, name)| {
+            cache
+                .read(RUN_ROOTS, name)
+                .and_then(|root| String::from_utf8(root).ok())
+                .is_some_and(|root| crate::aot::stored_executable(cache, &root, executable).is_some())
+        });
     if !ready {
         let checked = match checked {
             Checked::Resolved(signatures) => signatures.map(|signatures| *signatures),

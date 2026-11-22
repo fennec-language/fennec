@@ -7,23 +7,27 @@
 //! call passes up is the first round's that fails, by position, since the runtime keeps the lowest
 //! range's. Rounds after one that fails or breaks out may run or not, so they run here too, as
 //! rounds that may not run, and anything they'd change, or a channel they'd use, is refused, as
-//! is one failing after a `break`. What a round does that another round, or a stream's reader,
+//! is one failing after a `break`. A `for` over `parallel` whose body has a `return` in it runs
+//! as a plain loop over the source instead, as compiled code runs it and the docs say: one round
+//! after another, the `return` leaving the function. What a round does that another round, or a stream's reader,
 //! could see in another order is refused: printing, which follows real call order, the file
 //! system, a `shared` value one round changes and another reaches, and a generator made outside
 //! the round. Each round is one of its own to the channels it uses (`actors.rs`), so which
 //! round's message comes first is tried every way, as two tasks' is; of a channel made outside
-//! it, a close is refused, as is any use in a stream's item. An int `sum` is
-//! refused where some way of splitting it could overflow, and a float `sum` outright, since it
-//! adds in a tree of its own.
+//! it, a close is refused, as is any use in a stream's item. A `sum` adds in the runtime's fixed
+//! tree where compiled code lifts it into ranges, and in order, as a plain `sum` does, where it
+//! doesn't, so a float `sum` gives the same bits and an int `sum` overflows where compiled code's
+//! does.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use fennec_check::Type;
-use fennec_syntax::{Expr, ExprKind, Span, Stmt};
+use fennec_syntax::{Expr, ExprKind, Pattern, Span, Stmt, StmtKind, read, visit};
 
-use super::{Flow, Interp, Place, Run, Step, as_int, unsupported};
-use crate::value::Value;
+use super::calls::ArgVal;
+use super::{Flow, Interp, Place, Run, Step, as_int, crash, unsupported};
+use crate::value::{Held, Value};
 
 /// What runs beside something else now: a `parallel` call's rounds, or a `with launch`'s block
 /// and its task.
@@ -103,7 +107,14 @@ pub(crate) enum Work {
     /// `for names in parallel(...)`: the body, with each item.
     For { names: &'static [String], body: &'static [Stmt], items: Vec<Value> },
     /// A comprehension's element, for each item its condition keeps.
-    Made { elem: &'static Expr, names: &'static [String], cond: Option<&'static Expr>, items: Vec<Value> },
+    /// A dict comprehension's `value` too, each round making its key and value as a pair.
+    Made {
+        elem: &'static Expr,
+        value: Option<&'static Expr>,
+        names: &'static [String],
+        cond: Option<&'static Expr>,
+        items: Vec<Value>,
+    },
 }
 
 /// A `parallel` call whose rounds this thread runs, the innermost last, and whether the rounds
@@ -157,11 +168,258 @@ pub(crate) struct Written {
     limit: Option<&'static Expr>,
 }
 
+impl Written {
+    /// What the call goes over, for a loop that runs as a plain one over it.
+    pub(crate) fn source(self) -> &'static Expr {
+        self.source
+    }
+}
+
+/// Whether a `parallel` loop's `body` has a `return` in it, outside the functions written inside
+/// it: in its blocks, a `match`'s cases and an `except` block included. Compiled code never lifts
+/// such a body into ranges (`liftable` in the IR's lowering, which this walks as it does), and
+/// runs it as a plain loop.
+pub(crate) fn returns_in(body: &[Stmt]) -> bool {
+    let mut written = body.to_vec();
+    without_functions(&mut written);
+    returns_in_blocks(&written)
+}
+
+fn returns_in_blocks(body: &[Stmt]) -> bool {
+    let in_blocks = body.iter().any(|stmt| match &stmt.kind {
+        StmtKind::Return(_) => true,
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().any(|(_, block)| returns_in_blocks(block))
+                || otherwise.as_deref().is_some_and(returns_in_blocks)
+        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => returns_in_blocks(body),
+        _ => false,
+    });
+    in_blocks || {
+        let mut cases = Vec::new();
+        visit::in_stmts(&mut body.to_vec(), &mut |seen| {
+            if let ExprKind::Match { arms, .. } = &seen.kind {
+                cases.extend(arms.iter().map(|arm| arm.body.clone()));
+            }
+        });
+        cases.iter().any(|case| returns_in_blocks(case))
+    }
+}
+
+/// A place as the checker names one (`loops::place`): a name, then a field, or `None` for any
+/// index, at each step.
+type Named = (String, Vec<Option<String>>);
+
+fn place_named(expr: &Expr) -> Option<Named> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some((name.clone(), Vec::new())),
+        ExprKind::Attr { object, name, optional: false } => {
+            let mut found = place_named(object)?;
+            found.1.push(Some(name.clone()));
+            Some(found)
+        }
+        ExprKind::Index { object, .. } => {
+            let mut found = place_named(object)?;
+            found.1.push(None);
+            Some(found)
+        }
+        _ => None,
+    }
+}
+
+/// Whether changing one place can change the other: one is inside the other, where an index
+/// matches any item and different fields are different places.
+fn overlap(one: &Named, other: &Named) -> bool {
+    one.0 == other.0 && one.1.iter().zip(&other.1).all(|(a, b)| a.is_none() || b.is_none() || a == b)
+}
+
+/// Whether a `for ref item in parallel(source)` loop's `body` reads what it goes over, as the
+/// checker's `live_loops` asks (#2356): a place anywhere in it, nested functions' included, that
+/// overlaps `source`, with the body giving `item` no meaning of its own. The checker writes such a
+/// loop in to go by position, so its rounds run one after another, as a plain loop's do, and each
+/// sees the items as they are now.
+pub(crate) fn reads_its_list(body: &[Stmt], item: &str, source: &Expr) -> bool {
+    let Some(looped) = place_named(source) else { return false };
+    let mut reads = false;
+    read::in_stmts(body, &mut |seen| {
+        reads |= place_named(seen).is_some_and(|place| overlap(&place, &looped));
+    });
+    reads && !binds(body, item)
+}
+
+/// Whether a body gives `held` a meaning of its own anywhere, as the checker's `binds` asks:
+/// declares it again, loops with it, or binds it in a function, arrow function, comprehension or
+/// case.
+fn binds(body: &[Stmt], held: &str) -> bool {
+    let mut bound = false;
+    every_stmt(body, &mut |stmt| match &stmt.kind {
+        StmtKind::Assign { target, declare_mut, ty, .. } => {
+            bound |= (*declare_mut || ty.is_some()) && names_in(target).iter().any(|name| name == held);
+        }
+        StmtKind::For { names, .. } => bound |= names.iter().any(|name| name == held),
+        StmtKind::With { names, .. } => bound |= names.iter().any(|name| name.name == held),
+        StmtKind::OnFailure { name, .. } => bound |= name == held,
+        StmtKind::Def(def) => bound |= def.name == held || def.params.iter().any(|param| param.name == held),
+        _ => {}
+    });
+    read::in_stmts(body, &mut |expr| match &expr.kind {
+        ExprKind::Lambda { params, .. } => bound |= params.iter().any(|param| param == held),
+        ExprKind::Comprehension { names, .. } => bound |= names.iter().any(|name| name == held),
+        ExprKind::Match { arms, .. } => bound |= arms.iter().any(|arm| pattern_binds(&arm.pattern, held)),
+        _ => {}
+    });
+    bound
+}
+
+/// Calls `each` on every statement in a body: those in nested blocks, functions and `match`
+/// cases too.
+fn every_stmt(body: &[Stmt], each: &mut dyn FnMut(&Stmt)) {
+    for stmt in body {
+        each(stmt);
+        match &stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches {
+                    every_stmt(block, each);
+                }
+                every_stmt(otherwise.as_deref().unwrap_or_default(), each);
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                every_stmt(body, each);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                every_stmt(cleanup, each);
+                every_stmt(body, each);
+            }
+            StmtKind::Lend { otherwise, .. } => every_stmt(otherwise, each),
+            StmtKind::Def(def) => every_stmt(&def.body, each),
+            _ => {}
+        }
+    }
+    read::in_stmts(body, &mut |expr| {
+        if let ExprKind::Match { arms, .. } = &expr.kind {
+            for arm in arms {
+                every_stmt(&arm.body, each);
+            }
+        }
+    });
+}
+
+fn names_in(target: &Expr) -> Vec<String> {
+    match &target.kind {
+        ExprKind::Name(name) => vec![name.clone()],
+        ExprKind::Tuple(items) => items.iter().flat_map(names_in).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn pattern_binds(pattern: &Pattern, held: &str) -> bool {
+    match pattern {
+        Pattern::Bind(name) | Pattern::RefBind(name) | Pattern::MutBind(name) => name == held,
+        Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+            patterns.iter().any(|pattern| pattern_binds(pattern, held))
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => false,
+    }
+}
+
+/// Takes the functions written inside `body` out of it, at any depth, those in a `match`'s cases
+/// included, as the IR does before it looks for a `return`.
+fn without_functions(body: &mut Vec<Stmt>) {
+    body.retain(|stmt| !matches!(stmt.kind, StmtKind::Def(_)));
+    for stmt in body.iter_mut() {
+        match &mut stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches.iter_mut() {
+                    without_functions(block);
+                }
+                if let Some(block) = otherwise {
+                    without_functions(block);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                without_functions(body);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                without_functions(cleanup);
+                without_functions(body);
+            }
+            _ => {}
+        }
+    }
+    visit::in_stmts(body, &mut |seen| {
+        if let ExprKind::Match { arms, .. } = &mut seen.kind {
+            for arm in arms.iter_mut() {
+                without_functions(&mut arm.body);
+            }
+        }
+    });
+}
+
 /// What a call's rounds made, in order, those that made something, and what stopped it, if
 /// anything did.
 pub(crate) struct Ran {
     made: Vec<Value>,
     stop: Option<Flow>,
+    /// How many of `made` the rounds before the one that stopped the call made: those after it
+    /// are rounds that may not run.
+    before: usize,
+}
+
+/// The most positions a leaf of a reduction's tree holds, as the runtime's `REDUCE_LEAF`: set by
+/// the list's length alone, so the tree is the same at any thread count.
+const REDUCE_LEAF: usize = 1024;
+
+/// What fails in a sum's tree: the round that stopped the call, or an add that overflowed.
+enum TreeFailure {
+    Round,
+    Add(Flow),
+}
+
+/// The parts `from..to` of a lifted `sum`, added as the runtime's tree adds them: a range of at
+/// most [`REDUCE_LEAF`] positions from its first part on, in order, and a longer one as its two
+/// halves, split at the middle, the earlier first. The parts end at the round that stopped the
+/// call, if one did. What fails comes with where its range starts, as the runtime passes up the
+/// failure of the range that starts lowest; a range from past the round that stopped the call
+/// starts higher than that round's own, so what it would do is never needed.
+fn tree_sum(parts: &[Value], (from, to): (usize, usize), span: Span) -> Result<Value, (usize, TreeFailure)> {
+    if to - from <= REDUCE_LEAF {
+        let mut total = parts.get(from).cloned().ok_or((from, TreeFailure::Round))?;
+        for at in from + 1..to {
+            let part = parts.get(at).ok_or((from, TreeFailure::Round))?;
+            total = added(total, part, span).map_err(|flow| (from, TreeFailure::Add(flow)))?;
+        }
+        return Ok(total);
+    }
+    let middle = from + (to - from) / 2;
+    match (tree_sum(parts, (from, middle), span), tree_sum(parts, (middle, to), span)) {
+        (Ok(left), Ok(right)) => added(left, &right, span).map_err(|flow| (from, TreeFailure::Add(flow))),
+        (Err(left), Err(right)) => Err(if right.0 < left.0 { right } else { left }),
+        (Err(failed), Ok(_)) | (Ok(_), Err(failed)) => Err(failed),
+    }
+}
+
+/// Two parts of a sum added, as compiled code adds them: ints checked, floats as they are.
+fn added(left: Value, right: &Value, span: Span) -> Run<Value> {
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => match a.checked_add(*b) {
+            Some(sum) => Ok(Value::Int(sum)),
+            None => crash("this calculation overflows an int", span),
+        },
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+        (other, _) => unsupported(format!("`sum` over `parallel` of a {}", other.kind())),
+    }
+}
+
+/// Whether `expr` uses `?` anywhere in it, as the IR asks before lifting a sum.
+fn tries(expr: &Expr) -> bool {
+    let mut found = false;
+    visit::in_expr(&mut expr.clone(), &mut |seen| {
+        found |= matches!(seen.kind, ExprKind::Try { .. });
+    });
+    found
 }
 
 /// What runs one round of a call, given the round and whether it may not run.
@@ -207,6 +465,17 @@ impl Interp {
             Some(source) => Ok(Some(Written { source, limit })),
             None => unsupported("`parallel` with no source"),
         }
+    }
+
+    /// Whether `for ref name in parallel(...)` runs as a plain loop, as compiled code runs it: one
+    /// with a `return`, which isn't lifted into ranges, and one that reads what it goes over, which
+    /// the checker writes in to go by position.
+    pub(crate) fn ref_loop_is_plain(&self, name: &str, call: Written, body: &[Stmt]) -> bool {
+        let by_position = matches!(
+            self.program.type_at(call.source.span),
+            Some(Type::List(_) | Type::Array(..) | Type::Buffer(_) | Type::Table(_))
+        ) && reads_its_list(body, name, call.source);
+        by_position || returns_in(body)
     }
 
     /// The items a call's rounds take, in order, with its limit worked out after them.
@@ -429,6 +698,7 @@ impl Interp {
     pub(crate) fn each_round(&mut self, from: usize, count: usize, each: &mut Each<'_>) -> Run<RoundsRan> {
         let mut made = Vec::with_capacity(count.saturating_sub(from));
         let mut stop: Option<Flow> = None;
+        let mut before = None;
         // The numbers of the rounds that used a channel, each one of its own to them.
         let mut numbered = Vec::new();
         for at in from..count {
@@ -448,6 +718,9 @@ impl Interp {
                 self.give_up_handed();
                 return Err(flow);
             }
+            if stop.is_some() && before.is_none() {
+                before = Some(made.len());
+            }
         }
         if let Some(handed) = self.handing.last_mut().and_then(|handing| handing.handed.take()) {
             // The round that handed the rest on stopped the call, but the rounds after it ran
@@ -459,11 +732,15 @@ impl Interp {
                 );
             }
             let (rest, rest_numbered) = self.rest_ended(&handed)?;
+            if rest.stop.is_some() {
+                before = Some(made.len() + rest.before);
+            }
             made.extend(rest.made);
             stop = rest.stop;
             numbered.extend(rest_numbered);
         }
-        Ok((Ran { made, stop }, numbered))
+        let before = before.unwrap_or(made.len());
+        Ok((Ran { made, stop, before }, numbered))
     }
 
     /// Gives up the run where a call's rounds were handed on and this thread can't take in what
@@ -487,9 +764,9 @@ impl Interp {
                     Err(other) => Err(other),
                 }
             }
-            Work::Made { elem, names, cond, items } => {
+            Work::Made { elem, value, names, cond, items } => {
                 let item = items.get(at).cloned().unwrap_or(Value::Unit);
-                self.made_from(elem, names, item, *cond)
+                self.made_from((elem, *value), names, item, *cond)
             }
         }
     }
@@ -586,24 +863,28 @@ impl Interp {
         }
     }
 
-    /// What each round of `[elem for names in parallel(source) if cond]` makes, by position.
+    /// What each round of `[elem for names in parallel(source) if cond]` makes, by position, or
+    /// of `{elem: value for ...}`, each a pair.
     fn parallel_made(
         &mut self,
-        elem: &'static Expr,
+        (elem, value): (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         call: Written,
         cond: Option<&'static Expr>,
-    ) -> Run<Ran> {
+    ) -> Run<(Ran, usize)> {
         let items = self.parallel_items(call)?;
         let count = items.len();
-        let work = Arc::new(Work::Made { elem, names, cond, items });
-        self.rounds(count, Some(Arc::clone(&work)), &mut |interp, at, _| interp.run_round(&work, at))
+        let work = Arc::new(Work::Made { elem, value, names, cond, items });
+        let ran =
+            self.rounds(count, Some(Arc::clone(&work)), &mut |interp, at, _| interp.run_round(&work, at))?;
+        Ok((ran, count))
     }
 
-    /// What `elem` makes of an item, or `None` when `cond` leaves it out.
+    /// What `elem` makes of an item, with `value` after it as a pair when there's one, or `None`
+    /// when `cond` leaves it out.
     fn made_from(
         &mut self,
-        elem: &'static Expr,
+        (elem, value): (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         item: Value,
         cond: Option<&'static Expr>,
@@ -614,21 +895,29 @@ impl Interp {
                 Some(cond) => self.truth(cond)?,
                 None => true,
             };
-            if keep { self.eval(elem).map(Some) } else { Ok(None) }
+            if !keep {
+                return Ok(None);
+            }
+            let key = self.eval(elem)?;
+            match value {
+                Some(value) => Ok(Some(Value::Tuple(Held::new(vec![key, self.eval(value)?])))),
+                None => Ok(Some(key)),
+            }
         });
         self.restore(mark);
         made
     }
 
-    /// `[elem for names in parallel(source) if cond]`: the rounds' results, in the list's order.
+    /// `[elem for names in parallel(source) if cond]`: the rounds' results, in the list's order;
+    /// for `{elem: value for ...}`, each a pair.
     pub(crate) fn parallel_list(
         &mut self,
-        elem: &'static Expr,
+        made: (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         call: Written,
         cond: Option<&'static Expr>,
     ) -> Run<Vec<Value>> {
-        let ran = self.parallel_made(elem, names, call, cond)?;
+        let (ran, _) = self.parallel_made(made, names, call, cond)?;
         if let Some(stop) = ran.stop {
             return Err(stop);
         }
@@ -639,45 +928,58 @@ impl Interp {
         Ok(made)
     }
 
-    /// `sum(elem for names in parallel(source) if cond)`, with the start it may take. Its parts
-    /// add in a tree the runtime picks, so an int sum is modeled only where no way of adding them
-    /// could overflow: where the positive parts add up without overflowing, and the negative ones
-    /// too, every part of every tree lies between those two.
+    /// `sum(elem for names in parallel(source) if cond)`, with the start it may take.
+    ///
+    /// Where compiled code lifts it into ranges, as the IR's `parallel_value` does: an int or
+    /// float `sum` over a list, of one name, with no `if` and no `?`, its parts add in the
+    /// runtime's fixed tree (`tree_sum`), and the start is added to what that comes to. Any other
+    /// runs in order, as a plain `sum` adds, up to the round that stopped the call, whose failure
+    /// is passed up unless an add before it overflowed first.
     pub(crate) fn parallel_sum(
         &mut self,
         generator: &'static Expr,
         call: Written,
-        start: Option<&Value>,
-        span: Span,
+        start: Option<Value>,
+        expr: &'static Expr,
     ) -> Run<Value> {
         let ExprKind::Comprehension { elem, names, cond, .. } = &generator.kind else {
             return unsupported("a generator that isn't one");
         };
-        match self.program.type_at(span) {
-            Some(Type::Int) => {}
-            Some(Type::Float) => {
-                return unsupported("a float `sum` over `parallel`, which adds in a tree of its own");
-            }
-            _ => return unsupported("a `sum` over `parallel` of something other than ints"),
-        }
-        let ran = self.parallel_made(elem, names, call, cond.as_deref())?;
-        let (mut up, mut down) = (0_i64, 0_i64);
-        for part in start.into_iter().chain(ran.made.iter()) {
-            let Value::Int(n) = part else {
-                return unsupported(format!("`sum` over `parallel` of a {}", part.kind()));
+        let span = expr.span;
+        let float = match self.program.type_at(span) {
+            Some(Type::Int) => Some(false),
+            Some(Type::Float) => Some(true),
+            _ => None,
+        };
+        let lifted = float.is_some()
+            && cond.is_none()
+            && names.len() == 1
+            && call.limit.is_none()
+            && matches!(self.program.type_at(call.source.span), Some(Type::List(_)))
+            && !tries(elem);
+        let (Ran { mut made, stop, before }, count) =
+            self.parallel_made((elem, None), names, call, cond.as_deref())?;
+        made.truncate(before);
+        if !lifted {
+            let total = self.summed(ArgVal::Value(None, Value::List(Held::new(made))), start, expr)?;
+            return match stop {
+                Some(stop) => Err(stop),
+                None => Ok(total),
             };
-            let total = if *n >= 0 { &mut up } else { &mut down };
-            match total.checked_add(*n) {
-                Some(added) => *total = added,
-                None => {
-                    return unsupported("an int `sum` over `parallel` that may overflow, by how it's split");
-                }
+        }
+        let zero = if float == Some(true) { Value::Float(0.0) } else { Value::Int(0) };
+        let start = start.unwrap_or(zero);
+        // An empty list's sum is the start, with no tree to add it to.
+        if count == 0 {
+            return Ok(start);
+        }
+        match tree_sum(&made, (0, count), span) {
+            Ok(tree) => added(start, &tree, span),
+            Err((_, TreeFailure::Add(flow))) => Err(flow),
+            Err((_, TreeFailure::Round)) => {
+                Err(stop.unwrap_or_else(|| Flow::Unsupported("a `parallel` call was lost".to_owned())))
             }
         }
-        if let Some(stop) = ran.stop {
-            return Err(stop);
-        }
-        Ok(Value::Int(up + down))
     }
 
     /// In a stream's generator, `(elem for names in parallel(source) if cond)`: each item worked
@@ -696,7 +998,8 @@ impl Interp {
         for (at, item) in items.into_iter().enumerate() {
             self.push_call(true, count)?;
             self.rounds_as.push(None);
-            let made = self.start_round(at, false).and_then(|()| self.made_from(elem, names, item, cond));
+            let made =
+                self.start_round(at, false).and_then(|()| self.made_from((elem, None), names, item, cond));
             let numbered: Vec<usize> = self.rounds_as.pop().flatten().into_iter().collect();
             self.pop_scope();
             self.rounds_ended(&numbered)?;

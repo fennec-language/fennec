@@ -1042,6 +1042,9 @@ impl Interp {
         span: Span,
     ) -> Run<()> {
         if let Some(call) = self.parallel_call(iter)? {
+            if parallel::returns_in(body) {
+                return self.for_each(names, call.source(), body, span);
+            }
             return self.for_parallel(names, call, body);
         }
         let over = self.eval(iter)?;
@@ -1153,6 +1156,9 @@ impl Interp {
         span: Span,
     ) -> Run<()> {
         if let ([name], Some(call)) = (names, self.parallel_call(iter)?) {
+            if self.ref_loop_is_plain(name, call, body) {
+                return self.for_ref(names, call.source(), body, span);
+            }
             return self.for_ref_parallel(name, call, body, span);
         }
         let (place, numbered, keyed) = match (&iter.kind, names.len()) {

@@ -25,8 +25,20 @@ started=$SECONDS
 WITHIN_WALL=1 "$here/within.sh" 1 bash -c 'sleep 30 & echo $! > "$0/child"; wait' "$work" 2> "$work/said"
 status=$?
 [ $status -eq 124 ] || fail "a command that ran too long gave $status, not 124"
-[ $((SECONDS - started)) -lt 10 ] || fail "a command that ran too long took $((SECONDS - started))s to stop"
+# A second's sampling of each of its two processes, on a Mac, comes first.
+[ $((SECONDS - started)) -lt 60 ] || fail "a command that ran too long took $((SECONDS - started))s to stop"
 grep -q "didn't finish within 1 seconds by the clock" "$work/said" || fail "it didn't say what ran too long: $(cat "$work/said")"
+# And what it was doing, before it was stopped: the processes it had, the one it started too.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*) ;;
+  *)
+    grep -q "^    .*sleep 30" "$work/said" || fail "it didn't list what the command had started: $(cat "$work/said")"
+    if command -v sample > /dev/null; then
+      grep -q "where process [0-9]* was, sampled for a second, each thread" "$work/said" || fail "it didn't sample where each was: $(cat "$work/said")"
+      grep -q "^    Call graph:" "$work/said" || fail "its sample has no call graph: $(cat "$work/said")"
+    fi
+    ;;
+esac
 sleep 0.5
 ! kill -0 "$(cat "$work/child")" 2> /dev/null || fail "what the command started was left running"
 

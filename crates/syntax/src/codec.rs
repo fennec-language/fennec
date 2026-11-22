@@ -438,3 +438,74 @@ impl<A: Decode, B: Decode, C: Decode> Decode for (A, B, C) {
         Some((A::decode(from)?, B::decode(from)?, C::decode(from)?))
     }
 }
+
+impl<T: Encode, const N: usize> Encode for [T; N] {
+    fn encode(&self, to: &mut Writer) {
+        for item in self {
+            item.encode(to);
+        }
+    }
+}
+
+impl<T: Decode, const N: usize> Decode for [T; N] {
+    fn decode(from: &mut Reader<'_>) -> Option<Self> {
+        let items: Vec<T> = (0..N).map(|_| T::decode(from)).collect::<Option<_>>()?;
+        items.try_into().ok()
+    }
+}
+
+impl<T: Encode> Encode for std::sync::Arc<T> {
+    fn encode(&self, to: &mut Writer) {
+        (**self).encode(to);
+    }
+}
+
+impl<T: Decode> Decode for std::sync::Arc<T> {
+    fn decode(from: &mut Reader<'_>) -> Option<Self> {
+        T::decode(from).map(std::sync::Arc::new)
+    }
+}
+
+/// A hash map is written in its keys' order, as a `BTreeMap` is, so the same map is always the same
+/// bytes, whatever order it holds its entries in.
+impl<K: Encode + Ord, V: Encode, S> Encode for std::collections::HashMap<K, V, S> {
+    fn encode(&self, to: &mut Writer) {
+        let mut entries: Vec<(&K, &V)> = self.iter().collect();
+        entries.sort_unstable_by(|before, after| before.0.cmp(after.0));
+        entries.len().encode(to);
+        for (key, value) in entries {
+            key.encode(to);
+            value.encode(to);
+        }
+    }
+}
+
+impl<K: Decode + Ord + std::hash::Hash, V: Decode, S: std::hash::BuildHasher + Default> Decode
+    for std::collections::HashMap<K, V, S>
+{
+    fn decode(from: &mut Reader<'_>) -> Option<Self> {
+        let entries = Vec::<(K, V)>::decode(from)?;
+        entries.is_sorted_by(|before, after| before.0 < after.0).then(|| entries.into_iter().collect())
+    }
+}
+
+/// A hash set is written in order, as a `BTreeSet` is.
+impl<T: Encode + Ord, S> Encode for std::collections::HashSet<T, S> {
+    fn encode(&self, to: &mut Writer) {
+        let mut items: Vec<&T> = self.iter().collect();
+        items.sort_unstable();
+        items.len().encode(to);
+        for item in items {
+            item.encode(to);
+        }
+    }
+}
+
+impl<T: Decode + Ord + std::hash::Hash, S: std::hash::BuildHasher + Default> Decode
+    for std::collections::HashSet<T, S>
+{
+    fn decode(from: &mut Reader<'_>) -> Option<Self> {
+        let items = Vec::<T>::decode(from)?;
+        items.is_sorted_by(|before, after| before < after).then(|| items.into_iter().collect())
+    }
+}

@@ -8091,6 +8091,24 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Each sized integer's `wrapping_add`, `wrapping_sub` and `wrapping_mul`, its `saturating_mul`, a
+/// `u64`'s saturating `+` and `-`, and all six of `int`'s, are worked out natively: the operation on
+/// the word cut to the size's bits, a product held to the size's ends, or LLVM's `*.sat`. A
+/// saturating `+` or `-` below 64 bits stays the standard library's. Each gives what the standard
+/// library's own Fennec for it gives, copied into the program as plain functions: every pair of a
+/// size's edge values and a spread between, for every size, in dev and release.
+#[test]
+fn sized_wrapping_and_saturating_arithmetic_is_native_and_the_same() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "sized_native",
+        include_str!("fixtures/sized_wrapping.fen"),
+        include_str!("fixtures/sized_wrapping.out"),
+    )
+}
+
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
 /// largest `int` a digit at a time, failing cleanly past the top, from the same text `int` reads:
 /// with space around it and a `+` before it. And `u64`'s `wrapping_` and
@@ -14096,6 +14114,34 @@ def main(stdout: Stdout):
         stdout.print(word)
     held = or_else("later")
     stdout.print(list(held), list(when_given("x")))
+"#,
+    )
+}
+
+/// A generator copied into what's made of it holds what it yields as its item: a `1` or a `None`
+/// yielded where it yields `int?` is an `int?` in the copy. The copy once held them as their own
+/// types, so a comprehension over it didn't build natively, as it read `int` as `int?`, and a
+/// `list` of it wrote LLVM text `opt` refused.
+#[test]
+fn a_copied_generator_holds_what_it_yields_as_its_item() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "copied_yield_types",
+        r#"def numbers() -> Iterator[int?]:
+    yield 1
+    yield None
+    yield 3
+
+def words() -> Iterator[str?]:
+    yield "a"
+    yield None
+
+def main(stdout: Stdout):
+    stdout.print([number for number in numbers()])
+    stdout.print(list(numbers()), list(words()))
+    stdout.print([number else 0 for number in numbers()], [word else "-" for word in words()])
 "#,
     )
 }
@@ -21563,6 +21609,51 @@ fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
         "lock_failure_enum_fields",
         include_str!("fixtures/lock_failure_enum_fields.fen"),
         "kinds that kept a change: 0\n",
+    )
+}
+
+/// A whole field holding an enum of plain words, more than one of them, is put back word by word
+/// when the block fails, whichever case it held and was given, and the fields beside it with it.
+/// Each word of such an enum is its own word in the lock's log, so one put back at another's
+/// place, or not at all, leaves a mix of the two cases.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_each_word_of_an_enum_holding_only_numbers() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_plain_enum",
+        r#"error Nope:
+    why: str
+
+enum Spot:
+    Place(x: int, y: int)
+    Scaled(by: float, flipped: bool)
+    Off
+
+struct Board:
+    name: str
+    n: int
+    spot: Spot
+    last: int
+
+def fails_after(board: shared Board, to: Spot) fails Nope:
+    lock board as ref held:
+        held.spot = to
+        held.n += 1
+        held.last += 1
+        fail Nope(why="undone")
+
+def main(stdout: Stdout):
+    for start in [Spot.Place(x=3, y=4), Spot.Scaled(by=1.5, flipped=True), Spot.Off]:
+        shared board = Board(name="b", n=1, spot=start, last=7)
+        for to in [Spot.Place(x=30, y=40), Spot.Scaled(by=2.5, flipped=False), Spot.Off]:
+            fails_after(board, to=to) except Nope():
+                pass
+        lock board as held:
+            stdout.print(held.n, held.spot, held.last)
+"#,
+        "1 Spot.Place(x=3, y=4) 7\n1 Spot.Scaled(by=1.5, flipped=True) 7\n1 Spot.Off 7\n",
     )
 }
 

@@ -94,6 +94,9 @@ enum Entry {
     /// A folder, and whether everything in it is known here: for one the program made, or a
     /// fresh empty one it runs in.
     Folder { listed: bool },
+    /// A SQLite database the program made through `std.sqlite`, which the oracle keeps in a
+    /// folder of its own: its bytes are SQLite's, and never read here.
+    Database,
     /// Nothing: it was never there, or the program removed it.
     Gone,
 }
@@ -290,6 +293,7 @@ impl Disk {
                         Entry::Folder { .. } => at = inside,
                         Entry::Gone => return Ok(Walked::Missing),
                         Entry::File(_) | Entry::Found => return Ok(Walked::ThroughFile),
+                        Entry::Database => return refused("a path through a database's file"),
                     }
                 }
             }
@@ -443,6 +447,7 @@ impl Disk {
         match self.what_is(reached)? {
             (_, Entry::File(text)) => Ok(text),
             (_, Entry::Found) => refused("reading a file that was there before the program started"),
+            (_, Entry::Database) => refused("reading a database's file as text"),
             (_, Entry::Folder { .. }) => a_folder(),
             (_, Entry::Gone) => nothing_there(),
         }
@@ -451,7 +456,11 @@ impl Disk {
     /// Writes a whole file, which takes the old one's place at once.
     pub(crate) fn write_text(&mut self, reached: Reached, text: &str) -> Done<()> {
         let target = Self::named(reached, "writing to")?;
-        if let Entry::Folder { .. } = self.kind(&target)? {
+        let found = self.kind(&target)?;
+        if let Entry::Database = found {
+            return refused("writing over a database's file");
+        }
+        if let Entry::Folder { .. } = found {
             if cfg!(windows) {
                 return refused("writing to a folder, which Windows refuses in its own words");
             }
@@ -509,6 +518,7 @@ impl Disk {
                     return fails("AlreadyExists", "");
                 }
                 Entry::File(_) | Entry::Found => return through_a_file(),
+                Entry::Database => return refused("making a folder in a database's place"),
             }
         }
         let Some(first_missing) = first_missing else { return Ok(()) };
@@ -528,6 +538,7 @@ impl Disk {
         let target = Self::named(reached, "removing")?;
         match self.kind(&target)? {
             Entry::Gone => nothing_there(),
+            Entry::Database => refused("removing a database's file"),
             Entry::File(_) | Entry::Found => {
                 self.changing(&target)?;
                 self.not_busy(&target)?;
@@ -566,7 +577,7 @@ impl Disk {
         match self.what_is(reached)? {
             (folder, Entry::Folder { .. }) => Ok(folder),
             (_, Entry::Gone) => nothing_there(),
-            (_, Entry::File(_) | Entry::Found) => through_a_file(),
+            (_, Entry::File(_) | Entry::Found | Entry::Database) => through_a_file(),
         }
     }
 
@@ -578,6 +589,11 @@ impl Disk {
         if self.making_in(folder) {
             return refused(
                 "what's in a folder while a file is made in it, under a name holding the process's number",
+            );
+        }
+        if self.children(folder).any(|(_, entry)| matches!(entry, Entry::Database)) {
+            return refused(
+                "what's in a folder holding a database, whose journal files come and go beside it",
             );
         }
         let mut names: Vec<String> = self
@@ -620,6 +636,7 @@ impl Disk {
         match self.what_is(reached)? {
             (_, Entry::File(text)) => Ok(Metadata { size: Some(text.len()), is_dir: false }),
             (_, Entry::Found) => Ok(Metadata { size: None, is_dir: false }),
+            (_, Entry::Database) => refused("what a database's file holds, which SQLite says"),
             (_, Entry::Folder { .. }) => Ok(Metadata { size: None, is_dir: true }),
             (_, Entry::Gone) => nothing_there(),
         }
@@ -634,7 +651,11 @@ impl Disk {
             }
             other => Self::named(other, "making a file at")?,
         };
-        if let Entry::Folder { .. } = self.kind(&target)? {
+        let found = self.kind(&target)?;
+        if let Entry::Database = found {
+            return refused("making a file in a database's place");
+        }
+        if let Entry::Folder { .. } = found {
             return fails("Other", &format!("`{shown}` isn't a file that can be replaced"));
         }
         self.changing(&target)?;
@@ -646,8 +667,30 @@ impl Disk {
         match self.what_is(reached)? {
             (path, Entry::File(text)) => Ok(self.lend(Open::Reading { path, text, at: 0 })),
             (_, Entry::Found) => refused("opening a file that was there before the program started"),
+            (_, Entry::Database) => refused("reading a database's file as text"),
             (_, Entry::Folder { .. }) => a_folder(),
             (_, Entry::Gone) => nothing_there(),
+        }
+    }
+
+    /// The path of a SQLite database `std.sqlite` opens, made if it isn't there: one the program
+    /// made through it before, or a new one where nothing is. A file there already, a folder, a
+    /// path whose folder isn't there, and one outside the folder the program runs in are refused,
+    /// as what SQLite would make of them isn't modeled.
+    pub(crate) fn open_database(&mut self, reached: Reached) -> Done<Vec<String>> {
+        let path = match reached {
+            Reached::At(folder, Some(name)) => joined(&folder, &name),
+            _ => return refused("a database at a path whose folder isn't there, or that ends with a folder"),
+        };
+        match self.kind(&path)? {
+            Entry::Database => Ok(path),
+            Entry::Gone => {
+                self.changing(&path)?;
+                self.known.insert(path.clone(), Entry::Database);
+                Ok(path)
+            }
+            Entry::File(_) | Entry::Found => refused("a database in a file that's there already"),
+            Entry::Folder { .. } => refused("a database at a folder's path"),
         }
     }
 

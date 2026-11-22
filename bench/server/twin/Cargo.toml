@@ -14,6 +14,11 @@ publish = false
 [dependencies]
 socket2 = { version = "=0.6.5", default-features = false }
 tokio = { version = "=1.54.1", default-features = false, features = ["io-util", "net", "rt-multi-thread", "sync"] }
+# The HTTP twin's: serde for its JSON, and matchit, what axum routes with, pinned as the realworld
+# twins pin them.
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+matchit = "=0.9.2"
 
 [[bin]]
 name = "echo"
@@ -26,3 +31,11 @@ path = "chat.rs"
 [[bin]]
 name = "chat_threads"
 path = "chat_threads.rs"
+
+[[bin]]
+name = "http"
+path = "http.rs"
+
+[[bin]]
+name = "http_load"
+path = "http_load.rs"

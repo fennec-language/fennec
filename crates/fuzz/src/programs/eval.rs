@@ -2084,6 +2084,15 @@ impl Machine {
                     let _ = writeln!(self.out, "{line}");
                 }
             }
+            Stmt::Opened(opening) => {
+                let (lines, stops) = super::opening::printed(opening);
+                for line in lines {
+                    let _ = writeln!(self.out, "{line}");
+                }
+                if stops {
+                    return Err(Stop::Failed);
+                }
+            }
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,

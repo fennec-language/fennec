@@ -47,7 +47,6 @@ collections.fen: [missing-doc] the exported method `len` has no doc comment
 collections.fen: [missing-doc] the exported method `push` has no doc comment
 collections.fen: [missing-doc] the exported method `values` has no doc comment
 concurrent.fen: [missing-doc] the exported method `message` has no doc comment
-concurrent.fen: [missing-doc] the exported method `message` has no doc comment
 csv.fen: [long-function] `rows_in` is 81 lines, and a function can be 80
 csv.fen: [short-name] `c` is too short to say what it is: write a word
 dict.fen: [short-name] `c` is too short to say what it is: write a word

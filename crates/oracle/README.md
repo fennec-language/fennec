@@ -14,7 +14,7 @@ program. Fennec has no interpreter, on purpose. A test in this crate fails if an
 ## What it shares with the compiler
 
 Of Fennec's crates, it depends only on `fennec-syntax` and `fennec-check`, and besides them only
-on `libm`, below. It uses the compiler's parser to read a
+on `libm` and `rusqlite`, below. It uses the compiler's parser to read a
 program and its checker to accept it and to type its expressions, where the source alone can't
 say what a value is, as for a leading-dot case like `.Circle`. So a bug in the parser or the
 checker can hide from it: both sides would see the same wrong tree. Everything after the checker,
@@ -26,7 +26,7 @@ Where a standard library module is written in Fennec, the oracle can run its own
 beneath it. These are run this way (`RUN_FROM_SOURCE` in `src/load.rs`): `std.math`,
 `std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`, `std.uuid`,
 `std.cli`, `std.crypto`, `std.csv`, `std.html`, `std.log`, `std.url`, `std.concurrent`,
-`std.postgres`, `std.re`, `std.template`, `std.sql`, `std.io`, `std.toml`, `std.json`, `std.net`
+`std.postgres`, `std.re`, `std.template`, `std.sql`, `std.sqlite`, `std.io`, `std.toml`, `std.json`, `std.net`
 and `std.pack`. What `std.pack` writes beside a value, a type's shape, its FNV-1a hash and its layout,
 is worked out in `interp/packing.rs` from `docs/pack.md`, not from the compiler's code, and held to
 the doc's test vectors, a type that writes its own `serialize` shaped by what it saves. A kit with a
@@ -55,7 +55,13 @@ below. `toml.dumps` and `toml.loads` are the runtime's, written in Rust, and `st
 `native_dumps` and `native_loads`, written in Fennec, which the compiler uses for a type with its
 own `def serialize`, are run in their place, so the two are held to each other. `sin`, `cos`, `tan`,
 `acos`, `exp`, `log` and a float's `**` are computed with the `libm` crate, as `docs/language.md`
-says they are, at the version the workspace pins.
+says they are, at the version the workspace pins. A `std.sqlite` database is SQLite's, as its
+documentation says, so SQLite answers the queries, through `rusqlite` at the version the workspace
+pins. What the runtime does around it is modeled in `interp/sqlite.rs` on its own: a query is one
+statement with a place for each value, a NaN is refused, each row's cells go into `SqlRows` by
+kind, each failure is its case of `SqlError`, and a transaction is kept or undone as its block
+ends. A query past ordinary ones on the database's own tables, SQLite's random and time
+functions, and a database through a narrowed `Fs` are refused.
 
 ## How it models a program
 

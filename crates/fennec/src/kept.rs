@@ -103,6 +103,141 @@ pub(crate) fn building_as(name: Option<String>) {
     *STORED_AS.lock().unwrap_or_else(PoisonError::into_inner) = name;
 }
 
+/// What the daemon made while it kept analyses that's taken back if one turns out wrong, besides
+/// the programs `fennec build` and `fennec run` stored, which go by [`analyses_found_wrong`]. Only the daemon keeps
+/// analyses, so only Unix has any.
+#[cfg(unix)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum TakenBack {
+    /// What a kit's tests passed with, by the kit's absolute path (`test::forget_passed`).
+    Tests(String),
+}
+
+/// What the daemon made while it kept analyses, since checking them last disagreed: any may have
+/// used an analysis kept for another, so all are taken back if one is found wrong. One entry a kit
+/// and kind, however often it's built.
+#[cfg(unix)]
+static BUILT_WHILE_KEEPING: Mutex<std::collections::BTreeSet<TakenBack>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
+/// Notes what the daemon made, to take back if an analysis kept for builds turns out wrong.
+#[cfg(unix)]
+pub(crate) fn built_while_keeping(built: TakenBack) {
+    if !fennec_llvm::keeps_between_builds() {
+        return;
+    }
+    BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner).insert(built);
+}
+
+/// Where the daemon keeps the note the next build says once checking the analyses builds used
+/// again has disagreed: in the Fennec folder's `daemon`, so another daemon, or a build with none,
+/// finds it too.
+fn note_at(home: &std::path::Path) -> PathBuf {
+    home.join("daemon").join("kept-analyses-note.txt")
+}
+
+/// How many times checking the analyses builds used again has disagreed, for this cache
+/// (`Cache::analyses_found_wrong`). It's part of what names a stored program (`built::key`), so a
+/// program stored before is never put out after: whatever its settings, it may have used the
+/// analysis found wrong. While it can't be read, `u64::MAX`, nothing is put out from the store.
+pub(crate) fn analyses_found_wrong() -> u64 {
+    crate::run::cache().map_or(0, |cache| cache.analyses_found_wrong())
+}
+
+/// Checks what builds used again of the analyses the builds before kept, analyzing those functions
+/// again and comparing. A difference is the compiler's mistake, and goes as one the checker's kept
+/// check finds does ([`verify_pending`]):
+/// - every kept analysis goes;
+/// - every program `fennec build` and `fennec run` stored, by the count that names them
+///   ([`analyses_found_wrong`]), and every kit's test verdicts made while analyses were kept, so
+///   nothing made with a wrong fact is put out or trusted again: the same files build and test
+///   again;
+/// - a report is written in `home`'s daemon folder, naming the functions and what was taken back;
+/// - whatever builds, runs or tests next says so, in this daemon or another, and the next build
+///   analyzes every function.
+///
+/// Gives back the report written, if one was.
+#[cfg(unix)]
+pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::AnalysesCheck) -> Option<PathBuf> {
+    static REPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // The check counts as running till what it found is written down: a daemon that's ending, or
+    // a build that's starting, waits for all of it.
+    let differ = check.run();
+    if differ.is_empty() {
+        return None;
+    }
+    let note_at = note_at(home);
+    let _ = std::fs::create_dir_all(home.join("daemon"));
+    // The stored programs are taken back only if the count that names them is written.
+    let programs = crate::run::cache().is_some_and(|cache| cache.count_analysis_found_wrong().is_ok());
+    let taken = std::mem::take(&mut *BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner));
+    let mut named = Vec::new();
+    for built in &taken {
+        match built {
+            TakenBack::Tests(path) => {
+                crate::test::forget_passed(path);
+                named.push(format!("which tests of {path} passed"));
+            }
+        }
+    }
+    let number = REPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let report =
+        home.join("daemon").join(format!("kept-analysis-differs-{number}-{}.txt", std::process::id()));
+    let shown: Vec<String> = differ.iter().take(20).map(|name| format!("`{name}`")).collect();
+    let more = if differ.len() > shown.len() {
+        format!(" and {} more", differ.len() - shown.len())
+    } else {
+        String::new()
+    };
+    let text = format!(
+        "The build daemon analyzed again the functions builds used the analysis of from the builds before, and for {} of them it disagrees: {}{more}. This is a mistake in the compiler, not in the program: please report it with the program and this file.\n\nTaken back: {}{}.\n\nFennec {}\n",
+        differ.len(),
+        shown.join(", "),
+        if programs {
+            "every program `fennec build` and `fennec run` had stored"
+        } else {
+            "no stored program, as the count that names them couldn't be written"
+        },
+        if named.is_empty() { String::new() } else { format!(", {}", named.join(", ")) },
+        env!("CARGO_PKG_VERSION"),
+    );
+    let written = std::fs::write(&report, text);
+    let said = if written.is_ok() { format!(", reported in {}", report.display()) } else { String::new() };
+    let taken = if programs {
+        "every stored program, run and test result made since is taken back"
+    } else {
+        "the test results made since are taken back, but the stored programs couldn't be"
+    };
+    let note = format!(
+        "note: the build daemon analyzed again what builds used the analyses of, and it disagreed{said}: the programs they made may be wrong, so {taken}, and the next build analyzes every function\n"
+    );
+    let _ = std::fs::write(&note_at, note);
+    drop(check);
+    Some(report)
+}
+
+/// Checks what's waiting to be checked of the analyses builds used again, and waits for a check
+/// that's running, as the daemon ends: what's checked after the answer is checked before it goes.
+#[cfg(unix)]
+pub(crate) fn finish_analyses_check(home: &std::path::Path) {
+    if let Some(check) = fennec_llvm::AnalysesCheck::take() {
+        let _ = verify_analyses(home, check);
+    }
+    fennec_llvm::wait_for_analyses_check();
+}
+
+/// Says, in whatever builds, runs or tests now, that checking the analyses builds used again
+/// disagreed, if it did since this was last said, in any daemon.
+pub(crate) fn say_analyses_notice() {
+    let Some(home) = fennec_build::fennec_home() else { return };
+    let note_at = note_at(&home);
+    if let Ok(note) = std::fs::read_to_string(&note_at)
+        && std::fs::remove_file(&note_at).is_ok()
+    {
+        eprint!("{note}");
+    }
+}
+
 /// `fennec_check::check_to_build_saying`, as a build checks. In the build daemon, it carries over
 /// what the check of the kit's last build found for what an edit left as it was, and keeps what this
 /// one finds for the next. One build in 8 of a dev compiler, picked by what's built, or every one

@@ -5828,7 +5828,8 @@ fennec_syntax::codec_fields!(Analysis {
     walk_keys,
     pairs,
     guarded_reads,
-    param_ranges
+    param_ranges,
+    slice_ranges,
 });
 fennec_syntax::codec_fields!(AloneInLoop { entry, blocks, locals });
 fennec_syntax::codec_fields!(Reserved { list, limit, copied_from });

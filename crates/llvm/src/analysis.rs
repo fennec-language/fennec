@@ -98,9 +98,10 @@ pub(crate) struct Analysis {
     /// A slice of a string used only as a dict's key: the string and where it starts and ends.
     /// It's never made, as the runtime looks up and adds those bytes where they are.
     pub(crate) slice_keys: HashMap<usize, SliceKey>,
-    /// A slice of a string read only by one call that reads it where it is: `split`, `find`,
-    /// `startswith`, or `==` and `!=`. The string and where it starts and ends. It's never made,
-    /// as the call reads that range of the string (`fennec_str_split_range` and the rest).
+    /// A slice of a string read only by one `split` or `find`, which reads it where it is. The
+    /// string and where it starts and ends. It's never made: a string in a block has the call
+    /// read that range of it (`fennec_str_split_range`, `fennec_str_find_range`), and an inline
+    /// one is sliced natively, as before.
     pub(crate) slice_ranges: HashMap<usize, SliceKey>,
     /// The slice and its copy, which are never made.
     pub(crate) unmade: HashSet<usize>,
@@ -1731,11 +1732,12 @@ fn find_slice_keys(function: &Function, in_entries: InEntries<'_>, known: &mut A
     }
 }
 
-/// `text[a:b].split(x)`, `.find(x)`, `.startswith(x)`, and `text[a:b] == other` or `!=`, with the
-/// slice read by that one call and nothing else, and what it was made from unchanged after: the
-/// runtime reads the range of the string where it is, as slicing would, so no string is made for
-/// the slice. Slicing never fails, so nothing a program sees moves. A slice used as a dict's key is
-/// left to `find_slice_keys`.
+/// `text[a:b].split(x)` and `.find(x)`, with the slice read by that one call and nothing else, and
+/// what it was made from unchanged after: for a string in a block, the runtime reads the range where
+/// it is, as slicing would, so no string is made for the slice. Slicing never fails, so nothing a
+/// program sees moves. `==` and `startswith` are left out: a slice of 23 bytes or fewer is made
+/// natively, with no call, and compared in its words, which a call can't beat. A slice used as a
+/// dict's key is left to `find_slice_keys`.
 fn find_slice_ranges(function: &Function, known: &mut Analysis) {
     let insts: Vec<&InstKind> =
         function.blocks.iter().flat_map(|block| &block.insts).map(|inst| &inst.kind).collect();
@@ -1771,29 +1773,12 @@ fn find_slice_ranges(function: &Function, known: &mut Analysis) {
         let mut uses = 0;
         for inst in &insts {
             match inst {
-                // `startswith` is the standard library's, in Fennec, and a call to it is read
-                // natively (`header_affix`), as these are.
-                InstKind::Builtin { name, args, .. } | InstKind::Call { function: name, args, .. }
-                    if matches!(name.as_str(), "str.split" | "str.find" | "str.startswith")
+                InstKind::Builtin { name, args, .. }
+                    if matches!(name.as_str(), "str.split" | "str.find")
                         && args.first() == Some(&as_range)
                         && !args.iter().skip(1).any(|arg| *arg == as_range) =>
                 {
                     uses += 1;
-                }
-                // Beside another string, not an optional one.
-                InstKind::Binary { op: BinOp::Eq | BinOp::NotEq, lhs, rhs, .. }
-                    if (*lhs == as_range) != (*rhs == as_range) =>
-                {
-                    let other = if *lhs == as_range { rhs } else { lhs };
-                    let plain = match other {
-                        Operand::Str(_) => true,
-                        Operand::Local(local) => {
-                            function.locals.get(local.0).is_some_and(|local| local.ty == Type::Str)
-                        }
-                        _ => false,
-                    };
-                    // Anything else read where the slice is leaves it made.
-                    uses += if plain { 1 } else { 2 };
                 }
                 _ => {}
             }

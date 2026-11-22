@@ -1,7 +1,8 @@
-# A slice read by one `split`, `find`, `startswith`, `==` or `!=` is read where it is, with no
-# string made for it. Each is checked against the same call on the slice made first, which is read
-# twice so it's made: for short and long texts, ASCII and not, and ranges at either end, negative,
-# missing, reversed and past the end.
+# A slice read by one `split` or `find` is read where it is, with no string made for it, when its
+# text is in a block, and sliced natively when its text is inline; `startswith`, `==` and `!=` on a
+# slice take the native path. Each is checked against the same call on the slice made first, which
+# is read twice so it's made: for short and long texts, ASCII and not, and ranges at either end,
+# negative, missing, reversed and past the end.
 
 ## The slice made, as it would be with nothing reading it where it is.
 def made(text: str, start: int, end: int) -> str:

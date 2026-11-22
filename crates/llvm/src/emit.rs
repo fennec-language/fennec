@@ -2923,26 +2923,6 @@ impl Emit<'_, '_, '_> {
             let found = self.dict_contains(op, lhs, rhs)?;
             return self.assign(dest, &found);
         }
-        // A slice compared where it is, with the string beside it.
-        if matches!(op, BinOp::Eq | BinOp::NotEq) {
-            let (range, other) = match self.slice_range(lhs)? {
-                Some(range) => (Some(range), rhs),
-                None => (self.slice_range(rhs)?, lhs),
-            };
-            if let Some(([t0, t1, t2], [from, to])) = range {
-                let (other, _) = self.operand(other)?;
-                let [o0, o1, o2] = [0, 1, 2].map(|at| self.header_word(&other, at));
-                self.declare(
-                    "declare i8 @fennec_text_equals_range(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
-                );
-                let (byte, same, cc) = (self.temp(), self.temp(), if op == BinOp::Eq { "ne" } else { "eq" });
-                self.line(&format!(
-                    "{byte} = call i8 @fennec_text_equals_range(i64 {t0}, i64 {t1}, i64 {t2}, i64 {from}, i64 {to}, i64 {o0}, i64 {o1}, i64 {o2})"
-                ));
-                self.line(&format!("{same} = icmp {cc} i8 {byte}, 0"));
-                return self.assign(dest, &same);
-            }
-        }
         let (a, mut kind) = self.operand(lhs)?;
         let (mut b, mut b_kind) = self.operand(rhs)?;
         // A number written out takes the size of what's beside it, so the arithmetic is that size's.
@@ -3411,22 +3391,6 @@ impl Emit<'_, '_, '_> {
         {
             let number = if name == "int.parse" { "int" } else { "float" };
             return self.number_of_text(dest, number, text);
-        }
-        if let ("str.startswith", Some(dest), [text, part]) = (name, dest, args)
-            && let Some(([t0, t1, t2], [from, to])) = self.slice_range(text)?
-        {
-            // A slice's range, read where it is.
-            let (part, _) = self.operand(part)?;
-            let [p0, p1, p2] = [0, 1, 2].map(|at| self.header_word(&part, at));
-            self.declare(
-                "declare i8 @fennec_text_starts_with_range(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
-            );
-            let (byte, starts) = (self.temp(), self.temp());
-            self.line(&format!(
-                "{byte} = call i8 @fennec_text_starts_with_range(i64 {t0}, i64 {t1}, i64 {t2}, i64 {from}, i64 {to}, i64 {p0}, i64 {p1}, i64 {p2})"
-            ));
-            self.line(&format!("{starts} = icmp ne i8 {byte}, 0"));
-            return self.assign(dest, &starts);
         }
         if let ("str.startswith" | "str.endswith", Some(dest), [text, part], true) =
             (name, dest, args, self.headers())

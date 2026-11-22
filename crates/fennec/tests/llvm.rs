@@ -782,11 +782,11 @@ counted 8
 again 12 1
 "#;
 
-/// A slice read by one `split`, `find`, `startswith`, `==` or `!=` is read where it is, as a range
-/// of its string, with no string made for it: each gives what it gives on the slice made first, for
+/// A slice read by one `split` or `find` is read where it is, as a range of its string, with no
+/// string made for it, when the string is in a block, and sliced natively when it's inline. Each,
+/// and `startswith`, `==` and `!=` on a slice, gives what it gives on the slice made first, for
 /// short and long texts, ASCII, accented and Japanese, and ranges at either end, negative, missing,
-/// reversed and past the end, beside parts that are there and not. In dev and release, with nothing
-/// left at the end.
+/// reversed and past the end, beside parts that are there and not. In dev and release.
 #[test]
 fn a_slice_read_by_one_call_is_read_where_it_is() -> std::io::Result<()> {
     if !ready() {

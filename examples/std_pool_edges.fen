@@ -79,6 +79,19 @@ def failed_with(links: Pool[Brittle]) -> int fails PoolError:
     lent.give_back(False)
     return lent.value.number
 
+## Why a link couldn't be opened, with no words of its own: a pool says it as it prints.
+error Down:
+    host: str
+
+## A link that can't be opened, since its host is down.
+def opened_down() -> Link fails Down:
+    fail Down(host="db")
+
+## A pool of links whose host is down, never used.
+def pool_of_down() fails PoolError | Crashed:
+    with pool[Link, Down](open=() => opened_down()?, size=1)? as _:
+        pass
+
 ## A pool of `size` links, never used.
 def sized(size: int) fails PoolError | Crashed:
     shared count = Tally()
@@ -95,6 +108,9 @@ test "a pool needs at least one value"():
     assert sized(0) fails PoolError.Open(reason="a pool needs at least one value, not 0")
     assert sized(-3) fails PoolError.Open(reason="a pool needs at least one value, not -3")
     sized(1)?
+
+test "opening can fail with an error that has no words of its own"():
+    assert pool_of_down() fails PoolError.Open(reason="Down(host=\"db\")")
 
 test "a pool given its first value opens none up front"():
     shared count = Tally()

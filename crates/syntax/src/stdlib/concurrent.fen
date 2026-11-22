@@ -389,11 +389,7 @@ def opened_safely[T, E: Worded](open: () -> T fails E) -> T fails PoolError:
     fail .Closed
 
 ## Runs `open` in a task, sending what it gives to `to`, or why it failed to `refused`.
-def opening[T, E: Worded](
-    open: () -> T fails E,
-    to: Sender[T],
-    refused: Sender[str],
-) fails Crashed:
+def opening[T, E: Worded](open: () -> T fails E, to: Sender[T], refused: Sender[str]) fails Crashed:
     with launch(() => open_into[T, E](open, to, refused))?:
         pass
 

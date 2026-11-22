@@ -2482,6 +2482,10 @@ pub(crate) enum Stmt {
     /// `saved{id}(stdout)`: a box of the program's own values saved and loaded back through JSON,
     /// `std.pack` and TOML, and texts that don't hold one refused.
     Saved(super::saving::Saving),
+    /// `opened{id}(stdout)`: one `with` opening two or three handles left to right, one perhaps
+    /// failing to open, a lent pair taken apart inside, and the block ending, failing or crashing,
+    /// with cleanups that may crash.
+    Opened(super::opening::Opening),
     /// `interfaced{id}(stdout)`: two types with one interface, through generic functions bounded by it.
     Interfaced(Interfacing),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.

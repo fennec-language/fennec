@@ -1,0 +1,78 @@
+# Each kind of flat message, sent to a task: a string, short, long and empty; a struct of numbers,
+# bools and a narrow number; one holding strings, an optional string and bytes; and a struct of
+# those inside another. Each arrives as it was sent, and the sender keeps its own and changes it
+# after. A message that isn't flat, holding a list, still goes as a block. It prints the same with
+# flat messages sent as their words and with FENNEC_BLOCK_MESSAGES=1, and ends with nothing held.
+from std.concurrent import Closed, Crashed, Inbox
+
+struct Point:
+    x: int
+    y: float
+    near: bool
+    small: u8
+
+struct Note:
+    title: str
+    body: str
+    tag: str?
+    raw: bytes
+
+struct Packet:
+    at: Point
+    note: Note
+    seq: int
+
+struct Bundle:
+    items: list[int]
+    name: str
+
+def long_text(number: int) -> str:
+    return f"a text long enough to need a block of its own, number {number}"
+
+def texts(inbox: Inbox[str], stdout: Stdout):
+    for got in inbox:
+        stdout.print(f"text [{got}]", len(got))
+
+def points(inbox: Inbox[Point], stdout: Stdout):
+    for got in inbox:
+        stdout.print("point", got.x, got.y, got.near, got.small)
+
+def packets(inbox: Inbox[Packet], stdout: Stdout):
+    for got in inbox:
+        mut mine = got
+        mine.note.body += " (changed by the task)"
+        stdout.print("packet", got.seq, got.at.x, got.at.near, got.note.title, got.note.body, got.note.tag, got.note.raw)
+        stdout.print("its copy", mine.note.body)
+
+def bundles(inbox: Inbox[Bundle], stdout: Stdout):
+    for got in inbox:
+        stdout.print("bundle", got.items, got.name)
+
+def sent(stdout: Stdout) fails Closed | Crashed:
+    with launch((inbox) => texts(inbox, stdout))? as sends:
+        sends.send("short")?
+        sends.send(long_text(1))?
+        sends.send("")?
+        mut grown = "grows"
+        for round in range(3):
+            sends.send(grown)?
+            grown += f" past a header, round {round}"
+    with launch((inbox) => points(inbox, stdout))? as sends:
+        for at in range(3):
+            sends.send(Point(x=at, y=0.5 * float(at), near=at % 2 == 0, small=u8(at + 250)))?
+    mut note = Note(title="first", body=long_text(2), tag=None, raw=bytes([1, 2, 3]))
+    with launch((inbox) => packets(inbox, stdout))? as sends:
+        for seq in range(3):
+            point = Point(x=seq, y=0.25, near=seq == 1, small=u8(seq))
+            sends.send(Packet(at=point, note=note, seq=seq))?
+            note.body += f" {seq}"
+            note.tag = f"tag {seq}" if seq % 2 == 0 else long_text(seq)
+    stdout.print("sender kept", note.body, note.tag)
+    with launch((inbox) => bundles(inbox, stdout))? as sends:
+        sends.send(Bundle(items=[1, 2], name=long_text(3)))?
+    return
+
+def main(stdout: Stdout):
+    sent(stdout) except why:
+        stdout.print("failed", why)
+    return

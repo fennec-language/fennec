@@ -111,6 +111,17 @@ impl Interp {
             ("exists" | "remove" | "list_dir" | "walk" | "metadata", [path]) => {
                 self.fs_look(reach, name, path, span)
             }
+            ("_sqlite_open", [path]) if reach.folders.is_none() && !reach.read_only => {
+                let whither = self.whither(reach, name, path, span)?;
+                let at = self.disk(span, |disk| {
+                    let reached = reached(disk, &whither)?;
+                    disk.open_database(reached)
+                })?;
+                self.sqlite_open(at, span)
+            }
+            ("_sqlite_open" | "_sqlite_read", _) => {
+                unsupported("a database through an Fs narrowed with `only` or `read_only`")
+            }
             ("create" | "open", _) => unsupported(format!("`{name}` outside a `with`")),
             ("read_bytes" | "write_bytes" | "read_bytes_if_present", _) => unsupported("bytes"),
             _ => unsupported(format!("the Fs method `{name}`")),

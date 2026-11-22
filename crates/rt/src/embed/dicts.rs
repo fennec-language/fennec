@@ -222,7 +222,7 @@ fn kind(state: &State, block: &[u64]) -> Option<(Word, Word)> {
 /// How a dict's entries are laid out: what its keys and values are, and how many words an
 /// entry takes, a hash, then the key's words, then the value's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Layout {
+pub(super) struct Layout {
     key: Word,
     value: Word,
     /// How many words an entry takes. This is all a layout holds beside its kinds, as it was
@@ -2097,18 +2097,59 @@ pub(super) fn children(state: &State, block: &[u64], found: &mut Vec<u64>) {
     if !layout.value.owned() && !layout.key.owned() && layout.key != Word::Text {
         return;
     }
-    let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
-    let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
-    let start = DICT_HEADER_WORDS + slots;
-    let words = block.get(start..start + used * layout.width()).unwrap_or_default();
     // Room for a key's block and a value's in each entry at once: grown one at a time, the list
     // would double, copying itself on the way, and end with room for twice what it holds.
     let each =
         usize::from(layout.key.owned() || layout.key == Word::Text) + usize::from(layout.value.owned());
-    found.reserve(used * each);
+    found.reserve(entries_used(block) * each);
+    each_child(layout, block, |child| found.push(child));
+}
+
+/// How many entries a dict's block has used, those removed since among them.
+fn entries_used(block: &[u64]) -> usize {
+    block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0)
+}
+
+/// What a block is, as freeing it sees a dict.
+pub(super) enum Entries {
+    /// It isn't a dict's.
+    NotADict,
+    /// A dict's whose values are held in place, which [`children`] walks by their kind.
+    InPlace,
+    /// A dict's whose values are a word each, laid out so, for [`each_child`].
+    Words(Layout),
+}
+
+/// Whether a block is a dict's, and how its values are held, read once for its free.
+#[inline]
+pub(super) fn held_entries(state: &State, block: &[u64]) -> Entries {
+    match layout(state, block) {
+        None => Entries::NotADict,
+        Some(layout) if layout.in_place() => Entries::InPlace,
+        Some(layout) => Entries::Words(layout),
+    }
+}
+
+/// Gives `each` the address of every block a dict of one-word values owns, each entry's key and
+/// then its value, as they're read: what [`children`] adds to its list, with no list made. A dict
+/// whose values are held in place isn't one this reads.
+#[inline]
+pub(super) fn each_child(layout: Layout, block: &[u64], mut each: impl FnMut(u64)) {
+    debug_assert!(!layout.in_place(), "a dict of values in place is walked by their kind");
+    // Numbers as keys and values hold no blocks, so there's nothing to look through.
+    if !layout.value.owned() && !layout.key.owned() && layout.key != Word::Text {
+        return;
+    }
+    let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
+    let start = DICT_HEADER_WORDS + slots;
+    let words = block.get(start..start + entries_used(block) * layout.width()).unwrap_or_default();
     for entry in words.chunks_exact(layout.width()).filter(|entry| entry.first() != Some(&REMOVED)) {
-        found.extend(key_block(layout.key, key_of(layout, entry)));
-        found.extend(layout.value.owned().then(|| value_of(entry)));
+        if let Some(key) = key_block(layout.key, key_of(layout, entry)) {
+            each(key);
+        }
+        if layout.value.owned() {
+            each(value_of(entry));
+        }
     }
 }
 

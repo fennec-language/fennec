@@ -153,9 +153,9 @@ fn quiet(layouts: &Layouts, ty: Ty, seen: &mut HashSet<u32>) -> bool {
         Ty::Block(number) => layouts.block(number).is_some_and(|held| quiet(layouts, held, seen)),
         Ty::Dict(key, value) => [key, value].into_iter().all(|word| match word {
             Word::Plain(id) => quiet(layouts, Ty::Struct(id), seen),
-            // A value held in the entry: what the struct it is holds.
+            // A value held in the entry: what the struct or string it is holds.
             Word::InPlace(number) => {
-                layouts.dict_value(number).is_none_or(|id| quiet(layouts, Ty::Struct(id), seen))
+                layouts.dict_value(number).is_none_or(|value| quiet(layouts, value, seen))
             }
             Word::Block(number) => quiet(layouts, Ty::Block(number), seen),
             _ => true,

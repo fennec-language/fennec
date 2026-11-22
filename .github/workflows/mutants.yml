@@ -75,6 +75,8 @@ jobs:
           .github/scripts/memory-held.sh 12G \
             cargo mutants --in-diff changes.diff --no-shuffle --jobs 2 --baseline=skip --timeout "$LIMIT" \
             --test-package "$packages" --cargo-test-arg=-E --cargo-test-arg="$filter" || status=$?
+          # A mutant that changes nothing a test can see, as the list says, isn't missed.
+          .github/scripts/mutants-equivalent.sh mutants.out
           # A timeout is neither caught nor missed, and a run where most timed out checked next to
           # nothing, so it fails.
           verdict=0
@@ -160,6 +162,8 @@ jobs:
           # 165 minutes, and 137: it was stopped 15 minutes after. Anything else means the slice
           # wasn't tested.
           case "$status" in 0 | 2 | 3 | 124 | 137) ;; *) echo "error: cargo-mutants exited $status" >&2; exit "$status" ;; esac
+          # A mutant that changes nothing a test can see, as the list says, isn't missed.
+          .github/scripts/mutants-equivalent.sh mutants.out
       - name: Rank what no test caught
         if: always()
         env:

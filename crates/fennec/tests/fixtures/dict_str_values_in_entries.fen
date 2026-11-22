@@ -1,0 +1,147 @@
+# A dict whose values are strings, used every way a dict is: short values, held in the header
+# itself, and long ones, in a block, under int, text and float keys, made, read, got, changed where
+# they are, replaced, popped, walked, copied, compared and printed. Built with each string held in
+# the dict's entry as its header and with each value a block of its own, it prints the same and
+# ends with nothing held.
+
+struct Page:
+    title: str
+    headers: dict[str, str]
+
+    def add(ref self, name: str, value: str):
+        self.headers[name] = value
+        self.headers["count"] += "+"
+
+error Stop:
+    at: int
+
+def long_text(number: int) -> str:
+    return f"a value long enough for a block of its own, number {number}"
+
+## Short and long values under text keys, set new and again, read, got, changed and popped.
+def text_keys(stdout: Stdout):
+    mut held: dict[str, str] = {"short": "tiny", "long": long_text(0)}
+    held["empty"] = ""
+    held["grown"] = "starts short"
+    held["grown"] += ", then grows past twenty-three bytes"
+    held["shrunk"] = long_text(1)
+    held["shrunk"] = "small now"
+    held["short"] = held["short"] + "!"
+    for number in range(12):
+        held[f"key {number}"] = long_text(number) if number % 3 == 0 else f"v{number}"
+    stdout.print(len(held), held["short"], held["long"], held["grown"], held["shrunk"])
+    stdout.print(held.get("empty") else "none", held.get("missing") else "none")
+    stdout.print(held["key 3"], held["key 4"])
+    popped = held.pop("key 3")
+    other = held.pop("key 4")
+    again = held.pop("key 3") if "key 3" in held else "gone"
+    stdout.print(popped, other, again, len(held))
+    mut total = 0
+    for key, value in held.items():
+        total += len(key) + len(value)
+    stdout.print(total, "short" in held, "key 3" in held)
+    return
+
+## Int and float keys, a copy changed after it's made, compared and printed.
+def other_keys(stdout: Stdout):
+    mut by_number: dict[int, str] = {}
+    for number in range(20):
+        by_number[number] = long_text(number) if number % 2 == 0 else str(number)
+    by_number[5] += " and more, so it moves into a block"
+    kept = by_number
+    by_number[0] = "replaced"
+    by_number[19] += "?"
+    stdout.print(kept[0], by_number[0], kept[19], by_number[19], by_number[5])
+    stdout.print(kept == by_number, len(kept), len(by_number))
+    mut same: dict[int, str] = {}
+    for number in range(20):
+        same[number] = kept[number]
+    stdout.print(same == kept, same != by_number)
+    mut by_float: dict[float, str] = {0.5: "half", 1.5: long_text(15)}
+    by_float[2.5] = "two and a half"
+    stdout.print(by_float)
+    by_float.clear()
+    by_float[3.5] = "after clearing"
+    stdout.print(by_float, len(by_float))
+    return
+
+## Values walked, listed, and keys sliced out of a text.
+def walked(stdout: Stdout):
+    words = {"one": "1", "two": long_text(2), "three": "3"}
+    stdout.print(sorted(words.values()))
+    stdout.print(sorted(words.keys()))
+    line = "name=value;other=more"
+    mut found: dict[str, str] = {}
+    found[line[0:4]] = line[5:10]
+    found[line[11:16]] = line[17:21]
+    stdout.print(found, found[line[0:4]])
+    return
+
+## Keys sliced out of lines, as a request's headers are parsed: short new keys go straight in,
+## a key that's there gets its new value, and a long key, one that isn't ASCII, a dict another
+## local holds too and one that grows each take the runtime's way.
+def sliced_keys(stdout: Stdout):
+    lines = [
+        "Host: example.com",
+        "Content-Type: text/plain",
+        "Host: example.org",
+        "A-Header-Name-Longer-Than-A-Header: long key",
+        "Grüße: not ASCII",
+        "X-Long: a value long enough for a block of its own",
+        "X-Long: a value replaced by another long enough for a block",
+    ]
+    mut headers: dict[str, str] = {}
+    mut first: dict[str, str] = {}
+    for at, line in enumerate(lines):
+        colon = line.find(": ") else -1
+        headers[line[:colon]] = line[colon + 2:]
+        if at == 2:
+            first = headers
+        found = headers.get(line[:colon]) else "missing"
+        stdout.print(len(headers), found)
+    stdout.print(first)
+    stdout.print(headers)
+    mut many: dict[str, str] = {}
+    text = "k0=a;k1=bb;k2=ccc;k3=dddd;k4=eeeee;k5=ffffff;k6=a value long enough for a block;k7=h;k8=i;k9=j"
+    for round in range(3):
+        for part in text.split(";"):
+            equals = part.find("=") else 0
+            many[part[:equals]] = part[equals + 1:] if round == 0 else f"{part[equals + 1:]} {round}"
+    stdout.print(len(many), many["k6"], many["k9"])
+    missing = many.get(text[0:1]) else "none"
+    stdout.print(missing)
+    return
+
+## In a struct changed through `ref self`, in a dict of dicts, and under a lock that fails.
+def held_elsewhere(stdout: Stdout):
+    mut page = Page(title="home", headers={"count": ""})
+    page.add("Content-Type", "text/html")
+    page.add("Server", long_text(7))
+    page.headers["Server"] += " (changed)"
+    stdout.print(page.headers)
+    mut nested: dict[str, dict[int, str]] = {}
+    nested["first"] = {1: "one"}
+    nested["first"][2] = long_text(2)
+    nested["first"][1] += long_text(1)
+    stdout.print(nested)
+    shared kept = page
+    for at, stop in [(1, True), (2, False)]:
+        changed(kept, at=at, stop=stop) except why:
+            stdout.print("stopped at", why.at)
+        lock kept as held:
+            stdout.print(held.headers)
+    return
+
+def changed(page: shared Page, at: int, stop: bool) fails Stop:
+    lock page as ref current:
+        current.headers["Server"] = f"server {at}"
+        current.headers[f"added {at}"] = long_text(at)
+        if stop: fail Stop(at=at)
+
+def main(stdout: Stdout):
+    text_keys(stdout)
+    other_keys(stdout)
+    walked(stdout)
+    sliced_keys(stdout)
+    held_elsewhere(stdout)
+    return

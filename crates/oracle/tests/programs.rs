@@ -1026,14 +1026,14 @@ fn saving_holds_unions_tables_ids_and_rules_through_every_format() {
         (
             SAVED_UNION_JSON_LOADS,
             r#"Holder(shape=Square(side=2.0))
-refused ParseError(message="`shape` is \"Triangle\", which is none of `Circle | Square`", line=0, column=0)
-refused ParseError(message="", line=0, column=0)
-refused ParseError(message="`shape` should be a Circle | Square, but it's an object", line=0, column=0)
-refused ParseError(message="`shape.Circle` should be a Circle, but it's an int", line=0, column=0)
-refused ParseError(message="`shape` should be a Circle | Square, but it's a str", line=0, column=0)
-refused ParseError(message="`Circle` has no field \"side\", but `shape.Circle` has one", line=0, column=0)
-refused ParseError(message="`shape` should be a Circle | Square, but it's null", line=0, column=0)
-refused ParseError(message="`shape` should be a Circle | Square, but it's a list", line=0, column=0)
+refused `shape` is "Triangle", which is none of `Circle | Square`
+refused 
+refused `shape` should be a Circle | Square, but it's an object
+refused `shape.Circle` should be a Circle, but it's an int
+refused `shape` should be a Circle | Square, but it's a str
+refused `Circle` has no field "side", but `shape.Circle` has one
+refused `shape` should be a Circle | Square, but it's null
+refused `shape` should be a Circle | Square, but it's a list
 "#,
         ),
         (
@@ -1066,8 +1066,8 @@ Holder(order=Order.Move(steps=2), orders=[Order.Wait, Order.Move(steps=5)])
         ),
         (
             SAVED_RULE_THROUGH_PACK,
-            r#"refused ParseError(message="Gauge.level breaks its `where` rule, at byte 25", line=0, column=0)
-"#,
+            r"refused Gauge.level breaks its `where` rule, at byte 25
+",
         ),
     ] {
         let (got, ended) = ran(program);
@@ -4433,7 +4433,7 @@ fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
                     stdout.print(f'{why}')
             stdout.print('done')
         ",
-        "block gave -1\nCrashed(why=\"the task crashed\")\ndone\n",
+        "block gave -1\nthe task crashed\ndone\n",
     );
     // A send waiting for room is cut short as a closed channel's: it fails with `Closed`.
     prints(
@@ -4459,7 +4459,7 @@ fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
                     stdout.print(f'{why}')
             stdout.print('done')
         ",
-        "second send closed\nblock ends\nCrashed(why=\"the task crashed\")\ndone\n",
+        "second send closed\nblock ends\nthe task crashed\ndone\n",
     );
 }
 

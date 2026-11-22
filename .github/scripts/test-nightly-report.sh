@@ -207,8 +207,8 @@ runs mutants.yml-schedule "$(run 50 completed success $((day / 2)))"
 slice fennec-ir caught=3 missed=2 timeout=1 unviable=0
 slice fennec-llvm caught=7 missed=0 timeout=0 unviable=2
 check "a night of mutants passes the report" 0 "$(report)"
-check "it says one crate's counts" yes "$(said "fennec-ir: 3 caught, 2 missed, 1 timed out, 0 didn't build")"
-check "and another's" yes "$(said "fennec-llvm: 7 caught, 0 missed, 0 timed out, 2 didn't build")"
+check "it says one crate's counts" yes "$(said "fennec-ir: 3 caught, 2 missed, 0 equivalent, 1 timed out, 0 didn't build")"
+check "and another's" yes "$(said "fennec-llvm: 7 caught, 0 missed, 0 equivalent, 0 timed out, 2 didn't build")"
 check "and what no test caught, all told" yes "$(said ": 2 no test caught, ranked by file")"
 
 if [ "$failures" -ne 0 ]; then

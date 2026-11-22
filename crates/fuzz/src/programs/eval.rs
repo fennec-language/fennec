@@ -2084,6 +2084,11 @@ impl Machine {
                     let _ = writeln!(self.out, "{line}");
                 }
             }
+            Stmt::Stored(storing) => {
+                for line in super::storing::printed(storing) {
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
             Stmt::Opened(opening) => {
                 let (lines, stops) = super::opening::printed(opening);
                 for line in lines {

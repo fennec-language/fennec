@@ -698,7 +698,7 @@ impl Fake {
             && stream.inbox.len() > MOST_LINE_BYTES
             && !stream.inbox.iter().take(MOST_LINE_BYTES + 1).any(|byte| *byte == b'\n')
         {
-            return Ok(Err(Failure::Other(format!("a line was longer than {MOST_LINE_BYTES} bytes"))));
+            return Ok(Err(Failure::Other(line_too_long())));
         }
         let line = self.read(handle, None, span)?;
         Ok(line.and_then(|line| match line.as_deref().and_then(|line| line_refused(line, crlf)) {
@@ -1188,10 +1188,21 @@ pub(crate) fn data_of(data: &Value) -> &[u8] {
 /// than this fails, rather than take as much memory as whoever's sending it likes.
 pub(crate) const MOST_LINE_BYTES: usize = 1 << 20;
 
+/// What a line too long to read fails with, the same words wherever it's read.
+pub(crate) fn line_too_long() -> String {
+    format!("a line was longer than {MOST_LINE_BYTES} bytes")
+}
+
+/// Whether a read failed on a line too long to read, as `_read_head` tells a request line too
+/// long from a header too long.
+pub(crate) fn is_line_too_long(failure: &Failure) -> bool {
+    matches!(failure, Failure::Other(why) if *why == line_too_long())
+}
+
 /// Why a line read fails: it's too long, or, with `crlf`, it ended with no `\r` before its `\n`.
 pub(crate) fn line_refused(line: &[u8], crlf: bool) -> Option<String> {
     if line.len() > MOST_LINE_BYTES {
-        return Some(format!("a line was longer than {MOST_LINE_BYTES} bytes"));
+        return Some(line_too_long());
     }
     let bare =
         line.last() == Some(&b'\n') && line.len().checked_sub(2).and_then(|at| line.get(at)) != Some(&b'\r');

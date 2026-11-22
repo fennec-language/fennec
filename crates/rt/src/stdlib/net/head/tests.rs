@@ -16,8 +16,10 @@ fn read_from(limits: Limits, lines: &[&str]) -> (Head, usize) {
         taken += usize::from(next.is_some());
         Ok::<_, ()>(Ok(next))
     };
-    let Ok(head) = head(limits, &mut line) else { panic!("no line failed") };
-    (head, taken)
+    match head(limits, &mut line) {
+        Ok(head) | Err(Stopped::Gave(head)) => (head, taken),
+        Err(Stopped::Failed(_) | Stopped::Call(())) => panic!("no line failed"),
+    }
 }
 
 fn lines(lines: &[&str]) -> Head {
@@ -89,4 +91,36 @@ fn limits_come_from_three_ints_and_a_negative_one_is_none() {
     assert_eq!((limits.bytes, limits.lines, limits.blank), (5, 0, 0));
     assert!(Limits::of(&[Value::Int(5), Value::Int(1)]).is_none());
     assert!(Limits::of(&[Value::Int(5), Value::Int(1), Value::str("2")]).is_none());
+}
+
+/// A line too long for the connection to read at all is over the most bytes a head may hold, so
+/// a request line is `LongFirst`, the 414, and a header line is `TooBig`, the 431, as each was when
+/// std read a line at a time. Nothing after it is read. A bare `\n` still fails the head.
+#[test]
+fn a_line_too_long_to_read_is_long_first_or_too_big_by_where_it_is() {
+    let too_long = || Failure::Other(super::super::line_too_long());
+    let gave = |given: Vec<Result<Option<String>, Failure>>| {
+        let mut given = given.into_iter();
+        let mut taken = 0;
+        let mut line = || {
+            taken += 1;
+            Ok::<_, ()>(given.next().unwrap_or(Ok(None)))
+        };
+        let got = match head(LIMITS, &mut line) {
+            Ok(head) | Err(Stopped::Gave(head)) => Ok(head),
+            Err(Stopped::Failed(failure)) => Err(failure),
+            Err(Stopped::Call(())) => panic!("the call didn't fail"),
+        };
+        (got, taken)
+    };
+    let line = |text: &str| Ok(Some(text.to_owned()));
+    assert_eq!(gave(vec![Err(too_long()), line("host: a"), line("")]), (Ok(Head::LongFirst), 1));
+    assert_eq!(gave(vec![line(""), Err(too_long())]), (Ok(Head::LongFirst), 2), "after a blank line");
+    assert_eq!(
+        gave(vec![line("GET / HTTP/1.1"), line("host: a"), Err(too_long()), line("")]),
+        (Ok(Head::TooBig), 3)
+    );
+    let bare = Failure::Other("a line ended without a carriage return".to_owned());
+    assert!(matches!(gave(vec![Err(bare)]), (Err(Failure::Other(_)), 1)));
+    assert!(matches!(gave(vec![line("GET / HTTP/1.1"), Err(Failure::Closed)]), (Err(Failure::Closed), 2)));
 }

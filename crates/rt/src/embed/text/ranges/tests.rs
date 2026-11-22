@@ -80,7 +80,8 @@ const TEXTS: [&str; 6] = [
     "日本語のテキストも長くするとブロックになる",
 ];
 
-const PARTS: [&str; 7] = ["", " ", "é", "a", "text", "ünï", "日本"];
+// Parts of up to eight bytes are looked for where the text is, and longer ones in a copy.
+const PARTS: [&str; 9] = ["", " ", "é", "a", "text", "ünï", "日本", "and more text", "テキストも"];
 
 /// Every range worth trying on a text of `chars` characters.
 fn ranges(chars: i64) -> Vec<(i64, i64)> {
@@ -146,7 +147,10 @@ fn a_range_reads_what_its_slice_holds_for_every_call() {
                 "{what}"
             );
             let_go(itself);
-            for separator in [None, Some(" "), Some(", "), Some("é")] {
+            // None splits by whitespace, and one over eight bytes is split in a copy; the rest are split
+            // where the text is.
+            for separator in [None, Some(" "), Some(", "), Some("é"), Some("ünïcödé"), Some("ロック")]
+            {
                 let between = separator.map_or([0; 3], header);
                 let ranged = split_range(
                     whole[0], whole[1], whole[2], from, to, between[0], between[1], between[2], 0, 0,

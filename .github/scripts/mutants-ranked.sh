@@ -20,17 +20,18 @@ count() {
   echo "${n:-0}"
 }
 missed=$(count missed)
+equivalent=$(count equivalent)
 caught=$(count caught)
 timeout=$(count timeout)
 unviable=$(count unviable)
 echo "## $crate, slice $slice"
 echo
-tried=$((missed + caught + timeout + unviable))
+tried=$((missed + equivalent + caught + timeout + unviable))
 # How many the slice has, which cargo-mutants lists before it starts.
 found=$(jq length "$out/mutants.json" 2> /dev/null) || found=""
 said=$tried
 [ -z "$found" ] || said="$tried of $found"
-echo "$said mutants tried: $caught caught, $missed missed, $timeout timed out, $unviable didn't build."
+echo "$said mutants tried: $caught caught, $missed missed, $equivalent equivalent, $timeout timed out, $unviable didn't build."
 if [ -n "$found" ] && [ "$tried" -lt "$found" ]; then
   echo
   echo "**$((found - tried)) weren't tried before the slice's time ran out.**"

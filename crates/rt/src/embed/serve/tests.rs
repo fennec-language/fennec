@@ -1185,8 +1185,7 @@ fn connection_numbers_are_never_shared_between_workers() {
     let on_other_worker = std::thread::spawn(super::calls::next_handle).join().unwrap();
     let here = super::calls::next_handle();
     assert_ne!(here, on_other_worker);
-    let refused = super::calls::on_conn(on_other_worker, |_| Ok(()));
-    assert!(matches!(refused, Err(crate::stdlib::net::Failure::Closed)));
+    assert!(super::calls::conn_of(on_other_worker).is_none());
 }
 
 /// Running out of file descriptors leaves connections waiting that the poll won't announce again,

@@ -5799,6 +5799,62 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// A `fennec run` whose edit changes what a test reaches builds that test first, then the program,
+/// and the program's build uses again what the run before kept of its own functions: the ones no
+/// test reaches too. The test's text was written twice, once to see LLVM took it and once to build
+/// it, and two builds between the program's pushed every analysis of the program's own functions
+/// out of what the daemon keeps, so they were all worked out again at every such edit.
+#[cfg(unix)]
+#[test]
+fn a_run_with_tests_uses_the_programs_own_analyses_again() {
+    let (_folder, kit, home) = small_kit("run-kept-analyses").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    // `tested` is what the test reaches; the six others only the program does.
+    let program = |added: u32| {
+        let mut text = format!(
+            "def tested(number: int) -> int:\n    return number + {added}\n\n\
+             test \"tested adds\":\n    assert tested(1) == {}\n\n",
+            added + 1
+        );
+        let alone = (0..6).map(|at| {
+            format!("def alone_{at}(number: int) -> int:\n    return number * {} + {at}\n\n", at + 2)
+        });
+        text.extend(alone);
+        text += "def main(stdout: Stdout):\n    stdout.print(tested(1))\n";
+        text.extend((0..6).map(|at| format!("    stdout.print(alone_{at}(3))\n")));
+        text
+    };
+    // The program's build says its note last: "note: used 7 of 8 functions' analyses again, ...".
+    let used = |stderr: &str| -> (usize, usize) {
+        let line = stderr.lines().rev().find(|line| line.starts_with("note: used ")).unwrap_or("");
+        let words: Vec<&str> = line.split(' ').collect();
+        let count = |at: usize| words.get(at).and_then(|word| word.parse().ok()).unwrap_or(0);
+        (count(2), count(4))
+    };
+    for (edit, added) in [1, 2, 3].into_iter().enumerate() {
+        std::fs::write(kit.join("src/main.fen"), program(added)).unwrap();
+        let mut command = crate::executables::fennec_command();
+        command.args(["run", "."]).current_dir(&kit).env("FENNEC_HOME", &home);
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+        let ran = command.output().unwrap();
+        let stderr = text(&ran.stderr);
+        assert_eq!(ran.status.code(), Some(0), "{stderr}");
+        assert!(text(&ran.stdout).starts_with(&format!("{}\n", added + 1)), "{}", text(&ran.stdout));
+        let (again, of) = used(&stderr);
+        assert!(of >= 8, "{stderr}");
+        if edit > 0 {
+            // All but `tested`, whose body changed, and at most `main`, which calls it.
+            assert!(again + 2 >= of, "edit {edit}: {stderr}");
+        }
+    }
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
 /// A release build through the daemon uses no analysis a build before it kept, being the build
 /// that ships, and keeps its own: the dev build after it, of an edit to `main`, uses `doubled`'s.
 #[cfg(unix)]

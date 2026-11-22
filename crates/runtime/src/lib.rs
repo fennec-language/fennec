@@ -116,6 +116,7 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_str_join",
     "fennec_str_codes",
     "fennec_str_char_at",
+    "fennec_str_repr",
     "fennec_int_text",
     "fennec_float_text",
     "fennec_text_block",
@@ -136,6 +137,10 @@ pub const NEVER_FAIL: &[&str] = &[
     // for as an answer. It runs under `with`, which sets no flag, and only reads the text's bytes
     // and parses them.
     "fennec_parse_float_header",
+    // Where a part first is in a slice of a text, read where the text is, or -1 for nowhere, which
+    // native code tests for as an answer. It runs under `with`, which sets no flag, and only reads
+    // the two texts' bytes.
+    "fennec_str_find_range",
     // Only says where a buffer is.
     "fennec_dict_value_words",
     // A value's words taken from that buffer into a dict that holds its values in its entries:
@@ -180,19 +185,31 @@ const fn never_fails(symbol: &str) -> bool {
     listed(NEVER_FAIL, symbol.as_bytes())
 }
 
+/// Looked through one name at a time, in a loop rather than by recursion: the list outgrew how
+/// deep the compiler lets a constant's calls go once it held 100 names.
 const fn listed(names: &[&str], symbol: &[u8]) -> bool {
-    match names {
-        [first, rest @ ..] => same(first.as_bytes(), symbol) || listed(rest, symbol),
-        [] => false,
+    let mut rest = names;
+    while let [first, more @ ..] = rest {
+        if same(first.as_bytes(), symbol) {
+            return true;
+        }
+        rest = more;
     }
+    false
 }
 
 const fn same(a: &[u8], b: &[u8]) -> bool {
-    match (a, b) {
-        ([x, a @ ..], [y, b @ ..]) => *x == *y && same(a, b),
-        ([], []) => true,
-        _ => false,
+    if a.len() != b.len() {
+        return false;
     }
+    let (mut a, mut b) = (a, b);
+    while let ([x, after_a @ ..], [y, after_b @ ..]) = (a, b) {
+        if *x != *y {
+            return false;
+        }
+        (a, b) = (after_a, after_b);
+    }
+    true
 }
 
 /// What an executable's program allocates through: its big blocks, and what the runtime

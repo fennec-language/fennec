@@ -691,7 +691,7 @@ pub extern "C" fn from_code_problem(code: i64) -> i64 {
 
 /// A new string with a string's text as it shows inside a collection, in quotes.
 pub extern "C" fn str_repr(text: i64) -> i64 {
-    with(|state| {
+    super::made_with("fennec_str_repr", |state| {
         let held =
             u64::try_from(text).ok().and_then(|at| state.heap.block(at)).map_or_else(String::new, block_text);
         text_address(state, &crate::format::repr(&Value::Str(held.into())))

@@ -8072,9 +8072,10 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// Each sized integer's `wrapping_add`, `wrapping_sub` and `wrapping_mul`, and its `saturating_`
-/// forms, are worked out natively: the operation on the word cut to the size's bits, LLVM's `*.sat`,
-/// or a product held to the size's ends. Each gives what the standard library's own Fennec for it
+/// Each sized integer's `wrapping_add`, `wrapping_sub` and `wrapping_mul`, its `saturating_mul`, and
+/// a `u64`'s saturating `+` and `-`, are worked out natively: the operation on the word cut to the
+/// size's bits, a product held to the size's ends, or LLVM's `*.sat`. A saturating `+` or `-` below
+/// 64 bits stays the standard library's. Each gives what the standard library's own Fennec for it
 /// gives, copied into the program as plain functions: every pair of a size's edge values and a
 /// spread between, for every size, in dev and release.
 #[test]

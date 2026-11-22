@@ -1156,7 +1156,7 @@ impl Interp {
         span: Span,
     ) -> Run<()> {
         if let ([name], Some(call)) = (names, self.parallel_call(iter)?) {
-            if parallel::returns_in(body) {
+            if self.ref_loop_is_plain(name, call, body) {
                 return self.for_ref(names, call.source(), body, span);
             }
             return self.for_ref_parallel(name, call, body, span);

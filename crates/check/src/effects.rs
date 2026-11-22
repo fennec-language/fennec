@@ -67,10 +67,10 @@ fn statement(stmt: &Stmt, effects: &mut Effects) {
 }
 
 fn expression(expr: &Expr, effects: &mut Effects) {
-    // `loaded[int?]()` or `array[str?, 3]()`: that `?` is part of a type, not a failure passed up.
+    // `loaded[int?]()`, `array[str?, 3]()` or `SortedMap[str, int?].of(pairs)`: that `?` is part of
+    // a type, not a failure passed up.
     if let ExprKind::Call { callee, args } = &expr.kind
-        && let ExprKind::Index { object, index } = &callee.kind
-        && (index.as_type().is_some() || callee.as_type().is_some())
+        && let Some(object) = typed_through(callee)
     {
         expression(object, effects);
         for arg in args {
@@ -92,6 +92,21 @@ fn expression(expr: &Expr, effects: &mut Effects) {
             }
         }
         _ => {}
+    }
+}
+
+/// What a call's callee is written through when it names a type with its parameters, as
+/// `loaded[int?]` or `SortedMap[str, int?].of`: the name the types are given to.
+fn typed_through(callee: &Expr) -> Option<&Expr> {
+    let indexed = match &callee.kind {
+        ExprKind::Attr { object, .. } => object,
+        _ => callee,
+    };
+    match &indexed.kind {
+        ExprKind::Index { object, index } if index.as_type().is_some() || indexed.as_type().is_some() => {
+            Some(object)
+        }
+        _ => None,
     }
 }
 

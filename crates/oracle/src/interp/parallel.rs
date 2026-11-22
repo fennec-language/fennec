@@ -7,7 +7,9 @@
 //! call passes up is the first round's that fails, by position, since the runtime keeps the lowest
 //! range's. Rounds after one that fails or breaks out may run or not, so they run here too, as
 //! rounds that may not run, and anything they'd change, or a channel they'd use, is refused, as
-//! is one failing after a `break`. What a round does that another round, or a stream's reader,
+//! is one failing after a `break`. A `for` over `parallel` whose body has a `return` in it runs
+//! as a plain loop over the source instead, as compiled code runs it and the docs say: one round
+//! after another, the `return` leaving the function. What a round does that another round, or a stream's reader,
 //! could see in another order is refused: printing, which follows real call order, the file
 //! system, a `shared` value one round changes and another reaches, and a generator made outside
 //! the round. Each round is one of its own to the channels it uses (`actors.rs`), so which
@@ -21,7 +23,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use fennec_check::Type;
-use fennec_syntax::{Expr, ExprKind, Span, Stmt};
+use fennec_syntax::{Expr, ExprKind, Pattern, Span, Stmt, StmtKind, read, visit};
 
 use super::calls::ArgVal;
 use super::{Flow, Interp, Place, Run, Step, as_int, crash, unsupported};
@@ -105,7 +107,14 @@ pub(crate) enum Work {
     /// `for names in parallel(...)`: the body, with each item.
     For { names: &'static [String], body: &'static [Stmt], items: Vec<Value> },
     /// A comprehension's element, for each item its condition keeps.
-    Made { elem: &'static Expr, names: &'static [String], cond: Option<&'static Expr>, items: Vec<Value> },
+    /// A dict comprehension's `value` too, each round making its key and value as a pair.
+    Made {
+        elem: &'static Expr,
+        value: Option<&'static Expr>,
+        names: &'static [String],
+        cond: Option<&'static Expr>,
+        items: Vec<Value>,
+    },
 }
 
 /// A `parallel` call whose rounds this thread runs, the innermost last, and whether the rounds
@@ -157,6 +166,196 @@ pub(crate) fn reads_since(scopes: &[Scope]) -> Option<u64> {
 pub(crate) struct Written {
     source: &'static Expr,
     limit: Option<&'static Expr>,
+}
+
+impl Written {
+    /// What the call goes over, for a loop that runs as a plain one over it.
+    pub(crate) fn source(self) -> &'static Expr {
+        self.source
+    }
+}
+
+/// Whether a `parallel` loop's `body` has a `return` in it, outside the functions written inside
+/// it: in its blocks, a `match`'s cases and an `except` block included. Compiled code never lifts
+/// such a body into ranges (`liftable` in the IR's lowering, which this walks as it does), and
+/// runs it as a plain loop.
+pub(crate) fn returns_in(body: &[Stmt]) -> bool {
+    let mut written = body.to_vec();
+    without_functions(&mut written);
+    returns_in_blocks(&written)
+}
+
+fn returns_in_blocks(body: &[Stmt]) -> bool {
+    let in_blocks = body.iter().any(|stmt| match &stmt.kind {
+        StmtKind::Return(_) => true,
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().any(|(_, block)| returns_in_blocks(block))
+                || otherwise.as_deref().is_some_and(returns_in_blocks)
+        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::With { body, .. }
+        | StmtKind::OnFailure { body, .. } => returns_in_blocks(body),
+        _ => false,
+    });
+    in_blocks || {
+        let mut cases = Vec::new();
+        visit::in_stmts(&mut body.to_vec(), &mut |seen| {
+            if let ExprKind::Match { arms, .. } = &seen.kind {
+                cases.extend(arms.iter().map(|arm| arm.body.clone()));
+            }
+        });
+        cases.iter().any(|case| returns_in_blocks(case))
+    }
+}
+
+/// A place as the checker names one (`loops::place`): a name, then a field, or `None` for any
+/// index, at each step.
+type Named = (String, Vec<Option<String>>);
+
+fn place_named(expr: &Expr) -> Option<Named> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some((name.clone(), Vec::new())),
+        ExprKind::Attr { object, name, optional: false } => {
+            let mut found = place_named(object)?;
+            found.1.push(Some(name.clone()));
+            Some(found)
+        }
+        ExprKind::Index { object, .. } => {
+            let mut found = place_named(object)?;
+            found.1.push(None);
+            Some(found)
+        }
+        _ => None,
+    }
+}
+
+/// Whether changing one place can change the other: one is inside the other, where an index
+/// matches any item and different fields are different places.
+fn overlap(one: &Named, other: &Named) -> bool {
+    one.0 == other.0 && one.1.iter().zip(&other.1).all(|(a, b)| a.is_none() || b.is_none() || a == b)
+}
+
+/// Whether a `for ref item in parallel(source)` loop's `body` reads what it goes over, as the
+/// checker's `live_loops` asks (#2356): a place anywhere in it, nested functions' included, that
+/// overlaps `source`, with the body giving `item` no meaning of its own. The checker writes such a
+/// loop in to go by position, so its rounds run one after another, as a plain loop's do, and each
+/// sees the items as they are now.
+pub(crate) fn reads_its_list(body: &[Stmt], item: &str, source: &Expr) -> bool {
+    let Some(looped) = place_named(source) else { return false };
+    let mut reads = false;
+    read::in_stmts(body, &mut |seen| {
+        reads |= place_named(seen).is_some_and(|place| overlap(&place, &looped));
+    });
+    reads && !binds(body, item)
+}
+
+/// Whether a body gives `held` a meaning of its own anywhere, as the checker's `binds` asks:
+/// declares it again, loops with it, or binds it in a function, arrow function, comprehension or
+/// case.
+fn binds(body: &[Stmt], held: &str) -> bool {
+    let mut bound = false;
+    every_stmt(body, &mut |stmt| match &stmt.kind {
+        StmtKind::Assign { target, declare_mut, ty, .. } => {
+            bound |= (*declare_mut || ty.is_some()) && names_in(target).iter().any(|name| name == held);
+        }
+        StmtKind::For { names, .. } => bound |= names.iter().any(|name| name == held),
+        StmtKind::With { names, .. } => bound |= names.iter().any(|name| name.name == held),
+        StmtKind::OnFailure { name, .. } => bound |= name == held,
+        StmtKind::Def(def) => bound |= def.name == held || def.params.iter().any(|param| param.name == held),
+        _ => {}
+    });
+    read::in_stmts(body, &mut |expr| match &expr.kind {
+        ExprKind::Lambda { params, .. } => bound |= params.iter().any(|param| param == held),
+        ExprKind::Comprehension { names, .. } => bound |= names.iter().any(|name| name == held),
+        ExprKind::Match { arms, .. } => bound |= arms.iter().any(|arm| pattern_binds(&arm.pattern, held)),
+        _ => {}
+    });
+    bound
+}
+
+/// Calls `each` on every statement in a body: those in nested blocks, functions and `match`
+/// cases too.
+fn every_stmt(body: &[Stmt], each: &mut dyn FnMut(&Stmt)) {
+    for stmt in body {
+        each(stmt);
+        match &stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches {
+                    every_stmt(block, each);
+                }
+                every_stmt(otherwise.as_deref().unwrap_or_default(), each);
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                every_stmt(body, each);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                every_stmt(cleanup, each);
+                every_stmt(body, each);
+            }
+            StmtKind::Lend { otherwise, .. } => every_stmt(otherwise, each),
+            StmtKind::Def(def) => every_stmt(&def.body, each),
+            _ => {}
+        }
+    }
+    read::in_stmts(body, &mut |expr| {
+        if let ExprKind::Match { arms, .. } = &expr.kind {
+            for arm in arms {
+                every_stmt(&arm.body, each);
+            }
+        }
+    });
+}
+
+fn names_in(target: &Expr) -> Vec<String> {
+    match &target.kind {
+        ExprKind::Name(name) => vec![name.clone()],
+        ExprKind::Tuple(items) => items.iter().flat_map(names_in).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn pattern_binds(pattern: &Pattern, held: &str) -> bool {
+    match pattern {
+        Pattern::Bind(name) | Pattern::RefBind(name) | Pattern::MutBind(name) => name == held,
+        Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+            patterns.iter().any(|pattern| pattern_binds(pattern, held))
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => false,
+    }
+}
+
+/// Takes the functions written inside `body` out of it, at any depth, those in a `match`'s cases
+/// included, as the IR does before it looks for a `return`.
+fn without_functions(body: &mut Vec<Stmt>) {
+    body.retain(|stmt| !matches!(stmt.kind, StmtKind::Def(_)));
+    for stmt in body.iter_mut() {
+        match &mut stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches.iter_mut() {
+                    without_functions(block);
+                }
+                if let Some(block) = otherwise {
+                    without_functions(block);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                without_functions(body);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                without_functions(cleanup);
+                without_functions(body);
+            }
+            _ => {}
+        }
+    }
+    visit::in_stmts(body, &mut |seen| {
+        if let ExprKind::Match { arms, .. } = &mut seen.kind {
+            for arm in arms.iter_mut() {
+                without_functions(&mut arm.body);
+            }
+        }
+    });
 }
 
 /// What a call's rounds made, in order, those that made something, and what stopped it, if
@@ -217,7 +416,7 @@ fn added(left: Value, right: &Value, span: Span) -> Run<Value> {
 /// Whether `expr` uses `?` anywhere in it, as the IR asks before lifting a sum.
 fn tries(expr: &Expr) -> bool {
     let mut found = false;
-    fennec_syntax::visit::in_expr(&mut expr.clone(), &mut |seen| {
+    visit::in_expr(&mut expr.clone(), &mut |seen| {
         found |= matches!(seen.kind, ExprKind::Try { .. });
     });
     found
@@ -266,6 +465,17 @@ impl Interp {
             Some(source) => Ok(Some(Written { source, limit })),
             None => unsupported("`parallel` with no source"),
         }
+    }
+
+    /// Whether `for ref name in parallel(...)` runs as a plain loop, as compiled code runs it: one
+    /// with a `return`, which isn't lifted into ranges, and one that reads what it goes over, which
+    /// the checker writes in to go by position.
+    pub(crate) fn ref_loop_is_plain(&self, name: &str, call: Written, body: &[Stmt]) -> bool {
+        let by_position = matches!(
+            self.program.type_at(call.source.span),
+            Some(Type::List(_) | Type::Array(..) | Type::Buffer(_) | Type::Table(_))
+        ) && reads_its_list(body, name, call.source);
+        by_position || returns_in(body)
     }
 
     /// The items a call's rounds take, in order, with its limit worked out after them.
@@ -554,9 +764,9 @@ impl Interp {
                     Err(other) => Err(other),
                 }
             }
-            Work::Made { elem, names, cond, items } => {
+            Work::Made { elem, value, names, cond, items } => {
                 let item = items.get(at).cloned().unwrap_or(Value::Unit);
-                self.made_from(elem, names, item, *cond)
+                self.made_from((elem, *value), names, item, *cond)
             }
         }
     }
@@ -653,26 +863,28 @@ impl Interp {
         }
     }
 
-    /// What each round of `[elem for names in parallel(source) if cond]` makes, by position.
+    /// What each round of `[elem for names in parallel(source) if cond]` makes, by position, or
+    /// of `{elem: value for ...}`, each a pair.
     fn parallel_made(
         &mut self,
-        elem: &'static Expr,
+        (elem, value): (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         call: Written,
         cond: Option<&'static Expr>,
     ) -> Run<(Ran, usize)> {
         let items = self.parallel_items(call)?;
         let count = items.len();
-        let work = Arc::new(Work::Made { elem, names, cond, items });
+        let work = Arc::new(Work::Made { elem, value, names, cond, items });
         let ran =
             self.rounds(count, Some(Arc::clone(&work)), &mut |interp, at, _| interp.run_round(&work, at))?;
         Ok((ran, count))
     }
 
-    /// What `elem` makes of an item, or `None` when `cond` leaves it out.
+    /// What `elem` makes of an item, with `value` after it as a pair when there's one, or `None`
+    /// when `cond` leaves it out.
     fn made_from(
         &mut self,
-        elem: &'static Expr,
+        (elem, value): (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         item: Value,
         cond: Option<&'static Expr>,
@@ -683,21 +895,29 @@ impl Interp {
                 Some(cond) => self.truth(cond)?,
                 None => true,
             };
-            if keep { self.eval(elem).map(Some) } else { Ok(None) }
+            if !keep {
+                return Ok(None);
+            }
+            let key = self.eval(elem)?;
+            match value {
+                Some(value) => Ok(Some(Value::Tuple(Held::new(vec![key, self.eval(value)?])))),
+                None => Ok(Some(key)),
+            }
         });
         self.restore(mark);
         made
     }
 
-    /// `[elem for names in parallel(source) if cond]`: the rounds' results, in the list's order.
+    /// `[elem for names in parallel(source) if cond]`: the rounds' results, in the list's order;
+    /// for `{elem: value for ...}`, each a pair.
     pub(crate) fn parallel_list(
         &mut self,
-        elem: &'static Expr,
+        made: (&'static Expr, Option<&'static Expr>),
         names: &'static [String],
         call: Written,
         cond: Option<&'static Expr>,
     ) -> Run<Vec<Value>> {
-        let (ran, _) = self.parallel_made(elem, names, call, cond)?;
+        let (ran, _) = self.parallel_made(made, names, call, cond)?;
         if let Some(stop) = ran.stop {
             return Err(stop);
         }
@@ -738,7 +958,7 @@ impl Interp {
             && matches!(self.program.type_at(call.source.span), Some(Type::List(_)))
             && !tries(elem);
         let (Ran { mut made, stop, before }, count) =
-            self.parallel_made(elem, names, call, cond.as_deref())?;
+            self.parallel_made((elem, None), names, call, cond.as_deref())?;
         made.truncate(before);
         if !lifted {
             let total = self.summed(ArgVal::Value(None, Value::List(Held::new(made))), start, expr)?;
@@ -778,7 +998,8 @@ impl Interp {
         for (at, item) in items.into_iter().enumerate() {
             self.push_call(true, count)?;
             self.rounds_as.push(None);
-            let made = self.start_round(at, false).and_then(|()| self.made_from(elem, names, item, cond));
+            let made =
+                self.start_round(at, false).and_then(|()| self.made_from((elem, None), names, item, cond));
             let numbered: Vec<usize> = self.rounds_as.pop().flatten().into_iter().collect();
             self.pop_scope();
             self.rounds_ended(&numbered)?;

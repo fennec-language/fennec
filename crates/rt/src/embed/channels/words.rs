@@ -247,3 +247,6 @@ fn address_of(block: &[u64]) -> u64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod replayed;

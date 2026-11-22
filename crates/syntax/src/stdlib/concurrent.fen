@@ -18,15 +18,46 @@ from std.time import Duration
 
 ## A send on a channel that's closed.
 export error Closed:
-    pass
+    ## What went wrong, in words.
+    ## ```fennec
+    ## from std.concurrent import Closed
+    ## stdout.print(Closed())
+    ## ```
+    ## ```output
+    ## the channel is closed
+    ## ```
+    def message(self) -> str:
+        return "the channel is closed"
 
 ## A `send_within` or `receive_within` that waited as long as it was given and got nowhere.
 export error Timeout:
     waited: Duration
 
+    ## How long it waited, in words.
+    ## ```fennec
+    ## from std.concurrent import Timeout
+    ## stdout.print(Timeout(waited=2s))
+    ## ```
+    ## ```output
+    ## gave up after 2s
+    ## ```
+    def message(self) -> str:
+        return f"gave up after {self.waited}"
+
 ## A launched task that crashed, as its `with launch` block gives back where it ends.
 export error Crashed:
     why: str
+
+    ## Its `why`, which printing it prints.
+    ## ```fennec
+    ## from std.concurrent import Crashed
+    ## stdout.print(Crashed(why="the task crashed"))
+    ## ```
+    ## ```output
+    ## the task crashed
+    ## ```
+    def message(self) -> str:
+        return self.why
 
 ## A channel holding up to `size` messages of type `T`, lent for a `with` block, and closed when it
 ## ends: `with channel[Job](size=64) as jobs:`. It's the only way to make a `Channel`.

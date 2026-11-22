@@ -289,6 +289,8 @@ impl FnCx<'_> {
             actual
         } else if let Some(actual) = crate::builtins::engine_signature(ty, &wanted.name) {
             actual
+        } else if let Some(actual) = self.errors_own_signature(ty, &wanted.name) {
+            actual
         } else {
             return Err(missing);
         };
@@ -316,6 +318,28 @@ impl FnCx<'_> {
             return Err((format!("it has no `{wanted_text}`. Its `{}` returns {returns}", wanted.name), fix));
         }
         Ok(())
+    }
+
+    /// What the language gives every error, and every `fails A | B`, that reads it and takes
+    /// nothing more: `message()`, its words, and `notes()`. An error that writes its own `def
+    /// message` has it as a method of its type, found before this (#2343).
+    fn errors_own_signature(&self, ty: &Type, method: &str) -> Option<Signature> {
+        let returns = match method {
+            "message" => Type::Str,
+            "notes" => Type::list(Type::Str),
+            _ => return None,
+        };
+        if !matches!(ty, Type::Errors(_)) && !self.checker.is_error_type(ty) {
+            return None;
+        }
+        let this = ParamType { name: "self".to_owned(), ty: ty.clone(), is_mut: false, default: None };
+        Some(Signature {
+            params: vec![this],
+            returns,
+            can_fail: false,
+            generator: false,
+            generics: Vec::new(),
+        })
     }
 
     /// Whether what a type holds fits the bounds the extension giving it `key` asks for, like

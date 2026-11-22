@@ -8,9 +8,10 @@
 # fails one: a command that spends two minutes of CPU is in a loop it never leaves. Each process
 # the command starts gets as much. One that waits for something that never comes spends none, so
 # the clock stops it too, at WITHIN_WALL seconds, ten minutes unless it's set, and never sooner
-# than the CPU time. Either way this stops the command and everything it started, says which limit
-# it reached, and exits with 124. On Windows, which has no CPU limit to set, the seconds are by the
-# clock.
+# than the CPU time, and before it's stopped, what each of its processes was waiting in is said,
+# as nothing else would say why. Either way this stops the command and everything it started,
+# says which limit it reached, and exits with 124. On Windows, which has no CPU limit to set, the
+# seconds are by the clock.
 #
 # A process the system can't kill, like an x86-64 program while Rosetta is wedged, doesn't hold it
 # either: it waits a few seconds for the command to go, then exits with 124 all the same, saying
@@ -58,11 +59,34 @@ stop() {
   fi
 }
 
+# What a command that waited out the clock was doing, before it's stopped, since a wait that never
+# ends leaves nothing else behind to say why: each process in its group, with its state and CPU
+# time, and where each was, by a second's sampling on a Mac, or what the kernel says it waits on
+# elsewhere. At most four are sampled, the command first.
+waiting() {
+  local each sampled
+  echo "  it and what it started, each process's state, CPU time and size:"
+  ps -axo pid=,pgid=,stat=,etime=,time=,rss=,command= 2> /dev/null \
+    | awk -v group="$command" '$2 == group { print "    " substr($0, 1, 200) }'
+  sampled=$(mktemp 2> /dev/null) || return 0
+  for each in $(ps -axo pid=,pgid= 2> /dev/null | awk -v group="$command" '$2 == group { print $1 }' | head -4); do
+    if command -v sample > /dev/null; then
+      echo "  where process $each was, sampled for a second, each thread:"
+      sample "$each" 1 -mayDie -file "$sampled" > /dev/null 2>&1
+      sed -n '/^Call graph:/,/^Total number in stack/p' "$sampled" | head -150 | sed 's/^/    /'
+    elif [ -r "/proc/$each/wchan" ]; then
+      echo "  what process $each waits on: $(cat "/proc/$each/wchan" 2> /dev/null), state $(cut -d' ' -f3 "/proc/$each/stat" 2> /dev/null)"
+    fi
+  done
+  rm -f "$sampled"
+}
+
 deadline=$((SECONDS + wall))
 while kill -0 "$command" 2> /dev/null; do
   if [ "$SECONDS" -ge "$deadline" ]; then
-    stop
     echo "::error::\`$*\` didn't finish within $wall seconds by the clock" >&2
+    [ "$cpu" = yes ] && waiting >&2
+    stop
     gone=$((SECONDS + grace))
     while kill -0 "$command" 2> /dev/null; do
       if [ "$SECONDS" -ge "$gone" ]; then

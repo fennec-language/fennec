@@ -52,7 +52,7 @@ fn without_chunks(
 /// The smallest version of `input` it finds in the time it has.
 pub(crate) fn minimize(fennec_fuzz: &Path, target: &str, input: Vec<u8>, wanted: Failure) -> Vec<u8> {
     let folder = std::env::temp_dir().join(format!("fennec-fuzz-small-{}", std::process::id()));
-    if std::fs::create_dir_all(&folder).is_err() {
+    if crate::owned::own(&folder).is_err() {
         return input;
     }
     let file = folder.join("input");
@@ -60,7 +60,7 @@ pub(crate) fn minimize(fennec_fuzz: &Path, target: &str, input: Vec<u8>, wanted:
     let mut still_fails = |candidate: &[u8]| fails(fennec_fuzz, target, candidate, wanted, &file);
     // An input that only fails after the ones before it can't be cut down on its own.
     if !still_fails(&input) {
-        let _ = std::fs::remove_dir_all(&folder);
+        crate::owned::let_go(&folder);
         return input;
     }
     let mut small = input;
@@ -72,7 +72,7 @@ pub(crate) fn minimize(fennec_fuzz: &Path, target: &str, input: Vec<u8>, wanted:
         }
         size = size.div_ceil(2);
     }
-    let _ = std::fs::remove_dir_all(&folder);
+    crate::owned::let_go(&folder);
     small
 }
 

@@ -4495,6 +4495,28 @@ fn a_found_put_under_a_lock_is_written_in_place_and_put_back() -> std::io::Resul
     Ok(())
 }
 
+/// A store after a lookup of the same key in another dict writes the dict it's to, searching it,
+/// and leaves the one looked in as it was: a lookup's entry is reused only for its own dict.
+#[test]
+fn a_store_after_a_lookup_in_another_dict_writes_its_own_dict_not_the_one_looked_in() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "store_after_other_lookup",
+        "def main(stdout: Stdout):
+    mut first = {\"x\": 1, \"y\": 2}
+    mut second = {\"x\": 10, \"y\": 20}
+    key = \"x\"
+    seen = first.get(key) else 0
+    second[key] = seen + 5
+    first[key] = seen + 100
+    stdout.print(f\"{first} {second}\")
+",
+        "{\"x\": 101, \"y\": 2} {\"x\": 6, \"y\": 20}\n",
+    )
+}
+
 /// A put after a lookup of the same key under a lock writes where the lookup found it, with no
 /// second search, only when the dict there now is the one it searched: a different key, a
 /// different dict, a key worked out again with a side effect, a field set to another dict, a dict

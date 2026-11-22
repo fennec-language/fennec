@@ -367,11 +367,25 @@ quick() {
 # Every test, with `--no-fail-fast`, so a test binary that fails doesn't stop the rest. Each test
 # that fails is named exactly, as `cargo test` says it; a binary that fails without naming one,
 # by not building or by crashing, is named as that, which nothing known matches.
+#
+# In CI's three parts, with CI's commands (see "Test" in `ci.yml`), so the two can't disagree about
+# what's built with what. A `cargo test` of the whole workspace builds every package against
+# `fennec` with `std-private`, which only `fennec`'s own tests turn on, through its dev-dependency on
+# itself; CI's other packages get `fennec` without it. So #2353 passed the gate, the fuzzer's
+# `postgres` reader built against std's private names, and broke CI's "others" on every system.
+# Each part runs even after one fails, as each is a job of its own in CI.
 tests() {
   local said="$logs/tests.txt" status=0
+  : > "$said"
   # A failing test keeps its temporary folder and says where (see `fennec-temp`), for the step's
   # failure to keep with its log.
-  FENNEC_KEEP_FAILED=1 cargo test --locked --no-fail-fast > "$said" 2>&1 || status=$?
+  FENNEC_KEEP_FAILED=1 cargo test --locked --no-fail-fast -p fennec --test fennec 'llvm::' >> "$said" 2>&1 \
+    || status=$?
+  FENNEC_KEEP_FAILED=1 cargo test --locked --no-fail-fast -p fennec -- --skip 'llvm::' >> "$said" 2>&1 \
+    || status=$?
+  { cargo build --locked -p fennec --features std-private \
+    && FENNEC_KEEP_FAILED=1 cargo test --locked --no-fail-fast --workspace --exclude fennec; } >> "$said" 2>&1 \
+    || status=$?
   cat "$said"
   [ "$status" -eq 0 ] && return 0
   .github/scripts/known-failures.sh tests-failed "$said" >> "$names"

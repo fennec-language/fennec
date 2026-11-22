@@ -1,0 +1,54 @@
+# The smallest HTTP API worth measuring: std's server answering three routes through a `Router`,
+# each connection kept open for its requests. One route answers with plain text, one with a user
+# made into JSON from a route's parameter, and one reads an order posted as JSON and answers with
+# what it costs. It prints its port, then serves until it's asked to stop.
+
+from std import json
+from std.net import Captured, Request, Response, Router
+
+PRICE = 250
+
+struct User:
+    id: int
+    name: str
+    active: bool
+
+struct Order:
+    item: str
+    count: int
+
+struct Placed:
+    item: str
+    count: int
+    total: int
+
+# An answer of JSON, as `json.dumps` wrote it.
+def answer(status: int, text: str) -> Response:
+    return Response(status=status, headers={"content-type": "application/json"}, body=text.encode())
+
+def user(found: Captured) -> Response:
+    number = int.parse(found.text_at(0)) except InvalidValue(): return Response.not_found()
+    return answer(
+        200,
+        text=json.dumps(User(id=number, name=f"user {number}", active=number % 2 == 0)),
+    )
+
+def placed(request: Request) -> Response:
+    wanted = json.loads[Order](request.text()) except ParseError():
+        return Response(status=400, body="that isn't an order".encode())
+    return answer(
+        201,
+        text=json.dumps(Placed(item=wanted.item, count=wanted.count, total=wanted.count * PRICE)),
+    )
+
+def routes() -> Router:
+    mut router = Router()
+    router.handle("GET /", (request, found) => Response(status=200, body="hello".encode()))
+    router.handle("GET /users/{id}", (request, found) => user(found))
+    router.handle("POST /orders", (request, found) => placed(request))
+    return router
+
+def main(net: Net, signals: Signals, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(routes(), until=signals)

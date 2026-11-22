@@ -14,7 +14,9 @@
 # like Windows, is seen the day it goes red. A cancelled run says nothing, so the newest one that
 # finished counts, unless a run newer than it, still going, has a job that failed already: that
 # one counts, so a job's red is seen when it ends, not when the run's last job does, which on
-# 2026-11-21 was 25 minutes later. How far back a job has failed is looked for in the 30 finished
+# 2026-11-21 was 25 minutes later. Newest is by the commit's place in main's history, not when its
+# run was made: a run of a commit can be made after its child's, and on 2026-11-21 this said red at
+# the commit before a fix, whose run was made 4 minutes after the fix's green one. How far back a job has failed is looked for in the 30 finished
 # runs before the one that counts: past them, it's "since at least". It needs `gh`, signed in.
 # `nightly-report.sh` runs it.
 set -euo pipefail
@@ -33,6 +35,12 @@ failed_in() {
 
 # The line for one workflow, by its name, setting `red` if it is. It never returns a failure, so
 # `set -e` still stops this at a `gh` that fails, rather than taking that for green.
+# Main's newest 300 commits, newest first, a short hash a line. Main is squashed into, one parent
+# each, so GitHub's order is the first-parent one.
+history=$(for page in 1 2 3; do
+  gh api "repos/$repository/commits?sha=main&per_page=100&page=$page" --jq '.[].sha[0:9]'
+done)
+
 red=0
 says() {
   local workflow=$1
@@ -43,6 +51,11 @@ says() {
   listed=$(gh run list --repo "$repository" --workflow "$workflow" --branch main --limit 200 \
     --json databaseId,status,conclusion,headSha \
     --jq '[.[] | select(.status == "in_progress" or (.conclusion != "" and .conclusion != "cancelled"))] | .[:40][] | "\(.databaseId) \(.headSha[0:9]) \(.status)"')
+  # Newest commit first, and for one commit's runs, newest made first. A run of a commit past the
+  # history read comes after every one in it, in the order GitHub listed it.
+  listed=$(awk 'NR == FNR { if (!($1 in at)) at[$1] = FNR; next }
+    { print ($2 in at ? at[$2] : 100000 + FNR), $0 }' <(printf '%s\n' "$history") - <<< "$listed" \
+    | sort -s -n -k1,1 | cut -d' ' -f2-)
   # The newest 31 that finished.
   runs=$(awk '$3 == "completed" { print $1, $2; if (++n == 31) exit }' <<< "$listed")
   # The newest run going, newer than every one that finished, with a job that failed already.

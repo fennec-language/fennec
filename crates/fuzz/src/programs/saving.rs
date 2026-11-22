@@ -115,7 +115,7 @@ fn broken(id: usize) -> [(String, String); 12] {
         ("{}".to_owned(), String::new()),
         (
             q(&format!("{{\"kept\": {{\"mark\": {{\"Cone{id}\": {{\"x\": 1}}}}}}}}")),
-            format!("`kept.mark` is \\\"Cone{id}\\\", which is none of `Disc{id} | Pt{id}`"),
+            format!("`kept.mark` is \"Cone{id}\", which is none of `Disc{id} | Pt{id}`"),
         ),
         (
             q("{\"kept\": {\"mark\": 3}}"),
@@ -134,7 +134,7 @@ fn broken(id: usize) -> [(String, String); 12] {
             q("{\"units\": [{\"name\": \"a\", \"target\": 3}]}"),
             "`units[0].target` is item 3 of `units`, which has only 1".to_owned(),
         ),
-        (q("{\"moves\": [\"Run\"]}"), format!("`moves[0]` is \\\"Run\\\", which isn't a case of `Move{id}`")),
+        (q("{\"moves\": [\"Run\"]}"), format!("`moves[0]` is \"Run\", which isn't a case of `Move{id}`")),
         (
             q("{\"moves\": [{\"Step\": {\"by\": \"x\"}}]}"),
             "`moves[0].by` should be an int, but it's a str".to_owned(),
@@ -513,7 +513,7 @@ impl SavedBox {
                 if *at == 0 {
                     lines.push(SavedBox::new(id).shown());
                 } else {
-                    lines.push(format!("refused ParseError(message=\"{said}\", line=0, column=0)"));
+                    lines.push(format!("refused {said}"));
                 }
             }
             SaveStep::Packed(at) => {
@@ -530,8 +530,7 @@ impl SavedBox {
                         length += 1;
                     }
                     lines.push(format!(
-                        "refused ParseError(message=\"Gauge{id}.level breaks its `where` rule, at byte {}\", line=0, \
-                         column=0)",
+                        "refused Gauge{id}.level breaks its `where` rule, at byte {}",
                         24 + length
                     ));
                 }

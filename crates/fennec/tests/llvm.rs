@@ -21874,12 +21874,16 @@ fn a_build_finds_llvm_s_tools_beside_fennec() -> std::io::Result<()> {
     }
     let dir = folder("shipped")?;
     let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
-    for entry in std::fs::read_dir(fennec.parent().unwrap_or_else(|| Path::new(".")))? {
-        let path = entry?.path();
-        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        if name == "fennec" || name.starts_with("libfennec_runtime") {
-            std::fs::copy(&path, dir.join(&name))?;
-        }
+    let beside = fennec.parent().unwrap_or_else(|| Path::new("."));
+    // Only what a one-thread program needs, by name. Other tests put libraries beside `fennec` as
+    // they run, through a `.copying` file renamed into place, and take away a threads library from
+    // other source, so a file listed in the folder can be gone before it's copied.
+    std::fs::copy(fennec, dir.join("fennec"))?;
+    std::fs::copy(beside.join("libfennec_runtime.a"), dir.join("libfennec_runtime.a"))?;
+    // The audit's library, for a run under `FENNEC_AUDIT=1`, when there's one.
+    let audit = "libfennec_runtime_audit.a";
+    if beside.join(audit).exists() {
+        std::fs::copy(beside.join(audit), dir.join(audit))?;
     }
     let tools = fennec_llvm::Tools::find().map_err(std::io::Error::other)?;
     let program = dir.join("hello.fen");

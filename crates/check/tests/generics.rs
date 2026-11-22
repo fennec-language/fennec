@@ -927,6 +927,16 @@ fn what_might_be_missing_can_be_saved_when_what_it_holds_can() {
     assert!(found[0].contains("isn't a `Serializable`"), "{found:?}");
 }
 
+/// A `?` in the types written through a static call, as `SortedMap[str, int?].of(pairs)`, is part
+/// of a type, not a failure passed up: it once made `main` fail with nothing it could fail with.
+#[test]
+fn an_optional_written_through_a_static_call_is_no_failure() {
+    let empty: [&str; 0] = [];
+    let body = "ages = SortedMap[str, int?].of([(\"a\", 1)])\ncells = Grid[str?].of([[\"b\"]])\n\
+                stdout.print(ages.get(\"a\"), cells.get((0, 0)))\n";
+    assert_eq!(crate::in_main_after("from std.collections import Grid, SortedMap\n", body), empty);
+}
+
 const SAVED: &str = "struct Spot:
     x = 0
 

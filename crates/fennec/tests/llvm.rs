@@ -14099,6 +14099,34 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator copied into what's made of it holds what it yields as its item: a `1` or a `None`
+/// yielded where it yields `int?` is an `int?` in the copy. The copy once held them as their own
+/// types, so a comprehension over it didn't build natively, as it read `int` as `int?`, and a
+/// `list` of it wrote LLVM text `opt` refused.
+#[test]
+fn a_copied_generator_holds_what_it_yields_as_its_item() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "copied_yield_types",
+        r#"def numbers() -> Iterator[int?]:
+    yield 1
+    yield None
+    yield 3
+
+def words() -> Iterator[str?]:
+    yield "a"
+    yield None
+
+def main(stdout: Stdout):
+    stdout.print([number for number in numbers()])
+    stdout.print(list(numbers()), list(words()))
+    stdout.print([number else 0 for number in numbers()], [word else "-" for word in words()])
+"#,
+    )
+}
+
 /// What closures and generators capture, of each kind, comes out as pinned:
 /// a closure giving back what it captured as it is, generator expressions yielding a captured
 /// string, struct, list, bool, int or float, nested generators and generators with `while`,

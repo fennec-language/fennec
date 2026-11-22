@@ -194,8 +194,8 @@ impl Interp {
     }
 
     /// A union's value, as std's JSON reads one: an object whose first key names a member, by its
-    /// type's name, and whose value is that member's. A key after it fails with no words, as
-    /// std's reader does today.
+    /// type's name, and whose value is that member's. A key after it is a failure once the
+    /// member's value has read, naming the first such key, as an enum's case does.
     fn read_union(&mut self, node: &Node, members: &[Type], reading: &mut Reading) -> Run<Value> {
         let names: Vec<String> = members.iter().map(member_name).collect();
         let union = names.join(" | ");
@@ -209,8 +209,12 @@ impl Interp {
         let value = self.read(&first.value, member, reading, false);
         reading.path.pop();
         let value = value?;
-        if entries.len() > 1 {
-            return Err(says(String::new()));
+        if let Some(after) = entries.get(1) {
+            return Err(says(format!(
+                "{} has \"{}\" after its member, but a union is written as an object with its member as the only key",
+                reading.here(),
+                cut_input(&after.key)
+            )));
         }
         Ok(value)
     }

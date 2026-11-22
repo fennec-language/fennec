@@ -1662,12 +1662,32 @@ struct JsonReader:
             column=0,
         )
 
+    ## The `}` after a union's member and its value: the member is the object's only key.
     def end_member(ref self) fails ParseError:
-        if self._space() != 125: fail no_reason()
+        if self._space() != 125: fail self._after_member()
         self._at += 1
         self._depth -= 1
         if self._explain:
             self._pop_path()
+
+    ## The error for a union's object with more after its member, naming the key that follows,
+    ## said of the union, as an enum's is said of the enum.
+    def _after_member(ref self) -> ParseError:
+        if not self._explain: return no_reason()
+        self._pop_path()
+        if self._space() == 44:
+            self._at += 1
+            key = self.text() except ParseError(): return no_reason()
+            return ParseError(
+                message=f"{self._where()} has \"{cut_input(key)}\" after its member, but a union is written as an object with its member as the only key",
+                line=0,
+                column=0,
+            )
+        return ParseError(
+            message=f"{self._where()} should end after its member, but it goes on with {self._found()}",
+            line=0,
+            column=0,
+        )
 
     ## What comes after everything's been read has to be nothing.
     def finish(ref self) fails ParseError:

@@ -367,7 +367,7 @@ impl Run<'_> {
     pub(crate) fn until(&self, seconds: Option<u64>, inputs: u64) -> Result<Outcome, String> {
         let deadline = seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds));
         let folder = std::env::temp_dir().join(format!("fennec-fuzz-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+        crate::owned::own(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
         let progress = folder.join(self.target.name);
         let mut outcome = Outcome { inputs: 0, failures: Vec::new() };
         let mut next = 0_u64;
@@ -389,7 +389,7 @@ impl Run<'_> {
             outcome.note(failure, reached);
             next = reached + 1;
         }
-        let _ = std::fs::remove_dir_all(&folder);
+        crate::owned::let_go(&folder);
         Ok(outcome)
     }
 

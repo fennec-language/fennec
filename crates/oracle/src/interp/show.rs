@@ -34,9 +34,8 @@ impl Interp {
     }
 
     /// An error's own words, when it has a `def message`: the program's, or for an error the
-    /// oracle models, std's, as crates/syntax/src/stdlib/errors.fen writes them. `IoError`'s
-    /// gives what each case holds as `reason`, and `InvalidValue`'s and `ParseError`'s their
-    /// `message`.
+    /// oracle models, std's, as crates/syntax/src/stdlib/errors.fen writes them: `IoError`'s by
+    /// `io_words`, and `InvalidValue`'s and `ParseError`'s their `message`.
     fn own_words(&mut self, instance: &Instance) -> Option<Run<String>> {
         if let Some(def) = self.program.method(&instance.ty, "message") {
             let receiver = Receiver::Value(Value::Instance(Held::new(instance.clone())));
@@ -46,8 +45,10 @@ impl Interp {
                 Err(flow) => Err(flow),
             });
         }
+        if instance.ty == "IoError" {
+            return Some(io_words(instance));
+        }
         let field = match instance.ty.as_str() {
-            "IoError" => "reason",
             "InvalidValue" | "ParseError" => "message",
             _ => return None,
         };
@@ -375,6 +376,30 @@ impl Interp {
             _ => unsupported("a `def <` that doesn't give a bool"),
         }
     }
+}
+
+/// An `IoError`'s words, as its `def message` in crates/syntax/src/stdlib/errors.fen says them:
+/// the path it was at, and for `PermissionDenied` and `Other` its reason.
+pub(crate) fn io_words(instance: &Instance) -> Run<String> {
+    let text = |field: &str| match instance.field(field) {
+        Some(Value::Str(text)) => Ok(text.as_str().to_owned()),
+        _ => unsupported(format!("an `IoError` without its `{field}`")),
+    };
+    Ok(match instance.case.as_deref() {
+        Some("NotFound") => match text("path")? {
+            path if path.is_empty() => "nothing is there".to_owned(),
+            path => format!("nothing is at `{path}`"),
+        },
+        Some("PermissionDenied") => match (text("path")?, text("reason")?) {
+            (path, reason) if path.is_empty() => reason,
+            (path, reason) => format!("`{path}`: {reason}"),
+        },
+        Some("AlreadyExists") => match text("path")? {
+            path if path.is_empty() => "something is there already".to_owned(),
+            path => format!("something is at `{path}` already"),
+        },
+        _ => text("reason")?,
+    })
 }
 
 /// The errors every program has without an import.

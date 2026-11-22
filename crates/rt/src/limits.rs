@@ -447,20 +447,20 @@ fn narrowed_fs<D: Databases>(
     let Some(Value::Str(path)) = args.first().map(path_text) else {
         if read_only && FS_WRITES.contains(&method) {
             let reason = format!("this Fs only reads, so it can't `{method}`");
-            return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)));
+            return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied("", reason)));
         }
         if read_only && finishes_a_written_file(method, args) {
             let reason = "this Fs only reads, so it can't put a file that was written in its place";
             return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(
+                "",
                 reason.to_owned(),
             )));
         }
         return call(Capability::Fs, method, args);
     };
     if read_only && FS_WRITES.contains(&method) {
-        let shown = cut(&path);
-        let reason = format!("this Fs only reads, so it can't change `{shown}`");
-        return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)));
+        let reason = "this Fs only reads, so it can't change it".to_owned();
+        return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(&path, reason)));
     }
     // An `Fs` that reaches everywhere is the whole one, but for what it may do.
     let method = if read_only && method == "_sqlite_open" { "_sqlite_read" } else { method };
@@ -482,8 +482,8 @@ fn narrowed_fs<D: Databases>(
     if cfg!(windows)
         && let Some(why) = windows_trick(&path)
     {
-        let reason = format!("`{path}` can't be reached through this Fs on Windows: {why}");
-        return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)));
+        let reason = format!("it can't be reached through this Fs on Windows: {why}");
+        return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(&path, reason)));
     }
     let full = absolute(&path);
     let reaching = if real {
@@ -519,8 +519,8 @@ fn narrowed_fs<D: Databases>(
         }
         return call(Capability::Fs, method, args);
     }
-    let reason = format!("`{path}` is outside what this Fs can reach: {}", limited.listed());
-    Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)))
+    let reason = format!("it's outside what this Fs can reach: {}", limited.listed());
+    Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(&path, reason)))
 }
 
 #[cfg(test)]

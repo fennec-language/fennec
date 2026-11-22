@@ -28,6 +28,7 @@ path = "src/bin/fennec-std-tests.rs"
 required-features = ["std-private"]
 
 [dependencies]
+cap.workspace = true
 mimalloc.workspace = true
 fennec-blake3.workspace = true
 fennec-build.workspace = true

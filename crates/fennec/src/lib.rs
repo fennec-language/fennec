@@ -2,9 +2,15 @@
 #![expect(clippy::print_stdout, reason = "the command line prints its results")]
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
-/// What `fennec` allocates through, programs it runs included.
+/// What `fennec` allocates through, programs it runs included, counted, so the build daemon knows
+/// what it holds (`kept::fit_budget`).
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: cap::Cap<mimalloc::MiMalloc> = cap::Cap::new(mimalloc::MiMalloc, usize::MAX);
+
+/// How many bytes this process holds allocated now.
+pub(crate) fn held_bytes() -> usize {
+    ALLOCATOR.allocated()
+}
 
 mod aot;
 mod bench;

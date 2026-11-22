@@ -292,6 +292,7 @@ impl Lowering<'_> {
                 .map(|instance| instance.subst);
             Some((key, body, subst))
         });
+        let mut yields = None;
         if let Some((key, _, subst)) = &copied
             && let Some(raw) = self.context.signatures.get(&self.context.base_key(key))
         {
@@ -299,6 +300,9 @@ impl Lowering<'_> {
                 Some(subst) => self.context.instantiate(raw, subst),
                 None => raw.clone(),
             };
+            if let Type::Iterator(item, _) = &signature.returns {
+                yields = Some(item.as_ref().clone());
+            }
             for (fresh, param) in &expansion.params {
                 if let Some(found) = signature.params.iter().find(|each| each.name == *param) {
                     self.bound.insert(fresh.clone(), found.ty.clone());
@@ -307,13 +311,27 @@ impl Lowering<'_> {
         }
         let copying = copied.is_some();
         self.copied.extend(copied);
+        self.yielded.push(yields);
         self.scopes.push(HashMap::new());
         let lowered = self.stmts(&expansion.stmts, Tail::Drop);
         self.scopes.pop();
+        self.yielded.pop();
         if copying {
             self.copied.pop();
         }
         lowered
+    }
+
+    /// The type a loop's name holds an item of the yield function copied in, `given` the type of
+    /// the value yielded: what the function yields when that's `given` made optional, as a `1` or
+    /// a `None` yielded where it yields `int?`, so the name reads as the checker has it.
+    pub(super) fn yielded_as(&self, given: Type) -> Type {
+        match self.yielded.last() {
+            Some(Some(Type::Optional(inner))) if **inner == given || given == Type::None => {
+                Type::Optional(inner.clone())
+            }
+            _ => given,
+        }
     }
 
     /// One time around a comprehension's loop.

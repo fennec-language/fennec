@@ -2800,7 +2800,7 @@ impl Emit<'_, '_, '_> {
 
     /// A word cut to a size's bits, as that size holds them: kept unsigned, or with the sign of its
     /// top bit.
-    fn within_width(&mut self, value: &str, num: fennec_check::Num) -> String {
+    pub(crate) fn within_width(&mut self, value: &str, num: fennec_check::Num) -> String {
         let bits = num.bits();
         if bits >= 64 {
             return value.to_owned();
@@ -3386,6 +3386,11 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
+        }
+        if let (Some(dest), [a, b]) = (dest, args)
+            && let Some(done) = self.sized_arithmetic(dest, name, (a, b))
+        {
+            return done;
         }
         if dest.is_none()
             && let Some(done) = self.moving_list_method(name, args, span)

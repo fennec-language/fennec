@@ -59,6 +59,7 @@ mod messages;
 mod moved;
 mod named;
 mod once;
+mod optional_messages;
 mod parallel;
 mod pattern;
 mod place;

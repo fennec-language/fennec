@@ -110,7 +110,7 @@ pub extern "C" fn channel_receive_words(channel: i64, kind: i64, width: i64, tim
 /// The kind numbered `kind`, checked as flat and `width` words wide: anything else is a bug in the
 /// code that asked, which stops the program. A kind the runtime numbered itself, past those the
 /// program described, is numbered on each thread, so it means nothing to the receiver: refused.
-fn flat_kind(state: &State, kind: i64, width: i64) -> (usize, Element) {
+fn flat_kind(state: &State, kind: i64, width: i64) -> (usize, std::rc::Rc<Element>) {
     let found = usize::try_from(kind).ok().and_then(|at| Some((at, state.tables.elements.get(at)?)));
     let Some((kind, element)) = found else {
         heap::runtime_bug("a message's kind isn't one the program described");
@@ -121,7 +121,7 @@ fn flat_kind(state: &State, kind: i64, width: i64) -> (usize, Element) {
     if usize::try_from(width).ok() != Some(element.words()) {
         heap::runtime_bug("a message's width isn't its kind's");
     }
-    (kind, (**element).clone())
+    (kind, std::rc::Rc::clone(element))
 }
 
 /// The first `count` words of this thread's buffer.

@@ -35,5 +35,4 @@ fennec_str_find_header unchecked 0
 fennec_text_contains unchecked 0
 fennec_trace_allocated in-cant-fail 0
 fennec_trace_allocated unchecked 0
-fennec_u64_text unchecked 0
 fennec_unwrap unchecked 0

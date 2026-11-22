@@ -8,6 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::io::Write as _;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -29,13 +30,39 @@ use crate::value::Value;
 /// running finish. Its connection closes when it ends, however it ends.
 pub type ConnBody = extern "C" fn(env: i64, conn: i64, thread: i64) -> i64;
 
+/// A connection's number to whatever's kept for it. The runtime counts the numbers out itself,
+/// so no client chooses them, and they're hashed by one multiply rather than `SipHash`, which cost
+/// a served request 1,400 instructions for its dozen lookups.
+type ByHandle<V> = HashMap<i64, V, BuildHasherDefault<HandleHasher>>;
+
+/// Hashes a connection's number by one multiply, which spreads numbers counted one after another
+/// over the whole table.
+#[derive(Default)]
+struct HandleHasher(u64);
+
+impl Hasher for HandleHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(*byte)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        }
+    }
+
+    fn write_i64(&mut self, number: i64) {
+        self.0 = (self.0 ^ number.cast_unsigned()).wrapping_mul(0x9e_37_79_b9_7f_4a_7c_15);
+    }
+}
+
 /// A round's failure, copied out of its worker's runtime for the code serving to take.
 type Passed = Arc<Mutex<Option<(u64, Box<crate::embed::table::Table>)>>>;
 
 thread_local! {
     /// The connections this I/O worker serves, by the number native code holds: each round's,
     /// found here first, with no lock.
-    static CONNS: RefCell<HashMap<i64, Arc<Conn>>> = RefCell::new(HashMap::new());
+    static CONNS: RefCell<ByHandle<Arc<Conn>>> = RefCell::new(ByHandle::default());
     /// The failure the last `fennec_net_serve` on this thread passed up, for
     /// `fennec_net_serve_failure`.
     static PASSED_UP: Cell<i64> = const { Cell::new(0) };
@@ -44,8 +71,8 @@ thread_local! {
 /// Every connection being served, by its number, for a task on another worker than the one serving
 /// it: a `Connection` is `shared`, so one sent to a hub on another worker is written to there
 /// (#2065). Each is held weakly: its round ending closes it, wherever else it's been sent.
-static SERVED_CONNS: std::sync::LazyLock<Mutex<HashMap<i64, std::sync::Weak<Conn>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static SERVED_CONNS: std::sync::LazyLock<Mutex<ByHandle<std::sync::Weak<Conn>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(ByHandle::default()));
 
 /// How many connections `SERVED_CONNS` holds, kept beside it, so a call on a connection the program
 /// opened itself, which is in neither table, looks no further while nothing is served, rather than
@@ -63,7 +90,7 @@ fn note_served(handle: i64, conn: Option<&Arc<Conn>>) {
 }
 
 /// The connection served with `handle`, on this worker or another, while its round runs.
-fn conn_of(handle: i64) -> Option<Arc<Conn>> {
+pub(super) fn conn_of(handle: i64) -> Option<Arc<Conn>> {
     if let Some(here) = CONNS.with_borrow(|conns| conns.get(&handle).cloned()) {
         return Some(here);
     }
@@ -325,7 +352,7 @@ fn replayed(rounds: u64, body: ConnBody, env: i64, call: Option<&crate::replay::
 
 /// How many connections this worker is serving now.
 pub(in crate::embed) fn connections() -> usize {
-    CONNS.with_borrow(HashMap::len)
+    CONNS.with_borrow(ByHandle::len)
 }
 
 /// `fennec_net_serve_failure()`: the value of the failure the last `fennec_net_serve` on this thread
@@ -349,13 +376,10 @@ fn pass_up(passed: &Passed, failure: u64) {
     });
 }
 
-/// Runs `call` on a served connection taken out of the table, so nothing stays borrowed while
-/// it waits, and puts it back. A connection that isn't there is closed.
-pub(super) fn on_conn<T>(conn: i64, call: impl FnOnce(&Conn) -> Result<T, Failure>) -> Result<T, NetFailure> {
-    let Some(shared) = conn_of(conn) else {
-        return Err(NetFailure::Closed);
-    };
-    call(&shared).map_err(|failure| match failure {
+/// Runs `call` on a served connection, held by its own `Arc` so nothing stays borrowed while it
+/// waits, its failure as the network's.
+fn on<T>(conn: &Conn, call: impl FnOnce(&Conn) -> Result<T, Failure>) -> Result<T, NetFailure> {
+    call(conn).map_err(|failure| match failure {
         Failure::TimedOut(after) => NetFailure::TimedOut(after),
         Failure::Closed => NetFailure::Closed,
         Failure::Cancelled => NetFailure::Other("the server stopped".to_owned()),
@@ -376,9 +400,7 @@ pub(in crate::embed) fn served_call(
     let conn = conn_of(handle)?;
     let done = match (method, args) {
         ("read", [Value::Int(count)]) => match bytes_asked(*count, at) {
-            Ok(count) => {
-                on_conn(handle, |conn| conn.read(count, timeout)).map(|data| Value::Bytes(Rc::from(data)))
-            }
+            Ok(count) => on(&conn, |conn| conn.read(count, timeout)).map(|data| Value::Bytes(Rc::from(data))),
             Err(wrong) => return Some(Err(wrong)),
         },
         ("_room_for_body", [Value::Int(size)]) => {
@@ -388,27 +410,23 @@ pub(in crate::embed) fn served_call(
             );
         }
         ("_body", [Value::Int(size)]) => match bytes_asked(*size, at) {
-            Ok(size) => {
-                on_conn(handle, |conn| conn.body(size, timeout)).map(|data| Value::Bytes(Rc::from(data)))
-            }
+            Ok(size) => on(&conn, |conn| conn.body(size, timeout)).map(|data| Value::Bytes(Rc::from(data))),
             Err(wrong) => return Some(Err(wrong)),
         },
         ("read_line", []) => {
-            on_conn(handle, |conn| conn.read_line(timeout)).map(|line| trimmed_line_value(line.as_deref()))
+            on(&conn, |conn| conn.read_line(timeout)).map(|line| trimmed_line_value(line.as_deref()))
         }
-        ("read_line.crlf", [Value::Bool(crlf)]) => {
-            on_conn(handle, |conn| conn.read_line_crlf(timeout, *crlf))
-                .map(|line| trimmed_line_value(line.as_deref()))
-        }
+        ("read_line.crlf", [Value::Bool(crlf)]) => on(&conn, |conn| conn.read_line_crlf(timeout, *crlf))
+            .map(|line| trimmed_line_value(line.as_deref())),
         // A served connection's line has its ending taken off already.
         ("_read_head", given) if let Some(limits) = crate::stdlib::net::head::Limits::of(given) => {
             crate::stdlib::net::head::read_lines(limits, || {
-                let line = on_conn(handle, |conn| conn.read_line_crlf(timeout, true))?;
+                let line = on(&conn, |conn| conn.read_line_crlf(timeout, true))?;
                 Ok(line.map(|line| String::from_utf8_lossy(&line).into_owned()))
             })
         }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
-            on_conn(handle, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
+            on(&conn, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
         }
         ("_reads_within", [after]) => {
             let after = match crate::stdlib::net::duration_of(after, at) {

@@ -89,6 +89,29 @@ pub(crate) fn kilobytes(id: u32) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
+/// How many descriptors a process holds open, where that can be asked: from `/proc` on Linux and
+/// from `lsof` on macOS.
+pub(crate) fn descriptors(id: u32) -> Option<usize> {
+    if cfg!(target_os = "linux") {
+        return std::fs::read_dir(format!("/proc/{id}/fd")).ok().map(Iterator::count);
+    }
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let output =
+        Command::new("lsof").args(["-n", "-P", "-a", "-p", &id.to_string(), "-F", "f"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // `lsof` lists the working folder and the executable as `fcwd` and `ftxt`, which aren't
+    // descriptors.
+    let open = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.strip_prefix('f').is_some_and(|fd| fd.parse::<u32>().is_ok()))
+        .count();
+    Some(open)
+}
+
 /// What a process group holds and has used, summed over every process in it, where that can be
 /// asked.
 fn group_use(group: u32) -> Option<(u64, Duration)> {

@@ -18,6 +18,7 @@
 
 use std::path::Path;
 
+#[cfg(unix)]
 use fennec_syntax::codec::{Decode, Encode, Reader, Writer};
 
 use crate::aot::Built;
@@ -26,33 +27,44 @@ use crate::aot::Built;
 pub(crate) const COMMAND: &str = "build-child";
 
 /// What a request starts with, before the build of Fennec that sent it.
+#[cfg(unix)]
 const MAGIC: &[u8; 8] = b"FENCHILD";
 
 /// The build of Fennec this is: a child only builds for the one it's of.
+#[cfg(unix)]
 const BUILD: &str = env!("FENNEC_BUILD");
 
 /// The last section.
+#[cfg(unix)]
 const END: u8 = 0;
 /// The request's job: where the program goes and how it's built.
+#[cfg(unix)]
 const JOB: u8 = 1;
 /// In an answer, the child read the request and started building.
+#[cfg(unix)]
 const STARTED: u8 = 1;
 /// The program: its module, files and where its kit is.
+#[cfg(unix)]
 const PROGRAM: u8 = 2;
 /// In an answer, what the build gave: what it built, or why it couldn't.
+#[cfg(unix)]
 const RESULT: u8 = 2;
 /// What the daemon's check found, when it's handed on.
+#[cfg(unix)]
 const SIGNATURES: u8 = 3;
 /// Each function's analysis the builds before kept, as `fennec_llvm::kept_to_bytes` wrote them: in a
 /// request, for the build to use, and in an answer, what it keeps for the next, sent after the check
 /// of what it used (see `serve`).
+#[cfg(unix)]
 const ANALYSES: u8 = 4;
 /// In an answer, the functions whose analysis the build used again and the check after it found
 /// wrong, for the daemon to take back what was made with them.
+#[cfg(unix)]
 const WRONG: u8 = 5;
 /// The objects the last build found in the cache or made, as `fennec_llvm::known_objects_to_bytes`
 /// wrote them: in a request, so the build doesn't look for them again, and in an answer, what
 /// it found or made, for the next.
+#[cfg(unix)]
 const OBJECTS: u8 = 6;
 
 /// Why a build in a child didn't answer, which the daemon says before building in-process.
@@ -60,6 +72,7 @@ const OBJECTS: u8 = 6;
 pub(crate) struct NoAnswer(pub(crate) String);
 
 /// A child's job.
+#[cfg(unix)]
 struct Job {
     output: String,
     release: bool,
@@ -69,9 +82,11 @@ struct Job {
     tests: Option<Vec<String>>,
 }
 
+#[cfg(unix)]
 fennec_syntax::codec_fields!(Job { output, release, baseline, tests });
 
 /// A program as a child needs it: what `aot::executable_checked` reads of a `fennec_kit::Program`.
+#[cfg(unix)]
 struct Sent {
     module: fennec_syntax::Module,
     files: Vec<(String, String)>,
@@ -80,8 +95,10 @@ struct Sent {
     kit: Option<(String, String, String)>,
 }
 
+#[cfg(unix)]
 fennec_syntax::codec_fields!(Sent { module, files, kit_src, kit });
 
+#[cfg(unix)]
 impl Sent {
     fn of(program: &fennec_kit::Program) -> Sent {
         Sent {
@@ -124,6 +141,7 @@ impl Sent {
     }
 }
 
+#[cfg(unix)]
 impl Encode for Built {
     fn encode(&self, to: &mut Writer) {
         self.total.encode(to);
@@ -135,6 +153,7 @@ impl Encode for Built {
     }
 }
 
+#[cfg(unix)]
 impl Decode for Built {
     fn decode(from: &mut Reader<'_>) -> Option<Self> {
         Some(Built {
@@ -149,6 +168,7 @@ impl Decode for Built {
 }
 
 /// What a build gives back, as bytes: what it built, or why it couldn't.
+#[cfg(unix)]
 fn result_bytes(result: &Result<Built, String>) -> Vec<u8> {
     let mut to = Writer::default();
     match result {
@@ -164,12 +184,14 @@ fn result_bytes(result: &Result<Built, String>) -> Vec<u8> {
     to.into_bytes()
 }
 
+#[cfg(unix)]
 fn read_result(bytes: &[u8]) -> Option<Result<Built, String>> {
     read_either(bytes)
 }
 
 /// What a build of a module's tests gives back, as bytes: the functions with a flag saying they
 /// ran, or why it couldn't.
+#[cfg(unix)]
 fn ran_bytes(result: &Result<Vec<String>, String>) -> Vec<u8> {
     let mut to = Writer::default();
     match result {
@@ -185,11 +207,13 @@ fn ran_bytes(result: &Result<Vec<String>, String>) -> Vec<u8> {
     to.into_bytes()
 }
 
+#[cfg(unix)]
 fn read_ran(bytes: &[u8]) -> Option<Result<Vec<String>, String>> {
     read_either(bytes)
 }
 
 /// What either kind of build gave back, from all of `bytes`.
+#[cfg(unix)]
 fn read_either<T: Decode>(bytes: &[u8]) -> Option<Result<T, String>> {
     let mut from = Reader::new(bytes);
     let result = match from.tag()? {
@@ -202,6 +226,7 @@ fn read_either<T: Decode>(bytes: &[u8]) -> Option<Result<T, String>> {
 
 /// One value's bytes, which read back must be the same value, giving the same bytes: what's sent
 /// is what's built from. Checked where a build checks its proofs, and in dev builds of Fennec.
+#[cfg(unix)]
 fn bytes_of<T: Encode>(value: &T) -> Vec<u8> {
     let mut to = Writer::default();
     value.encode(&mut to);
@@ -210,6 +235,7 @@ fn bytes_of<T: Encode>(value: &T) -> Vec<u8> {
 
 /// Whether what was read is checked by writing it again: in a build checking its proofs, and
 /// always in a dev build of Fennec.
+#[cfg(unix)]
 fn checks_what_it_read() -> bool {
     cfg!(debug_assertions) || std::env::var("FENNEC_CHECK_PROOFS").as_deref() == Ok("1")
 }
@@ -768,10 +794,6 @@ pub(crate) fn built(
     Err(NoAnswer("builds go to their own process only where there's a daemon".to_owned()))
 }
 
-/// Where there are no daemons, no build is made in a child, so there's none to wait for.
-#[cfg(not(unix))]
-pub(crate) fn after_builds() {}
-
 /// A build of tests in a child, where there are no daemons: never.
 #[cfg(not(unix))]
 pub(crate) fn tests_built(
@@ -800,9 +822,11 @@ fn test_failure() -> Option<String> {
 static SERVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The daemon's home, where what a child's check found wrong is reported.
+#[cfg(unix)]
 static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 /// Makes this process's builds go to children from here on: it's the daemon, serving `home`.
+#[cfg(unix)]
 pub(crate) fn serving(home: &Path) {
     SERVING.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = HOME.set(home.to_path_buf());

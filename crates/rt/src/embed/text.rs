@@ -271,8 +271,8 @@ fn chars_of(state: &State, words: &[u64; 3]) -> u64 {
     if let Some(address) = block_of(words) {
         return state.heap.block(address).and_then(|block| block.get(3)).copied().unwrap_or(0);
     }
-    let count = bytes_vec(state, words).iter().filter(|byte| **byte & 0xC0 != 0x80).count();
-    u64::try_from(count).unwrap_or(0)
+    let (bytes, length) = bytes_of(state, words);
+    u64::try_from(super::strings::chars_before(bytes, length)).unwrap_or(0)
 }
 
 /// `fennec_str_append_header(text, piece)`: `text += piece` for a piece given as its header, inline

@@ -254,6 +254,16 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     if chosen.iter().any(native) {
         llvm::ready()?;
     }
+    // A target that reads its inputs through a Fennec program has that built first. One that can't
+    // be, like the `postgres` reader with no `fennec-std-tests` from this build beside `fennec`,
+    // is a setup to fix, said once here: each input would fail with it otherwise, and read as a
+    // finding.
+    let readers = llvm::reader_names();
+    for target in &chosen {
+        if readers.contains(&target.name) {
+            llvm::built_reader(target.name).map_err(|err| format!("{}: {err}", target.name))?;
+        }
+    }
     let fennec_fuzz = std::env::current_exe().map_err(|err| err.to_string())?;
     let mut found_any = false;
     for target in chosen {

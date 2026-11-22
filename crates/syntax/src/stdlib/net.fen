@@ -503,6 +503,32 @@ MOST_BODY = 10485760
 ## The most blank lines passed over before a request line.
 MOST_BLANK_LINES = 8
 
+## What a request's head held, as `read_head` read it, or why it held none.
+enum Head:
+    ## The request line, then each header line, without their endings.
+    Lines(lines: list[str])
+    ## The stream ended, or held only blank lines, before a request line came.
+    Ended
+    ## The stream ended after the request line, before the blank line that ends a head.
+    Unended
+    ## The request line alone was over the most bytes a head may hold.
+    LongFirst
+    ## The head was over the most bytes in all, or had over the most header lines.
+    TooBig
+
+## A request's head read from `connection` in one call: its request line, past up to `most_blank`
+## blank lines before it, then each header line up to the blank one, within `most_bytes` in all
+## and `most_lines` header lines. Each line is read as `read_line(timeout=, crlf=True)` reads one,
+## and what follows the head is left for its body and the next request.
+def read_head(
+    connection: Connection,
+    most_bytes: int,
+    most_lines: int,
+    most_blank: int,
+    timeout: Duration,
+) -> Head fails NetError:
+    return connection._read_head(most_bytes, most_lines, most_blank, timeout=timeout)?
+
 ## What reading a request gave: one to answer, one the server answers itself, or the end.
 enum RequestRead:
     Got(request: Request, keep: bool)

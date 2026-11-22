@@ -498,7 +498,7 @@ pub(super) fn bytes_in_block(state: &State, address: i64) -> (&[u64], usize) {
 }
 
 /// The longest `part` looked for in place: it fits one word.
-const WORD_BYTES: usize = 8;
+pub(super) const WORD_BYTES: usize = 8;
 
 /// A one in each byte, and each byte's top bit, for finding a byte a word at a time.
 const LOW_BITS: u64 = u64::from_ne_bytes([1; 8]);
@@ -550,15 +550,26 @@ fn word_in_place_from(
 }
 
 /// Calls `found` with each place `part`, of one to eight bytes, is in `whole`, in bytes, from the
-/// first on, none overlapping the one before: where a `split` on it cuts. One pass over the words
-/// `whole`'s bytes are in, a word at a time to each place `part`'s first byte is, then whether the
-/// rest follows, as [`word_in_place`] looks for the first.
-fn each_place_of((whole, length): (&[u64], usize), part: u64, size: usize, mut found: impl FnMut(usize)) {
+/// first at or after byte `start` on, none overlapping the one before: where a `split` on it cuts.
+/// One pass over the words `whole`'s bytes are in, a word at a time to each place `part`'s first
+/// byte is, then whether the rest follows, as [`word_in_place`] looks for the first.
+#[expect(
+    clippy::inline_always,
+    reason = "a whole text's `split` passes a start of 0, which inlined folds away, so it costs what it did before a slice's split shared it"
+)]
+#[inline(always)]
+fn each_place_of_from(
+    (whole, length): (&[u64], usize),
+    part: u64,
+    size: usize,
+    start: usize,
+    mut found: impl FnMut(usize),
+) {
     let mask = if size >= WORD_BYTES { u64::MAX } else { (1 << (size * 8)) - 1 };
     let (part, first) = (part & mask, part & 0xff);
     let used = whole.get(..length.div_ceil(8)).unwrap_or(whole);
     // Where the next one may start: after the last found.
-    let mut from = 0;
+    let mut from = start;
     for (at, word) in used.iter().enumerate() {
         let word = u64::from_le(*word);
         let others = word ^ (first * LOW_BITS);
@@ -1103,6 +1114,11 @@ pub(super) fn find_in(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> 
 /// Where `part` next is in `whole` from byte `from` on, in bytes, or `None`, with nothing
 /// copied: its first eight bytes are looked for as [`word_in_place_from`] does, then the rest
 /// compared eight at a time. For a loop over a `split`, which looks again from past each one.
+#[expect(
+    clippy::inline_always,
+    reason = "a loop over a `split` calls it for each part, through `split_at_header`, and once `find_range` called it too it stopped being inlined there, which cost log_crunch 0.8%"
+)]
+#[inline(always)]
 pub(super) fn place_from(
     whole: (&[u64], usize),
     (part, size): (&[u64], usize),
@@ -1275,7 +1291,7 @@ fn split_in_words(state: &mut State, text: &[u64; 3], separator: &[u64; 3]) -> O
     let mut items = SPLIT_ITEMS.take();
     items.clear();
     let mut from = 0;
-    each_place_of((&words, length), between, size, |found| {
+    each_place_of_from((&words, length), between, size, 0, |found| {
         put_part_of_words(state, &mut items, &words, from, found - from);
         from = found + size;
     });
@@ -1284,6 +1300,29 @@ fn split_in_words(state: &mut State, text: &[u64; 3], separator: &[u64; 3]) -> O
     SPLIT_ITEMS.set(items);
     state.heap.keep_scratch(words);
     Some(list)
+}
+
+/// The list `split` gives of bytes `start..length` of `words`, a text's bytes copied out, cut at
+/// each place of `between`, a separator of `size` bytes, one to eight: each part made inline from
+/// the words or a string of its own, as [`split_in_words`] makes them. A slice's split, which
+/// starts partway; a whole text's is [`split_in_words`]' own loop, which this mustn't slow.
+pub(super) fn split_words(
+    state: &mut State,
+    words: &[u64],
+    (start, length): (usize, usize),
+    (between, size): (u64, usize),
+) -> i64 {
+    let mut items = SPLIT_ITEMS.take();
+    items.clear();
+    let mut from = start;
+    each_place_of_from((words, length), between, size, start, |found| {
+        put_part_of_words(state, &mut items, words, from, found - from);
+        from = found + size;
+    });
+    put_part_of_words(state, &mut items, words, from, length.saturating_sub(from));
+    let list = super::lists::list_of_texts(state, &items);
+    SPLIT_ITEMS.set(items);
+    list
 }
 
 /// Adds the part of `length` bytes at byte `start` of `words`, a text's bytes, to a `split`'s

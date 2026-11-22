@@ -1,0 +1,73 @@
+# std.net's private `read_head` reads a request's head in one call: the request line, past the
+# blank lines before it, then each header line up to the blank one, within the most bytes and
+# header lines given. Each case it can give, from a connection over the real network here and
+# over a test's network in the tests. It reads std's private `read_head`, so `fennec-std-tests`
+# runs it (`std_private.rs`).
+from std.net import Connection, Head, NetError, read_head
+
+# What a head read gave, in words.
+def shown(head: Head) -> str:
+    match head:
+        case .Lines(lines=lines):
+            return "lines: " + " | ".join(lines)
+        case .Ended:
+            return "ended"
+        case .Unended:
+            return "unended"
+        case .LongFirst:
+            return "long first line"
+        case .TooBig:
+            return "too big"
+
+# The head a connection was sent, read within 40 bytes, 3 header lines and 2 blank lines before
+# it, and for a whole head, what's left after it.
+def read_sent(conn: Connection) -> str fails NetError:
+    head = read_head(conn, most_bytes=40, most_lines=3, most_blank=2, timeout=5s) except why:
+        return f"failed: {why}"
+    match head:
+        case .Lines(lines=lines):
+            left = conn.read(100)?
+            if len(left) == 0: return shown(head)
+            rest = left.decode() except InvalidValue(): "not text"
+            return f"{shown(head)}, then {rest}"
+        case _:
+            return shown(head)
+
+def head_of(net: Net, sent: str) -> str fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write(sent)?
+            client.close()
+            with server.accept()? as conn:
+                return read_sent(conn)?
+    return "no connection"
+
+SENT = [
+    "GET / HTTP/1.1\r\nhost: a\r\n\r\nbody",
+    "\r\n\r\nGET / HTTP/1.1\r\n\r\n",
+    "",
+    "\r\n\r\n\r\nGET / HTTP/1.1\r\n\r\n",
+    "GET / HTTP/1.1\r\nhost: a\r\n",
+    "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG\r\n\r\n",
+    "G\r\na\r\nb\r\nc\r\nd\r\n\r\n",
+    "GET / HTTP/1.1\r\nhost: aaaa\r\nhost: bbbb\r\nx: yyy!\r\n\r\n",
+    "GET / HTTP/1.1\nhost: a\r\n\r\n",
+]
+
+def main(net: Net, stdout: Stdout):
+    for sent in SENT:
+        said = head_of(net, sent) except why:
+            stdout.print(f"no connection: {why}")
+            continue
+        stdout.print(said)
+
+test "a test's network reads each head as the real one does"(net: Net):
+    assert head_of(net, SENT[0])? == "lines: GET / HTTP/1.1 | host: a, then body"
+    assert head_of(net, SENT[1])? == "lines: GET / HTTP/1.1"
+    assert head_of(net, SENT[2])? == "ended"
+    assert head_of(net, SENT[3])? == "ended"
+    assert head_of(net, SENT[4])? == "unended"
+    assert head_of(net, SENT[5])? == "long first line"
+    assert head_of(net, SENT[6])? == "too big"
+    assert head_of(net, SENT[7])? == "too big"
+    assert head_of(net, SENT[8])? == "failed: a line ended without a carriage return"

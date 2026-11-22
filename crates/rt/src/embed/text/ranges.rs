@@ -9,6 +9,11 @@
 //! The range is the slice's own, read as `fennec_str_slice` reads it: positions count characters,
 //! a negative one counts from the end, a missing one is `i64::MIN`, and both are clamped into the
 //! text, so a start at or past the end gives the empty string. A slice never fails for a text.
+//!
+//! `split` by a separator of up to eight bytes and `find` of a part of up to eight read the text's
+//! words where they are, from the range's first byte to its last: the two positions are made byte
+//! offsets, which for ASCII they already are. Anything else copies the range's bytes, and only
+//! those, out first.
 
 use std::cell::RefCell;
 
@@ -22,10 +27,24 @@ thread_local! {
     static OTHER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The bytes of `text[from:to]`, `text` given as its header, into `into`.
-fn sliced(state: &State, text: &[u64; 3], (from, to): (i64, i64), into: &mut Vec<u8>) {
-    strings::copy_words(bytes_of(state, text), into);
-    let chars = into.iter().filter(|byte| **byte & 0xC0 != 0x80).count();
+/// Each byte's top bit.
+const HIGH_BITS: u64 = u64::from_ne_bytes([0x80; 8]);
+
+/// Where a slice is in its text's bytes: the byte its first character starts at and the one after
+/// its last, the same two for an empty slice, and whether the text is ASCII, its characters its
+/// bytes.
+#[derive(Clone, Copy)]
+struct Bytes {
+    first: usize,
+    last: usize,
+    ascii: bool,
+}
+
+/// Where `text[from:to]` is in `text`'s bytes, `text` given as its header.
+fn byte_range(state: &State, text: &[u64; 3], (from, to): (i64, i64)) -> Bytes {
+    let (words, length) = bytes_of(state, text);
+    let chars = usize::try_from(super::chars_of(state, text)).unwrap_or(0);
+    let ascii = chars == length;
     let count = i64::try_from(chars).unwrap_or(i64::MAX);
     let bound = |at: i64, missing: i64| {
         let at = if at == i64::MIN { missing } else { at };
@@ -34,23 +53,44 @@ fn sliced(state: &State, text: &[u64; 3], (from, to): (i64, i64), into: &mut Vec
     };
     let (from, to) = (bound(from, 0), bound(to, count));
     if from >= to {
-        into.clear();
-        return;
+        return Bytes { first: 0, last: 0, ascii };
     }
-    let (first, last) =
-        if chars == into.len() { (from, to) } else { (byte_of_char(into, from), byte_of_char(into, to)) };
-    into.truncate(last);
-    into.drain(..first);
+    if ascii {
+        return Bytes { first: from, last: to, ascii };
+    }
+    let last = if to == chars { length } else { byte_of_char(words, length, to) };
+    Bytes { first: byte_of_char(words, length, from), last, ascii }
 }
 
-/// Where character `wanted` starts in `bytes`, UTF-8, or their length past the last.
-fn byte_of_char(bytes: &[u8], wanted: usize) -> usize {
-    bytes
-        .iter()
-        .enumerate()
-        .filter(|(_, byte)| **byte & 0xC0 != 0x80)
-        .nth(wanted)
-        .map_or(bytes.len(), |(at, _)| at)
+/// Where character `wanted` starts in the `length` bytes packed in `words`, UTF-8, counted a word
+/// at a time, as `chars_before` counts. `wanted` is one of the characters there are, so the bytes
+/// past the last word's last aren't counted before it's found; one past them all is `length`.
+fn byte_of_char(words: &[u64], length: usize, wanted: usize) -> usize {
+    let mut seen = 0;
+    for (at, word) in words.iter().enumerate().take(length.div_ceil(8)) {
+        let word = u64::from_le(*word);
+        // A byte that carries on a character has its top bit set and the one below it clear; each
+        // other byte starts one, marked at its top bit.
+        let mut starts = !(word & !(word << 1)) & HIGH_BITS;
+        let here = usize::try_from(starts.count_ones()).unwrap_or(0);
+        if seen + here > wanted {
+            for _ in 0..wanted - seen {
+                starts &= starts - 1;
+            }
+            return (at * 8 + usize::try_from(starts.trailing_zeros() / 8).unwrap_or(0)).min(length);
+        }
+        seen += here;
+    }
+    length
+}
+
+/// The bytes of `text[from:to]`, `text` given as its header, into `into`: only the range's.
+fn sliced(state: &State, text: &[u64; 3], range: (i64, i64), into: &mut Vec<u8>) {
+    let Bytes { first, last, .. } = byte_range(state, text, range);
+    let (words, _) = bytes_of(state, text);
+    let base = first / 8;
+    strings::copy_words((words.get(base..).unwrap_or_default(), last - base * 8), into);
+    into.drain(..first - base * 8);
 }
 
 /// Runs `read` on the bytes of `text[from:to]` and of `other`, both headers, each copied into the
@@ -87,18 +127,34 @@ pub extern "C" fn split_range(
     end: i64,
 ) -> i64 {
     attempt(|state: &mut State| {
-        let (mut slice, mut between) = (SLICE.take(), OTHER.take());
-        sliced(state, &[t0, t1, t2], (from, to), &mut slice);
-        let separated = (s0, s1, s2) != (0, 0, 0);
+        let (text, separator) = ([t0, t1, t2], [s0, s1, s2]);
+        let separated = separator != [0; 3];
+        let (between, size) = bytes_of(state, &separator);
+        if separated && (1..=strings::WORD_BYTES).contains(&size) && state.tables.text_headers {
+            let between = between.first().map_or(0, |word| u64::from_le(*word));
+            let Bytes { first, last, .. } = byte_range(state, &text, (from, to));
+            // The range's words are copied out, whole words at a time, so making a long part's
+            // block can't move them.
+            let mut words = std::mem::take(&mut state.heap.scratch);
+            words.clear();
+            let (held, _) = bytes_of(state, &text);
+            words.extend_from_slice(held.get(first / 8..last.div_ceil(8)).unwrap_or_default());
+            let base = first / 8 * 8;
+            let list = strings::split_words(state, &words, (first - base, last - base), (between, size));
+            state.heap.keep_scratch(words);
+            return Ok(list);
+        }
+        let (mut slice, mut parted) = (SLICE.take(), OTHER.take());
+        sliced(state, &text, (from, to), &mut slice);
         if separated {
-            strings::copy_words(bytes_of(state, &[s0, s1, s2]), &mut between);
+            strings::copy_words(bytes_of(state, &separator), &mut parted);
         } else {
-            between.clear();
+            parted.clear();
         }
         let split =
-            strings::split_bytes(state, &slice, separated.then_some(between.as_slice()), span(start, end));
+            strings::split_bytes(state, &slice, separated.then_some(parted.as_slice()), span(start, end));
         SLICE.set(slice);
-        OTHER.set(between);
+        OTHER.set(parted);
         split
     })
 }
@@ -116,13 +172,39 @@ pub extern "C" fn find_range(
     p2: u64,
 ) -> i64 {
     with(|state| {
-        with_both(state, &[t0, t1, t2], (from, to), &[p0, p1, p2], |slice, part| {
-            let found = match (std::str::from_utf8(slice), std::str::from_utf8(part)) {
-                (Ok(slice), Ok(part)) => slice.find(part).and_then(|at| slice.get(..at)),
-                _ => None,
-            };
-            found.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
-        })
+        let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
+        let range = byte_range(state, &text, (from, to));
+        let (words, _) = bytes_of(state, &text);
+        let (looked, size) = bytes_of(state, &part);
+        if size == 0 {
+            return 0;
+        }
+        if size > range.last - range.first {
+            return -1;
+        }
+        if size > strings::WORD_BYTES {
+            // Longer ones are rare, and `str`'s search stays linear however the two repeat
+            // themselves.
+            return with_both(state, &text, (from, to), &part, |slice, part| {
+                let found = match (std::str::from_utf8(slice), std::str::from_utf8(part)) {
+                    (Ok(slice), Ok(part)) => slice.find(part).and_then(|at| slice.get(..at)),
+                    _ => None,
+                };
+                found.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
+            });
+        }
+        let Some(at) = strings::place_from((words, range.last), (looked, size), range.first) else {
+            return -1;
+        };
+        let before = if range.ascii {
+            at - range.first
+        } else {
+            // Counted from the word the range starts in.
+            let base = range.first / 8;
+            let words = words.get(base..).unwrap_or_default();
+            strings::chars_before(words, at - base * 8) - strings::chars_before(words, range.first - base * 8)
+        };
+        i64::try_from(before).unwrap_or(-1)
     })
 }
 

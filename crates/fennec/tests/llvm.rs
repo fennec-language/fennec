@@ -697,6 +697,25 @@ fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result
     )
 }
 
+/// A dict of strings holds each value as its header in the entry, as its keys are, so a value of
+/// 23 bytes or fewer needs no block: it prints the same as with `FENNEC_BOXED_DICT_VALUES=1`, where
+/// each is a block's address, and ends with nothing held. Short and long values under text, int
+/// and float keys are set new and again, grown past a header with `+=`, read, got, popped, walked,
+/// listed, copied and changed, compared, cleared, keyed by slices, changed through `ref self` and
+/// in a dict of dicts, and under a lock that fails, which undoes it.
+#[test]
+fn a_dict_of_strings_holds_its_values_as_headers_in_its_entries() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_str_values_in_entries",
+        include_str!("fixtures/dict_str_values_in_entries.fen"),
+        include_str!("fixtures/dict_str_values_in_entries.out"),
+    )
+}
+
 /// A dict whose values are generators or closures builds and lets each go (#2099). Their blocks went
 /// into the runtime's calls as addresses where a word goes, so `opt` refused the program, written
 /// out or one value at a time. Each is put in, replaced, got, popped, looped over or called, left

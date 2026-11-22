@@ -430,7 +430,7 @@ pub fn held_by_word(layouts: &Layouts, word: Word, found: &mut Vec<u32>) {
         Word::Plain(id) => found.push(id),
         // A value held in the entry, by its number among the kinds of item.
         Word::InPlace(number) => {
-            if let Some(id) = layouts.dict_value(number) {
+            if let Some(Ty::Struct(id)) = layouts.dict_value(number) {
                 found.push(id);
             }
         }
@@ -502,17 +502,23 @@ impl<'l> Registry<'l> {
         // A plain type a dict holds in its entries goes by the number after those, in the order
         // the layouts first gave it one, which is what a dict's shape says it holds.
         let mut undescribed = None;
-        for id in layouts.dict_values() {
-            let described = describe_numbered(layouts, Ty::Struct(id), &numbering).unwrap_or_else(|| {
+        for value in layouts.dict_values() {
+            let described = describe_numbered(layouts, value, &numbering).unwrap_or_else(|| {
                 // The runtime would take it for one int, and read and let go of its words as that.
-                let name = layouts.get(id).map_or_else(|| format!("type {id}"), |layout| layout.name.clone());
+                let name = match value {
+                    Ty::Struct(id) => {
+                        layouts.get(id).map_or_else(|| format!("type {id}"), |layout| layout.name.clone())
+                    }
+                    other => format!("{other:?}"),
+                };
                 undescribed.get_or_insert(name);
                 Element::Int
             });
             let number = tables.elements.len();
             tables.elements.push(Rc::new(described));
-            // A list of one of these goes by the same number, unless it has one already.
-            elements.entry(Ty::Struct(id)).or_insert_with(|| i64::try_from(number).unwrap_or(0));
+            // A list of one of these goes by the same number, unless it has one already: a list
+            // of strings is described as a string held here is, by its header.
+            elements.entry(value).or_insert_with(|| i64::try_from(number).unwrap_or(0));
         }
         Self { layouts, tables, elements, strings: HashMap::new(), numbering, undescribed }
     }

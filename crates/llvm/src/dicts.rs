@@ -88,10 +88,10 @@ impl Emit<'_, '_, '_> {
         if word == Word::Str && self.headers() {
             return Some(Kind::TextBlock);
         }
-        // A value held in the entry is the plain type its number names.
+        // A value held in the entry is the plain type its number names, or a string's header.
         if let Word::InPlace(number) = word {
-            let id = self.module.layouts.dict_value(number)?;
-            return Kind::from_ty(self.module.layouts, Ty::Struct(id));
+            let value = self.module.layouts.dict_value(number)?;
+            return Kind::from_ty(self.module.layouts, value);
         }
         Kind::from_ty(self.module.layouts, word_ty(word))
     }
@@ -936,7 +936,7 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{placed} = icmp ne ptr {value_to}, null"));
             self.line(&format!("br i1 {placed}, label %{write}, label %{slow}"));
             self.start_block(&write);
-            self.retain_inline(&value_kind, held);
+            self.retain_in_entry(&value_kind, held);
             self.store_field(&value_kind, held, &value_to, "");
             self.line(&format!("br label %{done}"));
         }
@@ -946,8 +946,8 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        self.retain_inline(&value_kind, held);
-        self.release_inline(&value_kind, &value_at);
+        self.retain_in_entry(&value_kind, held);
+        self.release_in_entry(&value_kind, &value_at);
         self.store_field(&value_kind, held, &value_at, "");
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
@@ -960,7 +960,7 @@ impl Emit<'_, '_, '_> {
             self.retain_text(key);
             let [a, b, c] = [0, 1, 2].map(|at| self.header_word(key, at));
             self.declare("declare ptr @fennec_dict_set_words_header(ptr, i64, i64, i64) nounwind");
-            self.retain_inline(&value_kind, held);
+            self.retain_in_entry(&value_kind, held);
             let buffer = self.value_buffer();
             self.store_field(&value_kind, held, &buffer, "");
             self.line(&format!(
@@ -969,7 +969,7 @@ impl Emit<'_, '_, '_> {
         } else {
             let key_held = self.key_word(key_word, key)?;
             self.declare("declare ptr @fennec_dict_set_words(ptr, i64) nounwind");
-            self.retain_inline(&value_kind, held);
+            self.retain_in_entry(&value_kind, held);
             let buffer = self.value_buffer();
             self.store_field(&value_kind, held, &buffer, "");
             self.line(&format!("{changed} = call ptr @fennec_dict_set_words(ptr {dict}, i64 {key_held})"));
@@ -978,6 +978,26 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         Ok(())
+    }
+
+    /// Takes an owner of each block a value going into a dict's entry holds: a struct's, where it
+    /// is, or a string header's.
+    fn retain_in_entry(&mut self, kind: &Kind, held: &str) {
+        if kind.in_memory() {
+            self.retain_inline(kind, held);
+        } else {
+            self.retain_value(held, kind);
+        }
+    }
+
+    /// Lets go of each block the value in a dict's entry at `at` holds, as `retain_in_entry` took.
+    fn release_in_entry(&mut self, kind: &Kind, at: &str) {
+        if kind.in_memory() {
+            self.release_inline(kind, at);
+        } else {
+            let old = self.load_field(kind, at, "");
+            self.release_kind(&old, kind);
+        }
     }
 
     /// Where this thread's buffer is for a value held in a dict's entry, on its way into the dict
@@ -1211,6 +1231,10 @@ impl Emit<'_, '_, '_> {
             let at = self.value_place(value_word, &value_kind, &value_at);
             self.proof_goes_back(value, &at);
             self.store_field(&value_kind, &held, &at, "");
+        } else if matches!(value_word, Word::InPlace(_)) {
+            // A string's header held in the entry goes back as its words.
+            self.proof_goes_back(value, &value_at);
+            self.store_field(&value_kind, &held, &value_at, "");
         } else if value_kind.counted() {
             self.proof_goes_back(value, &value_at);
             self.line(&format!("store ptr {held}, ptr {value_at}"));
@@ -2057,7 +2081,7 @@ found:
         if let Some(dest) = dest {
             return self.assign_memory_owned(dest, &out);
         }
-        self.release_inline(value_kind, &out);
+        self.release_in_entry(value_kind, &out);
         Ok(())
     }
 
@@ -2428,9 +2452,10 @@ found:
     }
 
     /// A key or value from where a dict keeps it: a plain struct key is in a block of its own, and
-    /// a value held in the entry is right there.
+    /// a struct held in the entry is right there. A string held in the entry as its header is read
+    /// as any header is.
     fn dict_part(&mut self, word: Word, kind: &Kind, at: &str) -> String {
-        if matches!(word, Word::InPlace(_)) {
+        if matches!(word, Word::InPlace(_)) && kind.in_memory() {
             return at.to_owned();
         }
         if kind.in_memory() {

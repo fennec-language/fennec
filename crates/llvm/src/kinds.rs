@@ -327,7 +327,8 @@ pub(crate) fn word_named(layouts: &Layouts, word: Word) -> String {
         Word::Plain(id) => format!("Plain({})", layout_named(layouts, id)),
         Word::Block(id) => format!("Block({})", block_named(layouts, id)),
         Word::InPlace(number) => match layouts.dict_value(number) {
-            Some(id) => format!("InPlace({})", layout_named(layouts, id)),
+            Some(Ty::Struct(id)) => format!("InPlace({})", layout_named(layouts, id)),
+            Some(value) => format!("InPlace({value:?})"),
             None => format!("InPlace(#{number})"),
         },
         other => format!("{other:?}"),

@@ -1069,6 +1069,12 @@ mod unix {
                 .stack_size(crate::STACK_BYTES)
                 .spawn(move || crate::kept::verify_pending(&home));
         }
+        // A build made in a process of its own checks there what it used again of the analyses
+        // the builds before kept: once it has, what it found wrong is taken back, now that the
+        // command's tests are counted.
+        if crate::child::wanted() {
+            let _ = std::thread::Builder::new().spawn(crate::child::after_builds);
+        }
         // So are the analyses its builds used again of the ones the builds before kept: taken now,
         // so the next build waits for the check rather than using what it may let go of.
         if let Some(check) = fennec_llvm::AnalysesCheck::take() {

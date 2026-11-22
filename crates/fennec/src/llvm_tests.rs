@@ -640,7 +640,16 @@ pub(crate) fn run(
         result.left.extend(taken.iter().map(|test| test.name.clone()));
         return result;
     };
-    let flags = match crate::aot::tests_executable(&trimmed, &names, &work) {
+    // In the daemon, built in a process of its own, as a program is (see `crate::child`).
+    let built = if crate::child::wanted() {
+        crate::child::tests_built(&trimmed, &names, &work).unwrap_or_else(|no_answer| {
+            crate::child::said_no_answer(&no_answer, &work);
+            crate::aot::tests_executable(&trimmed, &names, &work)
+        })
+    } else {
+        crate::aot::tests_executable(&trimmed, &names, &work)
+    };
+    let flags = match built {
         Ok(flags) => flags,
         Err(why) => {
             result.left.extend(taken.iter().map(|test| test.name.clone()));

@@ -123,7 +123,8 @@ static BUILT_WHILE_KEEPING: Mutex<std::collections::BTreeSet<TakenBack>> =
 /// Notes what the daemon made, to take back if an analysis kept for builds turns out wrong.
 #[cfg(unix)]
 pub(crate) fn built_while_keeping(built: TakenBack) {
-    if !fennec_llvm::keeps_between_builds() {
+    // A daemon whose builds go to processes of their own keeps their analyses there.
+    if !fennec_llvm::keeps_between_builds() && !crate::child::wanted() {
         return;
     }
     BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner).insert(built);
@@ -228,6 +229,8 @@ pub(crate) fn report_wrong_analyses(home: &std::path::Path, differ: &[String]) -
 /// that's running, as the daemon ends: what's checked after the answer is checked before it goes.
 #[cfg(unix)]
 pub(crate) fn finish_analyses_check(home: &std::path::Path) {
+    // Builds made in processes of their own are checked there: what they found is taken back now.
+    crate::child::after_builds();
     if let Some(check) = fennec_llvm::AnalysesCheck::take() {
         let _ = verify_analyses(home, check);
     }

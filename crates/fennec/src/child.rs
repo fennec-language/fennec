@@ -50,6 +50,10 @@ const ANALYSES: u8 = 4;
 /// In an answer, the functions whose analysis the build used again and the check after it found
 /// wrong, for the daemon to take back what was made with them.
 const WRONG: u8 = 5;
+/// The objects the last build found in the cache or made, as `fennec_llvm::known_objects_to_bytes`
+/// wrote them: in a request, so the build doesn't look for them again, and in an answer, what
+/// it found or made, for the next.
+const OBJECTS: u8 = 6;
 
 /// Why a build in a child didn't answer, which the daemon says before building in-process.
 #[derive(Debug)]
@@ -60,9 +64,12 @@ struct Job {
     output: String,
     release: bool,
     baseline: bool,
+    /// For an executable of a module's tests, as `fennec test` runs them, the functions it runs
+    /// (see `aot::tests_executable`); for a program, nothing.
+    tests: Option<Vec<String>>,
 }
 
-fennec_syntax::codec_fields!(Job { output, release, baseline });
+fennec_syntax::codec_fields!(Job { output, release, baseline, tests });
 
 /// A program as a child needs it: what `aot::executable_checked` reads of a `fennec_kit::Program`.
 struct Sent {
@@ -89,6 +96,11 @@ impl Sent {
                 .as_ref()
                 .map(|manifest| (manifest.name.clone(), manifest.version.clone(), manifest.fennec.clone())),
         }
+    }
+
+    /// A module alone, as an executable of its tests is built from.
+    fn of_module(module: &fennec_syntax::Module) -> Sent {
+        Sent { module: module.clone(), files: Vec::new(), kit_src: None, kit: None }
     }
 
     fn into_program(self) -> fennec_kit::Program {
@@ -153,9 +165,35 @@ fn result_bytes(result: &Result<Built, String>) -> Vec<u8> {
 }
 
 fn read_result(bytes: &[u8]) -> Option<Result<Built, String>> {
+    read_either(bytes)
+}
+
+/// What a build of a module's tests gives back, as bytes: the functions with a flag saying they
+/// ran, or why it couldn't.
+fn ran_bytes(result: &Result<Vec<String>, String>) -> Vec<u8> {
+    let mut to = Writer::default();
+    match result {
+        Ok(flags) => {
+            to.tag(0);
+            flags.encode(&mut to);
+        }
+        Err(why) => {
+            to.tag(1);
+            why.encode(&mut to);
+        }
+    }
+    to.into_bytes()
+}
+
+fn read_ran(bytes: &[u8]) -> Option<Result<Vec<String>, String>> {
+    read_either(bytes)
+}
+
+/// What either kind of build gave back, from all of `bytes`.
+fn read_either<T: Decode>(bytes: &[u8]) -> Option<Result<T, String>> {
     let mut from = Reader::new(bytes);
     let result = match from.tag()? {
-        0 => Ok(Built::decode(&mut from)?),
+        0 => Ok(T::decode(&mut from)?),
         1 => Err(String::decode(&mut from)?),
         _ => return None,
     };
@@ -183,24 +221,42 @@ mod unix {
     use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::process::{Child, Command, ExitCode, Stdio};
-    use std::sync::{Mutex, PoisonError};
+    use std::sync::{Arc, Condvar, Mutex, PoisonError};
     use std::time::{Duration, Instant};
 
     use fennec_syntax::codec::{Decode, Reader};
 
     use super::{
-        ANALYSES, BUILD, Built, END, JOB, Job, MAGIC, NoAnswer, PROGRAM, RESULT, SIGNATURES, STARTED, Sent,
-        WRONG, bytes_of, checks_what_it_read, read_result, result_bytes,
+        ANALYSES, BUILD, Built, END, JOB, Job, MAGIC, NoAnswer, OBJECTS, PROGRAM, RESULT, SIGNATURES,
+        STARTED, Sent, WRONG, bytes_of, checks_what_it_read, ran_bytes, read_ran, read_result, result_bytes,
     };
 
     /// The last child's end, read on a thread of its own once it answers: it checks what it used
     /// again and sends what it keeps, and the next build waits for that. Its socket stays open until
     /// the child has ended, since a child takes its closing as the daemon gone.
-    static LAST: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+    static LAST: Mutex<Option<Arc<Ending>>> = Mutex::new(None);
 
-    /// What the last child kept of its build's analyses for the next, as it sent them: bytes only a
-    /// child reads, so the daemon holds one block, not the many small ones they'd be here.
-    static STORE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    /// Whether a child's end has been read.
+    #[derive(Default)]
+    struct Ending {
+        done: Mutex<bool>,
+        ended: Condvar,
+    }
+
+    /// The functions children's checks found wrong analyses of, not yet taken back: that's done
+    /// once the command's own work is done (see [`after_builds`]), so the tests it ran with them
+    /// are counted first, and then taken back.
+    static FOUND: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// What the last child kept for the next, as it sent them: its build's analyses, and the
+    /// objects it found or made. Bytes only a child reads, so the daemon holds a block each, not
+    /// the many small ones they'd be here.
+    static STORE: Mutex<Kept> = Mutex::new(Kept { analyses: Vec::new(), objects: Vec::new() });
+
+    struct Kept {
+        analyses: Vec<u8>,
+        objects: Vec<u8>,
+    }
 
     /// How long a child has to read its request and say it started: 60 s, or 2 s for a test of
     /// one that never does.
@@ -220,8 +276,42 @@ mod unix {
         release: bool,
         checked: Option<&fennec_check::Signatures>,
     ) -> Result<Result<Built, String>, NoAnswer> {
+        let job =
+            Job { output: output.to_string_lossy().into_owned(), release, baseline: baseline(), tests: None };
+        in_child(&job, &Sent::of(program), checked, read_result)
+    }
+
+    /// Builds an executable of `module`'s `tests` at `output` in a child process, as
+    /// `aot::tests_executable` would here, giving back the functions with a flag saying they ran.
+    /// `Err` when the child gave no answer, as for [`built`].
+    pub(crate) fn tests_built(
+        module: &fennec_syntax::Module,
+        tests: &[String],
+        output: &Path,
+    ) -> Result<Result<Vec<String>, String>, NoAnswer> {
+        let job = Job {
+            output: output.to_string_lossy().into_owned(),
+            release: false,
+            baseline: baseline(),
+            tests: Some(tests.to_vec()),
+        };
+        in_child(&job, &Sent::of_module(module), None, read_ran)
+    }
+
+    /// Whether builds here are for x86-64 machines older than AVX2.
+    fn baseline() -> bool {
+        crate::aot::BASELINE.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Does `job` in a child, reading its answer with `read`.
+    fn in_child<T>(
+        job: &Job,
+        sent: &Sent,
+        checked: Option<&fennec_check::Signatures>,
+        read: fn(&[u8]) -> Option<Result<T, String>>,
+    ) -> Result<Result<T, String>, NoAnswer> {
         let no_answer = |why: String| NoAnswer(why);
-        ended_last();
+        after_builds();
         let (ours, theirs) =
             UnixStream::pair().map_err(|err| no_answer(format!("no socket for it: {err}")))?;
         let exe = std::env::current_exe().map_err(|err| no_answer(format!("no `fennec` to run: {err}")))?;
@@ -239,15 +329,23 @@ mod unix {
         }
         .map_err(|err| no_answer(format!("it couldn't start: {err}")))?;
         let mut child = Running { child: Some(child), socket: ours };
-        let answer = child.asked(program, output, release, checked);
+        let answer = child.asked(job, sent, checked, read);
         match answer {
             Ok(result) => {
                 // A copy of the socket, open until the child has ended.
                 let rest =
                     child.socket.try_clone().ok().and_then(|socket| Some((child.child.take()?, socket)));
                 if let Some((process, socket)) = rest {
-                    let reading = std::thread::Builder::new().spawn(move || read_rest(process, &socket));
-                    *LAST.lock().unwrap_or_else(PoisonError::into_inner) = reading.ok();
+                    let ending = Arc::new(Ending::default());
+                    let read = Arc::clone(&ending);
+                    let reading = std::thread::Builder::new().spawn(move || {
+                        read_rest(process, &socket);
+                        *read.done.lock().unwrap_or_else(PoisonError::into_inner) = true;
+                        read.ended.notify_all();
+                    });
+                    if reading.is_ok() {
+                        *LAST.lock().unwrap_or_else(PoisonError::into_inner) = Some(ending);
+                    }
                 }
                 Ok(result)
             }
@@ -257,11 +355,26 @@ mod unix {
         }
     }
 
-    /// Waits for the last child to end, if it's working on after its answer.
-    fn ended_last() {
-        let last = LAST.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(reading) = last {
-            let _ = reading.join();
+    /// Waits for the last child to end, if it's working on after its answer, and takes back what
+    /// was made with an analysis a child's check found wrong, as the daemon's own check of a build
+    /// made in it does once the command's done: before the next build, and as the daemon ends.
+    pub(crate) fn after_builds() {
+        let last = LAST.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(ending) = last {
+            let mut done = ending.done.lock().unwrap_or_else(PoisonError::into_inner);
+            while !*done {
+                done = ending.ended.wait(done).unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+        let found = std::mem::take(&mut *FOUND.lock().unwrap_or_else(PoisonError::into_inner));
+        if found.is_empty() {
+            return;
+        }
+        match super::HOME.get() {
+            Some(home) => {
+                let _ = crate::kept::report_wrong_analyses(home, &found);
+            }
+            None => eprintln!("error: a build's check found these analyses wrong: {}", found.join(", ")),
         }
     }
 
@@ -271,28 +384,24 @@ mod unix {
     /// leaves nothing kept, so the next build works every analysis out.
     fn read_rest(mut process: Child, socket: &UnixStream) {
         let _ = socket.set_read_timeout(None);
-        let (mut kept, mut wrong) = (None, Vec::new());
-        loop {
+        let (mut analyses, mut objects, mut wrong) = (None, None, Vec::new());
+        let ended = loop {
             match read_section(&mut &*socket, || None) {
-                Ok((ANALYSES, bytes)) => kept = Some(bytes),
+                Ok((ANALYSES, bytes)) => analyses = Some(bytes),
+                Ok((OBJECTS, bytes)) => objects = Some(bytes),
                 Ok((WRONG, bytes)) => wrong = read_back::<Vec<String>>(&bytes).unwrap_or_default(),
-                Ok((END, _)) => break,
-                Ok(_) | Err(_) => {
-                    kept = None;
-                    break;
-                }
+                Ok((END, _)) => break true,
+                Ok(_) | Err(_) => break false,
             }
-        }
+        };
         let _ = process.wait();
-        *STORE.lock().unwrap_or_else(PoisonError::into_inner) = kept.unwrap_or_default();
-        if !wrong.is_empty() {
-            match super::HOME.get() {
-                Some(home) => {
-                    let _ = crate::kept::report_wrong_analyses(home, &wrong);
-                }
-                None => eprintln!("error: a build's check found these analyses wrong: {}", wrong.join(", ")),
-            }
-        }
+        let (analyses, objects) = if ended {
+            (analyses.unwrap_or_default(), objects.unwrap_or_default())
+        } else {
+            Default::default()
+        };
+        *STORE.lock().unwrap_or_else(PoisonError::into_inner) = Kept { analyses, objects };
+        FOUND.lock().unwrap_or_else(PoisonError::into_inner).extend(wrong);
     }
 
     /// A child the daemon is building in, killed and waited for unless it answered.
@@ -319,27 +428,25 @@ mod unix {
 
     impl Running {
         /// Sends the request and reads the answer.
-        fn asked(
+        fn asked<T>(
             &mut self,
-            program: &fennec_kit::Program,
-            output: &Path,
-            release: bool,
+            job: &Job,
+            sent: &Sent,
             checked: Option<&fennec_check::Signatures>,
-        ) -> Result<Result<Built, String>, String> {
-            let job = Job {
-                output: output.to_string_lossy().into_owned(),
-                release,
-                baseline: crate::aot::BASELINE.load(std::sync::atomic::Ordering::Relaxed),
-            };
+            read: fn(&[u8]) -> Option<Result<T, String>>,
+        ) -> Result<Result<T, String>, String> {
             let mut request = MAGIC.to_vec();
             let sections = (|| {
                 request.write_all(&bytes_of(&BUILD))?;
-                section(&mut request, JOB, &bytes_of(&job))?;
-                section(&mut request, PROGRAM, &bytes_of(&Sent::of(program)))?;
+                section(&mut request, JOB, &bytes_of(job))?;
+                section(&mut request, PROGRAM, &bytes_of(sent))?;
                 if let Some(checked) = checked {
                     section(&mut request, SIGNATURES, &checked.to_bytes())?;
                 }
-                section(&mut request, ANALYSES, &STORE.lock().unwrap_or_else(PoisonError::into_inner))?;
+                let kept = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+                section(&mut request, ANALYSES, &kept.analyses)?;
+                section(&mut request, OBJECTS, &kept.objects)?;
+                drop(kept);
                 section(&mut request, END, &[])
             })();
             sections.map_err(|err| self.ended(&format!("its request couldn't be written: {err}")))?;
@@ -353,12 +460,12 @@ mod unix {
             let mut building = false;
             loop {
                 let mut socket = &self.socket;
-                let read = read_section(&mut socket, || Running::gone(started, building));
-                match read {
+                let section_read = read_section(&mut socket, || Running::gone(started, building));
+                match section_read {
                     Ok((STARTED, _)) if !building => building = true,
                     // What comes after is read once the command has its answer (see `read_rest`).
                     Ok((RESULT, bytes)) if building => {
-                        return read_result(&bytes).ok_or_else(|| self.ended("its answer didn't read"));
+                        return read(&bytes).ok_or_else(|| self.ended("its answer didn't read"));
                     }
                     Ok((END, _)) => return Err(self.ended("it ended its answer early")),
                     Ok((tag, _)) => return Err(self.ended(&format!("it sent section {tag} out of turn"))),
@@ -516,21 +623,32 @@ mod unix {
         let output = std::path::PathBuf::from(&job.output);
         let built = std::thread::Builder::new()
             .stack_size(crate::STACK_BYTES)
-            .spawn(move || crate::aot::executable_checked_here(&program, &output, job.release, checked))
+            .spawn(move || match &job.tests {
+                Some(tests) => ran_bytes(&crate::aot::tests_executable(&program.module, tests, &output)),
+                None => result_bytes(&crate::aot::executable_checked_here(
+                    &program,
+                    &output,
+                    job.release,
+                    checked,
+                )),
+            })
             .ok()
             .and_then(|building| building.join().ok());
         let Some(built) = built else { return ExitCode::FAILURE };
-        if section(&mut to, RESULT, &result_bytes(&built)).and_then(|()| to.flush()).is_err() {
+        if section(&mut to, RESULT, &built).and_then(|()| to.flush()).is_err() {
             return ExitCode::FAILURE;
         }
-        // Answered, it checks what it used again of what the builds before kept, as the daemon's
-        // own build is checked once it's answered, and then hands on what it keeps.
+        // Answered, it writes what it put off till then, the index of the units it used, so the
+        // next build finds it. It checks what it used again of what the builds before kept, as the
+        // daemon's own build is checked once it's answered, and then hands on what it keeps.
+        crate::aot::later::finish(Duration::from_secs(60));
         let wrong = fennec_llvm::AnalysesCheck::take().map(|check| check.run()).unwrap_or_default();
         let mut rest = || {
             if !wrong.is_empty() {
                 section(&mut to, WRONG, &bytes_of(&wrong))?;
             }
             section(&mut to, ANALYSES, &fennec_llvm::kept_to_bytes())?;
+            section(&mut to, OBJECTS, &fennec_llvm::known_objects_to_bytes())?;
             section(&mut to, END, &[])?;
             to.flush()
         };
@@ -575,6 +693,15 @@ mod unix {
                 JOB => job = read_back::<Job>(&bytes),
                 PROGRAM => program = read_back::<Sent>(&bytes).map(Sent::into_program),
                 SIGNATURES => checked = Some(read_signatures(&bytes)?),
+                // What doesn't read is known as nothing: the build looks for every object.
+                OBJECTS => {
+                    if fennec_llvm::know_objects_from_bytes(&bytes) && checks_what_it_read() {
+                        assert!(
+                            fennec_llvm::known_objects_to_bytes() == bytes,
+                            "the objects the daemon knew read back as something else"
+                        );
+                    }
+                }
                 // What doesn't read is kept as nothing, and said: the build works every analysis
                 // out, which is slower, but right.
                 ANALYSES => {
@@ -628,7 +755,7 @@ mod unix {
 }
 
 #[cfg(unix)]
-pub(crate) use unix::{built, serve};
+pub(crate) use unix::{after_builds, built, serve, tests_built};
 
 /// A build in a child, where there are no daemons: never.
 #[cfg(not(unix))]
@@ -638,6 +765,20 @@ pub(crate) fn built(
     _release: bool,
     _checked: Option<&fennec_check::Signatures>,
 ) -> Result<Result<Built, String>, NoAnswer> {
+    Err(NoAnswer("builds go to their own process only where there's a daemon".to_owned()))
+}
+
+/// Where there are no daemons, no build is made in a child, so there's none to wait for.
+#[cfg(not(unix))]
+pub(crate) fn after_builds() {}
+
+/// A build of tests in a child, where there are no daemons: never.
+#[cfg(not(unix))]
+pub(crate) fn tests_built(
+    _module: &fennec_syntax::Module,
+    _tests: &[String],
+    _output: &Path,
+) -> Result<Result<Vec<String>, String>, NoAnswer> {
     Err(NoAnswer("builds go to their own process only where there's a daemon".to_owned()))
 }
 

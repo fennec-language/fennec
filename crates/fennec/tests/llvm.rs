@@ -3745,6 +3745,26 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
     Ok(())
 }
 
+/// A flat message crosses a channel as its words, through each thread's buffer, with a copy of each
+/// block they name, and no block made for the message itself: a string, short, long and empty; a
+/// struct of numbers, bools and a narrow number; one holding strings, an optional string and bytes;
+/// and a struct of those inside another. Each arrives as sent, the sender keeps and changes its
+/// own, and a message holding a list still goes as a block. It prints the same with
+/// `FENNEC_BLOCK_MESSAGES=1`, where each goes as a block, in dev and release, and ends with
+/// nothing held. CI runs it under the address and thread sanitizers, at 1, 4 and 8 threads.
+#[test]
+fn a_flat_message_crosses_a_channel_as_its_words() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BLOCK_MESSAGES",
+        "flat_messages",
+        include_str!("fixtures/workers/flat_messages.fen"),
+        include_str!("fixtures/workers/flat_messages.out"),
+    )
+}
+
 /// Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
 /// under its error, a number that doesn't fit its size, and a pick from a range given backwards.
 /// Each ends its task as a crash and the program goes on, with nothing left of the messages. The

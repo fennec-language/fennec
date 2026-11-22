@@ -364,6 +364,22 @@ pub(crate) fn executable_checked(
     release: bool,
     checked: Option<fennec_check::Signatures>,
 ) -> Result<Built, String> {
+    if crate::child::wanted() {
+        match crate::child::built(program, output, release, checked.as_ref()) {
+            Ok(built) => return built,
+            Err(no_answer) => crate::child::said_no_answer(&no_answer, output),
+        }
+    }
+    executable_checked_here(program, output, release, checked)
+}
+
+/// [`executable_checked`], in this process.
+pub(crate) fn executable_checked_here(
+    program: &fennec_kit::Program,
+    output: &Path,
+    release: bool,
+    checked: Option<fennec_check::Signatures>,
+) -> Result<Built, String> {
     match built_and_linked(program, output, release, (checked.clone(), true)) {
         // A unit used again has no text to compile again from, so when its object goes from the
         // cache before the link, the build is made again writing every unit.

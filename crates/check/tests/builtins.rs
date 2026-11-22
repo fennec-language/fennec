@@ -238,8 +238,8 @@ fn capabilities_and_errors_need_no_import() {
     let program = "
         def read(fs: Fs, path: str) -> str:
             return fs.read_text(path) except why:
-                case .NotFound(reason=reason):
-                    reason
+                case .NotFound(path=path):
+                    path
                 case _:
                     why.message()
 

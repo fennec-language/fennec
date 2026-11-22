@@ -105,9 +105,10 @@ impl Fault {
         }
     }
 
-    /// The failure as a program prints it: an `IoError`'s words, its reason.
-    fn printed(self) -> &'static str {
-        match self {
+    /// The failure as a program prints it: an `IoError`'s words. A refusal says the path it
+    /// was at, when the work was done for a call on `fs` given one, and not for a file's own.
+    fn printed(self, at: Option<&str>) -> String {
+        let said = match self {
             Fault::NoSpace => "the disk is full",
             Fault::Quota => "the disk space allowed is used up",
             Fault::ReadOnly => "the disk can't be written to",
@@ -115,6 +116,10 @@ impl Fault {
             Fault::TooLarge => "the file is too big for the system",
             Fault::Io => "the system failed: other error",
             Fault::Kill => "",
+        };
+        match (self, at) {
+            (Fault::Denied, Some(path)) => format!("`{path}`: {said}"),
+            _ => said.to_owned(),
         }
     }
 }
@@ -392,6 +397,11 @@ fn modelled(plan: &Plan, rules: &[Rule]) -> (Left, Vec<(Work, usize)>) {
     (Left { printed: Some(printed), killed: false, files, partial: None }, model.work)
 }
 
+/// A run that ends failing with `fault`, printed with the path it was at, if any.
+fn failed(fault: Fault, at: Option<&str>) -> Ended {
+    Ended::Printed(format!("failed {}\n", fault.printed(at)))
+}
+
 /// `fs.write_text` or `fs.write_bytes`: create, write, a sync of the file where it's durable,
 /// rename, and a sync of the folder where it's durable. A failure before the rename throws its file
 /// away, leaving the target as it was, a refusal to make it too; the folder's sync fails only
@@ -402,30 +412,31 @@ fn whole(
     (file, data, durable): (usize, &[u8], bool),
     at: usize,
 ) -> Ended {
-    let failed = |fault: Fault| Ended::Printed(format!("failed {}\n", fault.printed()));
+    // Each step is `fs.write_text`'s or `fs.write_bytes`'s, given the file's path.
+    let path = Some(file_name(file));
     match model.begin(Work::Create, 0) {
         Went::Done => {}
         Went::Killed(_) => return Ended::Killed(None),
-        Went::Failed(fault, _) => return failed(fault),
+        Went::Failed(fault, _) => return failed(fault, path),
     }
     match model.begin(Work::Write, data.len()) {
         Went::Done => {}
         Went::Killed(landed) => {
             return Ended::Killed(Some((file, data.get(..landed).unwrap_or_default().to_vec())));
         }
-        Went::Failed(fault, _) => return failed(fault),
+        Went::Failed(fault, _) => return failed(fault, path),
     }
     if durable {
         match model.begin(Work::Sync, 0) {
             Went::Done => {}
             Went::Killed(_) => return Ended::Killed(Some((file, data.to_vec()))),
-            Went::Failed(fault, _) => return failed(fault),
+            Went::Failed(fault, _) => return failed(fault, path),
         }
     }
     match model.begin(Work::Rename, 0) {
         Went::Done => {}
         Went::Killed(_) => return Ended::Killed(Some((file, data.to_vec()))),
-        Went::Failed(fault, _) => return failed(fault),
+        Went::Failed(fault, _) => return failed(fault, path),
     }
     if let Some(target) = files.get_mut(file) {
         *target = Some(data.to_vec());
@@ -434,7 +445,7 @@ fn whole(
         match model.begin(Work::Sync, 0) {
             Went::Done => {}
             Went::Killed(_) => return Ended::Killed(None),
-            Went::Failed(fault, _) => return failed(fault),
+            Went::Failed(fault, _) => return failed(fault, path),
         }
     }
     Ended::Printed(format!("wrote {at}\n"))
@@ -452,11 +463,11 @@ fn block(
     pieces: &[Piece],
     (at, printed): (usize, &mut String),
 ) -> Ended {
-    let failed = |fault: Fault| Ended::Printed(format!("failed {}\n", fault.printed()));
+    // `fs.create` is given the file's path; each step past it is the file's own, which has none.
     match model.begin(Work::Create, 0) {
         Went::Done => {}
         Went::Killed(_) => return Ended::Killed(None),
-        Went::Failed(fault, _) => return failed(fault),
+        Went::Failed(fault, _) => return failed(fault, Some(file_name(file))),
     }
     // Everything written, and how much of it a flush has put on the disk.
     let (mut written, mut landed) = (Vec::<u8>::new(), 0);
@@ -473,13 +484,13 @@ fn block(
                             written.get(..landed).unwrap_or_default().to_vec(),
                         )));
                     }
-                    Went::Failed(fault, _) => return failed(fault),
+                    Went::Failed(fault, _) => return failed(fault, None),
                 }
                 if matches!(piece, Piece::Sync) {
                     match model.begin(Work::Sync, 0) {
                         Went::Done => {}
                         Went::Killed(_) => return Ended::Killed(Some((file, written.clone()))),
-                        Went::Failed(fault, _) => return failed(fault),
+                        Went::Failed(fault, _) => return failed(fault, None),
                     }
                 }
                 continue;
@@ -495,9 +506,9 @@ fn block(
                 Went::Failed(fault, through) => {
                     written.extend_from_slice(data.get(..through).unwrap_or_default());
                     if !caught {
-                        return failed(fault);
+                        return failed(fault, None);
                     }
-                    let _ = writeln!(printed, "caught {}", fault.printed());
+                    let _ = writeln!(printed, "caught {}", fault.printed(None));
                     break;
                 }
             }
@@ -508,19 +519,19 @@ fn block(
         Went::Killed(_) => {
             return Ended::Killed(Some((file, written.get(..landed).unwrap_or_default().to_vec())));
         }
-        Went::Failed(fault, _) => return failed(fault),
+        Went::Failed(fault, _) => return failed(fault, None),
     }
     if durable {
         match model.begin(Work::Sync, 0) {
             Went::Done => {}
             Went::Killed(_) => return Ended::Killed(Some((file, written))),
-            Went::Failed(fault, _) => return failed(fault),
+            Went::Failed(fault, _) => return failed(fault, None),
         }
     }
     match model.begin(Work::Rename, 0) {
         Went::Done => {}
         Went::Killed(_) => return Ended::Killed(Some((file, written))),
-        Went::Failed(fault, _) => return failed(fault),
+        Went::Failed(fault, _) => return failed(fault, None),
     }
     if let Some(target) = files.get_mut(file) {
         *target = Some(written);
@@ -529,7 +540,7 @@ fn block(
         match model.begin(Work::Sync, 0) {
             Went::Done => {}
             Went::Killed(_) => return Ended::Killed(None),
-            Went::Failed(fault, _) => return failed(fault),
+            Went::Failed(fault, _) => return failed(fault, None),
         }
     }
     Ended::Printed(format!("closed {at}\n"))
@@ -710,7 +721,7 @@ fn canary() -> Result<(), String> {
                     .ok_or("LLVM doesn't take the canary")?;
                 let (folder, _) = fresh(&work)?;
                 let (printed, _, _) = ran(&executable, &work, &folder, &rule)?;
-                if printed != format!("failed {}\n", Fault::NoSpace.printed()) {
+                if printed != format!("failed {}\n", Fault::NoSpace.printed(None)) {
                     return Err(format!(
                         "`{}` builds programs whose runtime doesn't read FENNEC_FAULTS: point FENNEC_FAULTED at a \
                          `fennec` beside a runtime built with the `faults` feature (it printed {printed:?})",

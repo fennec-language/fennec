@@ -5673,6 +5673,7 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
 /// test reaches too. The test's text was written twice, once to see LLVM took it and once to build
 /// it, and two builds between the program's pushed every analysis of the program's own functions
 /// out of what the daemon keeps, so they were all worked out again at every such edit.
+#[cfg(unix)]
 #[test]
 fn a_run_with_tests_uses_the_programs_own_analyses_again() {
     let (_folder, kit, home) = small_kit("run-kept-analyses").unwrap();

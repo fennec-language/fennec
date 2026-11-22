@@ -24,6 +24,11 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Connection", "read" | "_body") => reads(&[Type::Int], fails(Type::Bytes)),
         ("Connection", "_room_for_body") => reads(&[Type::Int], Type::Bool),
         ("Connection", "read_line") => reads(&[], fails(Type::optional(Type::Str))),
+        // A request's head in one call, within the most bytes, header lines and blank lines
+        // before it given, as std.net's private `Head`.
+        ("Connection", "_read_head") => {
+            reads(&[Type::Int, Type::Int, Type::Int], fails(Type::named("Head")))
+        }
         // `bytes` or a `str`, which the call checks.
         ("Connection", "write") => reads(&[Type::Unknown], fails(Type::Unit)),
         ("Connection" | "Server" | "UdpSocket", "close") => reads(&[], Type::Unit),

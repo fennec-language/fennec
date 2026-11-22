@@ -554,22 +554,34 @@ fn compiler_for(name: &str) -> Result<PathBuf, String> {
     if !PRIVATE_READERS.contains(&name) {
         return Ok(fennec);
     }
-    std_tests_beside(&fennec, name)
+    std_tests_beside(&fennec, name, std::env::consts::EXE_SUFFIX)
 }
 
 /// `fennec-std-tests` beside `fennec`, to build the reader for `name`, when it's there and from
 /// the same build. One left from an earlier build, as rebuilding `fennec` alone leaves it, would
 /// build the reader with another std, and its inputs would all read as findings, so it's refused
-/// as a setup to fix.
-fn std_tests_beside(fennec: &Path, name: &str) -> Result<PathBuf, String> {
-    let beside = fennec.with_file_name(format!("fennec-std-tests{}", std::env::consts::EXE_SUFFIX));
+/// as a setup to fix. So is one whose build can't be told, from a file with no stamp or one that
+/// can't be read, which says which. A system's programs end in `suffix`, as Windows's in `.exe`.
+fn std_tests_beside(fennec: &Path, name: &str, suffix: &str) -> Result<PathBuf, String> {
+    let beside = fennec.with_file_name(format!("fennec-std-tests{suffix}"));
     if !beside.exists() {
         return Err(format!(
             "the `{name}` reader reads std's private names, so `fennec-std-tests` builds it, and there's none beside {}: build it with {BUILD_STD_TESTS}",
             fennec.display()
         ));
     }
-    if command_build(&beside) != command_build(fennec) {
+    let fennec = command_file(fennec, suffix);
+    let (theirs, ours) = (command_build(&beside)?, command_build(&fennec)?);
+    for (build, path) in [(&theirs, &beside), (&ours, &fennec)] {
+        if build.is_none() {
+            return Err(format!(
+                "`{}` holds no stamp saying which build of Fennec it's from, so the `{name}` reader may not be built with the same std as `{}`: build them again with {BUILD_STD_TESTS}",
+                path.display(),
+                fennec.display()
+            ));
+        }
+    }
+    if theirs != ours {
         return Err(format!(
             "`{}` is from another build of Fennec than `{}`, so the `{name}` reader it built would read another std: build it again with {BUILD_STD_TESTS}",
             beside.display(),
@@ -579,15 +591,33 @@ fn std_tests_beside(fennec: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(beside)
 }
 
+/// The file the command at `path` runs from. `fennec()` names `fennec` with no suffix, which runs
+/// either way, but on a system whose programs end in `suffix`, as Windows's in `.exe`, its file
+/// has the suffix, so that's the one read when only it is there.
+fn command_file(path: &Path, suffix: &str) -> PathBuf {
+    if suffix.is_empty() || path.is_file() {
+        return path.to_path_buf();
+    }
+    let mut named = path.as_os_str().to_owned();
+    named.push(suffix);
+    let with_suffix = PathBuf::from(named);
+    if with_suffix.is_file() { with_suffix } else { path.to_path_buf() }
+}
+
 /// The build of Fennec the command at `path` is from, as the stamp `fennec` writes into its file
-/// says, or `None` for one without, or that can't be read.
-fn command_build(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
+/// says, or `None` for a file with none. One that can't be read is an error that names it.
+fn command_build(path: &Path) -> Result<Option<String>, String> {
+    let bytes = std::fs::read(path).map_err(|err| {
+        format!("couldn't read `{}` to tell which build of Fennec it's from: {err}", path.display())
+    })?;
     // Written in two pieces, so this program's own file doesn't hold the marker whole.
     let marker = ["fennec-command-", "build:"].concat().into_bytes();
-    let at = bytes.windows(marker.len()).position(|window| window == marker.as_slice())? + marker.len();
-    let hex = std::str::from_utf8(bytes.get(at..at + 64)?).ok()?;
-    hex.bytes().all(|digit| digit.is_ascii_hexdigit()).then(|| hex.to_owned())
+    let Some(at) = bytes.windows(marker.len()).position(|window| window == marker.as_slice()) else {
+        return Ok(None);
+    };
+    let hex =
+        bytes.get(at + marker.len()..at + marker.len() + 64).and_then(|hex| std::str::from_utf8(hex).ok());
+    Ok(hex.filter(|hex| hex.bytes().all(|digit| digit.is_ascii_hexdigit())).map(str::to_owned))
 }
 
 /// The readers built so far in this process, by target.
@@ -804,24 +834,41 @@ mod tests {
     use super::{fuzzing_process, std_tests_beside};
 
     /// A `fennec-std-tests` from another build than the `fennec` beside it is refused, saying how
-    /// to build it again, and one from the same build is used. Each is a file holding a stamp.
+    /// to build it again, and one from the same build is used. Each is a file holding a stamp. A
+    /// file with none, or one that can't be read, is refused, saying which. On a system whose
+    /// programs end in `.exe`, `fennec` is named without it, as the fuzzer names it, and read with
+    /// it: Windows CI found the plain name unreadable, and read it as another build.
     #[test]
     fn a_fennec_std_tests_from_another_build_is_refused() {
         let folder = std::env::temp_dir().join(format!("fennec-fuzz-stamps-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
-        let stamped = |name: &str, digit: &str| {
-            let path = folder.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-            let stamp = format!("{}{}", ["fennec-command-", "build:"].concat(), digit.repeat(64));
-            std::fs::write(&path, format!("code before\0{stamp}\0code after")).unwrap();
-            path
-        };
-        let fennec = stamped("fennec", "a");
-        stamped("fennec-std-tests", "b");
-        let refused = std_tests_beside(&fennec, "postgres").unwrap_err();
-        assert!(refused.contains("is from another build of Fennec"), "{refused}");
-        assert!(refused.contains("cargo build -p fennec --features std-private"), "{refused}");
-        let same = stamped("fennec-std-tests", "a");
-        assert_eq!(std_tests_beside(&fennec, "postgres"), Ok(same));
+        for suffix in ["", ".exe"] {
+            let file = |name: &str, holding: &str| {
+                let path = folder.join(format!("{name}{suffix}"));
+                std::fs::write(&path, format!("code before\0{holding}\0code after")).unwrap();
+                path
+            };
+            let stamp =
+                |digit: &str| format!("{}{}", ["fennec-command-", "build:"].concat(), digit.repeat(64));
+            file("fennec", &stamp("a"));
+            // As the fuzzer names it, with no suffix.
+            let fennec = folder.join("fennec");
+            file("fennec-std-tests", &stamp("b"));
+            let refused = std_tests_beside(&fennec, "postgres", suffix).unwrap_err();
+            assert!(refused.contains("is from another build of Fennec"), "{suffix}: {refused}");
+            assert!(refused.contains("cargo build -p fennec --features std-private"), "{suffix}: {refused}");
+            let same = file("fennec-std-tests", &stamp("a"));
+            assert_eq!(std_tests_beside(&fennec, "postgres", suffix), Ok(same), "{suffix}");
+            file("fennec-std-tests", "no stamp");
+            let unstamped = std_tests_beside(&fennec, "postgres", suffix).unwrap_err();
+            assert!(unstamped.contains("holds no stamp"), "{suffix}: {unstamped}");
+            std::fs::remove_dir_all(&folder).unwrap();
+            std::fs::create_dir_all(&folder).unwrap();
+        }
+        // A `fennec` that isn't there can't be read, and that's what's said.
+        std::fs::write(folder.join("fennec-std-tests"), "no stamp").unwrap();
+        let unread = std_tests_beside(&folder.join("fennec"), "postgres", "").unwrap_err();
+        assert!(unread.contains("couldn't read"), "{unread}");
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

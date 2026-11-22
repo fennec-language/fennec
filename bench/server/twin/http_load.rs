@@ -1,0 +1,114 @@
+//! The load for `http.fen` and its twin: `http_load PORT CONNECTIONS REQUESTS` opens that many
+//! connections, each kept open, and sends each one's requests one after another, waiting for each
+//! answer before the next, in turn: `GET /`, `GET /users/{n}` and `POST /orders` with a small JSON
+//! order. Every answer's status and body are checked, and it prints how many it got and a checksum
+//! of their bodies, the same for any server that answers right. It's a process of its own, so a
+//! server's count of instructions holds only the server's work.
+
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::thread;
+
+/// The `n`th request a connection sends, and the status and body it should get back.
+fn request(n: u64) -> (String, u16, String) {
+    match n % 3 {
+        0 => ("GET / HTTP/1.1\r\nhost: localhost\r\n\r\n".to_string(), 200, "hello".to_string()),
+        1 => (
+            format!("GET /users/{n} HTTP/1.1\r\nhost: localhost\r\n\r\n"),
+            200,
+            format!("{{\"id\": {n}, \"name\": \"user {n}\", \"active\": {}}}", n.is_multiple_of(2)),
+        ),
+        _ => {
+            let count = n % 7 + 1;
+            let order = format!("{{\"item\":\"tea\",\"count\":{count}}}");
+            (
+                format!(
+                    "POST /orders HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{order}",
+                    order.len()
+                ),
+                201,
+                format!("{{\"item\": \"tea\", \"count\": {count}, \"total\": {}}}", count * 250),
+            )
+        }
+    }
+}
+
+/// A response's status and body.
+fn response(reader: &mut BufReader<TcpStream>) -> io::Result<(u16, Vec<u8>)> {
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let status = line.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut length = 0;
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header)?;
+        let header = header.trim_end();
+        if header.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    Ok((status, body))
+}
+
+/// One connection's requests, each answer checked: the checksum of their bodies, or what went
+/// wrong, the first wrong answer or the network's failure.
+fn visit(port: u16, first: u64, requests: u64) -> Result<u64, String> {
+    let failed = |why: io::Error| format!("the connection failed: {why}");
+    let stream = TcpStream::connect(("127.0.0.1", port)).map_err(failed)?;
+    stream.set_nodelay(true).map_err(failed)?;
+    let mut writer = stream.try_clone().map_err(failed)?;
+    let mut reader = BufReader::new(stream);
+    let mut sum = 0_u64;
+    for n in first..first + requests {
+        let (sent, status, wanted) = request(n);
+        writer.write_all(sent.as_bytes()).map_err(failed)?;
+        let (got, body) = response(&mut reader).map_err(failed)?;
+        if (got, body.as_slice()) != (status, wanted.as_bytes()) {
+            return Err(format!(
+                "request {n} was answered {got} {:?}, not {status} {wanted:?}",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+        sum = sum.wrapping_mul(31).wrapping_add(body.iter().map(|&b| u64::from(b)).sum::<u64>());
+    }
+    Ok(sum)
+}
+
+/// Every answer is checked, and one wrong answer, or a connection that fails, makes the whole
+/// load fail with what went wrong and exit 1, so a wrong answer can never be measured as a fast
+/// one.
+fn main() {
+    let args: Vec<u64> = std::env::args().skip(1).map(|a| a.parse().expect("a number")).collect();
+    let [port, connections, requests] = args[..] else {
+        eprintln!("usage: http_load PORT CONNECTIONS REQUESTS");
+        std::process::exit(2);
+    };
+    let port = u16::try_from(port).expect("a port");
+    let visits: Vec<_> =
+        (0..connections).map(|c| thread::spawn(move || visit(port, c * requests, requests))).collect();
+    let mut sums = Vec::new();
+    let mut wrong = Vec::new();
+    for visit in visits {
+        match visit.join() {
+            Ok(Ok(sum)) => sums.push(sum),
+            Ok(Err(why)) => wrong.push(why),
+            Err(_) => wrong.push("a connection's thread panicked".to_owned()),
+        }
+    }
+    if !wrong.is_empty() {
+        eprintln!("WRONG: {} of {connections} connections failed:", wrong.len());
+        for why in &wrong {
+            eprintln!("  {why}");
+        }
+        std::process::exit(1);
+    }
+    let sum = sums.iter().fold(0_u64, |all, s| all.wrapping_mul(1_000_003).wrapping_add(*s));
+    println!("{} answered, checksum {sum}", connections * requests);
+}

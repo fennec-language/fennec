@@ -1,0 +1,97 @@
+# Mutants no test can catch, since the program still does just what it did, at most slower.
+# `.github/scripts/mutants-equivalent.sh` takes them out of what a run missed. Each entry is four
+# lines, with a blank line after:
+# - the file;
+# - what cargo-mutants says the mutant does, after the line and column;
+# - the whole line it changes, leading and trailing spaces aside, so the entry goes with the line
+#   as code above it moves, and a line changed anywhere is a missed mutant again, to be looked at
+#   afresh;
+# - why no program can tell the difference.
+#
+# Add one only when no program could tell the difference. A mutant that only a wrong program
+# could show is a missing test, not an equivalent.
+
+crates/llvm/src/lists.rs
+delete match arm [] in Emit<'_, '_, '_>::put_in_place
+[] => dict == object,
+Changes only which lookup's entry the put tries first: `put_found_in_place` writes there only after checking at run time that the lookup searched this very block, and searches again if not, so every put lands in the right entry.
+
+crates/llvm/src/lists.rs
+replace == with != in Emit<'_, '_, '_>::put_in_place
+[] => dict == object,
+Changes only which lookup's entry the put tries first: `put_found_in_place` writes there only after checking at run time that the lookup searched this very block, and searches again if not, so every put lands in the right entry.
+
+crates/llvm/src/lists.rs
+delete match arm [field] in Emit<'_, '_, '_>::put_in_place
+[field] => self.known.field_of(dict).is_some_and(|(from, name)| *from == object && name == field),
+Changes only which lookup's entry the put tries first: `put_found_in_place` writes there only after checking at run time that the lookup searched this very block, and searches again if not, so every put lands in the right entry.
+
+crates/llvm/src/lists.rs
+replace && with || in Emit<'_, '_, '_>::put_in_place
+[field] => self.known.field_of(dict).is_some_and(|(from, name)| *from == object && name == field),
+Changes only which lookup's entry the put tries first: `put_found_in_place` writes there only after checking at run time that the lookup searched this very block, and searches again if not, so every put lands in the right entry.
+
+crates/llvm/src/lists.rs
+replace == with != in Emit<'_, '_, '_>::put_in_place
+[field] => self.known.field_of(dict).is_some_and(|(from, name)| *from == object && name == field),
+Changes only which lookup's entry the put tries first: `put_found_in_place` writes there only after checking at run time that the lookup searched this very block, and searches again if not, so every put lands in the right entry.
+
+crates/llvm/src/lists.rs
+delete match arm [] in Emit<'_, '_, '_>::set_index_as_ever
+[] => dict == object,
+Only stops the store reusing a lookup's entry: it searches the dict itself and finds the same entry, so only speed changes.
+
+crates/llvm/src/lists.rs
+delete match arm [field] in Emit<'_, '_, '_>::set_index_as_ever
+[field] => {
+Only stops the store reusing a lookup's entry: it searches the field's dict itself and finds the same entry, so only speed changes.
+
+crates/llvm/src/lists.rs
+replace && with || in Emit<'_, '_, '_>::set_index_as_ever
+self.known.field_of(dict).is_some_and(|(from, name)| *from == object && name == field)
+Changes only which lookup's entry a field's store tries: a field's entry is never taken as sure (`sure: path.is_empty()`), so the run time checks the lookup searched this very block, and searches again if not.
+
+crates/llvm/src/lists.rs
+replace == with != in Emit<'_, '_, '_>::set_index_as_ever
+self.known.field_of(dict).is_some_and(|(from, name)| *from == object && name == field)
+Changes only which lookup's entry a field's store tries: a field's entry is never taken as sure (`sure: path.is_empty()`), so the run time checks the lookup searched this very block, and searches again if not.
+
+crates/llvm/src/lists.rs
+replace && with || in Emit<'_, '_, '_>::set_index_as_ever
+self.reads_from(*dict, object, path) && looked_up == index
+Changes only which entry a put under a lock tries: `dict_store_checked` checks at run time that it's still that key's entry in this dict, and searches again if not.
+
+crates/llvm/src/lists.rs
+replace match guard self .known .item_home(*local) .is_some_and(|(home, at)| *home == object && at.as_slice() == path) with false in Emit<'_, '_, '_>::set_index_as_ever
+if self
+Only stops a put-back reusing the address its item was taken from: the store finds the same place in the list again, so only speed changes.
+
+crates/llvm/src/lists.rs
+replace match guard self .known .item_home(*local) .is_some_and(|(home, at)| *home == object && at.as_slice() == path) with true in Emit<'_, '_, '_>::set_index_as_ever
+if self
+A taken item's local is stored directly only at its own put-back, where the guard already holds, so the guard decides nothing: tried with the item stored into another list, and another field's, before and after its put-back.
+
+crates/llvm/src/lists.rs
+replace && with || in Emit<'_, '_, '_>::set_index_as_ever
+.is_some_and(|(home, at)| *home == object && at.as_slice() == path) =>
+A taken item's local is stored directly only at its own put-back, where the guard already holds, so the guard decides nothing: tried with the item stored into another list, and another field's, before and after its put-back.
+
+crates/llvm/src/lists.rs
+replace == with != in Emit<'_, '_, '_>::set_index_as_ever
+.is_some_and(|(home, at)| *home == object && at.as_slice() == path) =>
+A taken item's local is stored directly only at its own put-back, where the guard already holds, so the guard decides nothing: tried with the item stored into another list, and another field's, before and after its put-back.
+
+crates/llvm/src/lists.rs
+replace && with || in Emit<'_, '_, '_>::set_index_as_ever
+let handed = path.is_empty() && self.asks_the_log() && self.is_mut_param(object);
+Only swaps which alone check a list store takes, without the made-alone-once shortcut or, under a lock, the log's: each copies a shared list just as `unshared` does, so every store sees the same values.
+
+crates/llvm/src/lists.rs
+replace match guard step > 0 with true in Emit<'_, '_, '_>::see_to
+Kind::List(_) if step > 0 => {
+Also makes a root list alone first, which the change through it would do anyway: a shared list is still copied exactly once, so values and copy counts are the same.
+
+crates/llvm/src/lists.rs
+replace > with >= in Emit<'_, '_, '_>::see_to
+Kind::List(_) if step > 0 => {
+Also makes a root list alone first, which the change through it would do anyway: a shared list is still copied exactly once, so values and copy counts are the same.

@@ -3873,6 +3873,11 @@ impl Writer {
                 let _ = write!(self.helpers, "{}", super::saving::written(saving));
                 self.line(indent, &format!("saved{}(stdout)", saving.id));
             }
+            Stmt::Opened(opening) => {
+                let _ = write!(self.helpers, "{}", super::opening::written(opening));
+                self.line(indent, &format!("opened{}(stdout) except why:", opening.id));
+                self.line(indent + 1, "stdout.print(\"refused\", why.code)");
+            }
             Stmt::Ruled(ruling) => {
                 let _ = write!(self.helpers, "{}", ruled_written(ruling));
                 self.line(indent, &format!("ruled{}(stdout)", ruling.id));

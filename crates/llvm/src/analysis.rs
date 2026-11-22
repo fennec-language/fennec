@@ -1670,10 +1670,10 @@ fn find_slice_keys(function: &Function, in_entries: InEntries<'_>, known: &mut A
         Operand::Int(_) => true,
         _ => false,
     };
-    // A dict that holds its values in its entries is left out: finding a slice's bytes where
-    // they are, and adding them, are written for an entry of a key and one word. Which dicts do
-    // is the layouts' to say: a tuple, an array or an `Id` is held in place as a struct is,
-    // whatever it's written as.
+    // A dict that holds structs in its entries is left out: finding a slice's bytes where they
+    // are, and adding them, are written for an entry of a key and one word, or a string's header.
+    // Which dicts do is the layouts' to say: a tuple, an array or an `Id` is held in place as a
+    // struct is, whatever it's written as.
     let str_keyed = |dict: &Operand| match dict {
         Operand::Local(local) => function.locals.get(local.0).is_some_and(|local| {
             matches!(&local.ty, Type::Dict(key, _) if **key == Type::Str) && !in_entries(&local.ty)
@@ -5122,7 +5122,7 @@ fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
     thread.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
-/// Whether each `dict[str, _]` a function of the program has a local of holds its values in its
+/// Whether each `dict[str, _]` a function of the program has a local of holds structs in its
 /// entries, as `layouts` lay it out, asked here before the analyses run on threads: asking the
 /// layouts may number a kind of block, which only one thread can do. `None` without layouts.
 fn in_entries_of<'p>(
@@ -5135,10 +5135,14 @@ fn in_entries_of<'p>(
     for local in locals {
         let keyed_by_text = matches!(&local.ty, Type::Dict(key, _) if **key == Type::Str);
         if keyed_by_text && !held.iter().any(|(ty, _)| **ty == local.ty) {
-            let in_place = matches!(
-                crate::kinds::Kind::of(layouts, &local.ty),
-                Ok(crate::kinds::Kind::Dict(_, fennec_rt::embed::dicts::Word::InPlace(_)))
-            );
+            // A string held in the entry as its header is found and added by a slice's bytes
+            // too; a struct held there isn't.
+            let in_place = match crate::kinds::Kind::of(layouts, &local.ty) {
+                Ok(crate::kinds::Kind::Dict(_, fennec_rt::embed::dicts::Word::InPlace(number))) => {
+                    !matches!(layouts.dict_value(number), Some(fennec_layout::Ty::Str))
+                }
+                _ => false,
+            };
             held.push((&local.ty, in_place));
         }
     }

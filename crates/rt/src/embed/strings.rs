@@ -423,40 +423,17 @@ fn ascii_part(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64
         let at = if at < 0 { at + length } else { at };
         usize::try_from(at.clamp(0, length)).unwrap_or(0)
     };
-    let (from, to) = (bound(from, 0), bound(to, length));
-    let size = to.saturating_sub(from);
+    let from = bound(from, 0);
+    // A range that ends before it starts is empty, as `ascii_part_of` takes it.
+    let to = bound(to, length).max(from);
+    let size = to - from;
     if size == 1 {
         let word = block.get(TEXT_HEADER_WORDS + from / 8)?;
         let byte = word.to_le_bytes().get(from % 8).copied()?;
         return state.tables.ascii.get(usize::from(byte)).and_then(|at| i64::try_from(*at).ok());
     }
-    let words = size.div_ceil(8).max(1);
-    let mut made = state.heap.fresh(TEXT_HEADER_WORDS + words);
-    let number = |n: usize| u64::try_from(n).unwrap_or(0);
-    made.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&[
-        1,
-        state.tables.str_shape,
-        number(size),
-        number(size),
-        number(words * 8),
-        0,
-    ]);
-    let text = state.heap.block(source)?.get(TEXT_HEADER_WORDS..)?;
-    // Each word of the part is made of the end of one word and the start of the next.
-    let shift = u32::try_from(from % 8).unwrap_or(0) * 8;
-    for (at, to_word) in made.get_mut(TEXT_HEADER_WORDS..)?.iter_mut().enumerate().take(size.div_ceil(8)) {
-        let low = text.get(from / 8 + at).copied().unwrap_or(0) >> shift;
-        let high =
-            if shift == 0 { 0 } else { text.get(from / 8 + at + 1).copied().unwrap_or(0) << (64 - shift) };
-        *to_word = low | high;
-    }
-    // What's past the end of the part reads as zero, as native code expects.
-    if size % 8 != 0
-        && let Some(last) = made.get_mut(TEXT_HEADER_WORDS + size / 8)
-    {
-        *last &= (1_u64 << (u32::try_from(size % 8).unwrap_or(0) * 8)) - 1;
-    }
-    Some(state.heap.insert(made))
+    // An ASCII string's characters are its bytes.
+    ascii_part_of(state, source, (from, to), u64::try_from(size).ok()?)
 }
 
 /// `text[from:to]`, where a missing end is `i64::MIN`.
@@ -576,6 +553,11 @@ fn word_in_place_from(
 /// first at or after byte `start` on, none overlapping the one before: where a `split` on it cuts.
 /// One pass over the words `whole`'s bytes are in, a word at a time to each place `part`'s first
 /// byte is, then whether the rest follows, as [`word_in_place`] looks for the first.
+#[expect(
+    clippy::inline_always,
+    reason = "a whole text's `split` passes a start of 0, which inlined folds away, so it costs what it did before a slice's split shared it"
+)]
+#[inline(always)]
 fn each_place_of_from(
     (whole, length): (&[u64], usize),
     part: u64,
@@ -887,16 +869,28 @@ pub(super) fn ascii_part_of(
         return Some(text_from_bytes(state, &part, kept));
     }
     let words = kept.div_ceil(8);
-    let mut part = state.heap.fresh(TEXT_HEADER_WORDS + words);
+    // Every word is written below, the header's and the text's, so a reused block isn't zeroed first.
+    let mut part = state.heap.fresh_written(TEXT_HEADER_WORDS + words, TEXT_HEADER_WORDS + words);
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
     let header = [1, state.tables.str_shape, number(kept), chars, number(words * 8), 0];
     part.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&header);
     let source = state.heap.block(address)?.get(TEXT_HEADER_WORDS + from / 8..)?;
     let shift = u32::try_from(from % 8 * 8).ok()?;
-    for (at, word) in part.iter_mut().skip(TEXT_HEADER_WORDS).enumerate() {
-        let low = source.get(at).map_or(0, |word| word >> shift);
-        let high = if shift == 0 { 0 } else { source.get(at + 1).map_or(0, |word| word << (64 - shift)) };
-        *word = low | high;
+    let text = part.get_mut(TEXT_HEADER_WORDS..)?;
+    let mut read = source.iter().copied();
+    if shift == 0 {
+        for word in text {
+            *word = read.next().unwrap_or(0);
+        }
+    } else {
+        // Each word of the part is the end of one word and the start of the next, the next carried
+        // on as the following one's start.
+        let mut low = read.next().unwrap_or(0);
+        for word in text {
+            let high = read.next().unwrap_or(0);
+            *word = low >> shift | high << (64 - shift);
+            low = high;
+        }
     }
     let tail = u32::try_from(kept % 8 * 8).ok()?;
     if tail > 0
@@ -1120,6 +1114,11 @@ pub(super) fn find_in(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> 
 /// Where `part` next is in `whole` from byte `from` on, in bytes, or `None`, with nothing
 /// copied: its first eight bytes are looked for as [`word_in_place_from`] does, then the rest
 /// compared eight at a time. For a loop over a `split`, which looks again from past each one.
+#[expect(
+    clippy::inline_always,
+    reason = "a loop over a `split` calls it for each part, through `split_at_header`, and once `find_range` called it too it stopped being inlined there, which cost log_crunch 0.8%"
+)]
+#[inline(always)]
 pub(super) fn place_from(
     whole: (&[u64], usize),
     (part, size): (&[u64], usize),
@@ -1289,14 +1288,24 @@ fn split_in_words(state: &mut State, text: &[u64; 3], separator: &[u64; 3]) -> O
     let (held, length) = super::text::bytes_of(state, text);
     words.clear();
     words.extend_from_slice(held.get(..length.div_ceil(8)).unwrap_or_default());
-    let list = split_words(state, &words, (0, length), (between, size));
+    let mut items = SPLIT_ITEMS.take();
+    items.clear();
+    let mut from = 0;
+    each_place_of_from((&words, length), between, size, 0, |found| {
+        put_part_of_words(state, &mut items, &words, from, found - from);
+        from = found + size;
+    });
+    put_part_of_words(state, &mut items, &words, from, length.saturating_sub(from));
+    let list = super::lists::list_of_texts(state, &items);
+    SPLIT_ITEMS.set(items);
     state.heap.keep_scratch(words);
     Some(list)
 }
 
 /// The list `split` gives of bytes `start..length` of `words`, a text's bytes copied out, cut at
 /// each place of `between`, a separator of `size` bytes, one to eight: each part made inline from
-/// the words or a string of its own, as [`split_in_words`] makes them.
+/// the words or a string of its own, as [`split_in_words`] makes them. A slice's split, which
+/// starts partway; a whole text's is [`split_in_words`]' own loop, which this mustn't slow.
 pub(super) fn split_words(
     state: &mut State,
     words: &[u64],
@@ -1494,6 +1503,66 @@ mod place_tests {
         with(|state| assert_eq!(super::text(state, tail).as_deref(), Some("own")));
         let empty = slice(text, 5, 2, 0, 0);
         with(|state| assert_eq!(super::text(state, empty).as_deref(), Some("")));
+        finish();
+    }
+
+    /// A slice made in a block freed before, of its size, every word of it set, holds its own
+    /// bytes and nothing else, zeros past its end: every word of the part is written, as the block
+    /// isn't zeroed first. From every place in a word it can start, at sizes either side of a word.
+    #[test]
+    fn a_slice_in_a_reused_block_holds_only_its_own_bytes() {
+        begin();
+        let ascii = "0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let text = with(|state| heap::text_address(state, ascii));
+        for from in 0..9 {
+            // Sizes either side of a word, and the rest of the text, which reads past its last word.
+            for size in [2_usize, 7, 8, 9, 16, 23, 24, 31, ascii.len() - from] {
+                let words = super::TEXT_HEADER_WORDS + size.div_ceil(8);
+                with(|state| {
+                    let mut block = state.heap.fresh(words);
+                    block.fill(u64::MAX);
+                    state.heap.recycle(block);
+                    Some(())
+                });
+                let part =
+                    slice(text, i64::try_from(from).unwrap(), i64::try_from(from + size).unwrap(), 0, 0);
+                let wanted = &ascii.as_bytes()[from..from + size];
+                with(|state| {
+                    let block = state.heap.block(part.cast_unsigned())?;
+                    let mut packed = wanted.to_vec();
+                    packed.resize(size.div_ceil(8) * 8, 0);
+                    let words: Vec<u64> = packed
+                        .chunks(8)
+                        .map(|eight| u64::from_le_bytes(eight.try_into().unwrap_or([0; 8])))
+                        .collect();
+                    assert_eq!(
+                        block.get(super::TEXT_HEADER_WORDS..),
+                        Some(words.as_slice()),
+                        "{from}..{}",
+                        from + size
+                    );
+                    Some(())
+                });
+                heap::free_text(part);
+            }
+        }
+        heap::free_text(text);
+        finish();
+    }
+
+    /// A slice of a long ASCII text that ends where or before it starts, by its positions or
+    /// once they're counted from the end, is the empty string.
+    #[test]
+    fn a_reversed_slice_of_a_long_ascii_text_is_empty() {
+        begin();
+        let text = with(|state| heap::text_address(state, "a text long enough for a block, ASCII only"));
+        for (from, to) in [(3, 1), (5, 5), (40, 2), (-1, -3), (-2, 10), (30, -20), (i64::MIN, -100), (100, 0)]
+        {
+            let part = slice(text, from, to, 0, 0);
+            with(|state| assert_eq!(super::text(state, part).as_deref(), Some(""), "[{from}:{to}]"));
+            heap::free_text(part);
+        }
+        heap::free_text(text);
         finish();
     }
 }

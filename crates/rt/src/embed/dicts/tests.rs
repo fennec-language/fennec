@@ -380,6 +380,48 @@ fn the_places_a_dict_holds_blocks_at_are_the_blocks_it_frees() {
     finish();
 }
 
+/// A freed dict of one-word values lets go of each key and value it holds in a block, as its
+/// entries are read, and of nothing an entry taken out held: for keys as one word and as a
+/// string's header, and with an entry popped before the free, which leaves its place marked
+/// removed. Nothing's left behind.
+#[test]
+fn a_freed_dict_lets_go_of_every_block_its_entries_hold_and_no_other() {
+    started();
+    let before = live();
+    let text = |what: &str, at: usize| Value::str(&format!("{what} {at}: {LONG}"));
+    for key in [Word::Str, Word::Text] {
+        let shape = shape(0, key, Word::Str).unwrap();
+        let pairs = (0..6).map(|at| (text("key", at), text("value", at))).collect();
+        let dict =
+            with(|state| super::write(state, shape, &dict_of(pairs)).and_then(|at| u64::try_from(at).ok()))
+                .unwrap();
+        // The dict, and a block each for six keys and six values.
+        assert_eq!(live(), before + 13, "{key:?}");
+        audited(&[dict]);
+        let_go(dict);
+        assert_eq!(live(), before, "{key:?}");
+    }
+    // One entry popped first: its key goes with the pop, and its value to whoever popped it.
+    let shape = shape(0, Word::Str, Word::Str).unwrap();
+    let mut dict = super::new(i64::try_from(shape).unwrap(), 4);
+    let string = |what: &str, at: usize| {
+        with(|state| Some(heap::text_address(state, &format!("{what} {at}: {LONG}")))).unwrap()
+    };
+    for at in 0..6 {
+        dict = super::set(dict, string("key", at), string("value", at));
+    }
+    dict = super::pop(dict, string("key", 2), 0, 0);
+    let value = u64::try_from(super::popped()).unwrap();
+    assert_ne!(value, 0);
+    let_go(value);
+    assert_eq!(live(), before + 11);
+    assert!(shown(u64::try_from(dict).unwrap()).contains("\"key 3: "));
+    audited(&[u64::try_from(dict).unwrap()]);
+    let_go(u64::try_from(dict).unwrap());
+    assert_eq!(live(), before);
+    finish();
+}
+
 #[test]
 fn a_tuple_in_place_is_a_tuple() {
     started();

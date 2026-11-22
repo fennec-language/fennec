@@ -60,6 +60,7 @@ path=${words[1]}
 case "${words[0]} $path" in
   "api rate_limit") echo '{}' ;;
   "api repos/"*"/branches"*) answer none ;;
+  "api repos/"*"/commits"*) answer "$FAKE_GH/commits.json" ;;
   "api repos/"*"/actions/workflows/"*)
     [ -f "$FAKE_GH/workflow-${path##*/}.json" ] || exit 1
     answer "$FAKE_GH/workflow-${path##*/}.json" ;;
@@ -73,10 +74,15 @@ esac
 GH
 chmod +x "$work/bin/gh"
 
-# A run, as `<id> <status> <conclusion> <seconds ago>`, and the list of a workflow's runs.
+# A run, as `<id> <status> <conclusion> <seconds ago> [<commit>]`, and the list of a workflow's
+# runs.
 run() {
-  jq -nc --argjson id "$1" --arg status "$2" --arg conclusion "$3" --argjson ago "$4" \
-    '{databaseId: $id, status: $status, conclusion: $conclusion, createdAt: (now - $ago | todate), headSha: "0123456789abc"}'
+  jq -nc --argjson id "$1" --arg status "$2" --arg conclusion "$3" --argjson ago "$4" --arg sha "${5:-0123456789abc}" \
+    '{databaseId: $id, status: $status, conclusion: $conclusion, createdAt: (now - $ago | todate), headSha: $sha}'
+}
+# Main's commits, newest first, as GitHub lists them.
+commits() {
+  printf '%s\n' "$@" | jq -Rn '[inputs | {sha: .}]' > "$work/gh/commits.json"
 }
 runs() {
   local file=$1
@@ -184,6 +190,25 @@ green
 runs CI "$(run 40 completed success 300)" "$(run 12 in_progress "" 600)"
 check "a run still going behind one that finished isn't read" 0 "$(report)"
 
+# A run of a commit made after its child's run: the child's is the newer, by main's history. On
+# 2026-11-21 the parent's red run, made 4 minutes after the fix's green one, was taken as main's.
+green
+commits bbbbbbbbbbbb aaaaaaaaaaaa
+echo '{"jobs": [{"name": "Test", "conclusion": "failure"}]}' > "$work/gh/jobs-51.json"
+runs CI "$(run 51 completed failure 300 aaaaaaaaaaaa)" "$(run 50 completed success 540 bbbbbbbbbbbb)"
+check "a commit's run made after its child's doesn't count as newer" 0 "$(report)"
+check "the child's run counts" yes "$(said 'main CI: green at bbbbbbbbb (run 50)')"
+# The same for a run still going: one of the parent, made later, with a job failed, isn't read.
+runs CI "$(run 51 in_progress "" 300 aaaaaaaaaaaa)" "$(run 50 completed success 540 bbbbbbbbbbbb)"
+check "a run still going of an older commit isn't read" 0 "$(report)"
+check "the newer commit's finished run counts" yes "$(said 'main CI: green at bbbbbbbbb (run 50)')"
+# And the other way: the child's red, made first, counts, with the parent's green run behind it.
+/bin/rm -f "$work/gh/jobs-51.json"
+echo '{"jobs": [{"name": "Test", "conclusion": "failure"}]}' > "$work/gh/jobs-50.json"
+runs CI "$(run 51 completed success 300 aaaaaaaaaaaa)" "$(run 50 completed failure 540 bbbbbbbbbbbb)"
+check "the child's red run made first counts" 1 "$(report)"
+check "it's red since the child" yes "$(said 'main CI: red at bbbbbbbbb (run 50): Test since bbbbbbbbb')"
+
 green
 check "with no night of mutants yet, the report says so" yes "$(said 'mutants: no nightly run yet')"
 
@@ -207,8 +232,8 @@ runs mutants.yml-schedule "$(run 50 completed success $((day / 2)))"
 slice fennec-ir caught=3 missed=2 timeout=1 unviable=0
 slice fennec-llvm caught=7 missed=0 timeout=0 unviable=2
 check "a night of mutants passes the report" 0 "$(report)"
-check "it says one crate's counts" yes "$(said "fennec-ir: 3 caught, 2 missed, 1 timed out, 0 didn't build")"
-check "and another's" yes "$(said "fennec-llvm: 7 caught, 0 missed, 0 timed out, 2 didn't build")"
+check "it says one crate's counts" yes "$(said "fennec-ir: 3 caught, 2 missed, 0 equivalent, 1 timed out, 0 didn't build")"
+check "and another's" yes "$(said "fennec-llvm: 7 caught, 0 missed, 0 equivalent, 0 timed out, 2 didn't build")"
 check "and what no test caught, all told" yes "$(said ": 2 no test caught, ranked by file")"
 
 if [ "$failures" -ne 0 ]; then

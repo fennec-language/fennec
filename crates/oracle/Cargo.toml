@@ -16,6 +16,7 @@ path = "src/main.rs"
 fennec-check.workspace = true
 fennec-syntax.workspace = true
 libm.workspace = true
+rusqlite.workspace = true
 
 [lints]
 workspace = true

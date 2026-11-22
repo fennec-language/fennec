@@ -19,8 +19,11 @@ use std::time::Duration;
 
 use crate::json_rules::{Json, parse};
 
-/// The server, which answers each request with what it was asked.
-pub(crate) const SERVER: &str = "\
+/// An echo server's program, which waits `$timeout` for each request.
+macro_rules! echo_server {
+    ($timeout:literal) => {
+        concat!(
+            "\
 from std import json
 from std.net import Request, Response
 
@@ -44,8 +47,20 @@ def respond(request: Request) -> Response:
 def main(net: Net, stdout: Stdout):
     with net.listen(0)? as server:
         stdout.print(server.port)
-        server.serve(respond, timeout=5s)
-";
+        server.serve(respond, timeout=",
+            $timeout,
+            ")
+"
+        )
+    };
+}
+
+/// The server, which answers each request with what it was asked.
+pub(crate) const SERVER: &str = echo_server!("5s");
+
+/// The server the `http-sessions` target runs: the same, waiting less for a request, so a client
+/// that goes quiet is let go sooner.
+pub(crate) const SESSIONS_SERVER: &str = echo_server!("2s");
 
 /// The client, which asks the server on the port it's given and says what it got.
 pub(crate) const CLIENT: &str = "\
@@ -468,7 +483,7 @@ fn echoes(echo: &Json, wanted: &Wanted) -> bool {
 }
 
 /// A server started for one input, stopped when it's dropped.
-struct Server(Child);
+pub(crate) struct Server(pub(crate) Child);
 
 impl Drop for Server {
     fn drop(&mut self) {
@@ -477,11 +492,15 @@ impl Drop for Server {
     }
 }
 
-/// The target: what the server says to the input, against what HTTP/1.1 says it should.
-pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
-    let Some(executable) = crate::llvm::built_reader("http-server")? else { return Ok(()) };
+/// A server started from `executable`, with `threads` workers where it's given, and the port it
+/// listens on.
+pub(crate) fn started(executable: &std::path::Path, threads: Option<usize>) -> Result<(Server, u16), String> {
+    let mut command = Command::new(executable);
+    if let Some(threads) = threads {
+        command.env("FENNEC_THREADS", threads.to_string());
+    }
     let mut server = Server(
-        Command::new(&executable)
+        command
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -492,6 +511,13 @@ pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
         BufReader::new(out).read_line(&mut first).map_err(|err| err.to_string())?;
     }
     let port: u16 = first.trim().parse().map_err(|_| format!("the server said {first:?}, not its port"))?;
+    Ok((server, port))
+}
+
+/// The target: what the server says to the input, against what HTTP/1.1 says it should.
+pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
+    let Some(executable) = crate::llvm::built_reader("http-server")? else { return Ok(()) };
+    let (mut server, port) = started(&executable, None)?;
     let mut stream =
         TcpStream::connect(("127.0.0.1", port)).map_err(|err| format!("couldn't connect: {err}"))?;
     stream.set_read_timeout(Some(ANSWERED_WITHIN)).map_err(|err| err.to_string())?;
@@ -510,15 +536,22 @@ pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
     if crate::supervise::kilobytes(server.0.id()).is_some_and(|held| held > 512 * 1024) {
         return Err(format!("the server holds more than 512 MB after {} bytes", input.len()));
     }
+    judged(input, &said, false)
+}
+
+/// Whether what the server said on a connection, `said`, is what HTTP/1.1 says `input` should
+/// get. With `cut`, the client stopped without closing, so the server let it go when its wait for
+/// a request ran out: the last request, which the end of `input` may have cut short, may get no
+/// answer at all, where a close would have had it refused.
+pub(crate) fn judged(input: &[u8], said: &[u8], cut: bool) -> Result<(), String> {
     let (wanted, stop) = wanted(input);
     let heads: Vec<bool> = wanted.iter().map(|wanted| matches!(wanted, Wanted::Head)).collect();
     // Past what's unpromised, which may be a `HEAD`, a response's length can't be known.
     let most = if matches!(stop, Stop::Unpromised) { wanted.len() } else { usize::MAX };
-    let responses = heard(&said, &heads, most)
-        .map_err(|wrong| format!("{wrong} in {:?}", String::from_utf8_lossy(&said)))?;
-    let shown = || {
-        format!("asked {:?}, it said {:?}", String::from_utf8_lossy(input), String::from_utf8_lossy(&said))
-    };
+    let responses = heard(said, &heads, most)
+        .map_err(|wrong| format!("{wrong} in {:?}", String::from_utf8_lossy(said)))?;
+    let shown =
+        || format!("asked {:?}, it said {:?}", String::from_utf8_lossy(input), String::from_utf8_lossy(said));
     for (wanted, response) in wanted.iter().zip(&responses) {
         let right = match wanted {
             Wanted::Refused(status) => response.status == *status,
@@ -533,8 +566,9 @@ pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
         }
     }
     let complete = match stop {
+        Stop::End if cut => responses.len() + 1 >= wanted.len() && responses.len() <= wanted.len(),
         Stop::End => responses.len() == wanted.len(),
-        Stop::Unpromised => responses.len() >= wanted.len(),
+        Stop::Unpromised => responses.len() >= wanted.len() || cut && responses.len() + 1 == wanted.len(),
     };
     if !complete {
         return Err(format!("wanted {} answers, got {}: {}", wanted.len(), responses.len(), shown()));

@@ -801,6 +801,23 @@ counted 8
 again 12 1
 "#;
 
+/// A slice read by one `split` or `find` is read where it is, as a range of its string, with no
+/// string made for it, when the string is in a block, and sliced natively when it's inline. Each,
+/// and `startswith`, `==` and `!=` on a slice, gives what it gives on the slice made first, for
+/// short and long texts, ASCII, accented and Japanese, and ranges at either end, negative, missing,
+/// reversed and past the end, beside parts that are there and not. In dev and release.
+#[test]
+fn a_slice_read_by_one_call_is_read_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "slice_ranges",
+        include_str!("fixtures/slice_ranges.fen"),
+        include_str!("fixtures/slice_ranges.out"),
+    )
+}
+
 /// A slice of a text used as a dict's key is found and added with no string made for it only in a
 /// dict of one-word values. Which dicts hold their values in their entries is the layouts' to say:
 /// a tuple is held in an entry as a struct is, and a dict of tuples took the one-word way, which
@@ -1785,6 +1802,20 @@ def main(stdout: Stdout):
     found = other else Entry(size=-2)
     stdout.print(found.size)
 "#;
+
+/// `repr` of a string gives it quoted and lets go of what it made to show it: an inline string's
+/// block, made for the call, and nothing of a long one's, which it only reads. Short, long and
+/// optional strings, shown 200 times each, leave nothing behind. Each call left a block before.
+#[test]
+fn repr_of_a_string_leaves_nothing_behind() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout, args: Args):\n    extra = args[0] if len(args) > 0 else \"\"\n    texts = [\"short\" + extra, \"a text long enough to need a block of its own\" + extra, \"\"]\n    maybe: str? = texts[0] if len(extra) == 0 else None\n    mut total = 0\n    for _ in range(200):\n        for text in texts:\n            total += len(repr(text))\n        total += len(repr(maybe))\n    stdout.print(total, repr(texts[0]), repr(maybe))\n    return\n";
+    let counts = counts_of("repr_lets_go", source)?;
+    assert!(counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
 
 /// A `shared` value is shown as what it holds, read under its lock: printed, in an f-string, by
 /// `str`, and inside another value or a list, never as the declaration lowering holds it in.

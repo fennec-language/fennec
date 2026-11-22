@@ -125,6 +125,11 @@ const POPPED_OPTIONALS: bool = true;
 /// one refused.
 const SAVED_VALUES: bool = true;
 
+/// Whether a statement keeps rows in a SQLite database through `std.sqlite` (`Stored`): rows put
+/// in, changed and taken out, some breaking the table's rules, read back as structs, a column and
+/// a sum, and transactions kept or undone while the database outside them sees what was kept.
+const STORED_ROWS: bool = true;
+
 /// Whether a statement opens two or three handles in one `with` (`Opened`): left to right, one
 /// perhaps failing to open, a lent pair taken apart inside, and the block ending, failing or
 /// crashing, with cleanups that may crash.
@@ -837,6 +842,7 @@ impl Writer<'_> {
             27 if WHERE_RULES && self.choice(4) == 0 => self.where_rules(body),
             27 if POPPED_OPTIONALS && self.choice(4) == 0 => self.popped_optionals(body),
             27 if SAVED_VALUES && self.choice(4) == 0 => self.saved_values(body),
+            27 if STORED_ROWS && self.choice(4) == 0 => self.stored_rows(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1701,6 +1707,13 @@ impl Writer<'_> {
         let id = self.made;
         let steps = super::saving::picked_steps(id, &mut |n| self.choice(n));
         body.push(Stmt::Saved(super::saving::Saving { id, steps }));
+    }
+
+    /// A `Stored` statement: 3 to 10 steps, a fifth of them transactions.
+    fn stored_rows(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        body.push(Stmt::Stored(super::storing::picked(id, &mut |n| self.choice(n))));
     }
 
     /// A `Sized` statement: one size, a start near its middle or either end, then 3 to 12 steps,

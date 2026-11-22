@@ -572,14 +572,17 @@ impl Emit<'_, '_, '_> {
         }
         match kind {
             Kind::Str | Kind::TextBlock => {
-                let block = if *kind == Kind::Str && self.headers() {
-                    self.owned_text_block(value)
-                } else {
-                    value.to_owned()
-                };
                 self.declare("declare ptr @fennec_str_repr(ptr) nounwind");
                 let text = self.temp();
-                self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {block})"));
+                if *kind == Kind::Str && self.headers() {
+                    // The header's block, lent, or one made for an inline header and let go of
+                    // after: the call only reads it.
+                    let (block, owned) = self.text_block(value);
+                    self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {block})"));
+                    self.let_go_text_block(&block, &owned);
+                } else {
+                    self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {value})"));
+                }
                 Ok(text)
             }
             Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => Ok(self.text_of_block(value)),
@@ -1640,6 +1643,20 @@ tagged:
         result
     }
 
+    /// The string a slice is of and the slice's two ends, when `operand` is a slice read where it
+    /// is (`slice_ranges`): never made, its call reads that range of the string. `None` for any
+    /// other operand.
+    pub(crate) fn slice_range(&mut self, operand: &Operand) -> Result<Option<SliceRange>, String> {
+        let Operand::Local(local) = operand else { return Ok(None) };
+        let Some(range) = self.known.slice_ranges.get(&local.0).cloned() else { return Ok(None) };
+        if !self.headers() {
+            return Err("it reads a slice where it is, where strings aren't headers".to_owned());
+        }
+        let [text, from, to] = self.slice_place(&range)?;
+        let words = [0, 1, 2].map(|at| self.header_word(&text, at));
+        Ok(Some(SliceRange { text, words, ends: [from, to] }))
+    }
+
     /// A string operand as a block: with headers, one made for this call is kept in `made`, to
     /// be let go of after.
     fn block_operand(
@@ -1760,7 +1777,44 @@ tagged:
             }
             "str.find" => {
                 let at = self.temp();
-                if self.headers() {
+                let range = self.slice_range(first.ok_or("no argument")?)?;
+                if let Some(SliceRange { text, words: [t0, t1, t2], ends: [from, to] }) = range {
+                    // A slice's range of a string in a block, read where it is; an inline string's,
+                    // sliced natively as before, where a call costs more than the slice.
+                    let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                    let [p0, p1, p2] = [0, 1, 2].map(|at| self.header_word(&part, at));
+                    self.declare(
+                        "declare i64 @fennec_str_find_range(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
+                    );
+                    self.declare(
+                        "declare i64 @fennec_str_find_header(i64, i64, i64, i64, i64, i64) nounwind",
+                    );
+                    let in_block = self.header_in_block(&text);
+                    let (long, short, joined) =
+                        (self.label("find_range"), self.label("find_inline"), self.label("found_at"));
+                    self.line(&format!("br i1 {in_block}, label %{long}, label %{short}"));
+                    self.start_block(&long);
+                    let long_at = self.temp();
+                    self.line(&format!(
+                        "{long_at} = call i64 @fennec_str_find_range(i64 {t0}, i64 {t1}, i64 {t2}, i64 {from}, i64 {to}, i64 {p0}, i64 {p1}, i64 {p2})"
+                    ));
+                    let long_end = self.current.clone();
+                    self.line(&format!("br label %{joined}"));
+                    self.start_block(&short);
+                    let sliced = self.header_slice(&text, (&from, &to), span);
+                    let [s0, s1, s2] = [0, 1, 2].map(|at| self.header_word(&sliced, at));
+                    let short_at = self.temp();
+                    self.line(&format!(
+                        "{short_at} = call i64 @fennec_str_find_header(i64 {s0}, i64 {s1}, i64 {s2}, i64 {p0}, i64 {p1}, i64 {p2})"
+                    ));
+                    self.release_text(&sliced);
+                    let short_end = self.current.clone();
+                    self.line(&format!("br label %{joined}"));
+                    self.start_block(&joined);
+                    self.line(&format!(
+                        "{at} = phi i64 [ {long_at}, %{long_end} ], [ {short_at}, %{short_end} ]"
+                    ));
+                } else if self.headers() {
                     // Both go as their headers' words, so neither is made a block first.
                     let (text, _) = self.operand(first.ok_or("no argument")?)?;
                     let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
@@ -1820,8 +1874,7 @@ tagged:
             // as their words, so neither is made a block first; three zeros, which no header is,
             // say there's no separator.
             "str.split" if self.headers() => {
-                let (text, _) = self.operand(first.ok_or("no argument")?)?;
-                let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&text, at));
+                let range = self.slice_range(first.ok_or("no argument")?)?;
                 let [s0, s1, s2] = match args.get(1) {
                     Some(separator) => {
                         let (separator, _) = self.operand(separator)?;
@@ -1834,9 +1887,44 @@ tagged:
                 );
                 let (from, to) = self.place_in_source(span);
                 let parts = self.temp();
-                self.line(&format!(
-                    "{parts} = call ptr @fennec_str_split_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
-                ));
+                if let Some(SliceRange { text, words: [t0, t1, t2], ends: [start, end] }) = range {
+                    // A slice's range of a string in a block, split where it is; an inline
+                    // string's, sliced natively as before, where a call costs more than the slice.
+                    self.declare(
+                        "declare ptr @fennec_str_split_range(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
+                    );
+                    let in_block = self.header_in_block(&text);
+                    let (long, short, joined) =
+                        (self.label("split_range"), self.label("split_inline"), self.label("split_made"));
+                    self.line(&format!("br i1 {in_block}, label %{long}, label %{short}"));
+                    self.start_block(&long);
+                    let long_parts = self.temp();
+                    self.line(&format!(
+                        "{long_parts} = call ptr @fennec_str_split_range(i64 {t0}, i64 {t1}, i64 {t2}, i64 {start}, i64 {end}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
+                    ));
+                    let long_end = self.current.clone();
+                    self.line(&format!("br label %{joined}"));
+                    self.start_block(&short);
+                    let sliced = self.header_slice(&text, (&start, &end), span);
+                    let [h0, h1, h2] = [0, 1, 2].map(|at| self.header_word(&sliced, at));
+                    let short_parts = self.temp();
+                    self.line(&format!(
+                        "{short_parts} = call ptr @fennec_str_split_header(i64 {h0}, i64 {h1}, i64 {h2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
+                    ));
+                    self.release_text(&sliced);
+                    let short_end = self.current.clone();
+                    self.line(&format!("br label %{joined}"));
+                    self.start_block(&joined);
+                    self.line(&format!(
+                        "{parts} = phi ptr [ {long_parts}, %{long_end} ], [ {short_parts}, %{short_end} ]"
+                    ));
+                } else {
+                    let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                    let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&text, at));
+                    self.line(&format!(
+                        "{parts} = call ptr @fennec_str_split_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
+                    ));
+                }
                 self.leave_if_failed();
                 self.assign(dest.ok_or("no result")?, &parts)
             }
@@ -1873,4 +1961,12 @@ struct Piece {
 enum Owned {
     Header(String),
     Block(String),
+}
+
+/// A slice read where it is (see `Emit::slice_range`): the string it's of, that string's header's
+/// words, and the slice's two ends as slicing reads them.
+pub(crate) struct SliceRange {
+    text: String,
+    words: [String; 3],
+    ends: [String; 2],
 }

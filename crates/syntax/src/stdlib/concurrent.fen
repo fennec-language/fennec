@@ -222,8 +222,10 @@ export interface Pooled:
     ## Closes it, when the pool ends or replaces it.
     def close(self)
 
-## A failure that can say what went wrong, as every error in `std` can.
-export interface Explained:
+## What a pool asks of the failure its `open` can give: its words, to say why one couldn't be
+## opened. Every error has them, its own `def message` or the language's, so every error meets it,
+## and no program names it.
+interface Worded:
     def message(self) -> str
 
 ## Why a pool couldn't lend a value.
@@ -253,7 +255,7 @@ export error PoolError:
 ## and opened again when it's next needed, so the pool never shrinks. Values a task gives back are
 ## lent again in the order it gave them back; which value a `take()` gets while other tasks are
 ## giving theirs back depends on which of them comes first.
-export def pool[T: Pooled, E: Explained](
+export def pool[T: Pooled, E: Worded](
     open: () -> T fails E,
     size = 10,
     wait = 30s,
@@ -390,7 +392,7 @@ STOP = 4
 GAVE_UP = 5
 
 ## What `open` gives, or its failure as a `PoolError`.
-def opened[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
+def opened[T, E: Worded](open: () -> T fails E) -> T fails PoolError:
     value = open() except failure:
         fail .Open(reason=failure.message())
     return value
@@ -406,7 +408,7 @@ def delivered[T](to: Sender[T], message: T) -> bool:
 
 ## What `open` gives, run in a task of its own so that a crash in it ends only that task: the
 ## keeper that asked hears it as a failure, and stays to lend to the next borrower.
-def opened_safely[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
+def opened_safely[T, E: Worded](open: () -> T fails E) -> T fails PoolError:
     with channel[T](size=1) as made, channel[str](size=1) as refused:
         _ = opening[T, E](open, made.sender(), refused.sender()) except Crashed():
             fail .Open(reason="opening one crashed")
@@ -418,16 +420,12 @@ def opened_safely[T, E: Explained](open: () -> T fails E) -> T fails PoolError:
     fail .Closed
 
 ## Runs `open` in a task, sending what it gives to `to`, or why it failed to `refused`.
-def opening[T, E: Explained](
-    open: () -> T fails E,
-    to: Sender[T],
-    refused: Sender[str],
-) fails Crashed:
+def opening[T, E: Worded](open: () -> T fails E, to: Sender[T], refused: Sender[str]) fails Crashed:
     with launch(() => open_into[T, E](open, to, refused))?:
         pass
 
 ## `open`'s value sent to `to`, or its failure's words to `refused`.
-def open_into[T, E: Explained](open: () -> T fails E, to: Sender[T], refused: Sender[str]):
+def open_into[T, E: Worded](open: () -> T fails E, to: Sender[T], refused: Sender[str]):
     value = open() except failure:
         told(refused, failure.message())
         return
@@ -461,7 +459,7 @@ def closing[T: Pooled](value: T) fails Crashed:
 ## The pool's tasks: a keeper for each value, each launched inside the last so they all run at
 ## once, then the dispatcher that hands them out. Each `with launch` ends once its keeper has
 ## stopped, which it's told to when the pool ends.
-def run_pool[T: Pooled, E: Explained](
+def run_pool[T: Pooled, E: Worded](
     number: int,
     notes: Inbox[PoolNote[T]],
     sends: Sender[PoolNote[T]],
@@ -544,7 +542,7 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
 
 ## Keeper `number`: keeps one value, opening it when it's first needed, and lends it to each
 ## borrower it's sent in turn. The first keeper starts with the value the pool opened.
-def keep[T: Pooled, E: Explained](
+def keep[T: Pooled, E: Worded](
     number: int,
     notes: Sender[PoolNote[T]],
     open: () -> T fails E,

@@ -70,15 +70,15 @@ fn only_the_fuzzer_and_the_benchmarks_depend_on_the_oracle() {
     );
 }
 
-/// Besides the parser and the checker, only `libm`: `docs/language.md` says the float functions
-/// are computed by it, so it's what they're defined as, not the runtime's code. How the runtime
-/// calls it is still checked.
+/// Besides the parser and the checker, only `libm` and `rusqlite`. `docs/language.md` says the
+/// float functions are computed by `libm`, and `std.sqlite` says a database is SQLite's, so each is
+/// what those are defined as, not the runtime's code. How the runtime calls each is still checked.
 #[test]
 fn the_oracle_depends_on_nothing_past_the_checker() {
     let (_, dependencies) = manifests().into_iter().find(|(name, _)| name == "fennec-oracle").unwrap();
     for dependency in &dependencies {
         assert!(
-            matches!(dependency.as_str(), "fennec-syntax" | "fennec-check" | "libm"),
+            matches!(dependency.as_str(), "fennec-syntax" | "fennec-check" | "libm" | "rusqlite"),
             "fennec-oracle depends on {dependency}: it shares only the parser and the checker with the \
              compiler, so a bug past them can't hide from it"
         );

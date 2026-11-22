@@ -125,6 +125,11 @@ const POPPED_OPTIONALS: bool = true;
 /// one refused.
 const SAVED_VALUES: bool = true;
 
+/// Whether a statement opens two or three handles in one `with` (`Opened`): left to right, one
+/// perhaps failing to open, a lent pair taken apart inside, and the block ending, failing or
+/// crashing, with cleanups that may crash.
+const OPENED_HANDLES: bool = true;
+
 /// Whether random programs change a number of each of the eight integer sizes every way
 /// (`Sized`): checked arithmetic, `wrapping_` and `saturating_`, shifts past the top and at the
 /// width, bits, `sum`, widening, `parse`, and a loop whose bound the proofs can't see past. A
@@ -810,6 +815,7 @@ impl Writer<'_> {
             26 if NAME_CAPTURE && self.choice(4) == 0 => self.captures(body),
             26 if EVALUATION_ORDER && self.choice(4) == 0 => self.in_order(body),
             26 if FILE_WRITES && self.choice(4) == 0 => self.files(body),
+            26 if OPENED_HANDLES && self.choice(4) == 0 => self.opened(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
             // each of their cases still comes up as often.
@@ -1663,6 +1669,30 @@ impl Writer<'_> {
             steps.push((way, self.choice(3)));
         }
         body.push(Stmt::Popped(Popping { id, ty, in_field, steps }));
+    }
+
+    /// An `Opened` statement: two or three handles, a quarter of them failing to open, and a
+    /// crash, in a cleanup or the block, in one in ten, since it ends the program.
+    fn opened(&mut self, body: &mut Vec<Stmt>) {
+        use super::opening::{BlockEnd, Gate, Opening};
+        self.made += 1;
+        let id = self.made;
+        let crashing = self.choice(10) == 0;
+        let gates = (0..2 + self.choice(2))
+            .map(|_| match self.choice(if crashing { 6 } else { 4 }) {
+                0 => Gate::FailsOpen,
+                4 => Gate::CrashesUndo,
+                5 => Gate::CrashesClose,
+                _ => Gate::Plain,
+            })
+            .collect();
+        let pair = self.choice(2) == 0;
+        let end = match self.choice(if crashing { 4 } else { 3 }) {
+            0 => BlockEnd::Fails,
+            3 => BlockEnd::Crashes,
+            _ => BlockEnd::Ends,
+        };
+        body.push(Stmt::Opened(Opening { id, gates, pair, end }));
     }
 
     /// A `Saved` statement: 3 to 14 steps, each naming only units and tags that are in the box.

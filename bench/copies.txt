@@ -5,7 +5,7 @@
 # lowered here. Counts are exact and don't move with the machine or its load, as times do.
 api_handler 0
 binary_trees 0
-chat_server 101085
+chat_server 49477
 closures 0
 comp_helpers 0
 comprehensions 0

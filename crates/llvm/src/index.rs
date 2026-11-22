@@ -84,6 +84,7 @@ impl Index {
                         out.byte(1);
                         out.text(name);
                     }
+                    Asked::DictText => out.byte(2),
                 }
             }
             out.count(unit.share.len());
@@ -121,6 +122,7 @@ impl Index {
                 asked.push(match input.byte()? {
                     0 => Asked::Block(input.named()?),
                     1 => Asked::DictValue(input.text()?),
+                    2 => Asked::DictText,
                     _ => return None,
                 });
             }
@@ -592,6 +594,7 @@ impl Out {
             NamedWord::U64 => 8,
             NamedWord::F32 => 9,
             NamedWord::InPlace(_) => 10,
+            NamedWord::TextInPlace => 11,
         };
         self.byte(tag);
         match word {
@@ -728,6 +731,7 @@ impl In<'_> {
             8 => NamedWord::U64,
             9 => NamedWord::F32,
             10 => NamedWord::InPlace(self.text()?),
+            11 => NamedWord::TextInPlace,
             _ => return None,
         })
     }

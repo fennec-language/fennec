@@ -1159,17 +1159,38 @@ pub(crate) fn timed(
     span: Span,
 ) -> Result<(String, Vec<Value>, Option<Duration>), Diagnostic> {
     const NAMED: [&str; 5] = ["timeout", "crlf", "tls", "port", "host"];
-    let parts: Vec<&str> = method.split('.').collect();
-    let named = parts.iter().rev().take_while(|part| NAMED.contains(part)).count().min(args.len());
-    let first_named = parts.len() - named;
-    let Some(at) = parts.iter().skip(first_named).position(|part| *part == "timeout") else {
+    // The named arguments are the parts at the name's end that name one, at most as many as there
+    // are arguments, which are the last arguments in the same order. They're read from the end,
+    // in place: every call on a socket comes through here, and splitting its name into a list and
+    // joining it again cost a fifth of what a served request's calls cost.
+    let (mut named, mut end) = (0, method.len());
+    // The `timeout` nearest the start, as how many named parts come after it, and its bytes.
+    let mut timeout = None;
+    while named < args.len() {
+        let start = method.get(..end).and_then(|before| before.rfind('.')).map_or(0, |dot| dot + 1);
+        let part = method.get(start..end).unwrap_or_default();
+        if !NAMED.contains(&part) {
+            break;
+        }
+        if part == "timeout" {
+            timeout = Some((named, start, end));
+        }
+        named += 1;
+        if start == 0 {
+            break;
+        }
+        end = start - 1;
+    }
+    let Some((after, start, end)) = timeout else {
         return Ok((method.to_owned(), args.to_vec(), None));
     };
     let mut args = args.to_vec();
-    let timeout = args.remove(args.len() - named + at);
-    let mut parts = parts;
-    parts.remove(first_named + at);
-    Ok((parts.join("."), args, Some(duration_of(&timeout, span)?)))
+    let given = args.remove(args.len() - 1 - after);
+    // The part goes with the dot before it, or, first in the name, with the one after it.
+    let (cut_from, cut_to) = if start > 0 { (start - 1, end) } else { (start, (end + 1).min(method.len())) };
+    let name =
+        [method.get(..cut_from).unwrap_or_default(), method.get(cut_to..).unwrap_or_default()].concat();
+    Ok((name, args, Some(duration_of(&given, span)?)))
 }
 
 pub(crate) fn bytes_asked(count: i64, span: Span) -> Result<usize, Diagnostic> {
@@ -3359,13 +3380,35 @@ pub(crate) mod tests {
             ("Connection.read_line.crlf", vec![Value::Bool(true)], Some(std::time::Duration::from_nanos(5)))
         );
         let (method, args, timeout) =
-            super::timed("read_line.crlf.timeout", &[Value::Bool(true), wait], span).unwrap();
+            super::timed("read_line.crlf.timeout", &[Value::Bool(true), wait.clone()], span).unwrap();
         assert_eq!(
             (method.as_str(), args, timeout),
             ("read_line.crlf", vec![Value::Bool(true)], Some(std::time::Duration::from_nanos(5)))
         );
         let (method, args, timeout) = super::timed("read_line", &[], span).unwrap();
         assert_eq!((method.as_str(), args, timeout), ("read_line", vec![], None));
+        // A name that's all named parts, a `timeout` first or alone, and named parts past the
+        // arguments there are, which aren't named arguments.
+        let once = |name: &str, args: &[Value]| {
+            let (method, args, timeout) = super::timed(name, args, span).unwrap();
+            (method, args.len(), timeout.map(|after| after.as_nanos()))
+        };
+        assert_eq!(once("timeout", std::slice::from_ref(&wait)), (String::new(), 0, Some(5)));
+        assert_eq!(once("timeout.crlf", &[wait.clone(), Value::Bool(true)]), ("crlf".to_owned(), 1, Some(5)));
+        assert_eq!(once("write.timeout", &[Value::str("x"), wait.clone()]), ("write".to_owned(), 1, Some(5)));
+        assert_eq!(
+            once("read_line.timeout.crlf", &[Value::Bool(true)]),
+            ("read_line.timeout.crlf".to_owned(), 1, None)
+        );
+        assert_eq!(
+            once("read_line.port.timeout", std::slice::from_ref(&wait)),
+            ("read_line.port".to_owned(), 0, Some(5))
+        );
+        // Two `timeout`s: the one nearer the start is the argument, as before.
+        assert_eq!(
+            once("x.timeout.timeout", &[wait.clone(), Value::Int(9)]),
+            ("x.timeout".to_owned(), 1, Some(5))
+        );
     }
 
     #[test]

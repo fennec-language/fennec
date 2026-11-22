@@ -88,6 +88,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         "toml-rules",
         "http-client",
         "http-server",
+        "http-sessions",
         "router",
         "html",
         "postgres",
@@ -106,6 +107,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         "html",
         "http-client",
         "http-server",
+        "http-sessions",
         "json",
         "json-rules",
         "numbers",
@@ -119,8 +121,8 @@ fn a_short_run_of_every_target_finds_nothing() {
         "utf8",
     ];
     let left_out = printed.contains(
-        "base64, csv, html, http-client, http-server, json, json-rules, numbers, pack, postgres, router, time, \
-         toml, toml-rules, url, utf8: left out",
+        "base64, csv, html, http-client, http-server, http-sessions, json, json-rules, numbers, pack, postgres, \
+         router, time, toml, toml-rules, url, utf8: left out",
     );
     for target in targets {
         if left_out && native.contains(&target) {

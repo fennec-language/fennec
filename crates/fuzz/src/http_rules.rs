@@ -224,6 +224,12 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     if first.len() > MOST_HEADER_BYTES {
         return refused(414);
     }
+    // The whole head is read before any of it is taken apart, so its end and its limits come first.
+    match head_fits(input, *at, first.len()) {
+        Ok(()) => {}
+        Err(Early::Refused(status)) => return refused(status),
+        Err(Early::Stop(stop)) => return Err(stop),
+    }
     let first = std::str::from_utf8(first).map_err(|_| Stop::Unpromised)?;
     let parts: Vec<&str> = first.split(' ').collect();
     let [method, target, version] = parts.as_slice() else { return refused(400) };
@@ -313,6 +319,33 @@ fn whole_target(target: &str) -> Option<(String, String)> {
 enum Early {
     Refused(u16),
     Stop(Stop),
+}
+
+/// Whether the header lines from `at` end, with an empty line, within the head's limits, `size`
+/// bytes counted from its first line, as the server reads a head in one go before taking any of it
+/// apart: a line ended by a bare `\n`, or none ending them, is a 400, and over a limit a 431.
+fn head_fits(input: &[u8], mut at: usize, size: usize) -> Result<(), Early> {
+    let (mut size, mut lines) = (size, 0);
+    loop {
+        let Some(Ok((line, next))) = request_line(input, at) else { return Err(Early::Refused(400)) };
+        at = next;
+        if line.is_empty() {
+            return Ok(());
+        }
+        if std::str::from_utf8(line).is_err() {
+            return Err(Early::Stop(Stop::Unpromised));
+        }
+        size += line.len();
+        lines += 1;
+        // Near a limit, how it's counted decides, which isn't promised.
+        if lines > MOST_HEADERS || size > MOST_HEADER_BYTES {
+            return if lines > MOST_HEADERS + 1 || size > MOST_HEADER_BYTES + 4096 {
+                Err(Early::Refused(431))
+            } else {
+                Err(Early::Stop(Stop::Unpromised))
+            };
+        }
+    }
 }
 
 /// The headers of a request from `at`, past the empty line that ends them, with `size` bytes

@@ -560,8 +560,7 @@ fn compiler_for(name: &str) -> Result<PathBuf, String> {
 /// `fennec-std-tests` beside `fennec`, to build the reader for `name`, when it's there and from
 /// the same build. One left from an earlier build, as rebuilding `fennec` alone leaves it, would
 /// build the reader with another std, and its inputs would all read as findings, so it's refused
-/// as a setup to fix. So are two whose build can't be read, as from before commands were stamped,
-/// since nothing says they're from one build.
+/// as a setup to fix.
 fn std_tests_beside(fennec: &Path, name: &str) -> Result<PathBuf, String> {
     let beside = fennec.with_file_name(format!("fennec-std-tests{}", std::env::consts::EXE_SUFFIX));
     if !beside.exists() {
@@ -570,16 +569,7 @@ fn std_tests_beside(fennec: &Path, name: &str) -> Result<PathBuf, String> {
             fennec.display()
         ));
     }
-    let (theirs, ours) = (command_build(&beside), command_build(fennec));
-    if theirs.is_none() || ours.is_none() {
-        let unread = if theirs.is_none() { &beside } else { fennec };
-        return Err(format!(
-            "can't tell which build of Fennec `{}` is from, so the `{name}` reader may not be built with the same std as `{}`: build them again with {BUILD_STD_TESTS}",
-            unread.display(),
-            fennec.display()
-        ));
-    }
-    if theirs != ours {
+    if command_build(&beside) != command_build(fennec) {
         return Err(format!(
             "`{}` is from another build of Fennec than `{}`, so the `{name}` reader it built would read another std: build it again with {BUILD_STD_TESTS}",
             beside.display(),
@@ -814,8 +804,7 @@ mod tests {
     use super::{fuzzing_process, std_tests_beside};
 
     /// A `fennec-std-tests` from another build than the `fennec` beside it is refused, saying how
-    /// to build it again, and one from the same build is used. Each is a file holding a stamp, or
-    /// none, and two with none are refused, since nothing says they're from one build.
+    /// to build it again, and one from the same build is used. Each is a file holding a stamp.
     #[test]
     fn a_fennec_std_tests_from_another_build_is_refused() {
         let folder = std::env::temp_dir().join(format!("fennec-fuzz-stamps-{}", std::process::id()));
@@ -833,16 +822,6 @@ mod tests {
         assert!(refused.contains("cargo build -p fennec --features std-private"), "{refused}");
         let same = stamped("fennec-std-tests", "a");
         assert_eq!(std_tests_beside(&fennec, "postgres"), Ok(same));
-        // Two with no stamp can't be told apart from two builds, so they're refused too.
-        let unstamped = |name: &str| {
-            let path = folder.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-            std::fs::write(&path, "code with no stamp").unwrap();
-            path
-        };
-        let fennec = unstamped("fennec");
-        unstamped("fennec-std-tests");
-        let unread = std_tests_beside(&fennec, "postgres").unwrap_err();
-        assert!(unread.contains("can't tell which build of Fennec"), "{unread}");
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

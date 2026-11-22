@@ -3815,6 +3815,25 @@ fn a_flat_message_crosses_a_channel_as_its_words() -> std::io::Result<()> {
     )
 }
 
+/// Enums in messages: an enum, a struct holding one, an enum holding another, a union and a struct
+/// holding one, a struct holding an optional number, and an enum with a case holding a list, which
+/// isn't flat. A struct holding a flat enum crosses as its words, with a copy of the blocks only its
+/// case names. Each case arrives as sent while the sender changes its own. It prints the same with
+/// `FENNEC_BLOCK_MESSAGES=1`, in dev and release, and ends with nothing held. CI runs it under the
+/// address and thread sanitizers, at 1, 4 and 8 threads.
+#[test]
+fn an_enum_in_a_message_crosses_whole_as_its_words_or_a_block() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BLOCK_MESSAGES",
+        "enum_messages",
+        include_str!("fixtures/workers/enum_messages.fen"),
+        include_str!("fixtures/workers/enum_messages.out"),
+    )
+}
+
 /// Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
 /// under its error, a number that doesn't fit its size, and a pick from a range given backwards.
 /// Each ends its task as a crash and the program goes on, with nothing left of the messages. The

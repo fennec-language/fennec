@@ -276,6 +276,13 @@ impl Interp {
                 _ => unsupported(format!("the Env method `{name}`")),
             });
         }
+        // `std.sqlite`'s `Database` and `Transaction`, run from their own source: the methods
+        // their own call, written in Rust.
+        if matches!(ty, "Database" | "Transaction")
+            && self.program.from_std.get(&format!("std.sqlite.{ty}")).is_some_and(|found| found == ty)
+        {
+            return self.sqlite_method(instance, name, args, span);
+        }
         if !matches!(ty, "Path" | "File" | "IoError") || !self.is_std_type(ty) {
             return None;
         }

@@ -22,6 +22,7 @@ mod paths;
 pub(crate) mod saving;
 mod show;
 mod sources;
+mod sqlite;
 pub(crate) mod stream;
 mod tables;
 mod tasks;
@@ -148,6 +149,8 @@ pub(crate) struct Shared {
     next_tag: AtomicU64,
     /// The file system an `Fs` reaches.
     pub(crate) disk: Arc<Mutex<disk::Disk>>,
+    /// The SQLite databases the program has open, through `std.sqlite`.
+    pub(crate) databases: Mutex<sqlite::Databases>,
     /// The number the next `shared` value made gets.
     next_cell: AtomicU64,
     /// The `shared` values sent on a channel, which no `parallel` round has to itself once they
@@ -182,6 +185,7 @@ impl Shared {
             refused: Mutex::new(None),
             next_tag: AtomicU64::new(1),
             disk: Arc::new(Mutex::new(disk::Disk::new(workdir))),
+            databases: Mutex::new(sqlite::Databases::default()),
             next_cell: AtomicU64::new(1),
             sent_cells: Mutex::new(std::collections::BTreeSet::new()),
             scopes: Mutex::new(Vec::new()),

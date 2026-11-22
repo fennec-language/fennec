@@ -554,14 +554,40 @@ fn compiler_for(name: &str) -> Result<PathBuf, String> {
     if !PRIVATE_READERS.contains(&name) {
         return Ok(fennec);
     }
+    std_tests_beside(&fennec, name)
+}
+
+/// `fennec-std-tests` beside `fennec`, to build the reader for `name`, when it's there and from
+/// the same build. One left from an earlier build, as rebuilding `fennec` alone leaves it, would
+/// build the reader with another std, and its inputs would all read as findings, so it's refused
+/// as a setup to fix.
+fn std_tests_beside(fennec: &Path, name: &str) -> Result<PathBuf, String> {
     let beside = fennec.with_file_name(format!("fennec-std-tests{}", std::env::consts::EXE_SUFFIX));
-    if beside.exists() {
-        return Ok(beside);
+    if !beside.exists() {
+        return Err(format!(
+            "the `{name}` reader reads std's private names, so `fennec-std-tests` builds it, and there's none beside {}: build it with {BUILD_STD_TESTS}",
+            fennec.display()
+        ));
     }
-    Err(format!(
-        "the `{name}` reader reads std's private names, so `fennec-std-tests` builds it, and there's none beside {}: build it with {BUILD_STD_TESTS}",
-        fennec.display()
-    ))
+    if command_build(&beside) != command_build(fennec) {
+        return Err(format!(
+            "`{}` is from another build of Fennec than `{}`, so the `{name}` reader it built would read another std: build it again with {BUILD_STD_TESTS}",
+            beside.display(),
+            fennec.display()
+        ));
+    }
+    Ok(beside)
+}
+
+/// The build of Fennec the command at `path` is from, as the stamp `fennec` writes into its file
+/// says, or `None` for one without, or that can't be read.
+fn command_build(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    // Written in two pieces, so this program's own file doesn't hold the marker whole.
+    let marker = ["fennec-command-", "build:"].concat().into_bytes();
+    let at = bytes.windows(marker.len()).position(|window| window == marker.as_slice())? + marker.len();
+    let hex = std::str::from_utf8(bytes.get(at..at + 64)?).ok()?;
+    hex.bytes().all(|digit| digit.is_ascii_hexdigit()).then(|| hex.to_owned())
 }
 
 /// The readers built so far in this process, by target.
@@ -775,7 +801,29 @@ mod cut_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::fuzzing_process;
+    use super::{fuzzing_process, std_tests_beside};
+
+    /// A `fennec-std-tests` from another build than the `fennec` beside it is refused, saying how
+    /// to build it again, and one from the same build is used. Each is a file holding a stamp.
+    #[test]
+    fn a_fennec_std_tests_from_another_build_is_refused() {
+        let folder = std::env::temp_dir().join(format!("fennec-fuzz-stamps-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let stamped = |name: &str, digit: &str| {
+            let path = folder.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+            let stamp = format!("{}{}", ["fennec-command-", "build:"].concat(), digit.repeat(64));
+            std::fs::write(&path, format!("code before\0{stamp}\0code after")).unwrap();
+            path
+        };
+        let fennec = stamped("fennec", "a");
+        stamped("fennec-std-tests", "b");
+        let refused = std_tests_beside(&fennec, "postgres").unwrap_err();
+        assert!(refused.contains("is from another build of Fennec"), "{refused}");
+        assert!(refused.contains("cargo build -p fennec --features std-private"), "{refused}");
+        let same = stamped("fennec-std-tests", "a");
+        assert_eq!(std_tests_beside(&fennec, "postgres"), Ok(same));
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
 
     /// The sweep knows each kind of folder fuzzing makes by its process id, and leaves the
     /// readers, the tests' own folders and anything else alone.

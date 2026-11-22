@@ -557,6 +557,9 @@ pub extern "C" fn f32_header(x: f64) -> Text {
     header_of(&crate::format::float32(x))
 }
 
+mod ranges;
+pub use ranges::{equals_range, find_range, split_range, starts_with_range};
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;

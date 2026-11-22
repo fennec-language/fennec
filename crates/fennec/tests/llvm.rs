@@ -21593,6 +21593,51 @@ fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
     )
 }
 
+/// A whole field holding an enum of plain words, more than one of them, is put back word by word
+/// when the block fails, whichever case it held and was given, and the fields beside it with it.
+/// Each word of such an enum is its own word in the lock's log, so one put back at another's
+/// place, or not at all, leaves a mix of the two cases.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_each_word_of_an_enum_holding_only_numbers() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_plain_enum",
+        r#"error Nope:
+    why: str
+
+enum Spot:
+    Place(x: int, y: int)
+    Scaled(by: float, flipped: bool)
+    Off
+
+struct Board:
+    name: str
+    n: int
+    spot: Spot
+    last: int
+
+def fails_after(board: shared Board, to: Spot) fails Nope:
+    lock board as ref held:
+        held.spot = to
+        held.n += 1
+        held.last += 1
+        fail Nope(why="undone")
+
+def main(stdout: Stdout):
+    for start in [Spot.Place(x=3, y=4), Spot.Scaled(by=1.5, flipped=True), Spot.Off]:
+        shared board = Board(name="b", n=1, spot=start, last=7)
+        for to in [Spot.Place(x=30, y=40), Spot.Scaled(by=2.5, flipped=False), Spot.Off]:
+            fails_after(board, to=to) except Nope():
+                pass
+        lock board as held:
+            stdout.print(held.n, held.spot, held.last)
+"#,
+        "1 Spot.Place(x=3, y=4) 7\n1 Spot.Scaled(by=1.5, flipped=True) 7\n1 Spot.Off 7\n",
+    )
+}
+
 /// Every kind of field a `shared` struct holds is put back when a `lock ... as ref` block that
 /// wrote it fails, whichever of two values it held and was given: numbers, a string, an optional
 /// string, lists, dicts, a set, bytes, a tuple, enums with and without blocks, a struct, and an

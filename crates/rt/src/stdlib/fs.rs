@@ -677,7 +677,7 @@ fn real_fs_with<D: Databases>(method: &str, paths: &[Value], span: Span) -> Resu
     if let Some(refused) = holding_nul(paths) {
         return Ok(refused);
     }
-    on_real_fs::<D>(method, paths, span)
+    on_real_fs::<D>(method, paths, span).map(|done| at_path(done, paths))
 }
 
 /// `real_fs` for a path it's checked.
@@ -781,11 +781,11 @@ pub(crate) fn beneath_with<D: Databases>(
     let root = PathBuf::from(folder);
     let folder = match open_narrowed(folder) {
         Ok(folder) => Arc::new(folder),
-        Err(fail) => return Ok(io_failed(&fail)),
+        Err(fail) => return Ok(at_path(io_failed(&fail), paths)),
     };
     let io = Fail::from;
     let at = relative.to_path_buf();
-    Ok(match (method, paths) {
+    let done = match (method, paths) {
         ("exists", [Value::Str(_)]) => {
             done(blocking(move || exists_beneath(&folder, &at).map_err(io)), Value::Bool)
         }
@@ -848,7 +848,8 @@ pub(crate) fn beneath_with<D: Databases>(
         ("_sqlite_open" | "_sqlite_read", [Value::Str(_)]) => D::beneath(method, (folder, at, full), span)?,
         // Wrong arguments, and a method that isn't the file system's, say so as the whole `Fs` does.
         _ => return real_fs_with::<D>(method, paths, span),
-    })
+    };
+    Ok(at_path(done, paths))
 }
 
 /// Whether there's anything at `at` beneath `folder`, in one call where it can be (`one_call`).
@@ -1104,9 +1105,12 @@ fn open_narrowed(kept: &str) -> Result<cap_std::fs::Dir, Fail> {
                 let found = cap_std::fs::Dir::from_std_file(here).symlink_metadata(name);
                 if found.is_ok_and(|found| found.file_type().is_symlink()) {
                     let whole = crate::limits::whole_folder(kept);
-                    return Err(Fail::permission_denied(format!(
-                        "a folder on the way to `{whole}` is a link now, and this Fs follows no link to its folder"
-                    )));
+                    return Err(Fail::permission_denied(
+                        "",
+                        format!(
+                            "a folder on the way to `{whole}` is a link now, and this Fs follows no link to its folder"
+                        ),
+                    ));
                 }
                 return Err(Fail::from(err));
             }
@@ -1453,29 +1457,32 @@ fn walk_into(folder: &str, found: &mut Vec<String>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A failure of the file system, as the case of `IoError` it is and what it says.
+/// A failure of the file system, as the case of `IoError` it is: the path it was at, for the
+/// three cases that hold one, and what it says, for `PermissionDenied` and `Other`. A path left
+/// empty here is filled in with the one the program gave, by `at_path`.
 #[derive(Debug)]
 pub(crate) struct Fail {
     case: &'static str,
+    path: String,
     reason: String,
 }
 
 impl Fail {
-    /// Nothing is at the path.
-    pub(crate) fn not_found(reason: String) -> Self {
-        Self { case: "NotFound", reason }
+    /// Nothing is at `path`.
+    pub(crate) fn not_found(path: &str) -> Self {
+        Self { case: "NotFound", path: path.to_owned(), reason: String::new() }
     }
 
-    /// The system, or a narrowed `Fs`, won't let the program do that there.
-    pub(crate) fn permission_denied(reason: String) -> Self {
-        Self { case: "PermissionDenied", reason }
+    /// A narrowed `Fs` won't let the program do that at `path`, for `reason`.
+    pub(crate) fn permission_denied(path: &str, reason: String) -> Self {
+        Self { case: "PermissionDenied", path: path.to_owned(), reason }
     }
 }
 
 /// A failure said only in words is `Other`.
 impl From<String> for Fail {
     fn from(reason: String) -> Self {
-        Self { case: "Other", reason }
+        Self { case: "Other", path: String::new(), reason }
     }
 }
 
@@ -1491,16 +1498,41 @@ impl From<std::io::Error> for Fail {
         };
         // A failure made with words of its own, like a library's or the runtime's, keeps them. The
         // system's are said in Fennec's words, which are the same on every system, where its own,
-        // like "No such file or directory (os error 2)", differ from one to the next.
-        let reason = if err.get_ref().is_some() { err.to_string() } else { in_own_words(err.kind()) };
+        // like "No such file or directory (os error 2)", differ from one to the next. `NotFound`
+        // and `AlreadyExists` say nothing but their path, so they keep no words.
+        let reason = match case {
+            "NotFound" | "AlreadyExists" => String::new(),
+            _ if err.get_ref().is_some() => err.to_string(),
+            _ => in_own_words(err.kind()),
+        };
         // cap-std's words for a link that leads out of a narrowed `Fs`'s folder, in this `Fs`'s.
         let reason = if reason == "a path led outside of the filesystem" {
             "a link on the path leads outside what this Fs can reach".to_owned()
         } else {
             reason
         };
-        Self { case, reason }
+        Self { case, path: String::new(), reason }
     }
+}
+
+/// What a method of the file system gave, with the path the program gave it, the first of `args`,
+/// in a failure that holds one and doesn't have it yet. The work below a method doesn't know the
+/// path as the program wrote it, only as the system was given it, so it's filled in here, once.
+pub(crate) fn at_path(done: Value, args: &[Value]) -> Value {
+    let (Value::Err(failure), Some(Value::Str(path))) = (&done, args.first()) else { return done };
+    let Value::Instance(error) = failure.as_ref() else { return done };
+    let unfilled = error.type_name.as_ref() == "IoError"
+        && matches!(error.field("path"), Some(Value::Str(held)) if held.is_empty());
+    if !unfilled {
+        return done;
+    }
+    let mut filled = error.as_ref().clone();
+    for (name, value) in &mut filled.fields {
+        if name.as_ref() == "path" {
+            *value = Value::Str(path.clone());
+        }
+    }
+    Value::Err(Rc::new(Value::Instance(Rc::new(filled))))
 }
 
 /// The failure for a path that holds a NUL, if the path, the first of `args`, does: the rest are
@@ -1515,10 +1547,7 @@ pub(crate) fn holding_nul(args: &[Value]) -> Option<Value> {
             if text.chars().count() > 80 {
                 shown.push('…');
             }
-            Some(io_failed(&Fail {
-                case: "Other",
-                reason: format!("`{shown}` can't be a path: it holds a NUL"),
-            }))
+            Some(io_error(&format!("`{shown}` can't be a path: it holds a NUL")))
         }
         _ => None,
     })
@@ -1561,7 +1590,7 @@ fn in_own_words(kind: std::io::ErrorKind) -> String {
 /// apart from a folder there.
 fn read_failure(err: std::io::Error, is_folder: impl FnOnce() -> bool) -> Fail {
     if is_folder() {
-        return Fail { case: "Other", reason: in_own_words(std::io::ErrorKind::IsADirectory) };
+        return Fail::from(in_own_words(std::io::ErrorKind::IsADirectory));
     }
     Fail::from(err)
 }
@@ -1583,7 +1612,7 @@ fn read_whole(text: bool, read: impl FnOnce() -> Result<Vec<u8>, Fail> + Send + 
 /// it fails as one on every system.
 fn not_a_folder(file: std::fs::File) -> Result<std::fs::File, Fail> {
     if file.metadata().is_ok_and(|found| found.is_dir()) {
-        return Err(Fail { case: "Other", reason: in_own_words(std::io::ErrorKind::IsADirectory) });
+        return Err(Fail::from(in_own_words(std::io::ErrorKind::IsADirectory)));
     }
     Ok(file)
 }
@@ -1593,9 +1622,14 @@ fn is_folder_beneath(folder: &cap_std::fs::Dir, at: &Path) -> bool {
     folder.metadata(at).is_ok_and(|found| found.is_dir())
 }
 
-/// A failed result holding the `IoError` a failure is.
+/// A failed result holding the `IoError` a failure is, with the fields its case has.
 pub(crate) fn io_failed(fail: &Fail) -> Value {
-    let fields = vec![("reason", Value::str(&fail.reason))];
+    let (path, reason) = (("path", Value::str(&fail.path)), ("reason", Value::str(&fail.reason)));
+    let fields = match fail.case {
+        "NotFound" | "AlreadyExists" => vec![path],
+        "PermissionDenied" => vec![path, reason],
+        _ => vec![reason],
+    };
     Value::Err(Rc::new(Value::made_case("IoError", fail.case, fields)))
 }
 
@@ -1640,7 +1674,13 @@ mod tests {
     fn a_systems_failure_is_the_case_its_kind_is() {
         let gone = std::fs::read("/no/such/place/for/fennec").expect_err("it isn't there");
         let fail = Fail::from(gone);
-        assert_eq!((fail.case, fail.reason.as_str()), ("NotFound", "nothing is there"));
+        assert_eq!((fail.case, fail.path.as_str(), fail.reason.as_str()), ("NotFound", "", ""));
+        // The path is the one the program gave, filled in once the work is done.
+        let missing = Value::str("/no/such/place/for/fennec");
+        assert_eq!(
+            shown("read_text", &[missing]),
+            "Err(IoError.NotFound(path=\"/no/such/place/for/fennec\"))"
+        );
         // A folder read as a file is said as one on every system, though Windows calls it missing.
         for read in ["read_text", "read_bytes", "_open"] {
             let folder = Value::str(&std::env::temp_dir().to_string_lossy());
@@ -1653,14 +1693,14 @@ mod tests {
             Fail::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).reason,
             "the system won't allow it"
         );
-        for (kind, case) in [
-            (std::io::ErrorKind::PermissionDenied, "PermissionDenied"),
-            (std::io::ErrorKind::AlreadyExists, "AlreadyExists"),
-            (std::io::ErrorKind::InvalidData, "Other"),
-            (std::io::ErrorKind::IsADirectory, "Other"),
+        for (kind, case, reason) in [
+            (std::io::ErrorKind::PermissionDenied, "PermissionDenied", "said"),
+            (std::io::ErrorKind::AlreadyExists, "AlreadyExists", ""),
+            (std::io::ErrorKind::InvalidData, "Other", "said"),
+            (std::io::ErrorKind::IsADirectory, "Other", "said"),
         ] {
             let fail = Fail::from(std::io::Error::new(kind, "said"));
-            assert_eq!((fail.case, fail.reason.as_str()), (case, "said"));
+            assert_eq!((fail.case, fail.reason.as_str()), (case, reason));
         }
         assert_eq!(Fail::from("words".to_owned()).case, "Other");
     }
@@ -1709,12 +1749,16 @@ mod tests {
         let target = temp.path().join("kept.txt");
         std::fs::write(&target, "old")?;
         let path = Value::str(&target.to_string_lossy());
+        let denied = format!(
+            "PermissionDenied(path={}, reason=\"the system won't allow it\")",
+            crate::format::repr(&path)
+        );
         // Each error, as the `IoError` case and words a program is given.
         for (rule, said) in [
             ("create:1:nospace", "Other(reason=\"the disk is full\")"),
             ("write:1:quota", "Other(reason=\"the disk space allowed is used up\")"),
             ("write:1:readonly", "Other(reason=\"the disk can't be written to\")"),
-            ("write:1:denied", "PermissionDenied(reason=\"the system won't allow it\")"),
+            ("write:1:denied", denied.as_str()),
             ("write:1:nospace:2", "Other(reason=\"the disk is full\")"),
             ("write:1:toolarge:100", "Other(reason=\"the file is too big for the system\")"),
             ("sync:1:readonly", "Other(reason=\"the disk can't be written to\")"),
@@ -1730,7 +1774,7 @@ mod tests {
         // a full disk would leave half of it.
         faults::put_in("create:1:denied");
         let refused = shown("write_text", &[path.clone(), Value::str("new text")]);
-        assert!(refused.contains("PermissionDenied(reason=\"the system won't allow it\")"), "{refused}");
+        assert!(refused.contains(&denied), "{refused}");
         assert_eq!(std::fs::read_to_string(&target)?, "old");
         // The rename's own sync failing leaves the new file in place, and fails all the same.
         faults::put_in("sync:2:io");
@@ -1931,11 +1975,16 @@ mod tests {
         // Someone the system lets add a file anyway, as root is, can't see this.
         let shut = std::fs::write(folder.join("probe"), "").is_err();
         faults::put_in("");
-        let written = shown("write_text", &[Value::str(&target.to_string_lossy()), Value::str("new")]);
+        let path = Value::str(&target.to_string_lossy());
+        let denied = format!(
+            "PermissionDenied(path={}, reason=\"the system won't allow it\")",
+            crate::format::repr(&path)
+        );
+        let written = shown("write_text", &[path, Value::str("new")]);
         let held = std::fs::read_to_string(&target)?;
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755))?;
         if shut {
-            assert!(written.contains("PermissionDenied(reason=\"the system won't allow it\")"), "{written}");
+            assert!(written.contains(&denied), "{written}");
             assert_eq!(held, "old");
         }
         Ok(())

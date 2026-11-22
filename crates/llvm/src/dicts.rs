@@ -1447,7 +1447,10 @@ impl Emit<'_, '_, '_> {
 
     /// Where a key that's a slice of a string is: the string's address, and the slice's start and
     /// end in characters.
-    fn slice_place(&mut self, (text, start, end): &crate::analysis::SliceKey) -> Result<[String; 3], String> {
+    pub(crate) fn slice_place(
+        &mut self,
+        (text, start, end): &crate::analysis::SliceKey,
+    ) -> Result<[String; 3], String> {
         let (text, _) = self.operand(text)?;
         let mut at = |part: &Option<Operand>| -> Result<String, String> {
             Ok(match part {

@@ -295,8 +295,8 @@ impl Interp {
                 _ => unsupported("a Path without its text"),
             },
             "File" => self.file_method(&Value::Instance(Held::new(instance.clone())), name, args, span),
-            _ => match (name, args, instance.field("reason")) {
-                ("message", [], Some(reason)) => Ok(reason.clone()),
+            _ => match (name, args) {
+                ("message", []) => super::show::io_words(instance).map(|words| Value::Str(words.into())),
                 _ => unsupported(format!("the IoError method `{name}`")),
             },
         })

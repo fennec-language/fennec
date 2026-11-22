@@ -248,7 +248,18 @@ pub(crate) fn tests_executable(
     tests: &[String],
     output: &Path,
 ) -> Result<Vec<String>, String> {
-    let emitted = emitted(module, true)?;
+    tests_executable_from(TestsText(emitted(module, true)?), tests, output)
+}
+
+/// [`tests_executable`] from the text [`tests_take`] wrote for the same trimmed program, so it isn't
+/// written twice. Writing it twice cost more than the text: each time is a build to the daemon's
+/// kept analyses, and two test builds between a `fennec run`'s programs pushed out every analysis
+/// of the program's own functions, which then were all worked out again.
+pub(crate) fn tests_executable_from(
+    TestsText(emitted): TestsText,
+    tests: &[String],
+    output: &Path,
+) -> Result<Vec<String>, String> {
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
             // `fennec test` renders a failure itself.
@@ -294,10 +305,14 @@ pub(crate) fn takes(module: &fennec_syntax::Module) -> Result<(), String> {
     emitted(module, false).map(|_| ())
 }
 
-/// Whether LLVM has text for a trimmed program of tests, as `tests_executable` writes one.
-pub(crate) fn tests_take(module: &fennec_syntax::Module) -> Result<(), String> {
-    emitted(module, true).map(|_| ())
+/// LLVM's text for a trimmed program of tests, as `tests_executable` writes it, or why it has none:
+/// [`tests_executable_from`] builds the executable from it.
+pub(crate) fn tests_take(module: &fennec_syntax::Module) -> Result<TestsText, String> {
+    emitted(module, true).map(TestsText)
 }
+
+/// What [`tests_take`] wrote for a trimmed program of tests, to build its executable from.
+pub(crate) struct TestsText(Emitted);
 
 /// The IR a trimmed program's native code is written from, as a build lowers it.
 pub(crate) fn lowered_for_native(module: &fennec_syntax::Module) -> Result<fennec_ir::Program, String> {
@@ -359,6 +374,22 @@ pub(crate) fn executable(
 /// Like `executable`, for a program whose module was checked already, cut down to what `main`
 /// reaches: `checked` is what that check found, as checking it to emit would, when it's known.
 pub(crate) fn executable_checked(
+    program: &fennec_kit::Program,
+    output: &Path,
+    release: bool,
+    checked: Option<fennec_check::Signatures>,
+) -> Result<Built, String> {
+    if crate::child::wanted() {
+        match crate::child::built(program, output, release, checked.as_ref()) {
+            Ok(built) => return built,
+            Err(no_answer) => crate::child::said_no_answer(&no_answer, output),
+        }
+    }
+    executable_checked_here(program, output, release, checked)
+}
+
+/// [`executable_checked`], in this process.
+pub(crate) fn executable_checked_here(
     program: &fennec_kit::Program,
     output: &Path,
     release: bool,

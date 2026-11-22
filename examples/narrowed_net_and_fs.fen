@@ -71,11 +71,11 @@ test "a read-only Fs reads and changes nothing"(fs: Fs):
     assert reader.read_text("notes.txt")? == "kept"
     assert (
         why_io(() => reader.write_text("notes.txt", "changed")?)
-        == "this Fs only reads, so it can't change `notes.txt`"
+        == "`notes.txt`: this Fs only reads, so it can't change it"
     )
     assert (
         why_io(() => reader.remove("notes.txt")?)
-        == "this Fs only reads, so it can't change `notes.txt`"
+        == "`notes.txt`: this Fs only reads, so it can't change it"
     )
     assert fs.read_text("notes.txt")? == "kept"
     # A file opened to read is closed when its block ends, which is no change.
@@ -86,9 +86,11 @@ test "a read-only Fs reads and changes nothing"(fs: Fs):
     fs.write_text("saves/a.txt", "a")?
     saves = reader.only("saves")
     assert saves.read_text("saves/a.txt")? == "a"
-    assert why_io(() => saves.write_text("saves/b.txt", "b")?).startswith("this Fs only reads")
+    assert why_io(() => saves.write_text("saves/b.txt", "b")?).startswith(
+        "`saves/b.txt`: this Fs only reads",
+    )
     assert why_io(() => fs.only("saves").read_only().make_dir("saves/x")?).startswith(
-        "this Fs only reads",
+        "`saves/x`: this Fs only reads",
     )
 
 ## Why opening the database at `path` through `fs` failed, or "opened".

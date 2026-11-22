@@ -173,7 +173,7 @@ impl TestWorld {
             Some(Node::File(data)) => Ok(data),
             Some(Node::Folder) => Err(format!("{path} is a folder").into()),
             None if key(path).is_empty() => Err(format!("{path} is a folder").into()),
-            None => Err(Fail::not_found(format!("{path} doesn't exist"))),
+            None => Err(Fail::not_found(path)),
         }
     }
 
@@ -184,7 +184,7 @@ impl TestWorld {
         let key = key(path);
         let there = matches!(self.nodes.get(&key), Some(Node::File(_)));
         if read_only && !there {
-            return crate::stdlib::fs::io_failed(&Fail::not_found(format!("{path} doesn't exist")));
+            return crate::stdlib::fs::io_failed(&Fail::not_found(path));
         }
         if !there && let Err(reason) = self.write(path, &[]) {
             return crate::stdlib::fs::io_failed(&reason);
@@ -198,7 +198,7 @@ impl TestWorld {
             return Err(format!("{path} is a folder").into());
         }
         if !self.is_folder(parent(&key)) {
-            return Err(Fail::not_found(format!("the folder of {path} doesn't exist")));
+            return Err(Fail::not_found(path));
         }
         self.nodes.insert(key, Node::File(data.to_vec()));
         Ok(())
@@ -230,7 +230,7 @@ impl TestWorld {
         }
         match self.nodes.remove(&key) {
             Some(_) => Ok(()),
-            None => Err(Fail::not_found(format!("{path} doesn't exist"))),
+            None => Err(Fail::not_found(path)),
         }
     }
 
@@ -262,7 +262,7 @@ impl TestWorld {
         }
         match self.nodes.get(&key) {
             Some(_) => Err(format!("{path} is a file").into()),
-            None => Err(Fail::not_found(format!("{path} doesn't exist"))),
+            None => Err(Fail::not_found(path)),
         }
     }
 }
@@ -544,7 +544,7 @@ fn metadata(world: &TestWorld, path: &str) -> Result<Vec<(&'static str, Value)>,
         Some(Node::File(data)) => Some(i64::try_from(data.len()).unwrap_or(i64::MAX)),
         Some(Node::Folder) => None,
         None if key.is_empty() => None,
-        None => return Err(Fail::not_found(format!("{path} doesn't exist"))),
+        None => return Err(Fail::not_found(path)),
     };
     Ok(vec![
         ("size", Value::Int(size.unwrap_or(0))),

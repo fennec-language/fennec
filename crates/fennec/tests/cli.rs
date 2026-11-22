@@ -2123,6 +2123,137 @@ fn a_build_of_unchanged_files_is_the_program_the_last_one_made() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A build handed to a process of its own, as the daemon hands its builds, makes the same program
+/// byte for byte as one built in the command's own process, dev and release alike.
+#[cfg(unix)]
+#[test]
+fn a_build_in_its_own_process_makes_the_same_program() {
+    if !crate::llvm::ready() {
+        return;
+    }
+    let dir = scratch("build_child_same").unwrap();
+    let kit = dir.join("kit");
+    let main = "def main(stdout: Stdout):\n    stdout.print(\"same\")\n";
+    write_kit(&kit, "greeter", "", &[("main.fen", main)]).unwrap();
+    let out = dir.join("out");
+    for release in [false, true] {
+        let kind = if release { "release" } else { "dev" };
+        let built = |home: &str, child: bool| {
+            let mut command = crate::executables::fennec_command();
+            command.arg("build");
+            if release {
+                command.arg("--release");
+            }
+            command
+                .args(["-o", &out.to_string_lossy()])
+                .current_dir(&kit)
+                .env("FENNEC_HOME", dir.join(home))
+                .env_remove("FENNEC_NO_CACHE");
+            if child {
+                command.env("FENNEC_BUILD_CHILD", "1");
+            } else {
+                command.env_remove("FENNEC_BUILD_CHILD");
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{}", text(&output.stderr));
+            assert!(!text(&output.stderr).contains("own process"), "{}", text(&output.stderr));
+            std::fs::read(&out).unwrap()
+        };
+        let here = built(&format!("home-here-{kind}"), false);
+        let apart = built(&format!("home-child-{kind}"), true);
+        assert!(here == apart, "a {kind} build in its own process made another program");
+    }
+}
+
+/// A build whose own process crashes, or never says it started, is built in the command's process
+/// instead, saying why.
+#[cfg(unix)]
+#[test]
+fn a_build_whose_own_process_fails_is_built_here_saying_why() {
+    if !crate::llvm::ready() || !cfg!(debug_assertions) {
+        return;
+    }
+    let dir = scratch("build_child_fails").unwrap();
+    let kit = dir.join("kit");
+    write_kit(
+        &kit,
+        "greeter",
+        "",
+        &[("main.fen", "def main(stdout: Stdout):\n    stdout.print(\"here\")\n")],
+    )
+    .unwrap();
+    let out = dir.join("out");
+    for (failing, said) in [("crash", "was ended by signal 9"), ("hang", "it didn't start within 2 s")] {
+        let output = crate::executables::fennec_command()
+            .args(["build", "-o", &out.to_string_lossy()])
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join(format!("home-{failing}")))
+            .env("FENNEC_BUILD_CHILD", "1")
+            .env("FENNEC_TEST_BUILD_CHILD", failing)
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        let stderr = text(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(stderr.contains("in its own process gave no answer, so it's built here"), "{stderr}");
+        assert!(stderr.contains(said), "{stderr}");
+        let ran = std::process::Command::new(&out).output().unwrap();
+        assert_eq!(text(&ran.stdout), "here\n");
+    }
+}
+
+/// A command killed while its build's own process is working leaves no process behind: that
+/// process sees its socket close and ends with everything it started.
+#[cfg(unix)]
+#[test]
+fn a_command_killed_mid_build_leaves_no_build_process() {
+    if !crate::llvm::ready() || !cfg!(debug_assertions) {
+        return;
+    }
+    let dir = scratch("build_child_killed").unwrap();
+    let kit = dir.join("kit");
+    write_kit(
+        &kit,
+        "greeter",
+        "",
+        &[("main.fen", "def main(stdout: Stdout):\n    stdout.print(\"gone\")\n")],
+    )
+    .unwrap();
+    let noted = dir.join("child-pid");
+    let mut command = crate::executables::fennec_command()
+        .args(["build", "-o", &dir.join("out").to_string_lossy()])
+        .current_dir(&kit)
+        .env("FENNEC_HOME", dir.join("home"))
+        .env("FENNEC_BUILD_CHILD", "1")
+        .env("FENNEC_TEST_BUILD_CHILD", format!("hang-building:{}", noted.display()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&noted).ok().filter(|pid| !pid.is_empty()) {
+            break pid;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "the build's process never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    command.kill().unwrap();
+    command.wait().unwrap();
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let gone = std::time::Instant::now();
+    while alive() && gone.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!alive(), "the build's process {pid} outlived the command");
+}
+
 /// The same program in two folders is two programs to the store: each run's failure names its own
 /// folder, and quotes its own text, as a comment changed to one just as long, which leaves the
 /// program the same, shows.
@@ -5666,6 +5797,62 @@ fn a_daemon_build_uses_the_last_builds_analyses_again() {
         said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next()?.parse::<usize>().ok());
     assert!(compiled.is_some_and(|compiled| compiled <= 2), "{said}");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// A `fennec run` whose edit changes what a test reaches builds that test first, then the program,
+/// and the program's build uses again what the run before kept of its own functions: the ones no
+/// test reaches too. The test's text was written twice, once to see LLVM took it and once to build
+/// it, and two builds between the program's pushed every analysis of the program's own functions
+/// out of what the daemon keeps, so they were all worked out again at every such edit.
+#[cfg(unix)]
+#[test]
+fn a_run_with_tests_uses_the_programs_own_analyses_again() {
+    let (_folder, kit, home) = small_kit("run-kept-analyses").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    // `tested` is what the test reaches; the six others only the program does.
+    let program = |added: u32| {
+        let mut text = format!(
+            "def tested(number: int) -> int:\n    return number + {added}\n\n\
+             test \"tested adds\":\n    assert tested(1) == {}\n\n",
+            added + 1
+        );
+        let alone = (0..6).map(|at| {
+            format!("def alone_{at}(number: int) -> int:\n    return number * {} + {at}\n\n", at + 2)
+        });
+        text.extend(alone);
+        text += "def main(stdout: Stdout):\n    stdout.print(tested(1))\n";
+        text.extend((0..6).map(|at| format!("    stdout.print(alone_{at}(3))\n")));
+        text
+    };
+    // The program's build says its note last: "note: used 7 of 8 functions' analyses again, ...".
+    let used = |stderr: &str| -> (usize, usize) {
+        let line = stderr.lines().rev().find(|line| line.starts_with("note: used ")).unwrap_or("");
+        let words: Vec<&str> = line.split(' ').collect();
+        let count = |at: usize| words.get(at).and_then(|word| word.parse().ok()).unwrap_or(0);
+        (count(2), count(4))
+    };
+    for (edit, added) in [1, 2, 3].into_iter().enumerate() {
+        std::fs::write(kit.join("src/main.fen"), program(added)).unwrap();
+        let mut command = crate::executables::fennec_command();
+        command.args(["run", "."]).current_dir(&kit).env("FENNEC_HOME", &home);
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_CHECK_WHOLE", "1").env_remove("CI");
+        command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", crate::executables::daemons_of(&home));
+        let ran = command.output().unwrap();
+        let stderr = text(&ran.stderr);
+        assert_eq!(ran.status.code(), Some(0), "{stderr}");
+        assert!(text(&ran.stdout).starts_with(&format!("{}\n", added + 1)), "{}", text(&ran.stdout));
+        let (again, of) = used(&stderr);
+        assert!(of >= 8, "{stderr}");
+        if edit > 0 {
+            // All but `tested`, whose body changed, and at most `main`, which calls it.
+            assert!(again + 2 >= of, "edit {edit}: {stderr}");
+        }
+    }
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 
 /// A release build through the daemon uses no analysis a build before it kept, being the build

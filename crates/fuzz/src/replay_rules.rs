@@ -41,6 +41,10 @@
 //!   `main` prints each account, and its total, its count of moves and whether they agree are
 //!   known, but for the ranges a `parallel` call cut short didn't run. A crash says so on standard
 //!   error, which a replay has to say the same.
+//! - **Messages as structs:** each number sent to a task's inbox or into the gathered channel goes
+//!   as a `Note` of the number and a text, a short one for an even number and, for an odd one, one
+//!   long enough to need a block of its own. Whoever takes one prints its number and whether its
+//!   text is the one sent with it, so a message whose text came apart from its number is caught.
 //!
 //! The program is built once, with `fennec build --llvm`, and run with `FENNEC_RECORD` and then
 //! `FENNEC_REPLAY`, as `fennec run --record` and `fennec replay` run it. It needs what `llvm`
@@ -196,6 +200,8 @@ struct Plan {
     /// Whether each of the `parallel` call's ranges takes `a`'s lock and adds 1.
     pieces_lock: bool,
     gather: Option<Gather>,
+    /// Whether the numbers sent to tasks and gathered are sent inside a `Note` with a text.
+    notes: bool,
 }
 
 /// Tasks sending numbers into one channel, which `main` takes them all from once its steps are
@@ -374,10 +380,38 @@ fn plan(input: &[u8]) -> Plan {
             lock.ending = Ending::Read;
         }
     }
-    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather }
+    let notes = bytes.below(2) == 1;
+    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather, notes }
 }
 
 impl Plan {
+    /// Whether any `Note` is sent: the input asked for them, and some task takes from its inbox or
+    /// `main` gathers.
+    fn sends_notes(&self) -> bool {
+        self.notes && ((0..self.tasks.len()).any(|task| self.has_inbox(task)) || self.gather.is_some())
+    }
+
+    /// The type of what's sent to a task's inbox and gathered.
+    fn message(&self) -> &'static str {
+        if self.notes { "Note" } else { "int" }
+    }
+
+    /// What's sent for `number`, which is Fennec that gives an `int`.
+    fn sent_as(&self, number: &str) -> String {
+        if self.notes { format!("Note(number={number}, said=said({number}))") } else { number.to_owned() }
+    }
+
+    /// What's printed of `got`, a message taken: its number, and with a `Note`, whether its text is
+    /// the one sent with that number.
+    fn shown(&self, got: &str) -> String {
+        if self.notes { format!("{got}.number, {got}.said == said({got}.number)") } else { got.to_owned() }
+    }
+
+    /// What a printed message ends with past its number.
+    fn shown_end(&self) -> &'static str {
+        if self.notes { " True" } else { "" }
+    }
+
     fn has_inbox(&self, task: usize) -> bool {
         self.tasks.get(task).is_some_and(|steps| steps.iter().any(|step| matches!(step, Step::Receive)))
     }
@@ -482,7 +516,7 @@ impl Plan {
                     Step::Wait(_) => {}
                     Step::Receive if self.is_timed(task) => {}
                     Step::Receive => {
-                        printed.push(format!("{who} got {}\n", sent(&who, taken)));
+                        printed.push(format!("{who} got {}{}\n", sent(&who, taken), self.shown_end()));
                         taken += 1;
                     }
                     Step::Lock(lock) if matches!(self.lock(*lock).ending, Ending::Kept | Ending::Read) => {}
@@ -510,7 +544,10 @@ impl Plan {
         }
         printed.extend((0..self.rounds.len()).map(|round| format!("done r{round}\n")));
         printed.extend(
-            self.gather.iter().flat_map(Gather::numbers).map(|number| format!("gathered {number}\n")),
+            self.gather
+                .iter()
+                .flat_map(Gather::numbers)
+                .map(|number| format!("gathered {number}{}\n", self.shown_end())),
         );
         if let Some(pieces) = &self.pieces {
             printed.push(format!("p {}\n", pieces.at));
@@ -531,9 +568,11 @@ impl Plan {
                     Step::Print => lines.push(format!("{who} s{number}")),
                     Step::Pieces(_) => lines.push(format!("{who} s{number} a b")),
                     Step::Wait(_) => {}
-                    Step::Receive if self.is_timed(task) => lines.push(format!("{who} got ?")),
+                    Step::Receive if self.is_timed(task) => {
+                        lines.push(format!("{who} got ?{}", self.shown_end()));
+                    }
                     Step::Receive => {
-                        lines.push(format!("{who} got {}", sent(&who, taken)));
+                        lines.push(format!("{who} got {}{}", sent(&who, taken), self.shown_end()));
                         taken += 1;
                     }
                     Step::Lock(lock) if self.lock(*lock).ending == Ending::Kept => {
@@ -564,7 +603,12 @@ impl Plan {
         }
         lines.extend((0..self.rounds.len()).map(|round| format!("done r{round}")));
         lines.extend((0..self.jobs()).map(|job| format!("w? took {job}")));
-        lines.extend(self.gather.iter().flat_map(Gather::numbers).map(|number| format!("gathered {number}")));
+        lines.extend(
+            self.gather
+                .iter()
+                .flat_map(Gather::numbers)
+                .map(|number| format!("gathered {number}{}", self.shown_end())),
+        );
         lines.extend(self.pieces_over().map(str::to_owned));
         lines.push("over".to_owned());
         lines
@@ -576,11 +620,14 @@ impl Plan {
         if line.starts_with("p ") {
             return None;
         }
-        if let Some((who, _)) = line.split_once(" got ")
+        if let Some((who, got)) = line.split_once(" got ")
             && let Some(task) = who.strip_prefix('t').and_then(|task| task.parse::<usize>().ok())
             && self.is_timed(task)
         {
-            return Some(format!("{who} got ?"));
+            // Which number came is the recording's, but a note's text always matches it.
+            let held = if self.notes { got.split_once(' ').map_or(" ?", |(_, held)| held) } else { "" };
+            let held = if self.notes { format!(" {held}") } else { String::new() };
+            return Some(format!("{who} got ?{held}"));
         }
         if line.starts_with('w')
             && let Some((_, job)) = line.split_once(" took ")
@@ -708,11 +755,19 @@ fn body(plan: &Plan, who: &str, steps: &[Step], timed: bool) -> String {
             Step::Wait(wait) => out.push_str(&waited(*wait, "    ")),
             Step::Receive if timed => {
                 let _ = writeln!(out, "    got_{number} = got_within(inbox, {}ms)", 1 + number % 2);
-                let _ = writeln!(out, "    stdout.print(\"{who} got\", got_{number})");
+                let _ = writeln!(
+                    out,
+                    "    stdout.print(\"{who} got\", {})",
+                    plan.shown(&format!("got_{number}"))
+                );
             }
             Step::Receive => {
-                let _ = writeln!(out, "    got_{number} = inbox.receive() else -1");
-                let _ = writeln!(out, "    stdout.print(\"{who} got\", got_{number})");
+                let _ = writeln!(out, "    got_{number} = inbox.receive() else {}", plan.sent_as("-1"));
+                let _ = writeln!(
+                    out,
+                    "    stdout.print(\"{who} got\", {})",
+                    plan.shown(&format!("got_{number}"))
+                );
             }
             Step::Lock(lock) => out.push_str(&locking(plan, *lock, who, "    ")),
         }
@@ -824,8 +879,13 @@ fn needs(steps: &[Step]) -> (bool, bool) {
 /// The parameters a function takes, or the arguments it's called with, for an inbox, a clock and
 /// standard output where it needs each: only what it uses, since a parameter left unused is an
 /// error.
-fn given((inbox, clock, stdout): (bool, bool, bool), parameters: bool) -> String {
-    let all = [(inbox, "inbox", "Inbox[int]"), (clock, "clock", "Clock"), (stdout, "stdout", "Stdout")];
+fn given((inbox, clock, stdout): (Option<&str>, bool, bool), parameters: bool) -> String {
+    let inbox_kind = format!("Inbox[{}]", inbox.unwrap_or("int"));
+    let all = [
+        (inbox.is_some(), "inbox", inbox_kind.as_str()),
+        (clock, "clock", "Clock"),
+        (stdout, "stdout", "Stdout"),
+    ];
     let said: Vec<String> = all
         .iter()
         .filter(|(needed, ..)| *needed)
@@ -886,19 +946,30 @@ fn heading(plan: &Plan) -> String {
         out.push_str("\nstruct Account:\n    total: int\n    moves: list[int]\n");
         out.push_str(&undone(plan));
     }
+    if plan.sends_notes() {
+        out.push_str(
+            "\nstruct Note:\n    number: int\n    said: str\n\
+             \n# What a note of `number` says: for an odd number, a text long enough to need a block of its own.\n\
+             def said(number: int) -> str:\n    if number % 2 == 0:\n        return f\"n{number}\"\n    \
+             return f\"note {number} says something long enough to need a block of its own\"\n",
+        );
+    }
     out.push_str(
         "\n# Counts `turns` turns, making way for others at the runtime's ticks.\n\
          def counted(turns: int) -> int:\n    mut total = 0\n    for turn in range(turns):\n        \
          total = (total + turn * turn) % 1_000_003\n    return total\n",
     );
     if plan.any_timed() {
-        out.push_str(
+        let message = plan.message();
+        let (timed_out, closed) = (plan.sent_as("-1"), plan.sent_as("-2"));
+        let _ = write!(
+            out,
             "\n# The next number, if it comes within `wait`: -1 when it doesn't, -2 when the inbox closed.\n\
-             def got_within(inbox: Inbox[int], wait: Duration) -> int:\n    \
-             got = inbox.receive_within(wait) except Timeout(): return -1\n    return got else -2\n\
-             \n# Sends `number` within `wait`, or gives up, when the task has ended or its inbox stays full.\n\
-             def handed(to: Sender[int], number: int, wait: Duration):\n    \
-             to.send_within(number, wait) except Closed() | Timeout(): return\n",
+             def got_within(inbox: Inbox[{message}], wait: Duration) -> {message}:\n    \
+             got = inbox.receive_within(wait) except Timeout(): return {timed_out}\n    return got else {closed}\n\
+             \n# Sends `sent` within `wait`, or gives up, when the task has ended or its inbox stays full.\n\
+             def handed(to: Sender[{message}], sent: {message}, wait: Duration):\n    \
+             to.send_within(sent, wait) except Closed() | Timeout(): return\n",
         );
     }
     out
@@ -916,8 +987,10 @@ fn source(plan: &Plan) -> String {
             Step::Lock(lock) => Some(*lock),
             _ => None,
         }));
-        let parameters =
-            joined(accounts_given(locked, true), given((plan.has_inbox(task), clock, stdout), true));
+        let parameters = joined(
+            accounts_given(locked, true),
+            given((plan.has_inbox(task).then(|| plan.message()), clock, stdout), true),
+        );
         let _ = write!(out, "\ndef task_{task}({parameters}):\n");
         out.push_str(&body(plan, &format!("t{task}"), steps, plan.is_timed(task)));
     }
@@ -925,9 +998,17 @@ fn source(plan: &Plan) -> String {
         let clock = wait.as_ref().is_some_and(sleeps);
         main_clock |= clock;
         let parameters = if clock { ", clock: Clock" } else { "" };
-        let _ = write!(out, "\ndef sender_{sender}(gathered: Channel[int]{parameters}) fails Closed:\n");
+        let _ = write!(
+            out,
+            "\ndef sender_{sender}(gathered: Channel[{}]{parameters}) fails Closed:\n",
+            plan.message()
+        );
         for nth in 0..*count {
-            let _ = writeln!(out, "    gathered.send({})?", Gather::number(sender, nth));
+            let _ = writeln!(
+                out,
+                "    gathered.send({})?",
+                plan.sent_as(&Gather::number(sender, nth).to_string())
+            );
             out.extend(wait.map(|wait| waited(wait, "    ")));
         }
     }
@@ -935,7 +1016,7 @@ fn source(plan: &Plan) -> String {
         for (worker, wait) in queue.workers.iter().enumerate() {
             let clock = wait.as_ref().is_some_and(sleeps);
             main_clock |= clock;
-            let parameters = given((false, clock, true), true);
+            let parameters = given((None, clock, true), true);
             let _ = write!(
                 out,
                 "\ndef worker_{worker}(jobs: Channel[int], {parameters}):\n    for job in jobs:\n        \
@@ -951,23 +1032,23 @@ fn source(plan: &Plan) -> String {
         out.push_str(&parallel(
             pieces,
             plan.pieces_lock,
-            &joined(accounts_given(locked, true), given((false, clock, true), true)),
-            &joined(accounts_given(locked, false), given((false, clock, true), false)),
+            &joined(accounts_given(locked, true), given((None, clock, true), true)),
+            &joined(accounts_given(locked, false), given((None, clock, true), false)),
         ));
     }
     let mut server_clock = false;
     for (round, steps) in plan.rounds.iter().enumerate() {
         let (clock, stdout) = needs(steps);
         server_clock |= clock;
-        let parameters = given((false, clock, stdout), true);
+        let parameters = given((None, clock, stdout), true);
         let _ = write!(out, "\ndef round_{round}({parameters}):\n");
         out.push_str(&body(plan, &format!("r{round}"), steps, false));
     }
     // What the server's rounds need between them, which the server is handed. It always prints,
     // as a round that can't read or write says so.
-    let handed = given((false, server_clock, true), false);
+    let handed = given((None, server_clock, true), false);
     if !plan.rounds.is_empty() {
-        out.push_str(&server(plan, &given((false, server_clock, true), true), &handed));
+        out.push_str(&server(plan, &given((None, server_clock, true), true), &handed));
     }
     out.push_str(&main(plan, main_clock || server_clock, &handed));
     out
@@ -985,7 +1066,7 @@ fn server(plan: &Plan, parameters: &str, arguments: &str) -> String {
     out.push_str("    match asked:\n");
     for (round, steps) in plan.rounds.iter().enumerate() {
         let (clock, stdout) = needs(steps);
-        let passed = given((false, clock, stdout), false);
+        let passed = given((None, clock, stdout), false);
         let _ = write!(out, "        case \"r{round}\":\n            round_{round}({passed})\n");
     }
     let _ = write!(
@@ -1069,8 +1150,10 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
             Step::Lock(lock) => Some(*lock),
             _ => None,
         }));
-        let arguments =
-            joined(accounts_given(locked, false), given((plan.has_inbox(task), clock, stdout), false));
+        let arguments = joined(
+            accounts_given(locked, false),
+            given((plan.has_inbox(task).then(|| plan.message()), clock, stdout), false),
+        );
         if plan.has_inbox(task) && plan.is_timed(task) {
             let _ = writeln!(
                 out,
@@ -1121,6 +1204,7 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
             MainStep::Send(task) => {
                 let Some(count) = sent_to.get_mut(*task) else { continue };
                 let number = sent(&format!("t{task}"), *count);
+                let number = plan.sent_as(&number.to_string());
                 if plan.is_timed(*task) {
                     let _ = writeln!(out, "{indent}handed(to_{task}, {number}, {}ms)", 1 + *count % 2);
                 } else {
@@ -1137,7 +1221,7 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
                 let clock = plan.pieces.as_ref().is_some_and(|pieces| matches!(pieces.wait, Wait::Sleep(_)));
                 let arguments = joined(
                     accounts_given((plan.pieces_lock, false), false),
-                    given((false, clock, true), false),
+                    given((None, clock, true), false),
                 );
                 if fails {
                     let _ = writeln!(out, "{indent}gave = pieces({arguments}) except TooFar(): -1");
@@ -1171,9 +1255,11 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
     if let Some(gather) = &plan.gather {
         let _ = writeln!(
             out,
-            "{indent}for nth in range({}):\n{indent}    got = gathered.receive() else -1 - nth\n{indent}    \
-             stdout.print(\"gathered\", got)",
-            gather.numbers().count()
+            "{indent}for nth in range({}):\n{indent}    got = gathered.receive() else {}\n{indent}    \
+             stdout.print(\"gathered\", {})",
+            gather.numbers().count(),
+            plan.sent_as("-1 - nth"),
+            plan.shown("got")
         );
     }
     out
@@ -1187,13 +1273,13 @@ fn channels(plan: &Plan, indent: &mut String) -> String {
         let _ = writeln!(out, "{indent}with channel[int](size={}) as jobs:", queue.size);
         indent.push_str("    ");
         for (worker, wait) in queue.workers.iter().enumerate() {
-            let arguments = given((false, matches!(wait, Some(Wait::Sleep(_))), true), false);
+            let arguments = given((None, matches!(wait, Some(Wait::Sleep(_))), true), false);
             let _ = writeln!(out, "{indent}with launch(() => worker_{worker}(jobs, {arguments}))?:");
             indent.push_str("    ");
         }
     }
     if let Some(gather) = &plan.gather {
-        let _ = writeln!(out, "{indent}with channel[int](size={}) as gathered:", gather.size);
+        let _ = writeln!(out, "{indent}with channel[{}](size={}) as gathered:", plan.message(), gather.size);
         indent.push_str("    ");
         for (sender, (_, wait)) in gather.senders.iter().enumerate() {
             let clock = if matches!(wait, Some(Wait::Sleep(_))) { ", clock=clock" } else { "" };

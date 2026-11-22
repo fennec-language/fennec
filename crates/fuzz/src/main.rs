@@ -50,6 +50,7 @@ mod llvm;
 mod minimize;
 mod mutate;
 mod numbers_rules;
+mod owned;
 mod pack_rules;
 mod parked;
 mod postgres_rules;

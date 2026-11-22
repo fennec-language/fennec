@@ -18,6 +18,7 @@
 
 use std::path::Path;
 
+#[cfg(unix)]
 use fennec_syntax::codec::{Decode, Encode, Reader, Writer};
 
 use crate::aot::Built;
@@ -26,22 +27,30 @@ use crate::aot::Built;
 pub(crate) const COMMAND: &str = "build-child";
 
 /// What a request starts with, before the build of Fennec that sent it.
+#[cfg(unix)]
 const MAGIC: &[u8; 8] = b"FENCHILD";
 
 /// The build of Fennec this is: a child only builds for the one it's of.
+#[cfg(unix)]
 const BUILD: &str = env!("FENNEC_BUILD");
 
 /// The last section.
+#[cfg(unix)]
 const END: u8 = 0;
 /// The request's job: where the program goes and how it's built.
+#[cfg(unix)]
 const JOB: u8 = 1;
 /// In an answer, the child read the request and started building.
+#[cfg(unix)]
 const STARTED: u8 = 1;
 /// The program: its module, files and where its kit is.
+#[cfg(unix)]
 const PROGRAM: u8 = 2;
 /// In an answer, what the build gave: what it built, or why it couldn't.
+#[cfg(unix)]
 const RESULT: u8 = 2;
 /// What the daemon's check found, when it's handed on.
+#[cfg(unix)]
 const SIGNATURES: u8 = 3;
 
 /// Why a build in a child didn't answer, which the daemon says before building in-process.
@@ -49,15 +58,18 @@ const SIGNATURES: u8 = 3;
 pub(crate) struct NoAnswer(pub(crate) String);
 
 /// A child's job.
+#[cfg(unix)]
 struct Job {
     output: String,
     release: bool,
     baseline: bool,
 }
 
+#[cfg(unix)]
 fennec_syntax::codec_fields!(Job { output, release, baseline });
 
 /// A program as a child needs it: what `aot::executable_checked` reads of a `fennec_kit::Program`.
+#[cfg(unix)]
 struct Sent {
     module: fennec_syntax::Module,
     files: Vec<(String, String)>,
@@ -66,8 +78,10 @@ struct Sent {
     kit: Option<(String, String, String)>,
 }
 
+#[cfg(unix)]
 fennec_syntax::codec_fields!(Sent { module, files, kit_src, kit });
 
+#[cfg(unix)]
 impl Sent {
     fn of(program: &fennec_kit::Program) -> Sent {
         Sent {
@@ -105,6 +119,7 @@ impl Sent {
     }
 }
 
+#[cfg(unix)]
 impl Encode for Built {
     fn encode(&self, to: &mut Writer) {
         self.total.encode(to);
@@ -116,6 +131,7 @@ impl Encode for Built {
     }
 }
 
+#[cfg(unix)]
 impl Decode for Built {
     fn decode(from: &mut Reader<'_>) -> Option<Self> {
         Some(Built {
@@ -130,6 +146,7 @@ impl Decode for Built {
 }
 
 /// What a build gives back, as bytes: what it built, or why it couldn't.
+#[cfg(unix)]
 fn result_bytes(result: &Result<Built, String>) -> Vec<u8> {
     let mut to = Writer::default();
     match result {
@@ -145,6 +162,7 @@ fn result_bytes(result: &Result<Built, String>) -> Vec<u8> {
     to.into_bytes()
 }
 
+#[cfg(unix)]
 fn read_result(bytes: &[u8]) -> Option<Result<Built, String>> {
     let mut from = Reader::new(bytes);
     let result = match from.tag()? {
@@ -157,6 +175,7 @@ fn read_result(bytes: &[u8]) -> Option<Result<Built, String>> {
 
 /// One value's bytes, which read back must be the same value, giving the same bytes: what's sent
 /// is what's built from. Checked where a build checks its proofs, and in dev builds of Fennec.
+#[cfg(unix)]
 fn bytes_of<T: Encode>(value: &T) -> Vec<u8> {
     let mut to = Writer::default();
     value.encode(&mut to);
@@ -165,6 +184,7 @@ fn bytes_of<T: Encode>(value: &T) -> Vec<u8> {
 
 /// Whether what was read is checked by writing it again: in a build checking its proofs, and
 /// always in a dev build of Fennec.
+#[cfg(unix)]
 fn checks_what_it_read() -> bool {
     cfg!(debug_assertions) || std::env::var("FENNEC_CHECK_PROOFS").as_deref() == Ok("1")
 }

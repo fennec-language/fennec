@@ -2,9 +2,9 @@
 //! other, recorded on 1 and on 4 threads, and each recording replayed on 1, 4 and 16. A replay must
 //! print what its recording printed, byte for byte, and end the same way. Standard error is held to
 //! what's expected: from a recording nothing but what a lock's crash says, and from a replay what
-//! its recording said, in its order, and the one note that the recording's end stopped the server,
-//! wherever the stop came among the crashes, so a warning, like a recording that stopped early,
-//! fails.
+//! its recording said, in its order, and the note that the recording's end stopped a server, once
+//! for each of its rounds' and HTTP's, wherever the stop came among the crashes, so a warning, like
+//! a recording that stopped early, fails.
 //!
 //! What each `print` prints has to be in the recording as often as it's printed, so a print torn
 //! in two or put in twice is caught in the recording as well. Where nothing printed a line in
@@ -45,6 +45,12 @@
 //!   as a `Note` of the number and a text, a short one for an even number and, for an odd one, one
 //!   long enough to need a block of its own. Whoever takes one prints its number and whether its
 //!   text is the one sent with it, so a message whose text came apart from its number is caught.
+//! - **An HTTP server,** std's `serve`, which clients `main` connects and launches each ask on a
+//!   connection they keep: a head written whole, a line at a time, cut in two anywhere in a line
+//!   or its ending, or two requests in one write; a request line too long for a 414, more headers
+//!   than a head may have for a 431, or a head the client closes the connection partway through.
+//!   The server prints each path it serves, and each client the response it read. Which order those
+//!   came in is the recording's. A program with it gets no deadlock, as with a server's rounds.
 //!
 //! The program is built once, with `fennec build --llvm`, and run with `FENNEC_RECORD` and then
 //! `FENNEC_REPLAY`, as `fennec run --record` and `fennec replay` run it. It needs what `llvm`
@@ -183,6 +189,75 @@ const MOST_JOBS: usize = 6;
 const MOST_RANGES: usize = 8;
 /// The most locks tasks and `main` take between them, so a step's number stays one digit.
 const MOST_LOCKS: usize = 4;
+/// The most clients of the HTTP server, and the most requests each sends on its connection.
+const MOST_CLIENTS: usize = 3;
+const MOST_ASKS: usize = 3;
+/// More header lines than a head may have, so it's answered with a 431.
+const TOO_MANY_HEADERS: usize = 101;
+/// A request line longer than a whole head may be, so it's answered with a 414.
+const TOO_LONG_TARGET: usize = 17_000;
+
+/// How a client sends a request, on the connection it keeps for all of them.
+#[derive(Clone, Copy)]
+enum Ask {
+    /// Its head in one write.
+    Whole,
+    /// Each line of its head in a write of its own, making way after each.
+    Lines(Wait),
+    /// Its head in two writes, cut where `Cut` says, making way between them.
+    Split(Cut, Wait),
+    /// Two requests in one write, the second cut off in its request line and finished after
+    /// making way.
+    Two(Wait),
+    /// Part of its head, then the connection closed: nothing's answered.
+    Closed,
+    /// A request line longer than a whole head may be: a 414, and the connection closed.
+    LongLine,
+    /// More header lines than a head may have: a 431, and the connection closed.
+    ManyHeaders,
+}
+
+impl Ask {
+    /// Whether the server closes the connection after it, or the client does.
+    fn ends(self) -> bool {
+        matches!(self, Self::Closed | Self::LongLine | Self::ManyHeaders)
+    }
+}
+
+/// Where a head written in two pieces is cut.
+#[derive(Clone, Copy)]
+enum Cut {
+    /// Inside `HTTP/1.1` in the request line.
+    InLine,
+    /// Right after the request line's ending.
+    AtLine,
+    /// Between the request line's `\r` and its `\n`.
+    InEnding,
+    /// Before the blank line that ends the head.
+    BeforeEnd,
+}
+
+/// A request's head for `path`, with a `host`.
+fn head(path: &str) -> String {
+    format!("GET {path} HTTP/1.1\r\nhost: x\r\n\r\n")
+}
+
+/// Where `cut` cuts `head`'s text: always inside it.
+fn cut_at(head: &str, cut: Cut) -> usize {
+    let line = head.find("\r\n").unwrap_or(0);
+    match cut {
+        Cut::InLine => line.saturating_sub(4),
+        Cut::AtLine => line + 2,
+        Cut::InEnding => line + 1,
+        Cut::BeforeEnd => head.len() - 2,
+    }
+}
+
+/// `text` as a Fennec string's literal.
+fn literal(text: &str) -> String {
+    format!("\"{}\"", text.replace('\r', "\\r").replace('\n', "\\n"))
+}
+
 /// The most tasks sending into one channel `main` gathers from, and the most each sends.
 const MOST_SENDERS: usize = 3;
 const MOST_SENT: usize = 3;
@@ -202,6 +277,8 @@ struct Plan {
     gather: Option<Gather>,
     /// Whether the numbers sent to tasks and gathered are sent inside a `Note` with a text.
     notes: bool,
+    /// Each HTTP client's requests, in order, on its one connection.
+    clients: Vec<Vec<Ask>>,
 }
 
 /// Tasks sending numbers into one channel, which `main` takes them all from once its steps are
@@ -271,6 +348,35 @@ impl Bytes<'_> {
         } else {
             Wait::Sleep(1 + u32::from(byte / 2 % 3))
         }
+    }
+
+    /// A client's requests, which end at the first that closes its connection.
+    fn asks(&mut self) -> Vec<Ask> {
+        let mut asks = Vec::new();
+        for _ in 0..=self.below(MOST_ASKS) {
+            let ask = match self.below(8) {
+                0 | 1 => Ask::Whole,
+                2 => Ask::Lines(self.wait()),
+                3 => {
+                    let cut = match self.below(4) {
+                        0 => Cut::InLine,
+                        1 => Cut::AtLine,
+                        2 => Cut::InEnding,
+                        _ => Cut::BeforeEnd,
+                    };
+                    Ask::Split(cut, self.wait())
+                }
+                4 => Ask::Two(self.wait()),
+                5 => Ask::Closed,
+                6 => Ask::LongLine,
+                _ => Ask::ManyHeaders,
+            };
+            asks.push(ask);
+            if ask.ends() {
+                break;
+            }
+        }
+        asks
     }
 
     fn steps(&mut self, receives: bool) -> Vec<Step> {
@@ -381,10 +487,56 @@ fn plan(input: &[u8]) -> Plan {
         }
     }
     let notes = bytes.below(2) == 1;
-    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather, notes }
+    let clients: Vec<Vec<Ask>> = (0..bytes.below(MOST_CLIENTS + 1)).map(|_| bytes.asks()).collect();
+    // The HTTP server waits on the network too, so `main` never deadlocks beside it.
+    if !clients.is_empty() {
+        main.retain(|step| !matches!(step, MainStep::Stuck(_)));
+    }
+    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather, notes, clients }
 }
 
 impl Plan {
+    /// Whether the program runs a server, its rounds' or HTTP's, which waits on the network.
+    fn serves(&self) -> bool {
+        self.servers() > 0
+    }
+
+    /// How many servers the program runs: its rounds' and HTTP's.
+    fn servers(&self) -> usize {
+        usize::from(!self.rounds.is_empty()) + usize::from(!self.clients.is_empty())
+    }
+
+    /// Every line the HTTP server and its clients print, without its new line: the path the server
+    /// served, and the response a client read, or that it cut its request short.
+    fn http_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (client, asks) in self.clients.iter().enumerate() {
+            for (number, ask) in asks.iter().enumerate() {
+                let name = format!("c{client}q{number}");
+                let names = match ask {
+                    Ask::Two(_) => vec![format!("{name}a"), format!("{name}b")],
+                    _ => vec![name.clone()],
+                };
+                match ask {
+                    Ask::Whole | Ask::Lines(_) | Ask::Split(..) | Ask::Two(_) => {
+                        for name in names {
+                            lines.push(format!("served /{name}"));
+                            lines.push(format!("{name} HTTP/1.1 200 OK ok /{name}"));
+                        }
+                    }
+                    Ask::Closed => lines.push(format!("{name} cut")),
+                    Ask::LongLine => {
+                        lines.push(format!("{name} HTTP/1.1 414 URI Too Long the request line is too long"));
+                    }
+                    Ask::ManyHeaders => lines.push(format!(
+                        "{name} HTTP/1.1 431 Request Header Fields Too Large the headers are too big"
+                    )),
+                }
+            }
+        }
+        lines
+    }
+
     /// Whether any `Note` is sent: the input asked for them, and some task takes from its inbox or
     /// `main` gathers.
     fn sends_notes(&self) -> bool {
@@ -553,6 +705,7 @@ impl Plan {
             printed.push(format!("p {}\n", pieces.at));
         }
         printed.extend(self.pieces_over().map(|over| format!("{over}\n")));
+        printed.extend(self.http_lines().into_iter().map(|line| format!("{line}\n")));
         printed.push("over\n".to_owned());
         printed.sort();
         printed
@@ -610,6 +763,7 @@ impl Plan {
                 .map(|number| format!("gathered {number}{}", self.shown_end())),
         );
         lines.extend(self.pieces_over().map(str::to_owned));
+        lines.extend(self.http_lines());
         lines.push("over".to_owned());
         lines
     }
@@ -930,8 +1084,15 @@ fn heading(plan: &Plan) -> String {
         imported.push("channel");
     }
     let mut out = format!("from std.concurrent import {}\n", imported.join(", "));
-    if !plan.rounds.is_empty() {
-        out.push_str("from std.net import Connection, NetError, Server\n");
+    if plan.serves() {
+        let mut net = vec!["Connection", "NetError"];
+        if !plan.clients.is_empty() {
+            net.extend(["Request", "Response"]);
+        }
+        if !plan.rounds.is_empty() {
+            net.push("Server");
+        }
+        let _ = writeln!(out, "from std.net import {}", net.join(", "));
     }
     if plan.any_timed() {
         out.push_str("from std.time import Duration\n");
@@ -1050,8 +1211,129 @@ fn source(plan: &Plan) -> String {
     if !plan.rounds.is_empty() {
         out.push_str(&server(plan, &given((None, server_clock, true), true), &handed));
     }
-    out.push_str(&main(plan, main_clock || server_clock, &handed));
+    let (http, client_clock) = http_source(plan);
+    out.push_str(&http);
+    out.push_str(&main(plan, main_clock || server_clock || client_clock, &handed));
     out
+}
+
+/// The HTTP server's helpers and each client's function, if there are any, and whether a client
+/// needs a clock.
+fn http_source(plan: &Plan) -> (String, bool) {
+    if plan.clients.is_empty() {
+        return (String::new(), false);
+    }
+    let mut out = HTTP_HELPERS.to_owned();
+    let mut clock = false;
+    for (client, asks) in plan.clients.iter().enumerate() {
+        let (text, sleeps) = client_source(client, asks);
+        clock |= sleeps;
+        out.push_str(&text);
+    }
+    (out, clock)
+}
+
+/// What the HTTP server answers with, and how a client reads a response.
+const HTTP_HELPERS: &str = "
+# Answers a request with its path, saying it served it.
+def served(request: Request, stdout: Stdout) -> Response:
+    stdout.print(\"served\", request.path)
+    return Response(status=200, body=f\"ok {request.path}\".encode())
+
+# Reads the response to `asked`, its status line, its headers and as much body as they say, and
+# prints its status line and body.
+def heard(conn: Connection, asked: str, stdout: Stdout) fails NetError:
+    status = (conn.read_line()? else \"nothing\").strip()
+    mut length = 0
+    while True:
+        line = (conn.read_line()? else \"\").strip()
+        if line == \"\": break
+        if line.lower().startswith(\"content-length:\"):
+            length = int(line[15:].strip()) except InvalidValue(): 0
+    mut body = bytes([])
+    while len(body) < length:
+        more = conn.read(length - len(body))?
+        if len(more) == 0: break
+        body = body + more
+    said = body.decode() except InvalidValue(): \"?\"
+    stdout.print(asked, status, said)
+";
+
+/// Client `client`'s function, which sends `asks` on the connection it's given and reads each
+/// response, and whether it needs a clock.
+fn client_source(client: usize, asks: &[Ask]) -> (String, bool) {
+    let mut body = String::new();
+    let mut clock = false;
+    let wrote = |body: &mut String, text: &str| {
+        let _ = writeln!(body, "    conn.write({})?", literal(text));
+    };
+    for (number, ask) in asks.iter().enumerate() {
+        let name = format!("c{client}q{number}");
+        let path = format!("/{name}");
+        match *ask {
+            Ask::Whole => wrote(&mut body, &head(&path)),
+            Ask::Lines(wait) => {
+                for line in head(&path).split_inclusive("\r\n") {
+                    wrote(&mut body, line);
+                    clock |= matches!(wait, Wait::Sleep(_));
+                    body.push_str(&waited(wait, "    "));
+                }
+            }
+            Ask::Split(cut, wait) => {
+                let whole = head(&path);
+                let (first, rest) = whole.split_at(cut_at(&whole, cut));
+                wrote(&mut body, first);
+                clock |= matches!(wait, Wait::Sleep(_));
+                body.push_str(&waited(wait, "    "));
+                wrote(&mut body, rest);
+            }
+            Ask::Two(wait) => {
+                let second = head(&format!("{path}b"));
+                let (first, rest) = second.split_at(cut_at(&second, Cut::InLine));
+                wrote(&mut body, &format!("{}{first}", head(&format!("{path}a"))));
+                clock |= matches!(wait, Wait::Sleep(_));
+                body.push_str(&waited(wait, "    "));
+                wrote(&mut body, rest);
+            }
+            Ask::Closed => {
+                wrote(&mut body, &format!("GET {path} HTTP/1.1\r\nhost:"));
+                let _ = writeln!(body, "    conn.close()\n    stdout.print(\"{name} cut\")");
+            }
+            Ask::LongLine => {
+                let _ = writeln!(
+                    body,
+                    "    conn.write(\"GET /\" + \"x\" * {TOO_LONG_TARGET} + \" HTTP/1.1\\r\\n\")?"
+                );
+            }
+            Ask::ManyHeaders => {
+                let _ = writeln!(
+                    body,
+                    "    mut many = {}\n    for number in range({TOO_MANY_HEADERS}):\n        \
+                     many += f\"h{{number}}: v\\r\\n\"\n    conn.write(many + \"\\r\\n\")?",
+                    literal(&format!("GET {path} HTTP/1.1\r\n"))
+                );
+            }
+        }
+        match ask {
+            Ask::Two(_) => {
+                let _ = writeln!(
+                    body,
+                    "    heard(conn, \"{name}a\", stdout)?\n    heard(conn, \"{name}b\", stdout)?"
+                );
+            }
+            Ask::Closed => {}
+            _ => {
+                let _ = writeln!(body, "    heard(conn, \"{name}\", stdout)?");
+            }
+        }
+    }
+    let clock_parameter = if clock { ", clock: Clock" } else { "" };
+    (
+        format!(
+            "\ndef client_{client}(conn: Connection{clock_parameter}, stdout: Stdout) fails NetError:\n{body}"
+        ),
+        clock,
+    )
 }
 
 /// The server: `answered`, which runs the round a connection asks for and says it's done, and
@@ -1117,7 +1399,7 @@ fn parallel(pieces: &Pieces, locks: bool, parameters: &str, arguments: &str) -> 
 /// then each worker its stop, before it reads what each round said. `clock` says whether it needs
 /// one, and `handed` is what the server's handed.
 fn main(plan: &Plan, clock: bool, handed: &str) -> String {
-    let serves = !plan.rounds.is_empty();
+    let serves = plan.serves();
     let mut fails = Vec::new();
     if serves {
         fails.push("NetError");
@@ -1136,7 +1418,8 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
         );
     }
     let mut indent = String::from("    ");
-    if serves {
+    out.push_str(&http_blocks(plan, &mut indent));
+    if !plan.rounds.is_empty() {
         let _ = writeln!(out, "{indent}with net.listen(0)? as server:");
         indent.push_str("    ");
         let _ = writeln!(out, "{indent}port = server.port");
@@ -1261,6 +1544,42 @@ fn main_steps(plan: &Plan, indent: &str) -> String {
             plan.sent_as("-1 - nth"),
             plan.shown("got")
         );
+    }
+    out
+}
+
+/// The HTTP server's block and each client's connection and task, one block inside another from
+/// `indent`, which ends inside the last.
+fn http_blocks(plan: &Plan, indent: &mut String) -> String {
+    let mut out = String::new();
+    if plan.clients.is_empty() {
+        return out;
+    }
+    let _ = writeln!(out, "{indent}with net.listen(0)? as web:");
+    indent.push_str("    ");
+    let _ = writeln!(out, "{indent}web_port = web.port");
+    let _ = writeln!(
+        out,
+        "{indent}with launch(() => web.serve((request) => served(request, stdout)), stop_after=100ms)?:"
+    );
+    indent.push_str("    ");
+    for client in 0..plan.clients.len() {
+        let _ = writeln!(out, "{indent}with net.connect(\"127.0.0.1\", web_port)? as client_{client}_conn:");
+        indent.push_str("    ");
+    }
+    for (client, asks) in plan.clients.iter().enumerate() {
+        let sleeps = asks.iter().any(|ask| {
+            matches!(
+                ask,
+                Ask::Lines(Wait::Sleep(_)) | Ask::Split(_, Wait::Sleep(_)) | Ask::Two(Wait::Sleep(_))
+            )
+        });
+        let clock = if sleeps { ", clock" } else { "" };
+        let _ = writeln!(
+            out,
+            "{indent}with launch(() => client_{client}(client_{client}_conn{clock}, stdout)?)?:"
+        );
+        indent.push_str("    ");
     }
     out
 }
@@ -1422,13 +1741,9 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
         for replayed_on in [1, 4, 16] {
             let replayed = ran(&executable, &work, replayed_on, "FENNEC_REPLAY", &log)?;
             // What the recording's crashes said, in their order, and, only in a program with a
-            // server, which the recording's end stops, that it's stopped, once, wherever the stop
-            // came among the crashes.
-            let said = if plan.rounds.is_empty() {
-                replayed.1.clone()
-            } else {
-                replayed.1.replacen(SERVER_STOPPED, "", 1)
-            };
+            // server, which the recording's end stops, that it's stopped, once for each server,
+            // wherever the stop came among the crashes.
+            let said = replayed.1.replacen(SERVER_STOPPED, "", plan.servers());
             let quiet = said == recorded.1;
             if (&replayed.0, replayed.2) != (&recorded.0, recorded.2) || !quiet {
                 return Err(format!(

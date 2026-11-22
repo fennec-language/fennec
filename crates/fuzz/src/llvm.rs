@@ -25,9 +25,12 @@ pub(crate) fn fennec() -> PathBuf {
         .map_or_else(|| std::env::current_exe().unwrap_or_default().with_file_name("fennec"), PathBuf::from)
 }
 
-/// This process's own folder to build in.
+/// This process's own folder to build in, held as its own while it runs (see `owned`). Where it
+/// can't be held, it's still used, and is only removed once it's a day old.
 pub(crate) fn work() -> PathBuf {
-    work_of(std::process::id())
+    let folder = work_of(std::process::id());
+    let _ = crate::owned::own(&folder);
+    folder
 }
 
 /// The folder process `pid` builds in.
@@ -38,36 +41,25 @@ fn work_of(pid: u32) -> PathBuf {
 /// What every process's folder to build in is named from, before its process id.
 const WORK: &str = "fennec-fuzz-llvm-";
 
-/// Removes the folder process `pid` built in, once it's ended. A failing program is kept as its
-/// input, which builds it again, so nothing in the folder is needed after.
+/// Removes the folder process `pid` built in, once it's ended: this process's own, or a worker's
+/// it started, which is only removed once nothing holds it, so a new process given the same id
+/// keeps its own. A failing program is kept as its input, which builds it again, so nothing in the
+/// folder is needed after.
 pub(crate) fn forget(pid: u32) {
-    let _ = std::fs::remove_dir_all(work_of(pid));
+    if pid == std::process::id() {
+        crate::owned::let_go(&work_of(pid));
+    } else {
+        crate::owned::remove_ended(&work_of(pid));
+    }
 }
 
 /// Removes the folders fuzzing processes made that ended without removing them: a run, a worker
-/// or a try at cutting a failure down that was stopped, or a test's. One whose process id is
-/// running again, as another process, is removed once it's a day old. When which processes are
-/// running can't be asked, it removes nothing.
+/// or a try at cutting a failure down that was stopped, or a test's. A folder whose process is
+/// still running is held by it and kept, however new it is.
 fn forget_ended() {
-    let Ok(listed) = Command::new("ps").args(["-A", "-o", "pid="]).output() else { return };
-    if !listed.status.success() {
-        return;
-    }
-    let running: std::collections::HashSet<u32> = String::from_utf8_lossy(&listed.stdout)
-        .split_whitespace()
-        .filter_map(|pid| pid.parse().ok())
-        .collect();
-    if running.is_empty() {
-        return;
-    }
-    let day = std::time::Duration::from_hours(24);
     for entry in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(fuzzing_process) else { continue };
-        let changed = entry.metadata().and_then(|meta| meta.modified()).ok();
-        let old = changed.and_then(|changed| changed.elapsed().ok()).is_some_and(|age| age > day);
-        if !running.contains(&pid) || old {
-            let _ = std::fs::remove_dir_all(entry.path());
+        if entry.file_name().to_str().and_then(fuzzing_process).is_some() {
+            crate::owned::remove_ended(&entry.path());
         }
     }
 }

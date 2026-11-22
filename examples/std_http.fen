@@ -125,7 +125,7 @@ test "a request line longer than a whole head may be is refused as a target too 
     # A header line that long is still a header too big.
     assert (
         refused(net, "GET / HTTP/1.1\r\nX: " + "y" * 1048600 + "\r\n\r\n")?
-        == ("431 Request Header Fields Too Large: a line of the request is too long")
+        == ("431 Request Header Fields Too Large: the headers are too big")
     )
 
 test "a response header that would start another is answered as a 500"(net: Net):

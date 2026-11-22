@@ -1,0 +1,67 @@
+# A slice read by one `split` or `find` is read where it is, with no string made for it, when its
+# text is in a block, and sliced natively when its text is inline; `startswith`, `==` and `!=` on a
+# slice take the native path. Each is checked against the same call on the slice made first, which
+# is read twice so it's made: for short and long texts, ASCII and not, and ranges at either end,
+# negative, missing, reversed and past the end.
+
+## The slice made, as it would be with nothing reading it where it is.
+def made(text: str, start: int, end: int) -> str:
+    part = text[start:end]
+    if len(part) < 0:
+        return ""
+    return part
+
+## Each call on a slice read where it is.
+def ranged(text: str, start: int, end: int, part: str) -> str:
+    pieces = text[start:end].split(part)
+    words = text[start:end].split()
+    found = text[start:end].find(part) else -1
+    starts = text[start:end].startswith(part)
+    same = text[start:end] == part
+    differs = part != text[start:end]
+    return f"{pieces} {words} {found} {starts} {same} {differs}"
+
+## The same calls on the slice made.
+def plain(text: str, start: int, end: int, part: str) -> str:
+    slice = made(text, start=start, end=end)
+    pieces = slice.split(part)
+    words = slice.split()
+    found = slice.find(part) else -1
+    starts = slice.startswith(part)
+    same = slice == part
+    differs = part != slice
+    return f"{pieces} {words} {found} {starts} {same} {differs}"
+
+## The forms with an end left out, and literals beside them.
+def open_ended(line: str) -> str:
+    method = line[:4] == "GET "
+    after = line[4:].startswith("/users")
+    head = line[:-9].split(" ")
+    space = line[5:].find(" ") else -1
+    return f"{method} {after} {head} {space}"
+
+def main(stdout: Stdout):
+    texts = [
+        "",
+        "a b",
+        "short, with é",
+        "GET /users/12 HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n{\"id\": 12}",
+        "ünïcödé text, long enough for a block, with ünïcödé parts: ab ab ab",
+        "日本語のテキスト、ブロックに入るほど長い文です。ab 日本 ab",
+    ]
+    ends = [(0, 3), (2, -2), (-5, 100), (4, 2), (0, 0), (1, 40), (-100, -1), (30, 1000)]
+    parts = ["ab", " ", "é", "\r\n", "日本", "e"]
+    mut checked = 0
+    for text in texts:
+        for start, end in ends:
+            for part in parts:
+                here = ranged(text, start=start, end=end, part=part)
+                there = plain(text, start=start, end=end, part=part)
+                if here != there:
+                    stdout.print("differs:", repr(text), start, end, repr(part), here, there)
+                checked += 1
+    stdout.print("checked", checked)
+    stdout.print(ranged(texts[3], start=0, end=24, part="/"))
+    stdout.print(open_ended("GET /users/12 HTTP/1.1"))
+    stdout.print(open_ended("POST /orders HTTP/1.1"))
+    return

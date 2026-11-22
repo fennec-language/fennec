@@ -7,9 +7,11 @@
 //! - or goes quiet without closing, until the server stops waiting for it.
 //!
 //! Each answer a client reads is held to what `http-server`'s reader says the same bytes should
-//! get, however they were split. After the script, a last client asks for one plain request, which
-//! the server has to answer: whatever came before, it's still up for the next one. The server runs
-//! with one worker or four.
+//! get, however they were split. Clients may meet the server at the same time, up to four at once.
+//! After the script, a last client asks for one plain request, which the server has to answer:
+//! whatever came before, it's still up for the next one. By then it must also have let go of what
+//! the clients held: its descriptors come back to where they were and its memory near it. The
+//! server runs with one worker or four.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -57,15 +59,18 @@ impl Client {
     }
 }
 
-/// A script: how many workers the server has, and its clients in order.
+/// A script: how many workers the server has, how many clients meet it at once, and its clients
+/// in order.
 #[derive(Debug)]
 struct Script {
     threads: usize,
+    together: usize,
     clients: Vec<Client>,
 }
 
-/// The script an input says. Its first byte picks the workers: one, or four with its lowest bit
-/// set. Then each client is a byte saying how it goes, two bytes saying how many bytes it sends,
+/// The script an input says. Its first byte picks the workers, one or four with its lowest bit
+/// set, and in its next two bits how many clients meet the server at once, one to four: each group
+/// of that many starts together, and the next group starts once they've all ended. Then each client is a byte saying how it goes, two bytes saying how many bytes it sends,
 /// and those bytes: fewer where the input ends first. The byte saying how it goes is, from its
 /// lowest bits:
 /// - two bits for the end: `Reads` (0 or 3), `Drops` (1) or `Quiet` (2), at most one quiet client
@@ -74,7 +79,9 @@ struct Script {
 ///   each (2), or two halves (3);
 /// - two bits for the pause: none, 1, 4 or 10 ms.
 fn script(input: &[u8]) -> Script {
-    let threads = if input.first().is_some_and(|flags| flags & 1 == 1) { 4 } else { 1 };
+    let flags = input.first().copied().unwrap_or(0);
+    let threads = if flags & 1 == 1 { 4 } else { 1 };
+    let together = usize::from(flags >> 1 & 3) + 1;
     let mut clients = Vec::new();
     let mut at = 1;
     let mut quiet = false;
@@ -116,7 +123,7 @@ fn script(input: &[u8]) -> Script {
         });
         clients.push(Client { pieces, pause, end });
     }
-    Script { threads, clients }
+    Script { threads, together, clients }
 }
 
 /// What a client heard, and whether it sent so slowly that what's missing hangs on time.
@@ -155,40 +162,108 @@ fn met(port: u16, client: &Client) -> Result<(Vec<u8>, bool), String> {
 /// What a last client, asking for one plain request, has to get: an answer, whatever came before.
 const CANARY: &[u8] = b"GET /still-up HTTP/1.1\r\nHost: canary\r\nConnection: close\r\n\r\n";
 
-/// The target: a script of clients against one server, each heard as HTTP/1.1 says, and the
-/// server still up after them.
-pub(crate) fn http_sessions(input: &[u8]) -> Result<(), String> {
-    let Some(executable) = crate::llvm::built_reader("http-sessions")? else { return Ok(()) };
-    let script = script(input);
-    let (mut server, port) = started(&executable, Some(script.threads))?;
-    for (at, client) in script.clients.iter().enumerate() {
-        let shown = || format!("client {at} of {:?} at {} workers", script.clients, script.threads);
-        let (said, slow) = met(port, client).map_err(|wrong| format!("{wrong}: {}", shown()))?;
-        if let Ok(Some(status)) = server.0.try_wait() {
-            return Err(format!("the server stopped ({status}): {}", shown()));
-        }
-        if client.end != End::Drops {
-            // Sent slowly, the last request may run out of time before it's whole.
-            let cut = client.end == End::Quiet || slow;
-            judged(&client.bytes(), &said, cut).map_err(|wrong| format!("{wrong}: {}", shown()))?;
-        }
-    }
+/// How long the server may take to let go of a connection after its client has heard it close.
+const CLOSED_WITHIN: Duration = Duration::from_secs(3);
+
+/// How much more memory the server may hold after a script than before it: a script's clients send
+/// at most a few hundred kilobytes, so more than this is held for good.
+const MOST_GROWTH_KILOBYTES: u64 = 64 * 1024;
+
+/// Whether the server answers one plain request.
+fn answers(port: u16) -> Result<(), String> {
     let canary = Client { pieces: vec![CANARY.to_vec()], pause: Duration::ZERO, end: End::Reads };
-    let shown = || format!("after {:?} at {} workers", script.clients, script.threads);
-    let (said, _) = met(port, &canary).map_err(|wrong| format!("the last client: {wrong}, {}", shown()))?;
+    let (said, _) = met(port, &canary)?;
     if !said.starts_with(b"HTTP/1.1 200 ") {
-        return Err(format!("the last client heard {:?}, {}", String::from_utf8_lossy(&said), shown()));
-    }
-    if crate::supervise::kilobytes(server.0.id()).is_some_and(|held| held > 512 * 1024) {
-        return Err(format!("the server holds more than 512 MB, {}", shown()));
+        return Err(format!("it heard {:?}", String::from_utf8_lossy(&said)));
     }
     Ok(())
 }
 
-/// An input for `script`: the workers' flag, then each client as how it goes and its bytes.
+/// What's wrong if the server `id` still holds more descriptors than it did `before` its clients,
+/// once it's had `CLOSED_WITHIN` to close theirs.
+fn still_held(id: u32, before: Option<usize>) -> Option<String> {
+    let before = before?;
+    let waited = Instant::now();
+    let mut now = crate::supervise::descriptors(id)?;
+    while now > before && waited.elapsed() < CLOSED_WITHIN {
+        std::thread::sleep(Duration::from_millis(50));
+        now = crate::supervise::descriptors(id)?;
+    }
+    (now > before).then(|| {
+        format!("the server holds {now} descriptors {CLOSED_WITHIN:?} after its clients closed, and held {before} before them")
+    })
+}
+
+/// What each client of a group heard, in order, the group meeting the server at once.
+fn group_met(port: u16, group: &[Client]) -> Vec<Result<(Vec<u8>, bool), String>> {
+    if let [client] = group {
+        return vec![met(port, client)];
+    }
+    std::thread::scope(|scope| {
+        let meeting: Vec<_> = group.iter().map(|client| scope.spawn(move || met(port, client))).collect();
+        meeting
+            .into_iter()
+            .map(|client| client.join().unwrap_or_else(|_| Err("its thread panicked".to_owned())))
+            .collect()
+    })
+}
+
+/// The target: a script of clients against one server, each heard as HTTP/1.1 says, and the
+/// server still up after them, holding no more than it did before them.
+pub(crate) fn http_sessions(input: &[u8]) -> Result<(), String> {
+    let Some(executable) = crate::llvm::built_reader("http-sessions")? else { return Ok(()) };
+    let script = script(input);
+    let (mut server, port) = started(&executable, Some(script.threads))?;
+    let id = server.0.id();
+    // The runtime opens its own descriptors as it starts; one request first has it hold whatever
+    // else it keeps, so what it holds afterwards is what a script can be held to.
+    answers(port).map_err(|wrong| format!("the first client: {wrong}"))?;
+    let before = crate::supervise::descriptors(id);
+    let held = crate::supervise::kilobytes(id);
+    let shown = |at: usize| {
+        format!(
+            "client {at} of {:?}, {} at once, at {} workers",
+            script.clients, script.together, script.threads
+        )
+    };
+    for (group, clients) in script.clients.chunks(script.together).enumerate() {
+        for (within, (client, heard)) in clients.iter().zip(group_met(port, clients)).enumerate() {
+            let at = group * script.together + within;
+            let (said, slow) = heard.map_err(|wrong| format!("{wrong}: {}", shown(at)))?;
+            if client.end != End::Drops {
+                // Sent slowly, the last request may run out of time before it's whole.
+                let cut = client.end == End::Quiet || slow;
+                judged(&client.bytes(), &said, cut).map_err(|wrong| format!("{wrong}: {}", shown(at)))?;
+            }
+        }
+        if let Ok(Some(status)) = server.0.try_wait() {
+            return Err(format!("the server stopped ({status}): {}", shown(group * script.together)));
+        }
+    }
+    let after =
+        || format!("after {:?}, {} at once, at {} workers", script.clients, script.together, script.threads);
+    answers(port).map_err(|wrong| format!("the last client: {wrong}, {}", after()))?;
+    if let Some(wrong) = still_held(id, before) {
+        return Err(format!("{wrong}, {}", after()));
+    }
+    if let Some(now) = crate::supervise::kilobytes(id) {
+        if now > 512 * 1024 {
+            return Err(format!("the server holds more than 512 MB, {}", after()));
+        }
+        if let Some(held) = held.filter(|&held| now > held + MOST_GROWTH_KILOBYTES) {
+            return Err(format!(
+                "the server holds {now} KB after its clients and held {held} KB before them, {}",
+                after()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// An input for `script`: its flags, then each client as how it goes and its bytes.
 #[cfg(test)]
-fn written(threads: u8, clients: &[(u8, &[u8])]) -> Vec<u8> {
-    let mut input = vec![threads];
+fn written(flags: u8, clients: &[(u8, &[u8])]) -> Vec<u8> {
+    let mut input = vec![flags];
     for (how, bytes) in clients {
         let length = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
         input.push(*how);
@@ -200,16 +275,23 @@ fn written(threads: u8, clients: &[(u8, &[u8])]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{End, MOST_PIECES, http_sessions, script, written};
+    use super::{End, MOST_PIECES, answers, group_met, http_sessions, script, still_held, written};
+    use crate::http_rules::started;
+    use crate::supervise::{descriptors, kilobytes};
 
     const GET: &[u8] = b"GET /a?b=c HTTP/1.1\r\nHost: h\r\n\r\n";
     const POST: &[u8] = b"POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello";
+    const REFUSED: &[u8] =
+        b"GET / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nGET / HTTP/1.1\r\n\r\n";
 
     #[test]
     fn an_input_says_its_clients() {
         let input = written(1, &[(0b0000_0100, GET), (0b1000_1101, POST), (2, GET), (2, GET)]);
         let read = script(&input);
         assert_eq!(read.threads, 4);
+        assert_eq!(read.together, 1);
+        assert_eq!(script(&[0b0000_0010]).together, 2);
+        assert_eq!((script(&[0b0000_0111]).threads, script(&[0b0000_0111]).together), (4, 4));
         let ends: Vec<End> = read.clients.iter().map(|client| client.end).collect();
         // A second quiet client reads.
         assert_eq!(ends, [End::Reads, End::Drops, End::Quiet, End::Reads]);
@@ -223,27 +305,81 @@ mod tests {
     }
 
     /// Requests sent a byte at a time, halved, dropped half sent, and left unfinished by a client
-    /// that goes quiet, at one worker and four, are each heard as HTTP/1.1 says, and the server
-    /// answers the next client after them.
+    /// that goes quiet, one client at a time and four at once, at one worker and four, are each
+    /// heard as HTTP/1.1 says, and the server answers the next client after them, holding no more
+    /// than before them.
     #[test]
     fn a_server_hears_every_client_as_http_says_and_stays_up() {
         let pipelined = [GET, POST, GET].concat();
-        let refused =
-            b"GET / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nGET / HTTP/1.1\r\n\r\n";
-        for threads in [0, 1] {
+        for flags in [0b000, 0b001, 0b110, 0b111] {
             let input = written(
-                threads,
+                flags,
                 &[
                     (0b0100_0100, &pipelined),
                     (0b0000_1100, POST),
                     (0b0000_0101, &POST[..30]),
-                    (0b0000_1000, refused),
+                    (0b0000_1000, REFUSED),
                     (0b0000_0010, &[GET, &POST[..40]].concat()),
                     (0b1100_1000, &pipelined),
                 ],
             );
             if let Err(wrong) = http_sessions(&input) {
                 unreachable!("{wrong}");
+            }
+        }
+    }
+
+    /// How many rounds of clients the server meets, and after how many its memory has settled.
+    const ROUNDS: usize = 120;
+    const SETTLED: usize = 20;
+
+    /// A server met by the same clients round after round, four at once, lets go of what each round
+    /// held: its descriptors come back to where they were and its memory stops growing, at one
+    /// worker and four.
+    #[test]
+    fn a_server_lets_go_of_what_round_after_round_held() {
+        let executable = match crate::llvm::built_reader("http-sessions") {
+            Ok(Some(executable)) => executable,
+            Ok(None) => return,
+            Err(wrong) => unreachable!("{wrong}"),
+        };
+        let pipelined = [GET, POST, GET].concat();
+        let clients = script(&written(
+            0b110,
+            &[
+                (0b0000_0101, &POST[..30]),
+                (0b0000_1000, REFUSED),
+                (0b0100_0100, &pipelined),
+                (0b0000_0001, GET),
+            ],
+        ))
+        .clients;
+        for threads in [1, 4] {
+            let (server, port) = match started(&executable, Some(threads)) {
+                Ok(started) => started,
+                Err(wrong) => unreachable!("{wrong}"),
+            };
+            let id = server.0.id();
+            assert_eq!(answers(port), Ok(()));
+            let before = descriptors(id);
+            let mut settled = None;
+            for round in 0..ROUNDS {
+                for heard in group_met(port, &clients) {
+                    if let Err(wrong) = heard {
+                        unreachable!("round {round} at {threads} workers: {wrong}");
+                    }
+                }
+                if round == SETTLED {
+                    settled = kilobytes(id);
+                }
+            }
+            assert_eq!(answers(port), Ok(()));
+            assert_eq!(still_held(id, before), None, "at {threads} workers");
+            if let (Some(settled), Some(now)) = (settled, kilobytes(id)) {
+                assert!(
+                    now <= settled + 8 * 1024,
+                    "{now} KB after {ROUNDS} rounds, {settled} KB after {SETTLED}, at {threads} workers"
+                );
             }
         }
     }

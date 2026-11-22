@@ -288,6 +288,24 @@ mod tests {
         Ok(())
     }
 
+    /// A loop over part of a list, as a counting sort files it, reads the list by its count. The
+    /// range is checked once before the loop, so the copy that runs when it's inside the list keeps
+    /// no check on the read, and the copy for any other range keeps today's, to fail where it did.
+    #[test]
+    fn a_loop_over_part_of_a_list_checks_its_range_once() -> Result<(), String> {
+        let body = "def go(order: list[int], starts: list[int], near: int) -> int:\n    mut total = 0\n    for at in range(starts[near], starts[near + 1]):\n        total += order[at]\n    return total\n";
+        let found = kept(body)?;
+        let reads: Vec<&String> =
+            found.iter().filter(|(what, _)| *what == CheckKind::Bounds).map(|(_, on)| on).collect();
+        assert_eq!(reads, ["starts[near]", "starts[near + 1]", "order[at]"], "{found:?}");
+        // The two copies' reads are at the same place in the source, so only the code tells them
+        // apart: the starts are read once each, and `order[at]` is checked in one copy alone.
+        let (units, _, _) = crate::emit(&lowered(body)?)?;
+        let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+        assert_eq!(text.matches("call void @fennec_out_of_range(").count(), reads.len(), "{text}");
+        Ok(())
+    }
+
     /// A `for` over a list reads each item at its own count, which is short of the list's length
     /// while the body runs: no item it reads or writes back keeps a check, from a parameter, a
     /// field or a `for ref`.

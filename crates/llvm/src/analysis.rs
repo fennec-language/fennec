@@ -40,6 +40,8 @@ pub(crate) struct Analysis {
     below: HashMap<usize, LocalId>,
     /// Locals holding the length of a list that keeps its length, and which list.
     length_of: HashMap<usize, usize>,
+    /// Loops' limits a test before the loop held to a list's length or less, and which list.
+    at_most: HashMap<usize, usize>,
     /// How many instructions read and write each local.
     reads: Vec<u32>,
     writes: Vec<u32>,
@@ -169,6 +171,7 @@ impl Analysis {
             nonzero,
             below,
             length_of,
+            at_most,
             reads,
             writes,
             shared,
@@ -217,6 +220,7 @@ impl Analysis {
         hash_set(nonzero, state);
         hash_map(below, state);
         hash_map(length_of, state);
+        hash_map(at_most, state);
         reads.hash(state);
         writes.hash(state);
         hash_set(shared, state);
@@ -553,6 +557,53 @@ fn note(
     }
 }
 
+/// The limits of loops counting up that a test just before them held to a list's length or less,
+/// as the copy of a loop that `fennec_ir`'s lowering makes to check its reads once has: the loop's
+/// limit is set where the test came out true, from what it tested, and nothing else sets either.
+/// The list keeps its length (`length_of`), so a count below the limit reads inside it.
+fn find_checked_limits(function: &Function, known: &mut Analysis) {
+    let once = |local: LocalId| known.writes.get(local.0) == Some(&1);
+    let mut into: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (from, block) in function.blocks.iter().enumerate() {
+        for to in block.end.targets() {
+            into.entry(to.0).or_default().push(from);
+        }
+    }
+    let mut found = Vec::new();
+    for count in function.counts.iter().filter(|count| !count.down && once(count.stop)) {
+        let set = function.blocks.iter().enumerate().find_map(|(at, block)| {
+            block.insts.iter().find_map(|inst| match &inst.kind {
+                InstKind::Copy { dest, value: Operand::Local(from) } if *dest == count.stop => {
+                    Some((at, *from))
+                }
+                _ => None,
+            })
+        });
+        let Some((at, from)) = set.filter(|(_, from)| once(*from)) else { continue };
+        let Some(&[before]) = into.get(&at).map(Vec::as_slice) else { continue };
+        let Some(tested) = function.blocks.get(before) else { continue };
+        let Terminator::Branch { cond: Operand::Local(test), then, otherwise } = &tested.end else {
+            continue;
+        };
+        if then.0 != at || otherwise.0 == at || !once(*test) {
+            continue;
+        }
+        let list = tested.insts.iter().find_map(|inst| match &inst.kind {
+            InstKind::Binary {
+                dest,
+                op: BinOp::LtEq,
+                lhs: Operand::Local(lhs),
+                rhs: Operand::Local(length),
+            } if dest == test && *lhs == from => known.length_of.get(&length.0).copied(),
+            _ => None,
+        });
+        if let Some(list) = list {
+            found.push((count.stop.0, list));
+        }
+    }
+    known.at_most.extend(found);
+}
+
 /// Counts what reads and writes each local, and notes which lists change or are handed on.
 /// Gives back those that can change length.
 fn count_uses(
@@ -758,6 +809,7 @@ fn analyze(
         !grown.contains(list) && written == u32::from(*list >= params)
     });
     known.steady_lengths = steady_lengths(function, &grown, &known);
+    find_checked_limits(function, &mut known);
     find_guarded_reads(function, (&facts, &multi), &mut known);
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
@@ -3868,6 +3920,7 @@ impl Analysis {
             nonzero: HashSet::new(),
             below: HashMap::new(),
             length_of: HashMap::new(),
+            at_most: HashMap::new(),
             reads: vec![0; count],
             writes: vec![0; count],
             shared: HashSet::new(),
@@ -3937,7 +3990,9 @@ impl Analysis {
     pub(crate) fn inside(&self, list: LocalId, index: &Operand) -> bool {
         let Operand::Local(index) = index else { return false };
         let Some(limit) = self.below.get(&index.0) else { return false };
-        let Some(&measured) = self.length_of.get(&limit.0) else { return false };
+        let Some(&measured) = self.length_of.get(&limit.0).or_else(|| self.at_most.get(&limit.0)) else {
+            return false;
+        };
         measured == list.0 || self.aliases.get(&measured) == Some(&list)
     }
 

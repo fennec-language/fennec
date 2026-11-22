@@ -531,6 +531,11 @@ impl Lowering<'_> {
             && (by_id || matches!(self.type_at(iter.span), Some(Type::List(_) | Type::Array(..))));
         let back =
             if changes_items { Some(Back { place: self.held_place(iter, span)?, by_id }) } else { None };
+        if let (false, None, [name]) = (is_mut, &back, names)
+            && let Some(list) = self.checked_once(name, iter, body)
+        {
+            return self.versioned(name, (iter, &list), body, span);
+        }
         let over = Over { names, iter, back };
         self.looping(over, span, |lowering| lowering.stmts(body, Tail::Drop))
     }

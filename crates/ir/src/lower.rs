@@ -3,6 +3,7 @@
 
 mod arrays;
 pub(crate) mod calls;
+mod checked_once;
 mod closures;
 mod collections;
 mod constants;

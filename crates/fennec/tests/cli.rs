@@ -6470,6 +6470,47 @@ fn the_daemons_builds_go_to_processes_that_never_outlive_them() {
     build.wait().unwrap();
 }
 
+/// A build the daemon hands to a process of its own uses the analyses the build before it kept, as
+/// one in the daemon does: the daemon holds what each build's process kept and hands it to the
+/// next, so an edit analyzes what it changed, not every function. Each used again is checked here
+/// against analyzing it again (`FENNEC_CHECK_WHOLE=1`), and the program is what it should be.
+#[cfg(unix)]
+#[test]
+fn a_build_in_its_own_process_uses_the_analyses_the_one_before_kept() {
+    if !crate::llvm::ready() || !cfg!(debug_assertions) {
+        return;
+    }
+    let program = |word: &str| {
+        format!(
+            "def doubled(count: int) -> int:\n    return count * 2\n\ndef said(count: int) -> str:\n    return f\"{word} {{count}}\"\n\ndef main(stdout: Stdout):\n    stdout.print(said(doubled(2)))\n"
+        )
+    };
+    let (folder, kit, home) = kit_of("build-child-kept", &program("first")).unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let noted = folder.join("child-pid");
+    std::fs::write(&noted, "").unwrap();
+    let fennec = |args: &[&str]| {
+        let mut command = child_daemon_fennec(&kit, &home, &noted, (args, true));
+        command.env("FENNEC_CHECK_WHOLE", "1");
+        command
+    };
+    let status = || fennec(&["daemon", "status"]).output();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"]), &status).unwrap();
+    let mut used = Vec::new();
+    for word in ["first", "second"] {
+        std::fs::write(kit.join("src/main.fen"), program(word)).unwrap();
+        let build = fennec(&["build", ".", "-o", "prog"]).output().unwrap();
+        let said = text(&build.stderr);
+        assert!(build.status.success() && !said.contains("own process"), "{said}");
+        let ran = std::process::Command::new(kit.join("prog")).output().unwrap();
+        assert_eq!(text(&ran.stdout), format!("{word} 4\n"));
+        let count = said.split("note: used ").nth(1).and_then(|rest| rest.split(' ').next());
+        used.push(count.and_then(|count| count.parse::<usize>().ok()).unwrap_or_default());
+    }
+    assert_eq!(used[0], 0, "the first build had nothing to use again");
+    assert!(used[1] > 0, "the edit's build used no analysis the first kept: {used:?}");
+}
+
 /// A `fennec test` that goes while the daemon runs its tests, as on Ctrl-C, stops them, even one
 /// that never ends, and the daemon goes on to the next command.
 #[cfg(unix)]

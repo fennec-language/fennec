@@ -330,7 +330,22 @@ pub fn analyses_kept_and_checked(
     program: &fennec_ir::Program,
     kept: &mut KeptForNext,
 ) -> (Vec<String>, usize) {
-    let keeping = Keeping { checks_all: true, ..Keeping::from(kept.0.take()) };
+    // Through bytes and back, as a daemon whose builds are made apart hands it on, and written
+    // again the same.
+    let found = kept.0.take().map(|found| {
+        use fennec_syntax::codec::{Decode as _, Encode as _};
+        let mut to = fennec_syntax::codec::Writer::default();
+        found.encode(&mut to);
+        let bytes = to.into_bytes();
+        let mut from = fennec_syntax::codec::Reader::new(&bytes);
+        let read = KeptAnalyses::decode(&mut from).filter(|_| from.is_done());
+        let read = read.unwrap_or_else(|| panic!("the kept analyses didn't read back"));
+        let mut again = fennec_syntax::codec::Writer::default();
+        read.encode(&mut again);
+        assert!(again.into_bytes() == bytes, "the kept analyses read back as something else");
+        read
+    });
+    let keeping = Keeping { checks_all: true, ..Keeping::from(found) };
     let (_, differ) = crate::analysis::whole_keeping(program, &keeping);
     let used_again = keeping.used_again();
     // As a build does: what was found wrong isn't handed on.
@@ -609,6 +624,38 @@ mod tests {
         assert!(waited.load(std::sync::atomic::Ordering::SeqCst));
     }
 
+    /// What's kept reads back from its bytes as it was written, and bytes cut short or damaged keep
+    /// nothing, so the next build works every analysis out.
+    #[test]
+    fn kept_analyses_read_back_as_written_and_damaged_bytes_keep_nothing() -> Result<(), String> {
+        let text = "def doubled(count: int) -> int:\n    return count * 2\n\ndef listed(count: int) -> int:\n    return [5, 6, 7][count]\n\ndef main(stdout: Stdout):\n    stdout.print(doubled(2), listed(1))\n    return\n";
+        let mut module = fennec_syntax::parse(text).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let keeping = Keeping::from(None);
+        let _ = crate::analysis::whole_keeping(&program, &keeping);
+        let kept = keeping.into_kept();
+        let mut to = fennec_syntax::codec::Writer::default();
+        fennec_syntax::codec::Encode::encode(&kept, &mut to);
+        let bytes = to.into_bytes();
+        let read = |bytes: &[u8]| {
+            let mut from = fennec_syntax::codec::Reader::new(bytes);
+            <KeptAnalyses as fennec_syntax::codec::Decode>::decode(&mut from).filter(|_| from.is_done())
+        };
+        let back = read(&bytes).ok_or("it didn't read back")?;
+        assert_eq!(back.by_function.len(), kept.by_function.len());
+        let mut again = fennec_syntax::codec::Writer::default();
+        fennec_syntax::codec::Encode::encode(&back, &mut again);
+        assert!(again.into_bytes() == bytes, "it read back as something else");
+        for cut in [1, bytes.len() / 2, bytes.len() - 1] {
+            assert!(read(bytes.get(..cut).ok_or("cut")?).is_none(), "{cut} bytes read");
+        }
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(read(&longer).is_none(), "a byte too many read");
+        Ok(())
+    }
+
     /// A kept analysis the check finds isn't what analyzing again gives is handed to no later build:
     /// the next works every analysis out afresh.
     #[test]
@@ -631,4 +678,72 @@ mod tests {
         assert_eq!((differ.len(), used), (0, 0), "the build after one found wrong used what was kept");
         Ok(())
     }
+}
+
+// The store as bytes, for the daemon to keep between builds made in processes of their own (see
+// `kept_to_bytes`).
+fennec_syntax::codec_fields!(Kept { ir, params, asked, analysis, key, built, unchecked });
+fennec_syntax::codec_fields!(KeptAnalyses { build, by_function });
+
+impl fennec_syntax::codec::Encode for Asked {
+    fn encode(&self, to: &mut fennec_syntax::codec::Writer) {
+        match self {
+            Asked::Changes(callee, told) => {
+                to.tag(0);
+                callee.encode(to);
+                told.encode(to);
+            }
+            Asked::Keeps(callee, at, told) => {
+                to.tag(1);
+                callee.encode(to);
+                at.encode(to);
+                told.encode(to);
+            }
+            Asked::InEntries(dict, told) => {
+                to.tag(2);
+                dict.encode(to);
+                told.encode(to);
+            }
+        }
+    }
+}
+
+impl fennec_syntax::codec::Decode for Asked {
+    fn decode(from: &mut fennec_syntax::codec::Reader<'_>) -> Option<Self> {
+        Some(match from.tag()? {
+            0 => Asked::Changes(String::decode(from)?, Vec::decode(from)?),
+            1 => Asked::Keeps(String::decode(from)?, usize::decode(from)?, bool::decode(from)?),
+            2 => Asked::InEntries(Type::decode(from)?, bool::decode(from)?),
+            _ => return None,
+        })
+    }
+}
+
+/// What this process keeps for its next build, as bytes, for a daemon whose builds are each made
+/// in a process of their own: it holds them while no build runs and hands them to the next. A
+/// check of what the build used that's running is waited for, so what's written is what it left.
+/// Empty when nothing is kept.
+#[must_use]
+pub fn kept_to_bytes() -> Vec<u8> {
+    use fennec_syntax::codec::Encode as _;
+    wait_for_a_running_check();
+    let kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(kept) = kept.as_ref() else { return Vec::new() };
+    let mut to = fennec_syntax::codec::Writer::default();
+    kept.encode(&mut to);
+    to.into_bytes()
+}
+
+/// Keeps what [`kept_to_bytes`] wrote, for this process's next build to use. Bytes that don't read
+/// keep nothing, as if no build had come before, and say so: `false`.
+pub fn keep_from_bytes(bytes: &[u8]) -> bool {
+    use fennec_syntax::codec::Decode as _;
+    if bytes.is_empty() {
+        return true;
+    }
+    let mut from = fennec_syntax::codec::Reader::new(bytes);
+    let read = KeptAnalyses::decode(&mut from).filter(|_| from.is_done());
+    let read_it = read.is_some();
+    *KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = read;
+    read_it
 }

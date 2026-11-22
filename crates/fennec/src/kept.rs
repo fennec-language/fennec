@@ -159,10 +159,19 @@ pub(crate) fn analyses_found_wrong() -> u64 {
 /// Gives back the report written, if one was.
 #[cfg(unix)]
 pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::AnalysesCheck) -> Option<PathBuf> {
-    static REPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     // The check counts as running till what it found is written down: a daemon that's ending, or
     // a build that's starting, waits for all of it.
     let differ = check.run();
+    let written = report_wrong_analyses(home, &differ);
+    drop(check);
+    written
+}
+
+/// What `verify_analyses` does once the functions whose analyses differ are known, as a build in a
+/// process of its own finds them and tells the daemon (`crate::child`). Nothing when none differ.
+#[cfg(unix)]
+pub(crate) fn report_wrong_analyses(home: &std::path::Path, differ: &[String]) -> Option<PathBuf> {
+    static REPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if differ.is_empty() {
         return None;
     }
@@ -212,7 +221,6 @@ pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::Analys
         "note: the build daemon analyzed again what builds used the analyses of, and it disagreed{said}: the programs they made may be wrong, so {taken}, and the next build analyzes every function\n"
     );
     let _ = std::fs::write(&note_at, note);
-    drop(check);
     Some(report)
 }
 

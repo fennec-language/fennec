@@ -130,6 +130,11 @@ const SAVED_VALUES: bool = true;
 /// a sum, and transactions kept or undone while the database outside them sees what was kept.
 const STORED_ROWS: bool = true;
 
+/// Whether a statement sends enums to a task (`Messaged`): flat ones, which go as words once enums
+/// do (cheap messages, step 5), and ones that aren't, which are copied as blocks, each case's texts
+/// short, long, empty or the sender's own as it changes.
+const ENUM_MESSAGES: bool = true;
+
 /// Whether a statement opens two or three handles in one `with` (`Opened`): left to right, one
 /// perhaps failing to open, a lent pair taken apart inside, and the block ending, failing or
 /// crashing, with cleanups that may crash.
@@ -821,6 +826,7 @@ impl Writer<'_> {
             26 if EVALUATION_ORDER && self.choice(4) == 0 => self.in_order(body),
             26 if FILE_WRITES && self.choice(4) == 0 => self.files(body),
             26 if OPENED_HANDLES && self.choice(4) == 0 => self.opened(body),
+            26 if ENUM_MESSAGES && !self.threadless && self.choice(4) == 0 => self.enum_messages(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
             // each of their cases still comes up as often.
@@ -1714,6 +1720,13 @@ impl Writer<'_> {
         self.made += 1;
         let id = self.made;
         body.push(Stmt::Stored(super::storing::picked(id, &mut |n| self.choice(n))));
+    }
+
+    /// A `Messaged` statement: 2 to 8 enums of one shape sent to a task.
+    fn enum_messages(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        body.push(Stmt::Messaged(super::messaging::picked(id, &mut |n| self.choice(n))));
     }
 
     /// A `Sized` statement: one size, a start near its middle or either end, then 3 to 12 steps,

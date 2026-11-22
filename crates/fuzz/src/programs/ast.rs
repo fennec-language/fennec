@@ -2485,6 +2485,9 @@ pub(crate) enum Stmt {
     /// `stored{id}(fs, stdout)`: a SQLite database's one table, its rows put in, changed, taken
     /// out and read back, some breaking its rules, and transactions kept or undone.
     Stored(super::storing::Storing),
+    /// `messaged{id}(stdout)`: enums of one shape, flat or not, sent to a task that prints what each
+    /// held, while the sender changes its own text.
+    Messaged(super::messaging::Messaging),
     /// `opened{id}(stdout)`: one `with` opening two or three handles left to right, one perhaps
     /// failing to open, a lent pair taken apart inside, and the block ending, failing or crashing,
     /// with cleanups that may crash.

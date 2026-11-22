@@ -101,6 +101,14 @@ impl Lowering<'_> {
         );
         let (to_end, inside, outside, after) =
             (self.new_block(), self.new_block(), self.new_block(), self.new_block());
+        // A range with nothing in it reads nothing, and is often most of them, as a counting sort's
+        // empty cells are: it's let go before the test, which costs more than the loop it skips.
+        let tested = self.new_block();
+        let going = self.temporary(Type::Bool);
+        let (lhs, rhs) = (first.clone(), limit.clone());
+        self.emit(InstKind::Binary { dest: going, op: BinOp::Lt, lhs, rhs }, span);
+        self.finish(Terminator::Branch { cond: Operand::Local(going), then: tested, otherwise: after });
+        self.current = tested;
         if matches!(first, Operand::Int(0..)) {
             self.finish(Terminator::Jump(to_end));
         } else {

@@ -428,29 +428,30 @@ fn inputs_can_be_made(module: &Module, test: &TestDef) -> bool {
 
 /// The tests LLVM has text for, from `tests`, which may mean splitting them to find the ones it
 /// can't take: what one of them reaches may stop all of them. Each that can't be taken goes in
-/// `refused`.
+/// `refused`. When it takes them all at once, the text it wrote for them comes too, for their
+/// executable to be built from rather than written again.
 fn takeable<'t>(
     module: &Module,
     tests: &[&'t TestDef],
     refused: &mut Vec<(&'t TestDef, String)>,
-) -> Vec<&'t TestDef> {
+) -> (Vec<&'t TestDef>, Option<crate::aot::TestsText>) {
     let answer = trimmed_for(module, tests).map_or_else(
         || Err("a test's inputs aren't ready".to_owned()),
         |trimmed| crate::aot::tests_take(&trimmed),
     );
     match answer {
-        Ok(()) => tests.to_vec(),
+        Ok(text) => (tests.to_vec(), Some(text)),
         Err(why) => match tests {
-            [] => Vec::new(),
+            [] => (Vec::new(), None),
             [test] => {
                 refused.push((test, why));
-                Vec::new()
+                (Vec::new(), None)
             }
             _ => {
                 let (first, second) = tests.split_at(tests.len() / 2);
-                let mut taken = takeable(module, first, refused);
-                taken.extend(takeable(module, second, refused));
-                taken
+                let (mut taken, _) = takeable(module, first, refused);
+                taken.extend(takeable(module, second, refused).0);
+                (taken, None)
             }
         },
     }
@@ -626,7 +627,7 @@ pub(crate) fn run(
         }
     }
     let mut refused = Vec::new();
-    let taken = takeable(module, &plain, &mut refused);
+    let (taken, written) = takeable(module, &plain, &mut refused);
     for (test, why) in refused {
         result.left.push(test.name.clone());
         result.refused.get_or_insert(why);
@@ -636,11 +637,17 @@ pub(crate) fn run(
     }
     let names: Vec<String> = (0..taken.len()).map(function_name).collect();
     let work = crate::own_temp("tests").with_extension(std::env::consts::EXE_EXTENSION);
-    let Some(trimmed) = trimmed_for(module, &taken) else {
-        result.left.extend(taken.iter().map(|test| test.name.clone()));
-        return result;
+    // The text written to see they could all be taken is the text of the very program built here.
+    let built = if let Some(written) = written {
+        crate::aot::tests_executable_from(written, &names, &work)
+    } else {
+        let Some(trimmed) = trimmed_for(module, &taken) else {
+            result.left.extend(taken.iter().map(|test| test.name.clone()));
+            return result;
+        };
+        crate::aot::tests_executable(&trimmed, &names, &work)
     };
-    let flags = match crate::aot::tests_executable(&trimmed, &names, &work) {
+    let flags = match built {
         Ok(flags) => flags,
         Err(why) => {
             result.left.extend(taken.iter().map(|test| test.name.clone()));

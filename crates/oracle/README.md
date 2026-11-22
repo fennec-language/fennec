@@ -61,8 +61,8 @@ pins: the oracle checks Fennec's binding and rules around SQLite, not SQLite its
 checks how the float functions are called, not `libm`. What the runtime does around it is modeled
 in `interp/sqlite.rs` on its own: a query is one statement with a place for each value, a NaN is
 refused, each row's cells go into `SqlRows` by kind, each failure is its case of `SqlError`, and a
-transaction is kept or undone as its block ends. A query past ordinary ones on the database's own tables, SQLite's random and time
-functions, and a database through a narrowed `Fs` are refused.
+transaction is kept or undone as its block ends. A query past ordinary ones on the database's own
+tables, SQLite's random and time functions, and a database through a narrowed `Fs` are refused.
 
 ## How it models a program
 

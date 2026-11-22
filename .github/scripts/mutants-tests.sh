@@ -8,6 +8,9 @@
 # - the error examples, each failing as it says;
 # - a sample of `llvm::`, programs built through LLVM and run: a ninth of them, those whose name
 #   ends in g, h, n, o, w or x, which picks as a hash would;
+# - and by name, `llvm::` tests outside the sample that are the only ones to catch a mutant the
+#   sample missed (2026-11-21): a copy that mustn't see a change, a put under a lock that keeps
+#   nothing more, and an index into a big array;
 # - `fennec`'s own unit tests. For a mutant in `fennec` itself, that's its set: its other tests
 #   take 19 minutes.
 #
@@ -36,6 +39,9 @@ fi
 end_to_end='test(/^(newcomers|syntax_errors|hints|executables)::/)'
 end_to_end+=' | test(=examples::error_examples_the_checker_catches_fail_with_their_expected_message)'
 end_to_end+=' | test(/^llvm::.*[ghnowx]$/)'
+end_to_end+=' | test(=llvm::changing_an_item_doesnt_show_through_a_copy)'
+end_to_end+=' | test(=llvm::a_put_where_a_lookup_found_the_key_holds_nothing_more_kept_or_undone)'
+end_to_end+=' | test(=llvm::a_big_array_behaves_as_a_small_one)'
 filter="(package(fennec) & (kind(lib) | $end_to_end))"
 built=fennec
 for package in "$@"; do

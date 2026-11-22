@@ -13,6 +13,7 @@
 mod ast;
 mod eval;
 mod generate;
+mod opening;
 mod saving;
 mod source;
 mod storing;
@@ -762,9 +763,14 @@ mod tests {
     fn it_turns_ints_negative_after_the_first_turn() {
         let ways = ["        at -= ", "        sign = -sign\n", "            n = -"];
         let mut found = [0_usize; 3];
-        for seed in 0_u8..=255 {
-            let bytes: Vec<u8> = (0_u8..160)
-                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+        // Hashed bytes, as the shapes' own tests use: bytes linear in the seed come out alike
+        // from program to program, so one way can go unpicked by chance of the layout.
+        for seed in 0_u32..256 {
+            let bytes: Vec<u8> = (0_u32..160)
+                .map(|at| {
+                    u8::try_from(seed.wrapping_mul(2_654_435_761).wrapping_add(at * 40_503) >> 13 & 0xff)
+                        .unwrap_or(0)
+                })
                 .collect();
             let source = source::source(&generate::program(&bytes));
             for turned in source.split("\ndef turned").skip(1) {
@@ -1404,6 +1410,49 @@ mod tests {
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
+    /// Every way an `Opened` handle opens and closes, in each place, with and without a lent pair,
+    /// and each way the block ends, checks, and the evaluator prints what the oracle prints: a
+    /// handle failing to open runs the earlier ones' cleanups, a cleanup that crashes lets the
+    /// outer ones run, and a crash stops the program in both.
+    #[test]
+    fn the_opened_handle_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, Stmt};
+        use super::opening::{BlockEnd, Gate, Opening};
+        use Gate::{CrashesClose, CrashesUndo, FailsOpen, Plain};
+        let cases = [
+            (vec![Plain, Plain, Plain], true, BlockEnd::Ends),
+            (vec![Plain, FailsOpen, Plain], true, BlockEnd::Ends),
+            (vec![Plain, Plain, FailsOpen], false, BlockEnd::Ends),
+            (vec![FailsOpen, Plain], false, BlockEnd::Ends),
+            (vec![Plain, Plain], true, BlockEnd::Fails),
+            (vec![Plain, CrashesUndo, Plain], true, BlockEnd::Fails),
+            (vec![Plain, CrashesClose, Plain], true, BlockEnd::Ends),
+            (vec![CrashesUndo, Plain, Plain], true, BlockEnd::Crashes),
+            (vec![CrashesUndo, FailsOpen], false, BlockEnd::Ends),
+            (vec![CrashesClose, CrashesUndo], false, BlockEnd::Fails),
+            (vec![Plain, Plain, CrashesClose], false, BlockEnd::Ends),
+            (vec![Plain, Plain], false, BlockEnd::Crashes),
+        ];
+        for (gates, pair, end) in cases {
+            let opening = Opening { id: 1, gates, pair, end };
+            let (_, stops) = super::opening::printed(&opening);
+            let program = Program { body: vec![Stmt::Opened(opening.clone())], threadless: true };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some((printed, ran_through, _)) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure:\n{source}")
+            };
+            assert_eq!(ran_through, !stops, "{opening:?}");
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            assert_eq!(oracle.exit_code(), Some(u8::from(stops)), "{:?}\n{source}", oracle.ended);
+            assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+        }
     }
 
     /// A sum over `parallel` checks and the evaluator prints what the oracle prints: floats added in

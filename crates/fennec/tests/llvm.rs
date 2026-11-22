@@ -8072,19 +8072,19 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// Each sized integer's `wrapping_add`, `wrapping_sub` and `wrapping_mul`, its `saturating_mul`, and
-/// a `u64`'s saturating `+` and `-`, are worked out natively: the operation on the word cut to the
-/// size's bits, a product held to the size's ends, or LLVM's `*.sat`. A saturating `+` or `-` below
-/// 64 bits stays the standard library's. Each gives what the standard library's own Fennec for it
-/// gives, copied into the program as plain functions: every pair of a size's edge values and a
-/// spread between, for every size, in dev and release.
+/// Each sized integer's `wrapping_add`, `wrapping_sub` and `wrapping_mul`, its `saturating_mul`, a
+/// `u64`'s saturating `+` and `-`, and all six of `int`'s, are worked out natively: the operation on
+/// the word cut to the size's bits, a product held to the size's ends, or LLVM's `*.sat`. A
+/// saturating `+` or `-` below 64 bits stays the standard library's. Each gives what the standard
+/// library's own Fennec for it gives, copied into the program as plain functions: every pair of a
+/// size's edge values and a spread between, for every size, in dev and release.
 #[test]
 fn sized_wrapping_and_saturating_arithmetic_is_native_and_the_same() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     prints_in_both_builds(
-        "sized_wrapping",
+        "sized_native",
         include_str!("fixtures/sized_wrapping.fen"),
         include_str!("fixtures/sized_wrapping.out"),
     )

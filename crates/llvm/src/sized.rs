@@ -24,7 +24,6 @@ impl Emit<'_, '_, '_> {
         (a, b): (&Operand, &Operand),
     ) -> Option<Result<(), String>> {
         let (size, method) = name.split_once('.')?;
-        let num = fennec_check::Num::named(size).filter(|num| *num != fennec_check::Num::F32)?;
         let (saturating, op) = match method.split_once('_')? {
             ("wrapping", op) => (false, op),
             ("saturating", op) => (true, op),
@@ -36,6 +35,10 @@ impl Emit<'_, '_, '_> {
             "mul" => "mul",
             _ => return None,
         };
+        if size == "int" {
+            return Some(self.int_arithmetic(dest, (saturating, op), (a, b)));
+        }
+        let num = fennec_check::Num::named(size).filter(|num| *num != fennec_check::Num::F32)?;
         // A saturating `+` or `-` below 64 bits is left to the standard library's Fennec, as two
         // compares on the whole sum: LLVM drops an end the operands can't reach there, and fuses
         // one step into the next, which it doesn't for the same test written here (measured: an
@@ -89,6 +92,40 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{held} = call i64 @{intrinsic}(i64 {a}, i64 {b})"));
             held
         };
+        self.assign(dest, &value)
+    }
+
+    /// An `int`'s: wrapping is the operation on the word; saturating is LLVM's signed `*.sat` for
+    /// `+` and `-`, and for `*` the product, or the end its sign points to when it doesn't fit.
+    fn int_arithmetic(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        (saturating, op): (bool, &str),
+        (a, b): (&Operand, &Operand),
+    ) -> Result<(), String> {
+        let ((a, _), (b, _)) = (self.operand(a)?, self.operand(b)?);
+        let value = self.temp();
+        if !saturating {
+            self.line(&format!("{value} = {op} i64 {a}, {b}"));
+        } else if op == "mul" {
+            self.declare("declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)");
+            let (both, product, over, signs, negative, nearest) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{both} = call {{ i64, i1 }} @llvm.smul.with.overflow.i64(i64 {a}, i64 {b})"));
+            self.line(&format!("{product} = extractvalue {{ i64, i1 }} {both}, 0"));
+            self.line(&format!("{over} = extractvalue {{ i64, i1 }} {both}, 1"));
+            // Past an end, the product's sign is the two signs' xor: the least int when they differ.
+            self.line(&format!("{signs} = xor i64 {a}, {b}"));
+            self.line(&format!("{negative} = icmp slt i64 {signs}, 0"));
+            self.line(&format!(
+                "{nearest} = select i1 {negative}, i64 -9223372036854775808, i64 9223372036854775807"
+            ));
+            self.line(&format!("{value} = select i1 {over}, i64 {nearest}, i64 {product}"));
+        } else {
+            let intrinsic = format!("llvm.s{op}.sat.i64");
+            self.declare(&format!("declare i64 @{intrinsic}(i64, i64)"));
+            self.line(&format!("{value} = call i64 @{intrinsic}(i64 {a}, i64 {b})"));
+        }
         self.assign(dest, &value)
     }
 

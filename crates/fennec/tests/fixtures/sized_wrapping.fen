@@ -1,6 +1,6 @@
-# Each sized integer's wrapping and saturating add, sub and mul, worked out natively, checked against
-# the standard library's own Fennec for it (sized.fen), copied here as plain functions that nothing
-# works out natively: every pair of a size's edge values and a spread between.
+# Each sized integer's and int's wrapping and saturating add, sub and mul, worked out natively,
+# checked against the standard library's own Fennec for it (sized.fen, int.fen), copied here as plain
+# functions that nothing works out natively: every pair of edge values and a spread between.
 
 def i8_wrapping_add(left: i8, right: i8) -> i8:
     return i8((int(left) + int(right) + 128) % 256 - 128)
@@ -318,6 +318,62 @@ def check_u64(stdout: Stdout) -> int:
                 wrong += 1
     return wrong
 
+## int's, against the standard library's own Fennec for them (int.fen): wrapping through its 64 bits
+## as a u64, saturating by compares.
+def int_bits(value: int) -> u64:
+    if value >= 0: return u64(value)
+    return u64(value - (-9223372036854775807 - 1)) + u64(9223372036854775807) + 1
+
+def int_of_bits(bits: u64) -> int:
+    if bits <= u64(9223372036854775807): return int(bits)
+    return int(bits - u64(9223372036854775807) - 1) + (-9223372036854775807 - 1)
+
+def int_wrapping_add(left: int, right: int) -> int:
+    return int_of_bits(u64_wrapping_add(int_bits(left), int_bits(right)))
+
+def int_wrapping_sub(left: int, right: int) -> int:
+    return int_of_bits(u64_wrapping_sub(int_bits(left), int_bits(right)))
+
+def int_wrapping_mul(left: int, right: int) -> int:
+    return int_of_bits(u64_wrapping_mul(int_bits(left), int_bits(right)))
+
+def int_saturating_add(left: int, right: int) -> int:
+    if right > 0 and left > 9223372036854775807 - right: return 9223372036854775807
+    if right < 0 and left < -9223372036854775807 - 1 - right: return -9223372036854775807 - 1
+    return left + right
+
+def int_saturating_sub(left: int, right: int) -> int:
+    if right < 0 and left > 9223372036854775807 + right: return 9223372036854775807
+    if right > 0 and left < -9223372036854775807 - 1 + right: return -9223372036854775807 - 1
+    return left - right
+
+def int_saturating_mul(left: int, right: int) -> int:
+    nearest = 9223372036854775807 if (left < 0) == (right < 0) else -9223372036854775807 - 1
+    if left == -1:
+        if right == -9223372036854775807 - 1: return nearest
+        return -right
+    wrapped = int_wrapping_mul(left, right=right)
+    if left != 0 and wrapped // left != right: return nearest
+    return wrapped
+
+def check_int(stdout: Stdout) -> int:
+    least = -9223372036854775807 - 1
+    mut values = [least, least + 1, -4294967296, -4294967295, -3037000500, -2, -1, 0, 1, 2, 3037000499, 3037000500, 4294967295, 4294967296, 9223372036854775806, 9223372036854775807]
+    mut seed = u64(11)
+    for _ in range(16):
+        seed = u64_wrapping_add(u64_wrapping_mul(seed, u64(6364136223846793005)), u64(1442695040888963407))
+        values.append(int_of_bits(seed))
+        values.append(int_of_bits(seed >> 31) - 4294967296)
+    mut wrong = 0
+    for a in values:
+        for b in values:
+            got = [a.wrapping_add(b), a.wrapping_sub(b), a.wrapping_mul(b), a.saturating_add(b), a.saturating_sub(b), a.saturating_mul(b)]
+            wanted = [int_wrapping_add(a, right=b), int_wrapping_sub(a, right=b), int_wrapping_mul(a, right=b), int_saturating_add(a, right=b), int_saturating_sub(a, right=b), int_saturating_mul(a, right=b)]
+            if got != wanted:
+                stdout.print("int differs at", a, b, got, wanted)
+                wrong += 1
+    return wrong
+
 def main(stdout: Stdout):
     stdout.print("i8", check_i8(stdout))
     stdout.print("i16", check_i16(stdout))
@@ -326,4 +382,5 @@ def main(stdout: Stdout):
     stdout.print("u16", check_u16(stdout))
     stdout.print("u32", check_u32(stdout))
     stdout.print("u64", check_u64(stdout))
+    stdout.print("int", check_int(stdout))
     return

@@ -1,0 +1,29 @@
+17 tiny! a value long enough for a block of its own, number 0 starts short, then grows past twenty-three bytes small now
+ none
+a value long enough for a block of its own, number 3 v4
+a value long enough for a block of its own, number 3 v4 gone 15
+363 True False
+a value long enough for a block of its own, number 0 replaced 19 19? 5 and more, so it moves into a block
+False 20 20
+True True
+{0.5: "half", 1.5: "a value long enough for a block of its own, number 15", 2.5: "two and a half"}
+{3.5: "after clearing"} 1
+["1", "3", "a value long enough for a block of its own, number 2"]
+["one", "three", "two"]
+{"name": "value", "other": "more"} value
+1 example.com
+2 text/plain
+2 example.org
+3 long key
+4 not ASCII
+5 a value long enough for a block of its own
+5 a value replaced by another long enough for a block
+{"Host": "example.org", "Content-Type": "text/plain"}
+{"Host": "example.org", "Content-Type": "text/plain", "A-Header-Name-Longer-Than-A-Header": "long key", "Grüße": "not ASCII", "X-Long": "a value replaced by another long enough for a block"}
+10 a value long enough for a block 2 j 2
+none
+{"count": "++", "Content-Type": "text/html", "Server": "a value long enough for a block of its own, number 7 (changed)"}
+{"first": {1: "onea value long enough for a block of its own, number 1", 2: "a value long enough for a block of its own, number 2"}}
+stopped at 1
+{"count": "++", "Content-Type": "text/html", "Server": "a value long enough for a block of its own, number 7 (changed)"}
+{"count": "++", "Content-Type": "text/html", "Server": "server 2", "added 2": "a value long enough for a block of its own, number 2"}

@@ -325,7 +325,6 @@ pub struct KeptForNext(Option<KeptAnalyses>);
 /// `FENNEC_CHECK_WHOLE=1` has a build do. Gives back the functions whose analysis used again isn't
 /// what analyzing it again gives, sorted, and how many were used again. It's for the edit fuzzer,
 /// which runs it on each version of a program in turn.
-#[must_use]
 ///
 /// What was kept goes through bytes and back first, as a daemon whose builds are each made in a
 /// process of their own hands it on: `Err` says so when it doesn't read back as it was written.
@@ -333,7 +332,7 @@ pub fn analyses_kept_and_checked(
     program: &fennec_ir::Program,
     kept: &mut KeptForNext,
 ) -> Result<(Vec<String>, usize), String> {
-    let found = kept.0.take().map(through_bytes).transpose()?;
+    let found = kept.0.take().as_ref().map(through_bytes).transpose()?;
     let keeping = Keeping { checks_all: true, ..Keeping::from(found) };
     let (_, differ) = crate::analysis::whole_keeping(program, &keeping);
     let used_again = keeping.used_again();
@@ -344,7 +343,7 @@ pub fn analyses_kept_and_checked(
 
 /// What's kept, written as bytes and read back, and the bytes it reads back as written again the
 /// same.
-fn through_bytes(found: KeptAnalyses) -> Result<KeptAnalyses, String> {
+fn through_bytes(found: &KeptAnalyses) -> Result<KeptAnalyses, String> {
     use fennec_syntax::codec::{Decode as _, Encode as _};
     let mut to = fennec_syntax::codec::Writer::default();
     found.encode(&mut to);

@@ -423,8 +423,10 @@ fn ascii_part(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64
         let at = if at < 0 { at + length } else { at };
         usize::try_from(at.clamp(0, length)).unwrap_or(0)
     };
-    let (from, to) = (bound(from, 0), bound(to, length));
-    let size = to.saturating_sub(from);
+    let from = bound(from, 0);
+    // A range that ends before it starts is empty, as `ascii_part_of` takes it.
+    let to = bound(to, length).max(from);
+    let size = to - from;
     if size == 1 {
         let word = block.get(TEXT_HEADER_WORDS + from / 8)?;
         let byte = word.to_le_bytes().get(from % 8).copied()?;
@@ -1499,6 +1501,22 @@ mod place_tests {
                 });
                 heap::free_text(part);
             }
+        }
+        heap::free_text(text);
+        finish();
+    }
+
+    /// A slice of a long ASCII text that ends where or before it starts, by its positions or
+    /// once they're counted from the end, is the empty string.
+    #[test]
+    fn a_reversed_slice_of_a_long_ascii_text_is_empty() {
+        begin();
+        let text = with(|state| heap::text_address(state, "a text long enough for a block, ASCII only"));
+        for (from, to) in [(3, 1), (5, 5), (40, 2), (-1, -3), (-2, 10), (30, -20), (i64::MIN, -100), (100, 0)]
+        {
+            let part = slice(text, from, to, 0, 0);
+            with(|state| assert_eq!(super::text(state, part).as_deref(), Some(""), "[{from}:{to}]"));
+            heap::free_text(part);
         }
         heap::free_text(text);
         finish();

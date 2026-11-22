@@ -572,14 +572,17 @@ impl Emit<'_, '_, '_> {
         }
         match kind {
             Kind::Str | Kind::TextBlock => {
-                let block = if *kind == Kind::Str && self.headers() {
-                    self.owned_text_block(value)
-                } else {
-                    value.to_owned()
-                };
                 self.declare("declare ptr @fennec_str_repr(ptr) nounwind");
                 let text = self.temp();
-                self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {block})"));
+                if *kind == Kind::Str && self.headers() {
+                    // The header's block, lent, or one made for an inline header and let go of
+                    // after: the call only reads it.
+                    let (block, owned) = self.text_block(value);
+                    self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {block})"));
+                    self.let_go_text_block(&block, &owned);
+                } else {
+                    self.line(&format!("{text} = call ptr @fennec_str_repr(ptr {value})"));
+                }
                 Ok(text)
             }
             Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => Ok(self.text_of_block(value)),

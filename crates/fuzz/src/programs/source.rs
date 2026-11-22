@@ -665,8 +665,14 @@ pub(crate) fn source(program: &Program) -> String {
     } else {
         ("", HEADER.to_owned())
     };
+    // Only a program holding a `Stored` statement opens a database, so only it imports them.
+    let databases = if writer.helpers.contains("sqlite.open(") {
+        "from std import sqlite\nfrom std.sql import SqlError\n"
+    } else {
+        ""
+    };
     format!(
-        "{formats}{channels}{header}{tasks}{}def main(stdout: Stdout{fs}):\n{}",
+        "{formats}{databases}{channels}{header}{tasks}{}def main(stdout: Stdout{fs}):\n{}",
         writer.helpers, writer.out
     )
 }
@@ -3872,6 +3878,11 @@ impl Writer {
             Stmt::Saved(saving) => {
                 let _ = write!(self.helpers, "{}", super::saving::written(saving));
                 self.line(indent, &format!("saved{}(stdout)", saving.id));
+            }
+            Stmt::Stored(storing) => {
+                let _ = write!(self.helpers, "{}", super::storing::written(storing));
+                self.line(indent, &format!("stored{}(fs, stdout) except why:", storing.id));
+                self.line(indent + 1, "stdout.print(\"stored failed\", why.message())");
             }
             Stmt::Opened(opening) => {
                 let _ = write!(self.helpers, "{}", super::opening::written(opening));

@@ -400,6 +400,13 @@ pub(in crate::embed) fn served_call(
             on_conn(handle, |conn| conn.read_line_crlf(timeout, *crlf))
                 .map(|line| trimmed_line_value(line.as_deref()))
         }
+        // A served connection's line has its ending taken off already.
+        ("_read_head", given) if let Some(limits) = crate::stdlib::net::head::Limits::of(given) => {
+            crate::stdlib::net::head::read_lines(limits, || {
+                let line = on_conn(handle, |conn| conn.read_line_crlf(timeout, true))?;
+                Ok(line.map(|line| String::from_utf8_lossy(&line).into_owned()))
+            })
+        }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             on_conn(handle, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
         }

@@ -57,11 +57,12 @@ own `def serialize`, are run in their place, so the two are held to each other. 
 `acos`, `exp`, `log` and a float's `**` are computed with the `libm` crate, as `docs/language.md`
 says they are, at the version the workspace pins. A `std.sqlite` database is SQLite's, as its
 documentation says, so SQLite answers the queries, through `rusqlite` at the version the workspace
-pins. What the runtime does around it is modeled in `interp/sqlite.rs` on its own: a query is one
-statement with a place for each value, a NaN is refused, each row's cells go into `SqlRows` by
-kind, each failure is its case of `SqlError`, and a transaction is kept or undone as its block
-ends. A query past ordinary ones on the database's own tables, SQLite's random and time
-functions, and a database through a narrowed `Fs` are refused.
+pins: the oracle checks Fennec's binding and rules around SQLite, not SQLite itself, as it
+checks how the float functions are called, not `libm`. What the runtime does around it is modeled
+in `interp/sqlite.rs` on its own: a query is one statement with a place for each value, a NaN is
+refused, each row's cells go into `SqlRows` by kind, each failure is its case of `SqlError`, and a
+transaction is kept or undone as its block ends. A query past ordinary ones on the database's own
+tables, SQLite's random and time functions, and a database through a narrowed `Fs` are refused.
 
 ## How it models a program
 

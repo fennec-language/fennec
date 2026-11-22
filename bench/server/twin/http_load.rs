@@ -57,32 +57,58 @@ fn response(reader: &mut BufReader<TcpStream>) -> io::Result<(u16, Vec<u8>)> {
     Ok((status, body))
 }
 
-fn visit(port: u16, first: u64, requests: u64) -> io::Result<u64> {
-    let stream = TcpStream::connect(("127.0.0.1", port))?;
-    stream.set_nodelay(true)?;
-    let mut writer = stream.try_clone()?;
+/// One connection's requests, each answer checked: the checksum of their bodies, or what went
+/// wrong, the first wrong answer or the network's failure.
+fn visit(port: u16, first: u64, requests: u64) -> Result<u64, String> {
+    let failed = |why: io::Error| format!("the connection failed: {why}");
+    let stream = TcpStream::connect(("127.0.0.1", port)).map_err(failed)?;
+    stream.set_nodelay(true).map_err(failed)?;
+    let mut writer = stream.try_clone().map_err(failed)?;
     let mut reader = BufReader::new(stream);
     let mut sum = 0_u64;
     for n in first..first + requests {
         let (sent, status, wanted) = request(n);
-        writer.write_all(sent.as_bytes())?;
-        let (got, body) = response(&mut reader)?;
-        assert_eq!((got, body.as_slice()), (status, wanted.as_bytes()), "request {n}");
+        writer.write_all(sent.as_bytes()).map_err(failed)?;
+        let (got, body) = response(&mut reader).map_err(failed)?;
+        if (got, body.as_slice()) != (status, wanted.as_bytes()) {
+            return Err(format!(
+                "request {n} was answered {got} {:?}, not {status} {wanted:?}",
+                String::from_utf8_lossy(&body)
+            ));
+        }
         sum = sum.wrapping_mul(31).wrapping_add(body.iter().map(|&b| u64::from(b)).sum::<u64>());
     }
     Ok(sum)
 }
 
+/// Every answer is checked, and one wrong answer, or a connection that fails, makes the whole
+/// load fail with what went wrong and exit 1, so a wrong answer can never be measured as a fast
+/// one.
 fn main() {
     let args: Vec<u64> = std::env::args().skip(1).map(|a| a.parse().expect("a number")).collect();
     let [port, connections, requests] = args[..] else {
-        panic!("usage: http_load PORT CONNECTIONS REQUESTS");
+        eprintln!("usage: http_load PORT CONNECTIONS REQUESTS");
+        std::process::exit(2);
     };
     let port = u16::try_from(port).expect("a port");
-    let visits: Vec<_> = (0..connections)
-        .map(|c| thread::spawn(move || visit(port, c * requests, requests).expect("answered")))
-        .collect();
-    let sums: Vec<u64> = visits.into_iter().map(|v| v.join().expect("a visit")).collect();
+    let visits: Vec<_> =
+        (0..connections).map(|c| thread::spawn(move || visit(port, c * requests, requests))).collect();
+    let mut sums = Vec::new();
+    let mut wrong = Vec::new();
+    for visit in visits {
+        match visit.join() {
+            Ok(Ok(sum)) => sums.push(sum),
+            Ok(Err(why)) => wrong.push(why),
+            Err(_) => wrong.push("a connection's thread panicked".to_owned()),
+        }
+    }
+    if !wrong.is_empty() {
+        eprintln!("WRONG: {} of {connections} connections failed:", wrong.len());
+        for why in &wrong {
+            eprintln!("  {why}");
+        }
+        std::process::exit(1);
+    }
     let sum = sums.iter().fold(0_u64, |all, s| all.wrapping_mul(1_000_003).wrapping_add(*s));
     println!("{} answered, checksum {sum}", connections * requests);
 }

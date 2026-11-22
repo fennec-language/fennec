@@ -2,8 +2,9 @@ source dca6998d508fd5510eaca649441cde4428a5833b18bf4f531719ffc351080fcb
 code 1
 stdout 12
 [2, 4, 6] 6
-stderr 200
-error: `main` failed: InvalidValue(message="\"x\" isn't an int")
+stderr 219
+error: `main` failed: "x" isn't an int
+  InvalidValue(message="\"x\" isn't an int")
  --> <dir>/parallel_tries.fen:4:1
   |
 4 | def main(stdout: Stdout) fails InvalidValue:

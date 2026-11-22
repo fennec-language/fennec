@@ -5,4 +5,3 @@ std_net.fen | it talks over real sockets
 capability_only.fen | it runs another program
 std_process.fen | it runs other programs
 std_process_hostile.fen | it runs other programs
-parallel_loops.fen | a float sum over parallel adds in a tree the docs don't pin down

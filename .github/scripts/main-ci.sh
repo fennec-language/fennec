@@ -8,12 +8,17 @@
 # says, for example,
 #
 #   main CI: red at 56a2af620 (run 43651800879): Test (windows-latest, llvm::) since 04975ac69
-#   main CI macOS: green at 56a2af620 (run 43651800902)
+#   main CI macOS: red at 9914acc08 (run 44951580323, still going): ci / Test (macos-latest, fennec) since 9914acc08
 #
 # and exits 1 if either is red, so whatever runs it can say so loudly: a job red on one system,
 # like Windows, is seen the day it goes red. A cancelled run says nothing, so the newest one that
-# finished counts, and how far back a job has failed is looked for in the 30 finished runs before
-# it: past them, it's "since at least". It needs `gh`, signed in. `nightly-report.sh` runs it.
+# finished counts, unless a run newer than it, still going, has a job that failed already: that
+# one counts, so a job's red is seen when it ends, not when the run's last job does, which on
+# 2026-11-21 was 25 minutes later. Newest is by the commit's place in main's history, not when its
+# run was made: a run of a commit can be made after its child's, and on 2026-11-21 this said red at
+# the commit before a fix, whose run was made 4 minutes after the fix's green one. How far back a job has failed is looked for in the 30 finished
+# runs before the one that counts: past them, it's "since at least". It needs `gh`, signed in.
+# `nightly-report.sh` runs it.
 set -euo pipefail
 repository=${1:-fennec-language/fennec}
 # The jobs that failed in a run, a name a line, leaving out the one that only sums the others up,
@@ -30,20 +35,48 @@ failed_in() {
 
 # The line for one workflow, by its name, setting `red` if it is. It never returns a failure, so
 # `set -e` still stops this at a `gh` that fails, rather than taking that for green.
+# Main's newest 300 commits, newest first, a short hash a line. Main is squashed into, one parent
+# each, so GitHub's order is the first-parent one.
+history=$(for page in 1 2 3; do
+  gh api "repos/$repository/commits?sha=main&per_page=100&page=$page" --jq '.[].sha[0:9]'
+done)
+
 red=0
 says() {
   local workflow=$1
-  local runs newest sha failed said job since back run at
-  # The newest 31 that finished, picked in jq: cut off with `head`, `gh` was sometimes still
-  # writing, died of the broken pipe, and took this script with it, printing nothing.
-  runs=$(gh run list --repo "$repository" --workflow "$workflow" --branch main --limit 200 \
-    --json databaseId,conclusion,headSha \
-    --jq '[.[] | select(.conclusion != "" and .conclusion != "cancelled")] | .[:31][] | "\(.databaseId) \(.headSha[0:9])"')
-  if [ -z "$runs" ]; then
+  local listed runs going still newest sha failed said job since back run at state
+  # The runs going and the ones that finished, newest first, picked in jq: cut off with `head`,
+  # `gh` was sometimes still writing, died of the broken pipe, and took this script with it,
+  # printing nothing. One waiting for a runner has no job yet, so it says nothing.
+  listed=$(gh run list --repo "$repository" --workflow "$workflow" --branch main --limit 200 \
+    --json databaseId,status,conclusion,headSha \
+    --jq '[.[] | select(.status == "in_progress" or (.conclusion != "" and .conclusion != "cancelled"))] | .[:40][] | "\(.databaseId) \(.headSha[0:9]) \(.status)"')
+  # Newest commit first, and for one commit's runs, newest made first. A run of a commit past the
+  # history read comes after every one in it, in the order GitHub listed it.
+  listed=$(awk 'NR == FNR { if (!($1 in at)) at[$1] = FNR; next }
+    { print ($2 in at ? at[$2] : 100000 + FNR), $0 }' <(printf '%s\n' "$history") - <<< "$listed" \
+    | sort -s -n -k1,1 | cut -d' ' -f2-)
+  # The newest 31 that finished.
+  runs=$(awk '$3 == "completed" { print $1, $2; if (++n == 31) exit }' <<< "$listed")
+  # The newest run going, newer than every one that finished, with a job that failed already.
+  going=""
+  while read -r run at state; do
+    [ -n "$run" ] && [ "$state" != completed ] || break
+    if [ -n "$(failed_in "$run")" ]; then
+      going="$run $at"
+      break
+    fi
+  done <<< "$listed"
+  still=""
+  if [ -n "$going" ]; then
+    read -r newest sha <<< "$going"
+    still=", still going"
+  elif [ -z "$runs" ]; then
     echo "main $workflow: no finished run on main"
     return 0
+  else
+    read -r newest sha <<< "$(head -n 1 <<< "$runs")"
   fi
-  read -r newest sha <<< "$(head -n 1 <<< "$runs")"
   failed=$(failed_in "$newest")
   if [ -z "$failed" ]; then
     echo "main $workflow: green at $sha (run $newest)"
@@ -65,7 +98,7 @@ says() {
     done <<< "$runs"
     said="${said:+$said; }$job since $back$since"
   done <<< "$failed"
-  echo "main $workflow: red at $sha (run $newest): $said"
+  echo "main $workflow: red at $sha (run $newest$still): $said"
   red=1
 }
 

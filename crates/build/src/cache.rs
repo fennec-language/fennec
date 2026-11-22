@@ -69,6 +69,9 @@ pub const CLEANUP_EVERY: Duration = Duration::from_hours(1);
 /// The file, in the cache's folder, counting the cleanups that took anything.
 const REMOVALS: &str = "removals";
 
+/// The file, in the cache's folder, counting the analyses the build daemon kept that it found wrong.
+const ANALYSES_FOUND_WRONG: &str = "analyses-found-wrong";
+
 /// A cleanup lock older than this was left by a cleanup that died, and is taken over.
 const STALE_LOCK: Duration = Duration::from_secs(600);
 
@@ -451,6 +454,35 @@ impl Cache {
             .ok()
             .and_then(|text| text.trim().parse().ok())
             .unwrap_or(0)
+    }
+
+    /// How many times the build daemon has found an analysis it kept for builds wrong, for this
+    /// cache. It's part of what names a stored program, so none stored before one was found is put
+    /// out after, and it's kept beside them, where no cleanup takes it: it goes only with them. One
+    /// that's there but can't be read is `u64::MAX`, which names nothing stored.
+    #[must_use]
+    pub fn analyses_found_wrong(&self) -> u64 {
+        match std::fs::read_to_string(self.root.join(ANALYSES_FOUND_WRONG)) {
+            Ok(text) => text.trim().parse().unwrap_or(u64::MAX),
+            Err(err) if err.kind() == ErrorKind::NotFound => 0,
+            Err(_) => u64::MAX,
+        }
+    }
+
+    /// Counts an analysis the build daemon kept that it found wrong, written whole or not at all.
+    /// After one that couldn't be read, the count starts again from the time, which names nothing
+    /// stored before.
+    ///
+    /// # Errors
+    /// When the count can't be written.
+    pub fn count_analysis_found_wrong(&self) -> std::io::Result<()> {
+        let next = match self.analyses_found_wrong() {
+            u64::MAX => {
+                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(1, |since| since.as_secs())
+            }
+            count => count + 1,
+        };
+        put(&self.root.join(ANALYSES_FOUND_WRONG), &[next.to_string().as_bytes()])
     }
 
     /// Counts a cleanup that's about to take something, before it takes anything, under its lock:

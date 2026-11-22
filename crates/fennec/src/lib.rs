@@ -152,8 +152,14 @@ pub fn main() -> ExitCode {
     main_with(StdNames::Exported)
 }
 
+/// The build of Fennec this command is from, after a marker, so a tool can read it out of the
+/// command's file without running it: `fennec-fuzz` refuses a `fennec-std-tests` from another
+/// build than the `fennec` beside it. `main_with` reads it, so the linker keeps it.
+static BUILD_STAMP: &str = concat!("fennec-command-build:", env!("FENNEC_BUILD"));
+
 /// Runs the command on this process's arguments, letting a program import std's `names`.
 pub fn main_with(names: StdNames) -> ExitCode {
+    std::hint::black_box(BUILD_STAMP);
     if names == StdNames::PrivateToo {
         fennec_syntax::let_programs_import_std_private_names();
         ALONE.store(true, std::sync::atomic::Ordering::Relaxed);

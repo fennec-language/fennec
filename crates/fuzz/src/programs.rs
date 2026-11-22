@@ -1482,6 +1482,40 @@ mod tests {
         }
     }
 
+    /// 24 `Messaged` statements of shapes and messages picked at random, in one program, check, and
+    /// the evaluator prints what the oracle prints, and what a dev and a release build print where
+    /// they can be built here.
+    #[test]
+    fn random_enum_messages_arrive_as_they_were_sent() {
+        use super::ast::{Program, Stmt};
+        let mut state: u64 = 0x5eed_0005;
+        let mut choose = |n: usize| {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
+        };
+        let body = (1..=24).map(|id| Stmt::Messaged(super::messaging::picked(id, &mut choose))).collect();
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+        if crate::llvm::ready().is_err() || !crate::llvm::threads_runtime_here() {
+            return;
+        }
+        for release in [false, true] {
+            let built = crate::llvm::built_and_run(&source, "programs-messaged-random", release);
+            let Ok((said, _, _)) = built else { unreachable!("{built:?}\n{source}") };
+            assert_eq!(String::from_utf8_lossy(&said), printed, "release {release}\n{source}");
+        }
+    }
+
     /// Every way an `Opened` handle opens and closes, in each place, with and without a lent pair,
     /// and each way the block ends, checks, and the evaluator prints what the oracle prints: a
     /// handle failing to open runs the earlier ones' cleanups, a cleanup that crashes lets the

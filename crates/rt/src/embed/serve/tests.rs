@@ -706,6 +706,97 @@ fn native_code_serves_a_server_the_runtime_opened() {
     finish();
 }
 
+/// A served connection's body that reads each request's head with `_read_head`, within 40
+/// bytes, 3 header lines and 2 blank lines before it, and sends back its lines joined by `|`, or
+/// the case it was, until the head says the stream ended.
+extern "C" fn heads_body(_env: i64, conn: i64, _thread: i64) -> i64 {
+    use crate::value::Value;
+    let span = fennec_syntax::Span::default();
+    let limits = [Value::Int(40), Value::Int(3), Value::Int(2)];
+    loop {
+        let Some(Ok(Value::Ok(head))) = super::served_call(conn, "_read_head", &limits, None, span) else {
+            return 1;
+        };
+        let Value::Instance(head) = head.as_ref() else { return 1 };
+        let case = head.case.as_deref().unwrap_or("").to_owned();
+        let said = match head.field("lines") {
+            Some(Value::List(lines)) => {
+                let text = |line: &Value| match line {
+                    Value::Str(text) => text.to_string(),
+                    other => format!("not a str: {other:?}"),
+                };
+                let lines: Vec<String> = lines.iter().map(text).collect();
+                lines.join("|")
+            }
+            _ => case.clone(),
+        };
+        let written = super::served_call(conn, "write", &[Value::str(&format!("{said}\n"))], None, span);
+        assert!(matches!(written, Some(Ok(Value::Ok(_)))));
+        if case == "Ended" {
+            return 0;
+        }
+    }
+}
+
+#[test]
+fn a_served_connection_reads_each_head_in_one_call_and_leaves_what_follows() {
+    use super::super::{Tables, finish, start};
+    use crate::value::Value;
+    super::super::parallel::set_worker_setup(Box::new(|| {
+        let tables = Tables {
+            shapes: vec![std::rc::Rc::new(crate::packed::Element::Str)],
+            elements: vec![std::rc::Rc::new(crate::packed::Element::Int)],
+            ..Tables::default()
+        };
+        start(tables, crate::Inputs::default());
+    }));
+    start(Tables::default(), crate::Inputs::default());
+    let span = fennec_syntax::Span::default();
+    let listened = crate::stdlib::net::real_net("_listen", &[Value::Int(0)], None, span).unwrap();
+    let Value::Ok(server) = listened else { panic!("not listening: {listened:?}") };
+    let Value::Instance(instance) = server.as_ref() else { panic!("no server") };
+    let (Some(Value::Int(port)), Some(Value::Int(server))) =
+        (instance.field("port"), instance.field("_handle"))
+    else {
+        panic!("no port")
+    };
+    let port = *port;
+    let client = std::thread::spawn(move || {
+        let talked = std::panic::catch_unwind(|| {
+            let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            // Two heads in one write: the second stays held for the next call. Then one with a
+            // blank line before it, one over the most header lines, and the end.
+            stream
+                .write_all(
+                    b"GET / HTTP/1.1\r\nhost: a\r\n\r\nGET /b HTTP/1.1\r\n\r\n\r\nPUT /c HTTP/1.1\r\n\r\n",
+                )
+                .unwrap();
+            stream.write_all(b"G\r\na\r\nb\r\nc\r\nd\r\n\r\n").unwrap();
+            let mut said = Vec::new();
+            for _ in 0..4 {
+                let mut back = String::new();
+                reader.read_line(&mut back).unwrap();
+                said.push(back);
+            }
+            assert_eq!(
+                said,
+                ["GET / HTTP/1.1|host: a\n", "GET /b HTTP/1.1\n", "PUT /c HTTP/1.1\n", "TooBig\n"]
+            );
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut last = String::new();
+            reader.read_line(&mut last).unwrap();
+            assert_eq!(last, "Ended\n");
+        });
+        super::stop_servers();
+        talked.unwrap();
+    });
+    assert_eq!(super::net_serve(*server, heads_body, 0), 0);
+    client.join().unwrap();
+    finish();
+}
+
 /// Waits until `line` has been written since `mark`. The bound is only there so a broken server
 /// fails the test rather than hanging it.
 fn wait_for_written(mark: usize, line: &str) {

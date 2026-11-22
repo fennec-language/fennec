@@ -5323,12 +5323,12 @@ fn the_file_system_fails_with_the_case_and_the_words_the_runtime_gives() {
             stdout.print(why(() => fs.read_text('a\\x00b')?))
         "
         ),
-        "IoError.NotFound(reason=\"nothing is there\")\n\
+        "IoError.NotFound(path=\"missing.txt\")\n\
          IoError.Other(reason=\"it's a folder, not a file\")\n\
          IoError.Other(reason=\"it's a folder, not a file\")\n\
-         IoError.NotFound(reason=\"nothing is there\")\n\
+         IoError.NotFound(path=\"missing\")\n\
          IoError.Other(reason=\"the folder isn't empty\")\n\
-         IoError.AlreadyExists(reason=\"something is there already\")\n\
+         IoError.AlreadyExists(path=\"note.txt\")\n\
          IoError.Other(reason=\"this file was opened to read, not to write\")\n\
          IoError.Other(reason=\"`a\\\\0b` can't be a path: it holds a NUL\")\n",
     );
@@ -5380,11 +5380,11 @@ fn a_narrowed_fs_reaches_only_its_folder_and_a_read_only_one_changes_nothing() {
             stdout.print(why(() => saves.read_text('saves/a\\x00b')?))
         ",
         "{} True\n\
-         `secret.txt` is outside what this Fs can reach: `/work/saves`\n\
-         `saves/../secret.txt` is outside what this Fs can reach: `/work/saves`\n\
-         `other` is outside what this Fs can reach: nothing\n\
-         nothing is there\n\
-         {} this Fs only reads, so it can't change `saves/new.txt`\n\
+         `secret.txt`: it's outside what this Fs can reach: `/work/saves`\n\
+         `saves/../secret.txt`: it's outside what this Fs can reach: `/work/saves`\n\
+         `other`: it's outside what this Fs can reach: nothing\n\
+         nothing is at `missing/x`\n\
+         {} `saves/new.txt`: this Fs only reads, so it can't change it\n\
          `saves/a\\0b` can't be a path: it holds a NUL\n",
     );
 }
@@ -5619,7 +5619,7 @@ fn a_program_makes_an_io_error_of_its_own() {
                 stdout.print(repr(why), why.message())
                 ''
         ",
-        "IoError.Other(reason=\"missing.txt is missing: nothing is there\") missing.txt is missing: nothing is there\n",
+        "IoError.Other(reason=\"missing.txt is missing: nothing is at `missing.txt`\") missing.txt is missing: nothing is at `missing.txt`\n",
     );
 }
 

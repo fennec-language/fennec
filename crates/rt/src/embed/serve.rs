@@ -488,7 +488,7 @@ impl Conn {
                 .position(|byte| *byte == b'\n')
                 .map(|at| from + at);
             if found.is_none() && ahead.len() > most {
-                return Err(Failure::Other(format!("a line was longer than {most} bytes")));
+                return Err(Failure::Other(crate::stdlib::net::line_too_long()));
             }
             if let Some(end) = found {
                 let mut line: Vec<u8> = ahead.drain(..=end).collect();

@@ -10,8 +10,9 @@
 //! - `Lines(lines)`: the request line, then each header line, without their endings;
 //! - `Ended`: the stream ended, or held only blank lines, before a request line came;
 //! - `Unended`: it ended after the request line, before the blank line;
-//! - `LongFirst`: the request line alone is over `most_bytes`;
-//! - `TooBig`: the head is over `most_bytes` in all, or has over `most_lines` header lines.
+//! - `LongFirst`: the request line alone is over `most_bytes`, or too long to read at all;
+//! - `TooBig`: the head is over `most_bytes` in all, has over `most_lines` header lines, or has a
+//!   header line too long to read at all.
 //!
 //! Sizes are of the lines as text, without their endings, as std's `text_size` counts them. It
 //! stops reading at a limit, so nothing past the line that crossed it is read, and what comes after
@@ -52,9 +53,11 @@ enum Head {
     TooBig,
 }
 
-/// Why reading a head stopped short of one: the connection failed, or `E`, the call itself did,
-/// as when a test's network would wait forever.
+/// Why reading a head stopped short of its end: a line too long to read, which gives the head it
+/// makes, the connection failing, or `E`, the call itself failing, as when a test's network would
+/// wait forever.
 enum Stopped<E> {
+    Gave(Head),
     Failed(Failure),
     Call(E),
 }
@@ -66,7 +69,7 @@ pub(crate) fn read<E>(
     mut line: impl FnMut() -> Result<Result<Option<String>, Failure>, E>,
 ) -> Result<Result<Value, Failure>, E> {
     match head(limits, &mut line) {
-        Ok(head) => Ok(Ok(value(head))),
+        Ok(head) | Err(Stopped::Gave(head)) => Ok(Ok(value(head))),
         Err(Stopped::Failed(failure)) => Ok(Err(failure)),
         Err(Stopped::Call(wrong)) => Err(wrong),
     }
@@ -84,16 +87,21 @@ fn head<E>(
     limits: Limits,
     line: &mut impl FnMut() -> Result<Result<Option<String>, Failure>, E>,
 ) -> Result<Head, Stopped<E>> {
-    let mut next = || match line() {
+    // A line too long to read is over the most bytes a head may hold, so it's the head that
+    // makes, `too_long`: `LongFirst` for the request line and `TooBig` for a header, the 414 and
+    // the 431. Nothing more is read. Any other failure of a line fails the head.
+    let mut next = |too_long: fn() -> Head| match line() {
         Ok(Ok(read)) => Ok(read),
+        Ok(Err(failure)) if super::is_line_too_long(&failure) => Err(Stopped::Gave(too_long())),
         Ok(Err(failure)) => Err(Stopped::Failed(failure)),
         Err(wrong) => Err(Stopped::Call(wrong)),
     };
-    let Some(mut first) = next()? else { return Ok(Head::Ended) };
+    let first_too_long = || Head::LongFirst;
+    let Some(mut first) = next(first_too_long)? else { return Ok(Head::Ended) };
     let mut blank = 0;
     while first.is_empty() && blank < limits.blank {
         blank += 1;
-        let Some(again) = next()? else { return Ok(Head::Ended) };
+        let Some(again) = next(first_too_long)? else { return Ok(Head::Ended) };
         first = again;
     }
     if first.is_empty() {
@@ -105,7 +113,7 @@ fn head<E>(
     let mut size = first.len();
     let mut lines = vec![first];
     loop {
-        let Some(header) = next()? else { return Ok(Head::Unended) };
+        let Some(header) = next(|| Head::TooBig)? else { return Ok(Head::Unended) };
         if header.is_empty() {
             return Ok(Head::Lines(lines));
         }

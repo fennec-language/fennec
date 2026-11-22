@@ -16,6 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 
@@ -41,6 +42,13 @@ const WORKER_RUNTIME_BYTES: usize = WORKER_STACK_BYTES - WORKER_NATIVE_BYTES;
 /// looks, before it sleeps. A program that makes many short `parallel` calls in a row then finds
 /// its workers still awake, as rayon's do: waking a sleeping worker takes tens of microseconds.
 const ROUNDS: u32 = 32;
+
+/// How long those looks may go on, after the first: about what a wake costs, so a worker doesn't
+/// spend longer looking than sleeping and being woken would. A yield gives the core away for as
+/// long as the system likes, so on a busy machine 32 of them lasted over a millisecond, and a
+/// server with a little work coming kept its idle workers busy looking.
+/// (`runtime-lane-perf/idle-pool-2026-11-22.md` in the coordinator's notes.)
+const LOOKING: Duration = Duration::from_micros(50);
 
 /// What a worker does before its first job: start a runtime of its own, holding the program. An
 /// executable gives it when it starts; with none, every loop runs on the calling thread.
@@ -273,6 +281,8 @@ impl Pool {
         }
         let mut io = Io::new(poll, self, at);
         let mut idle = 0;
+        // When the worker started looking again, to stop after `LOOKING`.
+        let mut began = Instant::now();
         loop {
             self.read_mail(at, &mut io);
             io.run_ready();
@@ -294,8 +304,11 @@ impl Pool {
                 // A task that made way at a tick is ready again at once: the poll's looked at
                 // before it runs on, so a connection or a wake that came meanwhile gets its turn.
                 io.poll_now();
-            } else if idle < ROUNDS {
+            } else if idle < ROUNDS && (idle == 0 || began.elapsed() < LOOKING) {
                 // A program that makes many short `parallel` calls in a row finds its workers awake.
+                if idle == 0 {
+                    began = Instant::now();
+                }
                 idle += 1;
                 std::thread::yield_now();
                 io.poll_now();
@@ -723,13 +736,13 @@ impl crate::embed::deadlock::Awaited for Joined {
 
 /// For tests, in a debug build: how long a woken idle worker is held before its slot says it's
 /// awake, as `FENNEC_TEST_SLOW_WAKE_MS` says. A release build never reads it.
-fn slow_wake() -> Option<std::time::Duration> {
+fn slow_wake() -> Option<Duration> {
     #[cfg(debug_assertions)]
     {
-        static HELD: OnceLock<Option<std::time::Duration>> = OnceLock::new();
+        static HELD: OnceLock<Option<Duration>> = OnceLock::new();
         *HELD.get_or_init(|| {
             let asked = std::env::var("FENNEC_TEST_SLOW_WAKE_MS").ok()?.trim().parse().ok()?;
-            Some(std::time::Duration::from_millis(asked))
+            Some(Duration::from_millis(asked))
         })
     }
     #[cfg(not(debug_assertions))]
@@ -833,10 +846,10 @@ impl Latch {
         if !self.counted.load(Ordering::Relaxed) {
             return self.wait();
         }
-        let until = std::time::Instant::now() + crate::embed::deadlock::PATIENCE;
+        let until = Instant::now() + crate::embed::deadlock::PATIENCE;
         let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
         while !finished.all {
-            let left = until.saturating_duration_since(std::time::Instant::now());
+            let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
             }

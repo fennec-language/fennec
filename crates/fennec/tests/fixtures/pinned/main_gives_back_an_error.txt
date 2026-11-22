@@ -2,8 +2,9 @@ source c29fa24eb5f16609c218d53f34e69f14d1df24babce539c8c75add9f7d30b3de
 code 1
 stdout 6
 first
-stderr 253
-error: `main` failed: InvalidValue(message="\"twelve\" isn't an int")
+stderr 277
+error: `main` failed: "twelve" isn't an int
+  InvalidValue(message="\"twelve\" isn't an int")
  --> <dir>/main_gives_back_an_error.fen:2:12
   |
 2 |     return int(text)?

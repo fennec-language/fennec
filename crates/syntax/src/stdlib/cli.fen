@@ -10,6 +10,18 @@ from std.string import quoted_input
 export error CliError:
     message: str
 
+    ## Its `message`, which printing it prints.
+    ## ```fennec
+    ## from std.cli import CliError
+    ## problem = CliError(message="`--name` is required")
+    ## stdout.print(f"greet: {problem}")
+    ## ```
+    ## ```output
+    ## greet: `--name` is required
+    ## ```
+    def message(self) -> str:
+        return self.message
+
 ## One flag, option or positional argument a program takes.
 struct CliArg:
     name: str

@@ -23,7 +23,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use fennec_check::Type;
-use fennec_syntax::{Expr, ExprKind, Span, Stmt, StmtKind, visit};
+use fennec_syntax::{Expr, ExprKind, Pattern, Span, Stmt, StmtKind, read, visit};
 
 use super::calls::ArgVal;
 use super::{Flow, Interp, Place, Run, Step, as_int, crash, unsupported};
@@ -209,6 +209,122 @@ fn returns_in_blocks(body: &[Stmt]) -> bool {
     }
 }
 
+/// A place as the checker names one (`loops::place`): a name, then a field, or `None` for any
+/// index, at each step.
+type Named = (String, Vec<Option<String>>);
+
+fn place_named(expr: &Expr) -> Option<Named> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some((name.clone(), Vec::new())),
+        ExprKind::Attr { object, name, optional: false } => {
+            let mut found = place_named(object)?;
+            found.1.push(Some(name.clone()));
+            Some(found)
+        }
+        ExprKind::Index { object, .. } => {
+            let mut found = place_named(object)?;
+            found.1.push(None);
+            Some(found)
+        }
+        _ => None,
+    }
+}
+
+/// Whether changing one place can change the other: one is inside the other, where an index
+/// matches any item and different fields are different places.
+fn overlap(one: &Named, other: &Named) -> bool {
+    one.0 == other.0 && one.1.iter().zip(&other.1).all(|(a, b)| a.is_none() || b.is_none() || a == b)
+}
+
+/// Whether a `for ref item in parallel(source)` loop's `body` reads what it goes over, as the
+/// checker's `live_loops` asks (#2356): a place anywhere in it, nested functions' included, that
+/// overlaps `source`, with the body giving `item` no meaning of its own. The checker writes such a
+/// loop in to go by position, so its rounds run one after another, as a plain loop's do, and each
+/// sees the items as they are now.
+pub(crate) fn reads_its_list(body: &[Stmt], item: &str, source: &Expr) -> bool {
+    let Some(looped) = place_named(source) else { return false };
+    let mut reads = false;
+    read::in_stmts(body, &mut |seen| {
+        reads |= place_named(seen).is_some_and(|place| overlap(&place, &looped));
+    });
+    reads && !binds(body, item)
+}
+
+/// Whether a body gives `held` a meaning of its own anywhere, as the checker's `binds` asks:
+/// declares it again, loops with it, or binds it in a function, arrow function, comprehension or
+/// case.
+fn binds(body: &[Stmt], held: &str) -> bool {
+    let mut bound = false;
+    every_stmt(body, &mut |stmt| match &stmt.kind {
+        StmtKind::Assign { target, declare_mut, ty, .. } => {
+            bound |= (*declare_mut || ty.is_some()) && names_in(target).iter().any(|name| name == held);
+        }
+        StmtKind::For { names, .. } => bound |= names.iter().any(|name| name == held),
+        StmtKind::With { names, .. } => bound |= names.iter().any(|name| name.name == held),
+        StmtKind::OnFailure { name, .. } => bound |= name == held,
+        StmtKind::Def(def) => bound |= def.name == held || def.params.iter().any(|param| param.name == held),
+        _ => {}
+    });
+    read::in_stmts(body, &mut |expr| match &expr.kind {
+        ExprKind::Lambda { params, .. } => bound |= params.iter().any(|param| param == held),
+        ExprKind::Comprehension { names, .. } => bound |= names.iter().any(|name| name == held),
+        ExprKind::Match { arms, .. } => bound |= arms.iter().any(|arm| pattern_binds(&arm.pattern, held)),
+        _ => {}
+    });
+    bound
+}
+
+/// Calls `each` on every statement in a body: those in nested blocks, functions and `match`
+/// cases too.
+fn every_stmt(body: &[Stmt], each: &mut dyn FnMut(&Stmt)) {
+    for stmt in body {
+        each(stmt);
+        match &stmt.kind {
+            StmtKind::If { branches, otherwise } => {
+                for (_, block) in branches {
+                    every_stmt(block, each);
+                }
+                every_stmt(otherwise.as_deref().unwrap_or_default(), each);
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                every_stmt(body, each);
+            }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                every_stmt(cleanup, each);
+                every_stmt(body, each);
+            }
+            StmtKind::Lend { otherwise, .. } => every_stmt(otherwise, each),
+            StmtKind::Def(def) => every_stmt(&def.body, each),
+            _ => {}
+        }
+    }
+    read::in_stmts(body, &mut |expr| {
+        if let ExprKind::Match { arms, .. } = &expr.kind {
+            for arm in arms {
+                every_stmt(&arm.body, each);
+            }
+        }
+    });
+}
+
+fn names_in(target: &Expr) -> Vec<String> {
+    match &target.kind {
+        ExprKind::Name(name) => vec![name.clone()],
+        ExprKind::Tuple(items) => items.iter().flat_map(names_in).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn pattern_binds(pattern: &Pattern, held: &str) -> bool {
+    match pattern {
+        Pattern::Bind(name) | Pattern::RefBind(name) | Pattern::MutBind(name) => name == held,
+        Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+            patterns.iter().any(|pattern| pattern_binds(pattern, held))
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => false,
+    }
+}
+
 /// Takes the functions written inside `body` out of it, at any depth, those in a `match`'s cases
 /// included, as the IR does before it looks for a `return`.
 fn without_functions(body: &mut Vec<Stmt>) {
@@ -349,6 +465,17 @@ impl Interp {
             Some(source) => Ok(Some(Written { source, limit })),
             None => unsupported("`parallel` with no source"),
         }
+    }
+
+    /// Whether `for ref name in parallel(...)` runs as a plain loop, as compiled code runs it: one
+    /// with a `return`, which isn't lifted into ranges, and one that reads what it goes over, which
+    /// the checker writes in to go by position.
+    pub(crate) fn ref_loop_is_plain(&self, name: &str, call: Written, body: &[Stmt]) -> bool {
+        let by_position = matches!(
+            self.program.type_at(call.source.span),
+            Some(Type::List(_) | Type::Array(..) | Type::Buffer(_) | Type::Table(_))
+        ) && reads_its_list(body, name, call.source);
+        by_position || returns_in(body)
     }
 
     /// The items a call's rounds take, in order, with its limit worked out after them.

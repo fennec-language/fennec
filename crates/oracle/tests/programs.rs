@@ -5390,6 +5390,194 @@ fn a_narrowed_fs_reaches_only_its_folder_and_a_read_only_one_changes_nothing() {
 }
 
 #[test]
+fn a_database_takes_each_kind_of_value_as_a_parameter_and_gives_rows_back_by_kind() {
+    prints_in_work(
+        "
+        from std import sqlite
+        from std.sql import SqlError
+
+        struct Item:
+            name: str
+            weight: float
+            data: bytes
+            note: str?
+
+        def main(stdout: Stdout, fs: Fs) fails SqlError:
+            with sqlite.open(fs, 'kinds.db')? as db:
+                stdout.print(db.execute(t'create table items (name text, weight real, data blob, note text)')?)
+                first = 'a \\\"quoted\\\"; drop table items; --'
+                second = 'b'
+                weight = 0.5
+                whole = 2
+                data = bytes([0, 255])
+                stdout.print(db.execute(t'insert into items values ({first}, {weight}, {data}, null), ({second}, {whole}, {data}, {second})')?)
+                stdout.print(db.query[Item](t'select name, weight, data, note from items order by name')?)
+                stdout.print(db.execute(t'create table flags (value int)')?)
+                stdout.print(db.execute(t'insert into flags values ({True}), ({False}), ({whole})')?)
+                stdout.print(db.query[int](t'select value from flags order by value')?, db.query[float](t'select value from flags where value < {whole}')?)
+                stdout.print(db.query[bool](t'select value from flags where value < {whole} order by value')?)
+                stdout.print(db.query[int?](t'select null union all select {whole}')?, db.query[bytes](t'select data from items limit 1')?)
+                stdout.print(db.execute(t'select value from flags')?, db.execute(t'update flags set value = value + {whole} where value > {0}')?)
+        ",
+        "0\n\
+         2\n\
+         [Item(name=\"a \\\"quoted\\\"; drop table items; --\", weight=0.5, data=bytes([0, 255]), note=None), Item(name=\"b\", weight=2.0, data=bytes([0, 255]), note=\"b\")]\n\
+         2\n\
+         3\n\
+         [0, 1, 2] [1.0, 0.0]\n\
+         [False, True]\n\
+         [None, 2] [bytes([0, 255])]\n\
+         0 2\n",
+    );
+}
+
+#[test]
+fn a_database_fails_with_the_case_of_sql_error_each_mistake_is() {
+    prints_in_work(
+        "
+        from std import math, sqlite
+        from std.sql import SqlError
+
+        struct Pair:
+            a: int
+            b: str
+
+        def outcome[T](run: () -> T fails SqlError) -> str:
+            _ = run() except why:
+                case .Constraint(reason=reason):
+                    return f'Constraint: {reason}'
+                case .Busy(reason=reason):
+                    return f'Busy: {reason}'
+                case .Column(name=name, reason=reason):
+                    return f'Column {name}: {reason}'
+                case .Failed(reason=reason):
+                    return f'Failed: {reason}'
+            return 'fine'
+
+        def main(stdout: Stdout, fs: Fs) fails SqlError:
+            with sqlite.open(fs, 'rules.db')? as db:
+                _ = db.execute(t'create table rules (id int primary key, name text not null, size int check (size > 0))')?
+                one = 1
+                name = 'a'
+                _ = db.execute(t'insert into rules values ({one}, {name}, {one})')?
+                stdout.print(outcome(() => db.execute(t'insert into rules values (2, null, 1)')?))
+                stdout.print(outcome(() => db.execute(t'insert into rules values (3, {name}, 0)')?))
+                stdout.print(outcome(() => db.execute(t'insert into rules values ({one}, {name}, 1)')?))
+                stdout.print(outcome(() => db.execute(t'create tabel nope (x int)')?))
+                stdout.print(outcome(() => db.query[int](t'select x from missing')?))
+                stdout.print(outcome(() => db.execute(t'delete from rules; delete from rules')?))
+                stdout.print(outcome(() => db.query[int](t'select id from rules where id = ?1 or id = {one}')?))
+                stdout.print(outcome(() => db.execute(t'insert into rules values (7, {name}, {math.NAN})')?))
+                stdout.print(outcome(() => db.query[int](t'select name from rules')?))
+                stdout.print(outcome(() => db.query[int](t'select id, name from rules')?))
+                stdout.print(outcome(() => db.query[Pair](t'select id as a from rules')?))
+                stdout.print(outcome(() => db.query[Pair](t'select id as a, name as b, size from rules')?))
+                stdout.print(outcome(() => db.query[bool](t'select size + 1 from rules')?))
+                stdout.print(db.query[Pair](t'select id as a, name as b from rules')?)
+        ",
+        "Constraint: NOT NULL constraint failed: rules.name\n\
+         Constraint: CHECK constraint failed: size > 0\n\
+         Constraint: UNIQUE constraint failed: rules.id\n\
+         Failed: near \"tabel\": syntax error in create tabel nope (x int) at offset 7\n\
+         Failed: no such table: missing\n\
+         Failed: a query is one statement: give each its own `execute`\n\
+         Failed: the query has 1 values but 2 places for them: a `?` or `:name` in its text is one\n\
+         Failed: NaN can't be stored: SQLite would turn it into NULL\n\
+         Column name: it holds text, not an int\n\
+         Column id: a row of 2 columns can't be read as one value: read it into a struct\n\
+         Column b: the query gives no column for this field\n\
+         Column size: `Pair` has no field called `size`\n\
+         Column size + 1: it holds 2, and a bool is 0 or 1\n\
+         [Pair(a=1, b=\"a\")]\n",
+    );
+}
+
+#[test]
+fn a_transaction_is_kept_when_its_block_ends_and_undone_when_it_fails() {
+    prints_in_work(
+        "
+        from std import sqlite
+        from std.sql import SqlError
+
+        error Broke:
+            why: str
+
+        def undone(db: sqlite.Database, stdout: Stdout) fails SqlError | Broke:
+            with db.transaction()? as tx:
+                stdout.print(tx.execute(t'insert into kept values (10), (20)')?, tx.query[int](t'select count(*) from kept')?)
+                fail Broke(why='on purpose')
+
+        def main(stdout: Stdout, fs: Fs) fails SqlError | IoError:
+            with sqlite.open(fs, 'kept.db')? as db:
+                _ = db.execute(t'create table kept (value int)')?
+                with db.transaction()? as tx:
+                    stdout.print(tx.execute(t'insert into kept values (1), (2)')?, tx.query[int](t'select count(*) from kept')?)
+                    stdout.print(db.query[int](t'select count(*) from kept')?)
+                    waited = db.execute(t'insert into kept values (3)') except why:
+                        stdout.print(why.message())
+                        -1
+                    stdout.print(waited)
+                stdout.print(db.query[int](t'select count(*) from kept')?)
+                undone(db, stdout) except why:
+                    stdout.print(why)
+                stdout.print(db.query[int](t'select value from kept order by value')?)
+            with sqlite.open(fs, 'kept.db')? as again:
+                stdout.print(again.query[int](t'select sum(value) from kept')?, fs.exists('kept.db')?)
+        ",
+        "2 [2]\n\
+         [0]\n\
+         another writer held the database for over 5 seconds; inside a transaction, query through it rather than the database\n\
+         -1\n\
+         [2]\n\
+         2 [4]\n\
+         Broke(why=\"on purpose\")\n\
+         [1, 2]\n\
+         [3] True\n",
+    );
+}
+
+#[test]
+fn what_a_database_does_past_ordinary_queries_on_its_own_tables_is_refused() {
+    let uses = [
+        "_ = db.query[str](t'pragma journal_mode')?",
+        "_ = db.query[int](t'select random()')?",
+        "_ = db.query[float](t'select julianday()')?",
+        "_ = db.execute(t'create temp table scratch (x int)')?",
+        "_ = db.execute(t'create view seen as select 1')?",
+        "_ = fs.read_text('kept.db')?",
+        "_ = fs.list_dir('.')?",
+        "fs.remove('kept.db')?",
+        "fs.write_text('kept.db', 'over')?",
+    ];
+    for used in uses {
+        let (_, ended) = ran_in_work(&format!(
+            "
+            from std import sqlite
+            from std.sql import SqlError
+
+            def main(fs: Fs) fails SqlError | IoError:
+                with sqlite.open(fs, 'kept.db')? as db:
+                    {used}
+            "
+        ));
+        assert!(matches!(ended, Ended::Unsupported(_)), "{used}: {ended:?}");
+    }
+    let opened = [
+        "fs.write_text('kept.db', 'text')?\n    with sqlite.open(fs, 'kept.db')? as db:",
+        "with sqlite.open(fs, 'missing/kept.db')? as db:",
+        "fs.make_dir('saves')?\n    with sqlite.open(fs.only('saves'), 'saves/kept.db')? as db:",
+        "with sqlite.open(fs.read_only(), 'kept.db')? as db:",
+    ];
+    for opening in opened {
+        let source = format!(
+            "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs) fails SqlError | IoError:\n    {opening}\n        _ = db.execute(t'create table t (x int)')?\n"
+        );
+        let (_, ended) = ran_in_work(&source);
+        assert!(matches!(ended, Ended::Unsupported(_)), "{opening}: {ended:?}");
+    }
+}
+
+#[test]
 fn a_path_is_its_text_and_its_methods_only_look_at_it() {
     prints_in_work(
         "

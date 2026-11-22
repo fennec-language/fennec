@@ -697,6 +697,25 @@ fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result
     )
 }
 
+/// A dict of strings holds each value as its header in the entry, as its keys are, so a value of
+/// 23 bytes or fewer needs no block: it prints the same as with `FENNEC_BOXED_DICT_VALUES=1`, where
+/// each is a block's address, and ends with nothing held. Short and long values under text, int
+/// and float keys are set new and again, grown past a header with `+=`, read, got, popped, walked,
+/// listed, copied and changed, compared, cleared, keyed by slices, changed through `ref self` and
+/// in a dict of dicts, and under a lock that fails, which undoes it.
+#[test]
+fn a_dict_of_strings_holds_its_values_as_headers_in_its_entries() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_str_values_in_entries",
+        include_str!("fixtures/dict_str_values_in_entries.fen"),
+        include_str!("fixtures/dict_str_values_in_entries.out"),
+    )
+}
+
 /// A dict whose values are generators or closures builds and lets each go (#2099). Their blocks went
 /// into the runtime's calls as addresses where a word goes, so `opt` refused the program, written
 /// out or one value at a time. Each is put in, replaced, got, popped, looped over or called, left
@@ -3745,6 +3764,26 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
     Ok(())
 }
 
+/// A flat message crosses a channel as its words, through each thread's buffer, with a copy of each
+/// block they name, and no block made for the message itself: a string, short, long and empty; a
+/// struct of numbers, bools and a narrow number; one holding strings, an optional string and bytes;
+/// and a struct of those inside another. Each arrives as sent, the sender keeps and changes its
+/// own, and a message holding a list still goes as a block. It prints the same with
+/// `FENNEC_BLOCK_MESSAGES=1`, where each goes as a block, in dev and release, and ends with
+/// nothing held. CI runs it under the address and thread sanitizers, at 1, 4 and 8 threads.
+#[test]
+fn a_flat_message_crosses_a_channel_as_its_words() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BLOCK_MESSAGES",
+        "flat_messages",
+        include_str!("fixtures/workers/flat_messages.fen"),
+        include_str!("fixtures/workers/flat_messages.out"),
+    )
+}
+
 /// Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
 /// under its error, a number that doesn't fit its size, and a pick from a range given backwards.
 /// Each ends its task as a crash and the program goes on, with nothing left of the messages. The
@@ -4365,38 +4404,56 @@ fn a_put_after_a_lookup_under_a_lock_is_right_whatever_came_between() -> std::io
 
 /// A put after a lookup under a lock, of a number and of a string held in a block, takes and lets go
 /// of the same owners whether it's kept or a failure puts the old value back: twice the rounds hold
-/// no more at the end. The puts are made where the lookup found the key (`found_puts`), so the
-/// rolled-back ones are undone from what that path noted.
+/// no more at the end. With `FENNEC_BOXED_DICT_VALUES=1` the string's puts are made where the lookup
+/// found the key (`found_puts`), so the rolled-back ones are undone from what that path noted; held
+/// in the entry as its header, the string goes in through the runtime's store of an entry's words,
+/// which a failure undoes too.
 #[test]
 fn a_put_where_a_lookup_found_the_key_holds_nothing_more_kept_or_undone() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int(args[0]) except InvalidValue(): 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) except Boom():\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
-    let dir = folder("lock_found_counts")?;
-    let program = dir.join("found.fen");
-    std::fs::write(&program, source)?;
-    let executable = dir.join("found");
-    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let run = |rounds: &str| -> std::io::Result<(String, String)> {
-        let ran = Command::new(&executable).arg(rounds).env("FENNEC_COUNTS", "1").output_within()?;
-        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-        let counts = said.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned();
-        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), counts))
-    };
-    let (fewer, more) = (run("60")?, run("120")?);
-    std::fs::remove_dir_all(&dir)?;
-    let names = "name 2, long enough to be held in a block of its own name 1, long enough to be held in a block of its own";
-    assert_eq!((fewer.0, more.0), (format!("20 20 20 {names}\n"), format!("40 40 40 {names}\n")));
-    let field = |counts: &str, name: &str| {
-        counts.split_whitespace().skip_while(|word| *word != name).nth(1).unwrap_or_default().to_owned()
-    };
-    // The name's put of every round, rolled back or kept, but for the three whose key wasn't there
-    // yet: rounds 0, 1 and 2, as round 0's was put back. The count's put, a number into a dict
-    // with one owner, is written in place without the runtime once its key is there.
-    assert_eq!(field(&fewer.1, "found_puts"), "57", "{}", fewer.1);
-    assert_eq!(field(&fewer.1, "live"), field(&more.1, "live"), "{} / {}", fewer.1, more.1);
+    for boxed in [true, false] {
+        let dir = folder("lock_found_counts")?;
+        let program = dir.join("found.fen");
+        std::fs::write(&program, source)?;
+        let executable = dir.join("found");
+        let mut command = crate::executables::fennec_command();
+        command.arg("build").arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
+        command.env_remove("FENNEC_BOXED_DICT_VALUES");
+        if boxed {
+            command.env("FENNEC_BOXED_DICT_VALUES", "1");
+        }
+        let built = command.output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let run = |rounds: &str| -> std::io::Result<(String, String)> {
+            let ran = Command::new(&executable).arg(rounds).env("FENNEC_COUNTS", "1").output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            let counts = said.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned();
+            Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), counts))
+        };
+        let (fewer, more) = (run("60")?, run("120")?);
+        std::fs::remove_dir_all(&dir)?;
+        let names = "name 2, long enough to be held in a block of its own name 1, long enough to be held in a block of its own";
+        assert_eq!((fewer.0, more.0), (format!("20 20 20 {names}\n"), format!("40 40 40 {names}\n")));
+        let field = |counts: &str, name: &str| {
+            counts.split_whitespace().skip_while(|word| *word != name).nth(1).unwrap_or_default().to_owned()
+        };
+        // Boxed, the name's put of every round, rolled back or kept, but for the three whose key
+        // wasn't there yet: rounds 0, 1 and 2, as round 0's was put back. The count's put, a number
+        // into a dict with one owner, is written in place without the runtime once its key is there.
+        if boxed {
+            assert_eq!(field(&fewer.1, "found_puts"), "57", "{}", fewer.1);
+        }
+        assert_eq!(
+            field(&fewer.1, "live"),
+            field(&more.1, "live"),
+            "boxed {boxed}: {} / {}",
+            fewer.1,
+            more.1
+        );
+    }
     Ok(())
 }
 
@@ -4436,6 +4493,28 @@ fn a_found_put_under_a_lock_is_written_in_place_and_put_back() -> std::io::Resul
         );
     }
     Ok(())
+}
+
+/// A store after a lookup of the same key in another dict writes the dict it's to, searching it,
+/// and leaves the one looked in as it was: a lookup's entry is reused only for its own dict.
+#[test]
+fn a_store_after_a_lookup_in_another_dict_writes_its_own_dict_not_the_one_looked_in() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "store_after_other_lookup",
+        "def main(stdout: Stdout):
+    mut first = {\"x\": 1, \"y\": 2}
+    mut second = {\"x\": 10, \"y\": 20}
+    key = \"x\"
+    seen = first.get(key) else 0
+    second[key] = seen + 5
+    first[key] = seen + 100
+    stdout.print(f\"{first} {second}\")
+",
+        "{\"x\": 101, \"y\": 2} {\"x\": 6, \"y\": 20}\n",
+    )
 }
 
 /// A put after a lookup of the same key under a lock writes where the lookup found it, with no
@@ -13751,7 +13830,7 @@ fn a_pop_that_fails_or_a_remove_of_nothing_changes_nothing_and_leaves_nothing() 
     prints_in_both_builds("failed_takes", FAILED_TAKES, FAILED_TAKES_PRINTS)?;
     assert_eq!(
         counts_of("failed_takes_counts", FAILED_TAKES)?,
-        "copies 20 copied_bytes 1104 largest_copy 80 allocations 82 allocated_bytes 10328 live 0"
+        "copies 20 copied_bytes 1136 largest_copy 80 allocations 76 allocated_bytes 10664 live 0"
     );
     Ok(())
 }

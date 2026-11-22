@@ -152,6 +152,16 @@ pub(crate) fn failed_global(threads: bool) -> &'static str {
     }
 }
 
+/// How a module declares where this thread's buffer is for a message's words, which `fennec_entry`
+/// sets for the program's thread and a worker's first shim for its own.
+pub(crate) fn words_global(threads: bool) -> &'static str {
+    if threads {
+        "@fennec_words = external dso_local thread_local(initialexec) global ptr"
+    } else {
+        "@fennec_words = external dso_local global ptr"
+    }
+}
+
 /// How a module declares this thread's number, which is what a block's owner bits hold when
 /// this thread made it. It's 0 on the program's thread, and a worker's first shim sets it.
 const THREAD_GLOBAL: &str = "@fennec_thread = external dso_local thread_local(initialexec) global i64";
@@ -223,7 +233,8 @@ fn immortal() -> String {
 }
 
 /// The start of every shim: on a thread whose failure flag isn't known yet, a worker running
-/// its first range, asks the runtime where this thread's flag is, and notes its number. The
+/// its first range, asks the runtime where this thread's flag and its buffer for a message's words
+/// are, and notes its number. The
 /// program's thread has both from `fennec_entry`. Then, for every range, it asks how deep its stack
 /// may go: a range whose body may wait runs as a parked task, on a stack of its own, so the
 /// worker's stack limit isn't its. Everything else reads these as never changing, so the range
@@ -231,7 +242,8 @@ fn immortal() -> String {
 const READY: &str = "entry:\n  %known = load ptr, ptr @fennec_failed\n  %fresh = icmp eq ptr %known, null\n  \
     br i1 %fresh, label %ready, label %set_limit\nready:\n  \
     %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  \
-    store ptr %flag_at, ptr @fennec_failed\n  store i64 %thread, ptr @fennec_thread\n  br label %set_limit\nset_limit:\n  \
+    store ptr %flag_at, ptr @fennec_failed\n  %words_at = call ptr @fennec_dict_value_words()\n  \
+    store ptr %words_at, ptr @fennec_words\n  store i64 %thread, ptr @fennec_thread\n  br label %set_limit\nset_limit:\n  \
     %stack_limit = call i64 @fennec_aot_stack_limit()\n  store i64 %stack_limit, ptr @fennec_stack_limit\n  br label %run\nrun:\n";
 
 /// What a range's closure gives back, which says which shim runs it.
@@ -615,8 +627,10 @@ impl Emit<'_, '_, '_> {
         let threads = self.module.threads;
         self.declare(stack_limit_global(threads));
         self.declare(failed_global(threads));
+        self.declare(words_global(threads));
         self.declare(THREAD_GLOBAL);
         self.declare("declare i64 @fennec_aot_failed_flag()");
+        self.declare("declare ptr @fennec_dict_value_words() nounwind");
         self.declare("declare i64 @fennec_aot_stack_limit()");
         self.module.add_helper(name, shape.shim());
         name

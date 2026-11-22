@@ -1,0 +1,17 @@
+text [short] 5
+text [a text long enough to need a block of its own, number 1] 55
+text [] 0
+text [grows] 5
+text [grows past a header, round 0] 28
+text [grows past a header, round 0 past a header, round 1] 51
+point 0 0.0 True 250
+point 1 0.5 False 251
+point 2 1.0 True 252
+packet 0 0 False first a text long enough to need a block of its own, number 2 None bytes([1, 2, 3])
+its copy a text long enough to need a block of its own, number 2 (changed by the task)
+packet 1 1 True first a text long enough to need a block of its own, number 2 0 tag 0 bytes([1, 2, 3])
+its copy a text long enough to need a block of its own, number 2 0 (changed by the task)
+packet 2 2 False first a text long enough to need a block of its own, number 2 0 1 a text long enough to need a block of its own, number 1 bytes([1, 2, 3])
+its copy a text long enough to need a block of its own, number 2 0 1 (changed by the task)
+sender kept a text long enough to need a block of its own, number 2 0 1 2 tag 2
+bundle [1, 2] a text long enough to need a block of its own, number 3

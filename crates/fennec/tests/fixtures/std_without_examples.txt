@@ -174,8 +174,6 @@ concurrent: Channel.sender
 concurrent: Closed
 concurrent: Crashed
 concurrent: Delivery
-concurrent: Explained
-concurrent: Explained.message
 concurrent: Inbox
 concurrent: Inbox.iter
 concurrent: Inbox.receive

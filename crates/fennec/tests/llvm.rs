@@ -782,6 +782,23 @@ counted 8
 again 12 1
 "#;
 
+/// A slice read by one `split`, `find`, `startswith`, `==` or `!=` is read where it is, as a range
+/// of its string, with no string made for it: each gives what it gives on the slice made first, for
+/// short and long texts, ASCII, accented and Japanese, and ranges at either end, negative, missing,
+/// reversed and past the end, beside parts that are there and not. In dev and release, with nothing
+/// left at the end.
+#[test]
+fn a_slice_read_by_one_call_is_read_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "slice_ranges",
+        include_str!("fixtures/slice_ranges.fen"),
+        include_str!("fixtures/slice_ranges.out"),
+    )
+}
+
 /// A slice of a text used as a dict's key is found and added with no string made for it only in a
 /// dict of one-word values. Which dicts hold their values in their entries is the layouts' to say:
 /// a tuple is held in an entry as a struct is, and a dict of tuples took the one-word way, which

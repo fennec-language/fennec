@@ -98,6 +98,10 @@ pub(crate) struct Analysis {
     /// A slice of a string used only as a dict's key: the string and where it starts and ends.
     /// It's never made, as the runtime looks up and adds those bytes where they are.
     pub(crate) slice_keys: HashMap<usize, SliceKey>,
+    /// A slice of a string read only by one call that reads it where it is: `split`, `find`,
+    /// `startswith`, or `==` and `!=`. The string and where it starts and ends. It's never made,
+    /// as the call reads that range of the string (`fennec_str_split_range` and the rest).
+    pub(crate) slice_ranges: HashMap<usize, SliceKey>,
     /// The slice and its copy, which are never made.
     pub(crate) unmade: HashSet<usize>,
     /// Locals standing for a list that a `for` loop goes through while changing only the item
@@ -192,6 +196,7 @@ impl Analysis {
             places_waiting,
             field_of,
             slice_keys,
+            slice_ranges,
             unmade,
             aliases,
             alone_in_loops,
@@ -240,6 +245,7 @@ impl Analysis {
         hash_set(places_waiting, state);
         hash_map(field_of, state);
         hash_map(slice_keys, state);
+        hash_map(slice_ranges, state);
         hash_set(unmade, state);
         hash_map(aliases, state);
         alone_in_loops.hash(state);
@@ -762,6 +768,7 @@ fn analyze(
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
     find_slice_keys(function, in_entries, &mut known);
+    find_slice_ranges(function, &mut known);
     find_unmade_enumerates(function, &mut known);
     find_counts_inside(function, &mut known);
     find_adjacent_reads(function, &mut known);
@@ -1721,6 +1728,82 @@ fn find_slice_keys(function: &Function, in_entries: InEntries<'_>, known: &mut A
         known.slice_keys.insert(key.0, (object.clone(), start.clone(), end.clone()));
         known.unmade.insert(slice.0);
         known.unmade.insert(key.0);
+    }
+}
+
+/// `text[a:b].split(x)`, `.find(x)`, `.startswith(x)`, and `text[a:b] == other` or `!=`, with the
+/// slice read by that one call and nothing else, and what it was made from unchanged after: the
+/// runtime reads the range of the string where it is, as slicing would, so no string is made for
+/// the slice. Slicing never fails, so nothing a program sees moves. A slice used as a dict's key is
+/// left to `find_slice_keys`.
+fn find_slice_ranges(function: &Function, known: &mut Analysis) {
+    let insts: Vec<&InstKind> =
+        function.blocks.iter().flat_map(|block| &block.insts).map(|inst| &inst.kind).collect();
+    let steady = |operand: &Operand, known: &Analysis| match operand {
+        Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(2) <= 1,
+        Operand::Int(_) => true,
+        _ => false,
+    };
+    for inst in &insts {
+        let InstKind::Slice { dest: slice, object, start, end } = inst else { continue };
+        let Operand::Local(text) = object else { continue };
+        if known.unmade.contains(&slice.0)
+            || function.locals.get(text.0).map(|local| &local.ty) != Some(&Type::Str)
+            || known.writes.get(slice.0) != Some(&1)
+            || !steady(object, known)
+            || !start.iter().chain(end).all(|at| steady(at, known))
+        {
+            continue;
+        }
+        // Copied once to the local the call reads, or read as it is.
+        let copied = insts.iter().find_map(|inst| match inst {
+            InstKind::Copy { dest, value: Operand::Local(from) } if from == slice => Some(*dest),
+            _ => None,
+        });
+        let read = match copied {
+            Some(read) if known.reads.get(slice.0) == Some(&1) && known.writes.get(read.0) == Some(&1) => {
+                read
+            }
+            Some(_) => continue,
+            None => *slice,
+        };
+        let as_range = Operand::Local(read);
+        let mut uses = 0;
+        for inst in &insts {
+            match inst {
+                // `startswith` is the standard library's, in Fennec, and a call to it is read
+                // natively (`header_affix`), as these are.
+                InstKind::Builtin { name, args, .. } | InstKind::Call { function: name, args, .. }
+                    if matches!(name.as_str(), "str.split" | "str.find" | "str.startswith")
+                        && args.first() == Some(&as_range)
+                        && !args.iter().skip(1).any(|arg| *arg == as_range) =>
+                {
+                    uses += 1;
+                }
+                // Beside another string, not an optional one.
+                InstKind::Binary { op: BinOp::Eq | BinOp::NotEq, lhs, rhs, .. }
+                    if (*lhs == as_range) != (*rhs == as_range) =>
+                {
+                    let other = if *lhs == as_range { rhs } else { lhs };
+                    let plain = match other {
+                        Operand::Str(_) => true,
+                        Operand::Local(local) => {
+                            function.locals.get(local.0).is_some_and(|local| local.ty == Type::Str)
+                        }
+                        _ => false,
+                    };
+                    // Anything else read where the slice is leaves it made.
+                    uses += if plain { 1 } else { 2 };
+                }
+                _ => {}
+            }
+        }
+        if uses != 1 || known.reads.get(read.0).copied() != Some(1) {
+            continue;
+        }
+        known.slice_ranges.insert(read.0, (object.clone(), start.clone(), end.clone()));
+        known.unmade.insert(slice.0);
+        known.unmade.insert(read.0);
     }
 }
 
@@ -3891,6 +3974,7 @@ impl Analysis {
             places_waiting: HashSet::new(),
             field_of: HashMap::new(),
             slice_keys: HashMap::new(),
+            slice_ranges: HashMap::new(),
             unmade: HashSet::new(),
             aliases: HashMap::new(),
             alone_in_loops: Vec::new(),

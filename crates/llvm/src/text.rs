@@ -1640,6 +1640,23 @@ tagged:
         result
     }
 
+    /// The words of the string a slice is of, and the slice's two ends as slicing reads them, when
+    /// `operand` is a slice read where it is (`slice_ranges`): never made, its call reads that range
+    /// of the string. `None` for any other operand.
+    pub(crate) fn slice_range(
+        &mut self,
+        operand: &Operand,
+    ) -> Result<Option<([String; 3], [String; 2])>, String> {
+        let Operand::Local(local) = operand else { return Ok(None) };
+        let Some(range) = self.known.slice_ranges.get(&local.0).cloned() else { return Ok(None) };
+        if !self.headers() {
+            return Err("it reads a slice where it is, where strings aren't headers".to_owned());
+        }
+        let [text, from, to] = self.slice_place(&range)?;
+        let words = [0, 1, 2].map(|at| self.header_word(&text, at));
+        Ok(Some((words, [from, to])))
+    }
+
     /// A string operand as a block: with headers, one made for this call is kept in `made`, to
     /// be let go of after.
     fn block_operand(
@@ -1760,7 +1777,18 @@ tagged:
             }
             "str.find" => {
                 let at = self.temp();
-                if self.headers() {
+                let range = self.slice_range(first.ok_or("no argument")?)?;
+                if let Some(([t0, t1, t2], [from, to])) = range {
+                    // A slice's range, read where it is.
+                    let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                    let [p0, p1, p2] = [0, 1, 2].map(|at| self.header_word(&part, at));
+                    self.declare(
+                        "declare i64 @fennec_str_find_range(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
+                    );
+                    self.line(&format!(
+                        "{at} = call i64 @fennec_str_find_range(i64 {t0}, i64 {t1}, i64 {t2}, i64 {from}, i64 {to}, i64 {p0}, i64 {p1}, i64 {p2})"
+                    ));
+                } else if self.headers() {
                     // Both go as their headers' words, so neither is made a block first.
                     let (text, _) = self.operand(first.ok_or("no argument")?)?;
                     let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
@@ -1820,8 +1848,14 @@ tagged:
             // as their words, so neither is made a block first; three zeros, which no header is,
             // say there's no separator.
             "str.split" if self.headers() => {
-                let (text, _) = self.operand(first.ok_or("no argument")?)?;
-                let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&text, at));
+                let range = self.slice_range(first.ok_or("no argument")?)?;
+                let ([t0, t1, t2], range) = match range {
+                    Some((words, ends)) => (words, Some(ends)),
+                    None => {
+                        let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                        ([0, 1, 2].map(|at| self.header_word(&text, at)), None)
+                    }
+                };
                 let [s0, s1, s2] = match args.get(1) {
                     Some(separator) => {
                         let (separator, _) = self.operand(separator)?;
@@ -1829,14 +1863,24 @@ tagged:
                     }
                     None => ["0".to_owned(), "0".to_owned(), "0".to_owned()],
                 };
-                self.declare(
-                    "declare ptr @fennec_str_split_header(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
-                );
                 let (from, to) = self.place_in_source(span);
                 let parts = self.temp();
-                self.line(&format!(
-                    "{parts} = call ptr @fennec_str_split_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
-                ));
+                if let Some([start, end]) = range {
+                    // A slice's range, split where it is.
+                    self.declare(
+                        "declare ptr @fennec_str_split_range(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
+                    );
+                    self.line(&format!(
+                        "{parts} = call ptr @fennec_str_split_range(i64 {t0}, i64 {t1}, i64 {t2}, i64 {start}, i64 {end}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
+                    ));
+                } else {
+                    self.declare(
+                        "declare ptr @fennec_str_split_header(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
+                    );
+                    self.line(&format!(
+                        "{parts} = call ptr @fennec_str_split_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
+                    ));
+                }
                 self.leave_if_failed();
                 self.assign(dest.ok_or("no result")?, &parts)
             }

@@ -15,6 +15,7 @@ mod eval;
 mod generate;
 mod saving;
 mod source;
+mod storing;
 
 /// Whether the dev build just made calls `fennec_native_made`, as code making a native block
 /// does. The runtime defines it, so only a call counts, `bl` on arm64 and `call` on x86-64.
@@ -1335,6 +1336,63 @@ mod tests {
             SaveStep::Shown,
         ]);
         let program = Program { body: vec![Stmt::Saved(Saving { id: 1, steps })], threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
+    /// A `Stored` statement checks and the evaluator prints what the oracle prints, its table's
+    /// rules each broken, alone and two at once, and transactions kept and undone.
+    #[test]
+    fn the_stored_row_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, Stmt};
+        use super::storing::{Step, Storing};
+        let insert = |key, name, size| Step::Insert { key, name, size };
+        let steps = vec![
+            Step::Sum,
+            Step::Rows,
+            insert(2, Some(0), 3),
+            insert(4, Some(2), 0),
+            insert(1, Some(1), 5),
+            insert(2, Some(1), 1),
+            insert(3, None, 1),
+            insert(5, Some(0), -1),
+            insert(2, None, -1),
+            insert(2, Some(0), -1),
+            Step::Rows,
+            Step::Update { by: 2, from: 2 },
+            Step::Update { by: -3, from: 1 },
+            Step::Sizes { above: 1 },
+            Step::Transaction {
+                steps: vec![insert(3, Some(1), 4), Step::Count, Step::Rows, Step::Delete { below: 4 }],
+                fails: true,
+            },
+            Step::Rows,
+            Step::Transaction {
+                steps: vec![
+                    insert(3, Some(1), 4),
+                    insert(3, Some(1), 4),
+                    Step::Update { by: 1, from: 3 },
+                    Step::Count,
+                ],
+                fails: false,
+            },
+            Step::Count,
+            Step::Delete { below: 4 },
+            Step::Sum,
+            Step::Delete { below: 9 },
+            Step::Sum,
+            Step::Sizes { above: 0 },
+        ];
+        let program = Program { body: vec![Stmt::Stored(Storing { id: 1, steps })], threadless: true };
         let source = source::source(&program);
         let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
         if let Err(err) = fennec_check::check(&module) {

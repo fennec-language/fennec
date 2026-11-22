@@ -2084,6 +2084,11 @@ impl Machine {
                     let _ = writeln!(self.out, "{line}");
                 }
             }
+            Stmt::Stored(storing) => {
+                for line in super::storing::printed(storing) {
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
             Stmt::Ordered(in_order) => self.ordered(in_order)?,
             Stmt::Owned(owning) => self.owned(owning)?,
             Stmt::Streamed(streaming) => self.streamed(streaming)?,

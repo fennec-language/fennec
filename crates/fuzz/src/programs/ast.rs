@@ -2482,6 +2482,9 @@ pub(crate) enum Stmt {
     /// `saved{id}(stdout)`: a box of the program's own values saved and loaded back through JSON,
     /// `std.pack` and TOML, and texts that don't hold one refused.
     Saved(super::saving::Saving),
+    /// `stored{id}(fs, stdout)`: a SQLite database's one table, its rows put in, changed, taken
+    /// out and read back, some breaking its rules, and transactions kept or undone.
+    Stored(super::storing::Storing),
     /// `interfaced{id}(stdout)`: two types with one interface, through generic functions bounded by it.
     Interfaced(Interfacing),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.

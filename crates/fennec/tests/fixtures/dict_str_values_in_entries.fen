@@ -77,6 +77,41 @@ def walked(stdout: Stdout):
     stdout.print(found, found[line[0:4]])
     return
 
+## Keys sliced out of lines, as a request's headers are parsed: short new keys go straight in,
+## a key that's there gets its new value, and a long key, one that isn't ASCII, a dict another
+## local holds too and one that grows each take the runtime's way.
+def sliced_keys(stdout: Stdout):
+    lines = [
+        "Host: example.com",
+        "Content-Type: text/plain",
+        "Host: example.org",
+        "A-Header-Name-Longer-Than-A-Header: long key",
+        "Grüße: not ASCII",
+        "X-Long: a value long enough for a block of its own",
+        "X-Long: a value replaced by another long enough for a block",
+    ]
+    mut headers: dict[str, str] = {}
+    mut first: dict[str, str] = {}
+    for at, line in enumerate(lines):
+        colon = line.find(": ") else -1
+        headers[line[:colon]] = line[colon + 2:]
+        if at == 2:
+            first = headers
+        found = headers.get(line[:colon]) else "missing"
+        stdout.print(len(headers), found)
+    stdout.print(first)
+    stdout.print(headers)
+    mut many: dict[str, str] = {}
+    text = "k0=a;k1=bb;k2=ccc;k3=dddd;k4=eeeee;k5=ffffff;k6=a value long enough for a block;k7=h;k8=i;k9=j"
+    for round in range(3):
+        for part in text.split(";"):
+            equals = part.find("=") else 0
+            many[part[:equals]] = part[equals + 1:] if round == 0 else f"{part[equals + 1:]} {round}"
+    stdout.print(len(many), many["k6"], many["k9"])
+    missing = many.get(text[0:1]) else "none"
+    stdout.print(missing)
+    return
+
 ## In a struct changed through `ref self`, in a dict of dicts, and under a lock that fails.
 def held_elsewhere(stdout: Stdout):
     mut page = Page(title="home", headers={"count": ""})
@@ -107,5 +142,6 @@ def main(stdout: Stdout):
     text_keys(stdout)
     other_keys(stdout)
     walked(stdout)
+    sliced_keys(stdout)
     held_elsewhere(stdout)
     return

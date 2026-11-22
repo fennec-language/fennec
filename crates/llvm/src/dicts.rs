@@ -791,7 +791,7 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("br label %{done}"));
         } else if absent != slow {
             self.start_block(&absent);
-            let add = self.add_short_key_helper(KeyBytes::Header);
+            let add = self.add_short_key_helper(KeyBytes::Header, None);
             let (bytes, length) = (self.header_bytes(&key), self.header_byte_length(&key));
             let word = self.dict_word(&value_kind, &held, false)?;
             let added = self.temp();
@@ -1465,15 +1465,32 @@ impl Emit<'_, '_, '_> {
     /// empty slot. Gives back whether it did, the runtime doing anything else: a dict to grow, one
     /// hashed the strong way, or a key too far from its slot. Its words and hash come from
     /// [`short_key`], as a lookup's do. `from` says where the bytes are.
-    fn add_short_key_helper(&mut self, from: KeyBytes) -> String {
+    ///
+    /// With `in_entry`, the width of a dict's entries that hold their values in them, it's
+    /// `@fen_add_short_<from>_e<width>(dict, bytes, length)` instead: it writes the slot and the
+    /// entry's hash and key, and gives back where the value goes, for the caller to write, or null
+    /// when it adds nothing.
+    fn add_short_key_helper(&mut self, from: KeyBytes, in_entry: Option<usize>) -> String {
         self.string_slice_helpers();
         let header = header_bytes();
-        let name = format!("fen_add_short_{}", from.name());
         let key = short_key(from);
+        let (name, signature, width, written, added, refused) = match in_entry {
+            None => {
+                let name = format!("fen_add_short_{}", from.name());
+                let signature = format!("define internal i1 @{name}(ptr %d, ptr %bytes, i64 %length, i64 %value) #0 {{");
+                let written = "  %value_to = getelementptr inbounds i64, ptr %added, i64 4\n  store i64 %value, ptr %value_to\n";
+                (name, signature, entry_words(Word::Text), written, "  ret i1 true", "  ret i1 false")
+            }
+            Some(width) => {
+                let name = format!("fen_add_short_{}_e{width}", from.name());
+                let signature = format!("define internal ptr @{name}(ptr %d, ptr %bytes, i64 %length) #0 {{");
+                (name, signature, width, "", "  %value_to = getelementptr inbounds i64, ptr %added, i64 4\n  ret ptr %value_to", "  ret ptr null")
+            }
+        };
         self.module.add_helper(
             &name,
             format!(
-                "define internal i1 @{name}(ptr %d, ptr %bytes, i64 %length, i64 %value) #0 {{
+                "{signature}
 entry:
   %short = icmp ule i64 %length, 23
   br i1 %short, label %hashed, label %no
@@ -1513,7 +1530,7 @@ place:
   %number = add i64 %used, 1
   store i64 %number, ptr %slot
   %entries = getelementptr inbounds i64, ptr %slots, i64 %count
-  %added = getelementptr inbounds [5 x i64], ptr %entries, i64 %used
+  %added = getelementptr inbounds [{width} x i64], ptr %entries, i64 %used
   store i64 %hash, ptr %added
   %a_to = getelementptr inbounds i64, ptr %added, i64 1
   store i64 %a, ptr %a_to
@@ -1521,16 +1538,14 @@ place:
   store i64 %b, ptr %b_to
   %c_to = getelementptr inbounds i64, ptr %added, i64 3
   store i64 %c, ptr %c_to
-  %value_to = getelementptr inbounds i64, ptr %added, i64 4
-  store i64 %value, ptr %value_to
-  %keys_at = getelementptr inbounds i8, ptr %d, i64 {KEYS}
+{written}  %keys_at = getelementptr inbounds i8, ptr %d, i64 {KEYS}
   %keys = load i64, ptr %keys_at
   %more_keys = add i64 %keys, 1
   store i64 %more_keys, ptr %keys_at
   store i64 %number, ptr %used_at
-  ret i1 true
+{added}
 no:
-  ret i1 false
+{refused}
 }}
 
 "
@@ -1752,7 +1767,7 @@ found:
     /// The address of the value `dict` holds for the key `text[from:to]`, or null. An ASCII slice,
     /// of a string in a block or held inline, is hashed and looked up where its bytes are; any
     /// other goes to the runtime.
-    fn slice_value_at(&mut self, dict: &str, key_word: Word, sliced: &[String; 3]) -> String {
+    fn slice_value_at(&mut self, dict: &str, words: (Word, Word), sliced: &[String; 3]) -> String {
         let [text, from, to] = sliced;
         // One lookup for a text in a block and one held inline, whose bytes are put on the stack:
         // with a second, LLVM keeps the lookup's helpers out of line, and every lookup pays a call.
@@ -1760,7 +1775,7 @@ found:
         let (here, there, joined) = (self.label("ascii"), self.label("other"), self.label("looked"));
         self.line(&format!("br i1 {ascii_ok}, label %{here}, label %{there}, !prof !8"));
         self.start_block(&here);
-        let found = self.slice_entry_value(dict, key_word, &first, &size);
+        let found = self.slice_entry_value(dict, words, &first, &size);
         let here_end = self.current.clone();
         self.line(&format!("br label %{joined}"));
         self.start_block(&there);
@@ -1782,9 +1797,10 @@ found:
 
     /// The address of the value `dict` holds for the key that's the `size` ASCII bytes at
     /// `first`, hashed where they are as a stored key's are, or null.
-    fn slice_entry_value(&mut self, dict: &str, key_word: Word, first: &str, size: &str) -> String {
+    fn slice_entry_value(&mut self, dict: &str, (key_word, value_word): (Word, Word), first: &str, size: &str) -> String {
         let entry = if key_word == Word::Text {
-            self.find_text_key(dict, (first, KeyBytes::InBlock), size, entry_words(Word::Text))
+            let width = self.stride(key_word, value_word);
+            self.find_text_key(dict, (first, KeyBytes::InBlock), size, width)
         } else {
             let (mixed, high, folded, hash, entry) =
                 (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -1860,7 +1876,7 @@ found:
         };
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let place = self.slice_place(key)?;
-        let value_at = self.slice_value_at(&dict, key_word, &place);
+        let value_at = self.slice_value_at(&dict, (key_word, value_word), &place);
         // A store with the same slice next finds the value here, as nothing's changed between.
         self.remember_entry(&looked_up, &dict, &value_at);
         let missing = self.temp();
@@ -1910,13 +1926,16 @@ found:
     ) -> Result<(), String> {
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let (held, fresh) = self.value_for(value, &value_kind)?;
+        if matches!(value_word, Word::InPlace(_)) {
+            return self.slice_set_in_entry(place, (key_word, value_word), (key, found), (&held, fresh));
+        }
         let sliced = self.slice_place(key)?;
         let [text, from, to] = sliced.clone();
         let dict = self.temp();
         self.line(&format!("{dict} = load ptr, ptr {place}"));
         // A key that's there, in a dict nothing else holds, just gets its new value. The lookup is
         // left out where a `get` just before found the entry.
-        let value_at = self.found_in(&dict, found, |emit| emit.slice_value_at(&dict, key_word, &sliced));
+        let value_at = self.found_in(&dict, found, |emit| emit.slice_value_at(&dict, (key_word, value_word), &sliced));
         let alone = self.alone(&dict);
         let (there, quick) = (self.temp(), self.temp());
         self.line(&format!("{there} = icmp ne ptr {value_at}, null"));
@@ -1972,7 +1991,7 @@ found:
             let (native, runtime) = (self.label("add_here"), self.label("add_runtime"));
             self.line(&format!("br i1 {try_it}, label %{native}, label %{runtime}"));
             self.start_block(&native);
-            let add = self.add_short_key_helper(KeyBytes::InBlock);
+            let add = self.add_short_key_helper(KeyBytes::InBlock, None);
             let added = self.temp();
             self.line(&format!("{added} = call i1 @{add}(ptr {dict}, ptr {bytes}, i64 {size}, i64 {word})"));
             self.line(&format!("br i1 {added}, label %{done}, label %{runtime}"));
@@ -1988,6 +2007,85 @@ found:
             ));
             changed
         });
+        self.line(&format!("store ptr {changed}, ptr {place}"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
+    /// [`Self::slice_set`] for a dict that holds each value in its entry as a string's header: the
+    /// value's words go into the entry, with an owner of its block. A key that's there, in a dict
+    /// nothing else holds, just gets its new value. A short new key of an ASCII string goes straight
+    /// in when the dict has room. Anything else makes the key's string from the slice, and is the
+    /// runtime's, as any store of a value held in an entry is: a dict held elsewhere too or marked
+    /// by a lock's log, one to grow, or a key too far from its slot.
+    fn slice_set_in_entry(
+        &mut self,
+        place: &str,
+        (key_word, value_word): (Word, Word),
+        (key, found): (&crate::analysis::SliceKey, Option<Found>),
+        (held, fresh): (&str, bool),
+    ) -> Result<(), String> {
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        if value_kind.in_memory() || key_word != Word::Text {
+            return Err("a slice as the key of a dict holding structs in its entries".to_owned());
+        }
+        let sliced = self.slice_place(key)?;
+        let dict = self.temp();
+        self.line(&format!("{dict} = load ptr, ptr {place}"));
+        let value_at =
+            self.found_in(&dict, found, |emit| emit.slice_value_at(&dict, (key_word, value_word), &sliced));
+        let alone = self.alone(&dict);
+        let (there, quick) = (self.temp(), self.temp());
+        self.line(&format!("{there} = icmp ne ptr {value_at}, null"));
+        self.line(&format!("{quick} = and i1 {alone}, {there}"));
+        let (change, add, done) = (self.label("change"), self.label("add"), self.label("stored"));
+        self.line(&format!("br i1 {quick}, label %{change}, label %{add}"));
+        self.start_block(&change);
+        // The new value's owner is taken before the old one's let go of, as they may be the same.
+        if !fresh {
+            self.retain_in_entry(&value_kind, held);
+        }
+        self.release_in_entry(&value_kind, &value_at);
+        self.store_field(&value_kind, held, &value_at, "");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&add);
+        let (ok, bytes, size) = self.ascii_slice_bytes(&sliced);
+        let (missing, both, try_it) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{missing} = xor i1 {there}, true"));
+        self.line(&format!("{both} = and i1 {alone}, {missing}"));
+        self.line(&format!("{try_it} = and i1 {both}, {ok}"));
+        let (native, write, runtime) = (self.label("add_here"), self.label("write_new"), self.label("add_runtime"));
+        self.line(&format!("br i1 {try_it}, label %{native}, label %{runtime}"));
+        self.start_block(&native);
+        let add_here = self.add_short_key_helper(KeyBytes::InBlock, Some(self.stride(key_word, value_word)));
+        let (value_to, placed) = (self.temp(), self.temp());
+        self.line(&format!("{value_to} = call ptr @{add_here}(ptr {dict}, ptr {bytes}, i64 {size})"));
+        self.line(&format!("{placed} = icmp ne ptr {value_to}, null"));
+        self.line(&format!("br i1 {placed}, label %{write}, label %{runtime}"));
+        self.start_block(&write);
+        if !fresh {
+            self.retain_in_entry(&value_kind, held);
+        }
+        self.store_field(&value_kind, held, &value_to, "");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&runtime);
+        // The key's string, made here, hands its owner to the dict. Nothing runs between the
+        // value's words going into the buffer and the call that takes them out.
+        let [text, from, to] = &sliced;
+        let span = self.here_span();
+        let key_header = self.header_slice(text, (from, to), span);
+        let [a, b, c] = [0, 1, 2].map(|at| self.header_word(&key_header, at));
+        self.declare("declare ptr @fennec_dict_set_words_header(ptr, i64, i64, i64) nounwind");
+        if !fresh {
+            self.retain_in_entry(&value_kind, held);
+        }
+        let buffer = self.value_buffer();
+        self.store_field(&value_kind, held, &buffer, "");
+        let changed = self.temp();
+        self.line(&format!(
+            "{changed} = call ptr @fennec_dict_set_words_header(ptr {dict}, i64 {a}, i64 {b}, i64 {c})"
+        ));
         self.line(&format!("store ptr {changed}, ptr {place}"));
         self.line(&format!("br label %{done}"));
         self.start_block(&done);

@@ -207,10 +207,21 @@ impl Type {
         }
     }
 
+    /// `T?`, an optional of `inner`. An optional of an optional stays one, `T??`, so a generic's
+    /// `T?` of an optional `T` still tells "nothing there" from "a `None` there".
     pub(crate) fn optional(inner: Type) -> Type {
         match inner {
-            Type::Optional(_) | Type::None | Type::Unknown => inner,
+            Type::None | Type::Unknown => inner,
             other => Type::Optional(Box::new(other)),
+        }
+    }
+
+    /// `inner` or `None`: `inner` itself when it can already be `None`, else `inner?`. A chain that
+    /// stops at the first missing step, and a value joined with `None`, are missing one way only.
+    pub(crate) fn or_none(inner: Type) -> Type {
+        match inner {
+            Type::Optional(_) => inner,
+            other => Type::optional(other),
         }
     }
 

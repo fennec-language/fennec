@@ -979,7 +979,7 @@ impl FnCx<'_> {
         if !self.else_chain.contains(&(step.start, step.end)) {
             return ty;
         }
-        let read_as = Type::optional(inner.as_ref().clone());
+        let read_as = Type::or_none(inner.as_ref().clone());
         self.checker.failing_steps.insert((step.start, step.end));
         // Expressions are told apart by span, and nothing's written here, so it's empty.
         self.record(Span { start: object.end, end: object.end }, &read_as);
@@ -1001,7 +1001,7 @@ impl FnCx<'_> {
         match ty {
             Type::Unknown => Type::Unknown,
             Type::None if optional => Type::None,
-            Type::Optional(inner) if optional => Type::optional(self.field_of(inner, name, false, span)),
+            Type::Optional(inner) if optional => Type::or_none(self.field_of(inner, name, false, span)),
             ty if ty.maybe_none() => {
                 self.error(crate::messages::missing_step(span));
                 Type::Unknown

@@ -175,7 +175,7 @@ impl Checker {
                 let other = other.clone();
                 return self.bind(*id, &other).then_some(other);
             }
-            (Type::None, other) | (other, Type::None) => Type::optional(other.clone()),
+            (Type::None, other) | (other, Type::None) => Type::or_none(other.clone()),
             (Type::Optional(inner), other) | (other, Type::Optional(inner)) => {
                 let other = other.without_none();
                 Type::optional(self.join(inner, &other)?)

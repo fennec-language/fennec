@@ -27,6 +27,84 @@ extend int:
     def deserialize(ref src: Deserializer) -> int fails ParseError:
         return src.int()?
 
+    ## `self + other`, wrapping round past either end, as an int's 64 bits do.
+    ##
+    ## ```fennec
+    ## assert 9223372036854775807.wrapping_add(1) == -9223372036854775807 - 1
+    ## assert 5.wrapping_add(-7) == -2
+    ## ```
+    def wrapping_add(self, other: int) -> int:
+        return int._of_bits(self._bits().wrapping_add(other._bits()))
+
+    ## `self - other`, wrapping round past either end, as an int's 64 bits do.
+    ##
+    ## ```fennec
+    ## assert (-9223372036854775807 - 1).wrapping_sub(1) == 9223372036854775807
+    ## assert 5.wrapping_sub(7) == -2
+    ## ```
+    def wrapping_sub(self, other: int) -> int:
+        return int._of_bits(self._bits().wrapping_sub(other._bits()))
+
+    ## `self * other`, wrapping round past either end, as an int's 64 bits do, as a hash wants.
+    ##
+    ## ```fennec
+    ## assert 9223372036854775807.wrapping_mul(2) == -2
+    ## assert (-3).wrapping_mul(4) == -12
+    ## ```
+    def wrapping_mul(self, other: int) -> int:
+        return int._of_bits(self._bits().wrapping_mul(other._bits()))
+
+    ## `self + other`, or the nearest end of int when it's past one.
+    ##
+    ## ```fennec
+    ## assert 9223372036854775807.saturating_add(1) == 9223372036854775807
+    ## assert (-9223372036854775807).saturating_add(-5) == -9223372036854775807 - 1
+    ## ```
+    def saturating_add(self, other: int) -> int:
+        if other > 0 and self > 9223372036854775807 - other: return 9223372036854775807
+        if other < 0 and self < -9223372036854775807 - 1 - other: return -9223372036854775807 - 1
+        return self + other
+
+    ## `self - other`, or the nearest end of int when it's past one.
+    ##
+    ## ```fennec
+    ## assert (-9223372036854775807).saturating_sub(5) == -9223372036854775807 - 1
+    ## assert 9223372036854775807.saturating_sub(-1) == 9223372036854775807
+    ## ```
+    def saturating_sub(self, other: int) -> int:
+        if other < 0 and self > 9223372036854775807 + other: return 9223372036854775807
+        if other > 0 and self < -9223372036854775807 - 1 + other: return -9223372036854775807 - 1
+        return self - other
+
+    ## `self * other`, or the nearest end of int when it's past one.
+    ##
+    ## ```fennec
+    ## assert 9223372036854775807.saturating_mul(2) == 9223372036854775807
+    ## assert (-9223372036854775807 - 1).saturating_mul(-1) == 9223372036854775807
+    ## assert 4611686018427387904.saturating_mul(-2) == -9223372036854775807 - 1
+    ## ```
+    def saturating_mul(self, other: int) -> int:
+        # The product's sign, should it be past an end, says which.
+        nearest = 9223372036854775807 if (self < 0) == (other < 0) else -9223372036854775807 - 1
+        if self == -1:
+            # Only the least int has no negative.
+            if other == -9223372036854775807 - 1: return nearest
+            return -other
+        wrapped = self.wrapping_mul(other)
+        # A wrapped product isn't a whole multiple of `self` that gives `other` back.
+        if self != 0 and wrapped // self != other: return nearest
+        return wrapped
+
+    ## An int's 64 bits as a u64, as two's complement has them: -1 is every bit.
+    def _bits(self) -> u64:
+        if self >= 0: return u64(self)
+        return u64(self - (-9223372036854775807 - 1)) + u64(9223372036854775807) + 1
+
+    ## The int whose 64 bits `bits` are, as two's complement reads them.
+    def _of_bits(bits: u64) -> int:
+        if bits <= u64(9223372036854775807): return int(bits)
+        return int(bits - u64(9223372036854775807) - 1) + (-9223372036854775807 - 1)
+
 ## `int`'s methods the engines provide. Each is declared here for its signature and its doc, and a
 ## test holds it to the checker's own.
 extend int:

@@ -851,6 +851,11 @@ impl Interp {
     /// Notes printing, or reaching the file system, refusing it where it could come before or after
     /// what another task did last of the same, as which hangs on time: it has to have heard of
     /// that, through a message, a task's end or a launch.
+    /// Whether a task runs beside this one, which may do something while this waits.
+    pub(crate) fn tasks_beside(&self) -> Run<bool> {
+        Ok(self.sched_state()?.actors.len() > 1)
+    }
+
     pub(crate) fn outside_in_order(&self, outside: super::parallel::Outside) -> Run<()> {
         let mut state = self.sched_state()?;
         if state.actors.len() < 2 {

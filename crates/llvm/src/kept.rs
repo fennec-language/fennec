@@ -326,31 +326,38 @@ pub struct KeptForNext(Option<KeptAnalyses>);
 /// what analyzing it again gives, sorted, and how many were used again. It's for the edit fuzzer,
 /// which runs it on each version of a program in turn.
 #[must_use]
+///
+/// What was kept goes through bytes and back first, as a daemon whose builds are each made in a
+/// process of their own hands it on: `Err` says so when it doesn't read back as it was written.
 pub fn analyses_kept_and_checked(
     program: &fennec_ir::Program,
     kept: &mut KeptForNext,
-) -> (Vec<String>, usize) {
-    // Through bytes and back, as a daemon whose builds are made apart hands it on, and written
-    // again the same.
-    let found = kept.0.take().map(|found| {
-        use fennec_syntax::codec::{Decode as _, Encode as _};
-        let mut to = fennec_syntax::codec::Writer::default();
-        found.encode(&mut to);
-        let bytes = to.into_bytes();
-        let mut from = fennec_syntax::codec::Reader::new(&bytes);
-        let read = KeptAnalyses::decode(&mut from).filter(|_| from.is_done());
-        let read = read.unwrap_or_else(|| panic!("the kept analyses didn't read back"));
-        let mut again = fennec_syntax::codec::Writer::default();
-        read.encode(&mut again);
-        assert!(again.into_bytes() == bytes, "the kept analyses read back as something else");
-        read
-    });
+) -> Result<(Vec<String>, usize), String> {
+    let found = kept.0.take().map(through_bytes).transpose()?;
     let keeping = Keeping { checks_all: true, ..Keeping::from(found) };
     let (_, differ) = crate::analysis::whole_keeping(program, &keeping);
     let used_again = keeping.used_again();
     // As a build does: what was found wrong isn't handed on.
     kept.0 = differ.is_empty().then(|| keeping.into_kept());
-    (differ, used_again)
+    Ok((differ, used_again))
+}
+
+/// What's kept, written as bytes and read back, and the bytes it reads back as written again the
+/// same.
+fn through_bytes(found: KeptAnalyses) -> Result<KeptAnalyses, String> {
+    use fennec_syntax::codec::{Decode as _, Encode as _};
+    let mut to = fennec_syntax::codec::Writer::default();
+    found.encode(&mut to);
+    let bytes = to.into_bytes();
+    let mut from = fennec_syntax::codec::Reader::new(&bytes);
+    let read = KeptAnalyses::decode(&mut from).filter(|_| from.is_done());
+    let read = read.ok_or("the kept analyses didn't read back from their bytes")?;
+    let mut again = fennec_syntax::codec::Writer::default();
+    read.encode(&mut again);
+    if again.into_bytes() != bytes {
+        return Err("the kept analyses read back from their bytes as something else".to_owned());
+    }
+    Ok(read)
 }
 
 /// How many analyses the last build in this process used again, of how many, for
@@ -665,16 +672,16 @@ mod tests {
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let mut kept = KeptForNext::default();
-        let (differ, used) = analyses_kept_and_checked(&program, &mut kept);
+        let (differ, used) = analyses_kept_and_checked(&program, &mut kept)?;
         assert_eq!((differ.len(), used), (0, 0));
         // `listed`'s analysis swapped for `doubled`'s, as a mistake in what's compared would leave it.
         let store = kept.0.as_mut().ok_or("nothing kept")?;
         let doubled =
             store.by_function.get("doubled").map(|kept| Arc::clone(&kept.analysis)).ok_or("no `doubled`")?;
         store.by_function.get_mut("listed").ok_or("no `listed`")?.analysis = doubled;
-        let (differ, _) = analyses_kept_and_checked(&program, &mut kept);
+        let (differ, _) = analyses_kept_and_checked(&program, &mut kept)?;
         assert_eq!(differ, ["listed"]);
-        let (differ, used) = analyses_kept_and_checked(&program, &mut kept);
+        let (differ, used) = analyses_kept_and_checked(&program, &mut kept)?;
         assert_eq!((differ.len(), used), (0, 0), "the build after one found wrong used what was kept");
         Ok(())
     }

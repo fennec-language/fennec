@@ -575,9 +575,14 @@ mod unix {
                 JOB => job = read_back::<Job>(&bytes),
                 PROGRAM => program = read_back::<Sent>(&bytes).map(Sent::into_program),
                 SIGNATURES => checked = Some(read_signatures(&bytes)?),
-                // What doesn't read is kept as nothing: the build works every analysis out.
+                // What doesn't read is kept as nothing, and said: the build works every analysis
+                // out, which is slower, but right.
                 ANALYSES => {
-                    if fennec_llvm::keep_from_bytes(&bytes) && checks_what_it_read() {
+                    if !fennec_llvm::keep_from_bytes(&bytes) {
+                        eprintln!(
+                            "note: the analyses the daemon kept for this build didn't read, so it works every one out"
+                        );
+                    } else if checks_what_it_read() {
                         assert!(
                             fennec_llvm::kept_to_bytes() == bytes,
                             "the analyses the daemon kept read back as something else"

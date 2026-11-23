@@ -47,7 +47,7 @@ def main(stdout: Stdout):
     stdout.print([hit.start for hit in Regex(r"\bcat\b").find_all("cat concat cat.")])
 
     # Patterns written in the program are checked before it runs. One built while it runs
-    # might not be valid, so making it gives a result.
+    # might not be valid, so making it can fail.
     for pattern in ["[0-9]+", "[0-9+"]:
         regex = Regex(pattern) except error:
             stdout.print(pattern, "->", error.message)

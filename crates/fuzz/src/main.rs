@@ -42,6 +42,7 @@ mod engines;
 mod fault_writes;
 mod generate;
 mod html_rules;
+mod http_client_scripts;
 mod http_rules;
 mod http_sessions;
 mod json_rules;

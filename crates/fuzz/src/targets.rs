@@ -235,7 +235,7 @@ const TIMES: [&str; 20] = [
 /// What base64 is written with, in both alphabets, and its padding.
 const BASE64: [&str; 14] = ["=", "==", "+", "/", "-", "_", "A", "Q", "AA", "aGk", "\n", " ", "%", "é🦊"];
 
-pub(crate) const TARGETS: [Target; 25] = [
+pub(crate) const TARGETS: [Target; 26] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
@@ -303,6 +303,13 @@ pub(crate) const TARGETS: [Target; 25] = [
         corpus: &["crates/fuzz/seeds/http-client"],
         tokens: &HTTP,
         run: crate::http_rules::http_client,
+        stuck: STUCK,
+    },
+    Target {
+        name: "http-client-scripts",
+        corpus: &["crates/fuzz/seeds/http-client-scripts"],
+        tokens: &HTTP,
+        run: crate::http_client_scripts::http_client_scripts,
         stuck: STUCK,
     },
     Target {
@@ -389,11 +396,12 @@ pub(crate) const LLVM: Target = Target {
 };
 
 /// The targets, besides `llvm`, that run their input through a program built natively.
-pub(crate) const NATIVE: [&str; 17] = [
+pub(crate) const NATIVE: [&str; 18] = [
     "base64",
     "csv",
     "html",
     "http-client",
+    "http-client-scripts",
     "http-server",
     "http-sessions",
     "json",

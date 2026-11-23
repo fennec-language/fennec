@@ -62,12 +62,10 @@ def main(stdout: Stdout):
     stdout.print(small <= big, big <= small, small >= big, big >= small, small <= small)
     stdout.print(big / 2, big % 2)
 
-    # `where` rules: literals are checked as the program is read; anything else can fail.
-    for value in [5, -1]:
-        score = Score(value=value) except why:
-            stdout.print(why)
-            continue
-        stdout.print(score)
+    # `where` rules: literals are checked as the program is read, and a value that breaks a rule
+    # stops the program where it's built, as a bug does. One from outside comes in through a load,
+    # which fails cleanly.
+    stdout.print(Score(value=5))
 
     # A method call on a value that might be None needs `else` to end the chain.
     stdout.print(

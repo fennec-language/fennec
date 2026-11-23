@@ -1,0 +1,9 @@
+# A value that breaks a `where` rule stops the program where it's built, as a bug does. A value
+# from outside is checked before it's built with, or comes in through a load, which fails cleanly.
+
+struct Score:
+    value: int where value >= 0
+
+def main(stdout: Stdout):
+    given = -1
+    stdout.print(Score(value=given))

@@ -437,17 +437,25 @@ fn passing_a_result_where_a_value_is_wanted_is_a_mistake() {
     );
 }
 
+/// Building a value with `where` rules can't fail: one that breaks a rule stops the program, as a
+/// bug, so `?` and `except` after it are refused, the latter saying why.
 #[test]
-fn where_rules_make_construction_fail_unless_every_value_is_written_out() {
-    let program = "
-        struct Score:
-            value: int where value >= 0
-
-        def main(stdout: Stdout):
-            n = 5
-            stdout.print(Score(value=5).value, Score(value=n).value, (Score(n)?).value)
-    ";
-    assert_eq!(problems(program), ["this is the result of something that can fail @ Score(value=n).value"]);
+fn building_a_value_with_where_rules_cant_fail() {
+    let program = |body: &str| {
+        problems(&format!(
+            "struct Score:\n    value: int where value >= 0\n\ndef main(stdout: Stdout):\n    n = 5\n{body}"
+        ))
+    };
+    let empty: [&str; 0] = [];
+    assert_eq!(program("    stdout.print(Score(value=5).value, Score(value=n).value)\n"), empty);
+    assert_eq!(
+        program(
+            "    score = Score(value=n) except why:\n        stdout.print(why)\n        return\n    stdout.print(score)\n"
+        ),
+        [
+            "building a `Score` can't fail, so `except` has nothing to handle: a value that breaks a `where` rule stops the program @ Score(value=n)"
+        ]
+    );
 }
 
 #[test]

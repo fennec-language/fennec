@@ -1418,10 +1418,13 @@ impl FnCx<'_> {
             given => Type::Generic(type_name.to_owned(), given.iter().map(|(_, ty)| ty.clone()).collect()),
         };
         self.private_fields_given(type_name, &fields, args, span);
-        let literal = self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
+        self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
         self.check_bounds(chosen, span);
         crate::stdlib::construct(self, type_name, args);
-        if fields.iter().any(|field| field.rule.is_some()) && !literal {
+        // A value that breaks a `where` rule stops the program, as a bug. One from outside comes in
+        // through a load, which fails cleanly: built in a `deserialize` the compiler or std wrote,
+        // breaking a rule is a failure the load passes on.
+        if self.loading() && fields.iter().any(|field| field.rule.is_some()) {
             return Type::result(built, Type::named("InvalidValue"));
         }
         built
@@ -1698,9 +1701,15 @@ impl FnCx<'_> {
         Diagnostic::new(message, span).with_help(help)
     }
 
-    /// Matches arguments to fields, positionally and by name. Returns whether every argument
-    /// is written as a literal, so `where` rules can be checked when the value is made.
-    fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
+    /// Whether this is a `deserialize` the compiler or the standard library wrote: a load, where a
+    /// value that breaks a `where` rule fails the load rather than stopping the program.
+    fn loading(&self) -> bool {
+        self.key.rsplit('.').next() == Some("deserialize")
+            && self.checker.program.functions.get(&self.key).is_some_and(|entry| entry.def.span.in_prelude())
+    }
+
+    /// Matches arguments to fields, positionally and by name.
+    fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) {
         let Target { name: type_name, case, .. } = *target;
         if self.checker.program.type_info(type_name).is_some_and(|info| !info.prelude) {
             let values: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
@@ -1772,12 +1781,6 @@ impl FnCx<'_> {
                 self.error(problem);
             }
         }
-        args.iter().all(|arg| {
-            matches!(
-                arg.value.kind,
-                ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None
-            )
-        })
     }
 }
 

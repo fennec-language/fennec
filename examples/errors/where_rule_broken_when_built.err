@@ -1,0 +1,5 @@
+error: this breaks the `where` rule on `Score.value`
+ --> examples/errors/where_rule_broken_when_built.fen:9:18
+  |
+9 |     stdout.print(Score(value=given))
+  |                  ^^^^^^^^^^^^^^^^^^

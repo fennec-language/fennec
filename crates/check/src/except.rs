@@ -55,9 +55,27 @@ impl FnCx<'_> {
         }
     }
 
-    /// The failure `except` handles, when it can't fail: there's nothing to handle.
-    pub(crate) fn nothing_to_except(&mut self, value: &Type, span: Span) {
-        let help = match self.checker.settled(value) {
+    /// The failure `except` handles, when `written` can't fail: there's nothing to handle. Building
+    /// a value with `where` rules is said by name, as it once could fail.
+    pub(crate) fn nothing_to_except(&mut self, value: &Type, written: &Expr) {
+        let span = written.span;
+        let settled = self.checker.settled(value);
+        if let (ExprKind::Call { callee, .. }, Type::Named(built)) = (&written.kind, &settled)
+            && matches!(&callee.kind, ExprKind::Name(name) if name == built)
+            && self
+                .checker
+                .program
+                .type_info(built)
+                .is_some_and(|info| info.def.fields.iter().any(|field| field.rule.is_some()))
+        {
+            let message = format!(
+                "building a `{built}` can't fail, so `except` has nothing to handle: a value that breaks a `where` rule stops the program"
+            );
+            let help = "take `except` and its block off, and check what comes from outside before building with it; a load that breaks a rule fails cleanly";
+            self.error(Diagnostic::new(message, span).with_help(help));
+            return;
+        }
+        let help = match settled {
             Type::Optional(_) | Type::None => {
                 "a value that may be `None` takes `else`, as `x = f() else default`".to_owned()
             }

@@ -170,3 +170,29 @@ fn a_channels_end_can_be_handed_on() {
     ";
     assert_eq!(problems(program), Vec::<String>::new());
 }
+
+/// An interface's `with` source runs from a generic function, which is copied for each type it's
+/// called with. A method, of a generic type or with type parameters of its own, has no such copy,
+/// so calling one there is refused where it's written, saying what to write instead.
+#[test]
+fn an_interfaces_source_runs_from_a_generic_function_not_a_method() {
+    let types = "error Nope:\n    why: str\n\nstruct Tx:\n    log: str\n\n\
+                 interface Database:\n    def transaction(self) -> with Tx fails Nope\n\n";
+    let source = |rest: &str| problems(&format!("{types}{rest}"));
+    let in_method = "struct Repo[D: Database]:\n    db: D\n\n    def saved(self) -> str fails Nope:\n        \
+                     with self.db.transaction()? as tx:\n            return tx.log\n        return \"\"\n";
+    assert_eq!(
+        source(in_method),
+        [
+            "`transaction` is a `with` source of `D`'s interface, which runs from a generic function, not from a method like `Repo.saved` @ self.db.transaction()"
+        ]
+    );
+    let own_parameter = "struct Repo:\n    name: str\n\n    def saved[D: Database](self, db: D) -> str fails Nope:\n        \
+                         with db.transaction()? as tx:\n            return tx.log\n        return \"\"\n";
+    assert_eq!(source(own_parameter).len(), 1, "{:?}", source(own_parameter));
+    let in_function = "struct Repo[D: Database]:\n    db: D\n\n\
+                       def saved[D: Database](repo: Repo[D]) -> str fails Nope:\n    \
+                       with repo.db.transaction()? as tx:\n        return tx.log\n    return \"\"\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(source(in_function), empty);
+}

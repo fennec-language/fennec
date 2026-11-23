@@ -32,11 +32,15 @@ pub(crate) fn own(folder: &Path) -> io::Result<()> {
         return Ok(());
     }
     loop {
-        std::fs::create_dir_all(folder)?;
+        match std::fs::create_dir_all(folder) {
+            Err(err) if !swept(&err, folder) => return Err(err),
+            Err(_) => continue,
+            Ok(()) => {}
+        }
         let held = folder.join(HELD);
         let file = match OpenOptions::new().create(true).truncate(false).write(true).open(&held) {
             Ok(file) => file,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) if swept(&err, folder) => continue,
             Err(err) => return Err(err),
         };
         file.lock()?;
@@ -48,6 +52,17 @@ pub(crate) fn own(folder: &Path) -> io::Result<()> {
             return Ok(());
         }
     }
+}
+
+/// Whether `err`, from making `folder` or its file, came of a sweep removing the folder meanwhile,
+/// so making it again is the answer: the folder's gone, and the error is one that a removal under
+/// way gives. That's `NotFound` for the file, `AlreadyExists` from `create_dir_all` when the
+/// folder it found is gone before it looks again, and, on macOS, `InvalidInput` for a file
+/// created in a folder being removed, which Linux says is `NotFound`.
+fn swept(err: &io::Error, folder: &Path) -> bool {
+    let kind = err.kind();
+    matches!(kind, io::ErrorKind::NotFound | io::ErrorKind::AlreadyExists | io::ErrorKind::InvalidInput)
+        && !folder.is_dir()
 }
 
 /// Lets go of a folder this process owns, and removes it.
@@ -147,25 +162,29 @@ mod tests {
     }
 
     /// A process that makes its folder while a sweep holds the lock on it, to remove it, waits for
-    /// the sweep, finds its folder gone and makes it again, and the next sweep keeps it.
+    /// the sweep, finds its folder gone and makes it again, and the next sweep keeps it. The owner
+    /// may make the folder or open its file at any moment of the removal, which on macOS can fail
+    /// with `InvalidInput`, so it's done 50 times.
     #[test]
     fn a_folder_made_while_a_sweep_removes_it_is_made_again_and_kept() {
         let folder = test_folder("swept");
-        assert!(std::fs::create_dir_all(&folder).is_ok());
-        let sweeping = File::create(folder.join(HELD));
-        let Ok(sweeping) = sweeping else { unreachable!("{sweeping:?}") };
-        assert!(sweeping.try_lock().is_ok());
-        let made = std::thread::scope(|scope| {
-            let owner = scope.spawn(|| own(&folder));
-            let _ = std::fs::remove_dir_all(&folder);
-            drop(sweeping);
-            owner.join().unwrap_or_else(|_| Err(std::io::Error::other("the owner panicked")))
-        });
-        assert!(made.is_ok(), "{made:?}");
-        assert!(held(&folder));
-        remove_ended(&folder);
-        assert!(held(&folder));
-        let_go(&folder);
+        for round in 0..50 {
+            assert!(std::fs::create_dir_all(&folder).is_ok());
+            let sweeping = File::create(folder.join(HELD));
+            let Ok(sweeping) = sweeping else { unreachable!("{sweeping:?}") };
+            assert!(sweeping.try_lock().is_ok());
+            let made = std::thread::scope(|scope| {
+                let owner = scope.spawn(|| own(&folder));
+                let _ = std::fs::remove_dir_all(&folder);
+                drop(sweeping);
+                owner.join().unwrap_or_else(|_| Err(std::io::Error::other("the owner panicked")))
+            });
+            assert!(made.is_ok(), "round {round}: {made:?}");
+            assert!(held(&folder), "round {round}");
+            remove_ended(&folder);
+            assert!(held(&folder), "round {round}");
+            let_go(&folder);
+        }
     }
 
     /// Processes making their folders while sweeps run over and over beside them keep every one.

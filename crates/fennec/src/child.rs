@@ -642,6 +642,8 @@ mod unix {
         }
         let noted = failing.as_deref().and_then(|failing| failing.strip_prefix("hang-building:"));
         if let Some(noted) = noted.filter(|noted| !Path::new(noted).exists()) {
+            // What it builds is started, as a link stopped partway leaves it.
+            let _ = std::fs::write(&job.output, b"started");
             let _ = std::fs::write(noted, std::process::id().to_string());
             never_ends();
         }
@@ -811,8 +813,8 @@ pub(crate) fn serve() -> std::process::ExitCode {
 }
 
 /// How a test asks a child to fail, in a dev build of Fennec only: `crash` before it reads its
-/// request, `hang` before it says it started, and `hang-building:<file>` after, writing its
-/// process's id to the file first, when the file isn't there.
+/// request, `hang` before it says it started, and `hang-building:<file>` after, starting what it
+/// builds and writing its process's id to the file first, when the file isn't there.
 #[cfg(unix)]
 fn test_failure() -> Option<String> {
     cfg!(debug_assertions).then(|| std::env::var("FENNEC_TEST_BUILD_CHILD").ok()).flatten()

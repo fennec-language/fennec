@@ -1,4 +1,4 @@
-//! `std.re`: `re.is_regex`, and the methods of `Regex`, which run in Rust. `Regex` and
+//! `std.re`: `re.is_regex` and `re.pattern_problem`, and the methods of `Regex`, which run in Rust. `Regex` and
 //! `Match` themselves are written in Fennec.
 
 use fennec_syntax::{Arg, Diagnostic, ExprKind, Span};
@@ -9,20 +9,24 @@ use crate::function::FnCx;
 use crate::types::Type;
 
 pub(crate) const MODULE: Module = Module {
-    functions: &[Function { name: "re.is_regex", arity: (1, 1), named: &[], needs_values: false }],
+    functions: &[
+        Function { name: "re.is_regex", arity: (1, 1), named: &[], needs_values: false },
+        Function { name: "re.pattern_problem", arity: (1, 1), named: &[], needs_values: false },
+    ],
     result,
     method,
     construct,
 };
 
-/// `re.is_regex(pattern)`: whether some text is a pattern.
-fn result(cx: &mut FnCx<'_>, _: &str, plain: &[(Type, Span)], _: Span) -> Type {
+/// `re.is_regex(pattern)`: whether some text is a pattern. `re.pattern_problem(pattern)`: what's
+/// wrong with text that isn't one, as a `Regex` built from it would say.
+fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], _: Span) -> Type {
     if let Some((ty, at)) = plain.first()
         && !cx.checker.fits(&Type::Str, ty)
     {
         cx.error(crate::messages::mismatch("the pattern", &Type::Str, ty, *at));
     }
-    Type::Bool
+    if name == "re.pattern_problem" { Type::Str } else { Type::Bool }
 }
 
 fn method(type_name: &str, name: &str) -> Option<Method> {

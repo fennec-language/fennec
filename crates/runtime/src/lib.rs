@@ -118,6 +118,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_str_char_at",
     "fennec_str_repr",
     "fennec_int_text",
+    "fennec_u64_text",
+    "fennec_f32_text",
     "fennec_float_text",
     "fennec_text_block",
     "fennec_str_from_code_problem",

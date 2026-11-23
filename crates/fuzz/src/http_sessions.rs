@@ -283,6 +283,54 @@ pub(crate) fn http_sessions(input: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The most bytes an input may have to be split at every one of them by `http-splits`. A longer
+/// one, like a kept input of a million blank lines or 20,000 requests, is split at its first and
+/// last `FEW_SPLITS` bytes and at `FEW_SPLITS` places between, as meeting it once for each byte
+/// would take hours.
+const EVERY_BYTE_UP_TO: usize = 4096;
+const FEW_SPLITS: usize = 16;
+
+/// Where `http-splits` splits an input `length` bytes long: after each of its bytes but the last,
+/// or, past `EVERY_BYTE_UP_TO`, at a few places from its start, its end and between.
+fn split_points(length: usize) -> Vec<usize> {
+    if length <= EVERY_BYTE_UP_TO {
+        return (1..length).collect();
+    }
+    let mut points: Vec<usize> = (1..=FEW_SPLITS).collect();
+    points.extend((1..=FEW_SPLITS).map(|at| at * length / (FEW_SPLITS + 1)));
+    points.extend(length - FEW_SPLITS..length);
+    points
+}
+
+/// The `http-splits` target: an `http-server` input sent to one server once for each place it
+/// can be split, its two pieces a millisecond apart, so the server reads a head, a line, a length
+/// or a body cut wherever a network might cut it, or two requests in one read. Each time, the
+/// answers have to be what `http-server`'s reader says the whole input gets, and the server has to
+/// answer a plain request after them all.
+pub(crate) fn http_splits(input: &[u8]) -> Result<(), String> {
+    let Some(executable) = crate::llvm::built_reader("http-server")? else { return Ok(()) };
+    let (mut server, port) = started(&executable, None)?;
+    for at in split_points(input.len()) {
+        let (first, rest) = input.split_at(at);
+        let client = Client {
+            pieces: vec![first.to_vec(), rest.to_vec()],
+            pause: Duration::from_millis(1),
+            end: End::Reads,
+        };
+        let shown = || format!("split after byte {at} of {}", input.len());
+        let (said, slow) = met(port, &client).map_err(|wrong| format!("{wrong}, {}", shown()))?;
+        if let Ok(Some(status)) = server.0.try_wait() {
+            return Err(format!("the server stopped ({status}), {}", shown()));
+        }
+        judged(input, &said, slow).map_err(|wrong| format!("{wrong}, {}", shown()))?;
+    }
+    answers(port).map_err(|wrong| format!("the last client: {wrong}"))?;
+    if crate::supervise::kilobytes(server.0.id()).is_some_and(|held| held > 512 * 1024) {
+        return Err(format!("the server holds more than 512 MB after {} bytes, split", input.len()));
+    }
+    Ok(())
+}
+
 /// An input for `script`: its flags, then each client as how it goes and its bytes.
 #[cfg(test)]
 fn written(flags: u8, clients: &[(u8, &[u8])]) -> Vec<u8> {

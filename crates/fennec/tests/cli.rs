@@ -1592,6 +1592,39 @@ fn the_sites_front_page_program_and_every_pages_sample_compile() {
     assert!(samples.len() > 3, "found only {} samples on the site", samples.len());
 }
 
+/// The language page is the source of truth, so a whole program it shows has to compile as it's
+/// shown. A sample marked `fragment`, a piece of a program, or `planned`, not built yet, is left
+/// out, and the page says which are which.
+#[test]
+fn the_language_pages_whole_programs_compile() {
+    let page = std::fs::read_to_string(repo().join("docs/language.md")).unwrap();
+    let dir = scratch("language").unwrap();
+    let mut checked = 0;
+    let mut lines = page.lines().enumerate();
+    while let Some((at, line)) = lines.next() {
+        let Some(info) = line.strip_prefix("```fennec") else { continue };
+        let sample: Vec<&str> =
+            lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+        match info.trim() {
+            "fragment" | "planned" => continue,
+            "" => {}
+            other => panic!("the language page's sample at line {} is marked `{other}`", at + 2),
+        }
+        let name = format!("line_{}.fen", at + 2);
+        std::fs::write(dir.join(&name), sample.join("\n") + "\n").unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the language page's sample at line {} doesn't compile:\n{}",
+            at + 2,
+            text(&output.stderr)
+        );
+        checked += 1;
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(checked >= 4, "found only {checked} whole programs on the language page");
+}
+
 /// The guide says every sample compiles and passes its tests on main. Each whole program is
 /// checked as it's shown. One whose fence names a file, as ```` ```fennec src/store.fen ````, is
 /// that file of Hoard, the kit the guide builds: they're put together, in order, as the kit, which

@@ -1133,7 +1133,7 @@ fn each_kind_of_name_is_written_its_own_way() {
 
 #[test]
 fn a_short_name_is_flagged_unless_it_says_enough() {
-    assert_eq!(name_rules("def area(w: int) -> int:\n    return w\n"), ["short-name"]);
+    assert_eq!(name_rules("def area(q: int) -> int:\n    return q\n"), ["short-name"]);
     assert_eq!(
         name_rules("def f(hp: int) -> int:\n    return hp\n")
             .iter()
@@ -1154,6 +1154,17 @@ fn a_short_name_is_flagged_unless_it_says_enough() {
         name_rules("from std.json import loads as j\n\ndef read() -> int:\n    return j(\"1\")\n"),
         NONE,
         "kept apart, see below"
+    );
+}
+
+#[test]
+fn a_fourth_coordinate_is_short_enough_as_x_y_and_z_are() {
+    let point = "struct Point:\n    x = 0.0\n    w = 1.0\n\ndef weight(point: Point) -> float:\n    w = point.w\n    return w\n";
+    assert_eq!(name_rules(point), NONE, "a `w` field and a `w` local");
+    assert_eq!(
+        name_rules("def weight(q: float) -> float:\n    return q\n"),
+        ["short-name"],
+        "another letter still isn't"
     );
 }
 
@@ -1231,7 +1242,8 @@ fn std_exceptions() -> Vec<(&'static str, String, &'static str)> {
         }
     }
     // A workaround, not a need: a std module is one file, so a long one can't be split yet (#2241).
-    for file in ["collections.fen", "json.fen", "net.fen", "pack.fen", "postgres.fen", "toml.fen"] {
+    for file in ["collections.fen", "json.fen", "math.fen", "net.fen", "pack.fen", "postgres.fen", "toml.fen"]
+    {
         exceptions.push((
             file,
             "this file is ".to_owned(),

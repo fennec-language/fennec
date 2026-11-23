@@ -12,7 +12,7 @@ use crate::Lint;
 use crate::sizes::{blocks, functions};
 
 /// Short names that say enough, by long use.
-const SHORT_ENOUGH: [&str; 11] = ["i", "j", "k", "n", "x", "y", "z", "dt", "id", "db", "tx"];
+const SHORT_ENOUGH: [&str; 12] = ["i", "j", "k", "n", "x", "y", "z", "w", "dt", "id", "db", "tx"];
 
 /// Two-letter names that are words, not abbreviations.
 const WORDS: [&str; 18] = [

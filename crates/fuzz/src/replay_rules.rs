@@ -45,6 +45,10 @@
 //!   as a `Note` of the number and a text, a short one for an even number and, for an odd one, one
 //!   long enough to need a block of its own. Whoever takes one prints its number and whether its
 //!   text is the one sent with it, so a message whose text came apart from its number is caught.
+//!   A byte past the HTTP clients' makes the message an enum instead: `Sent`, flat, its case
+//!   chosen by the number; a struct holding a `Sent`; an enum holding a `Sent` in one case and a
+//!   number in another; or an enum with a case holding a list, which isn't flat and goes as a
+//!   block. Each carries its number and texts the receiver checks the same way.
 //! - **An HTTP server,** std's `serve`, which clients `main` connects and launches each ask on a
 //!   connection they keep: a head written whole, a line at a time, cut in two anywhere in a line
 //!   or its ending, or two requests in one write; a request line too long for a 414, more headers
@@ -258,6 +262,191 @@ fn literal(text: &str) -> String {
     format!("\"{}\"", text.replace('\r', "\\r").replace('\n', "\\n"))
 }
 
+/// What a message holding a number is, when the input asks for messages: each carries its number
+/// and texts made from it, which whoever takes it checks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// A struct of the number and a text.
+    Note,
+    /// `Sent`, a flat enum: `Even` or `Odd` by the number, with its text, or `Missing`.
+    Flat,
+    /// A struct of the number and a `Sent`.
+    Carried,
+    /// An enum holding a `Sent` and a text in one case, and only the number in the other.
+    Wrapped,
+    /// An enum whose case holds a list of texts, which isn't flat.
+    Listed,
+}
+
+impl Shape {
+    /// Its type's name in the program.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Note => "Note",
+            Self::Flat => "Sent",
+            Self::Carried => "Carried",
+            Self::Wrapped => "Wrapped",
+            Self::Listed => "Listed",
+        }
+    }
+
+    /// Its types and the program's `made`, `number_of` and `held` for it.
+    fn helpers(self) -> &'static str {
+        match self {
+            Self::Note => NOTE_HELPERS,
+            Self::Flat => FLAT_HELPERS,
+            Self::Carried => CARRIED_HELPERS,
+            Self::Wrapped => WRAPPED_HELPERS,
+            Self::Listed => LISTED_HELPERS,
+        }
+    }
+}
+
+/// What a message's text is, which every shape uses.
+const SAID: &str = "
+# What a message of `number` says: for an odd number, a text long enough to need a block of its own.
+def said(number: int) -> str:
+    if number % 2 == 0:
+        return f\"n{number}\"
+    return f\"note {number} says something long enough to need a block of its own\"
+";
+
+const NOTE_HELPERS: &str = "
+struct Note:
+    number: int
+    said: str
+
+# The message sent for `number`.
+def made(number: int) -> Note:
+    return Note(number=number, said=said(number))
+
+def number_of(got: Note) -> int:
+    return got.number
+
+# Whether a message holds the text sent with its number.
+def held(got: Note) -> bool:
+    return got.said == said(got.number)
+";
+
+/// `Sent` and what reads it, which the shapes holding one use too.
+const SENT: &str = "
+enum Sent:
+    Even(number: int, said: str)
+    Odd(number: int, said: str)
+    Missing(number: int)
+
+# `number` as a `Sent`: its case by its parity, or `Missing` for one below zero.
+def made_sent(number: int) -> Sent:
+    if number < 0:
+        return .Missing(number=number)
+    if number % 2 == 0:
+        return .Even(number=number, said=said(number))
+    return .Odd(number=number, said=said(number))
+
+def sent_number(got: Sent) -> int:
+    match got:
+        case .Even(number, _):
+            return number
+        case .Odd(number, _):
+            return number
+        case .Missing(number):
+            return number
+
+# Whether a `Sent` holds the text sent with its number.
+def sent_held(got: Sent) -> bool:
+    match got:
+        case .Even(number, text):
+            return text == said(number)
+        case .Odd(number, text):
+            return text == said(number)
+        case .Missing(_):
+            return True
+";
+
+const FLAT_HELPERS: &str = "
+# The message sent for `number`.
+def made(number: int) -> Sent:
+    return made_sent(number)
+
+def number_of(got: Sent) -> int:
+    return sent_number(got)
+
+# Whether a message holds the text sent with its number.
+def held(got: Sent) -> bool:
+    return sent_held(got)
+";
+
+const CARRIED_HELPERS: &str = "
+struct Carried:
+    seq: int
+    sent: Sent
+
+# The message sent for `number`.
+def made(number: int) -> Carried:
+    return Carried(seq=number, sent=made_sent(number))
+
+def number_of(got: Carried) -> int:
+    return got.seq
+
+# Whether a message holds the text sent with its number, and the same number twice.
+def held(got: Carried) -> bool:
+    return sent_held(got.sent) and sent_number(got.sent) == got.seq
+";
+
+const WRAPPED_HELPERS: &str = "
+enum Wrapped:
+    Inside(sent: Sent, tag: str)
+    Plain(number: int)
+
+# The message sent for `number`: one in three only the number.
+def made(number: int) -> Wrapped:
+    if number % 3 == 1:
+        return .Plain(number=number)
+    return .Inside(sent=made_sent(number), tag=said(number + 1))
+
+def number_of(got: Wrapped) -> int:
+    match got:
+        case .Inside(inner, _):
+            return sent_number(inner)
+        case .Plain(number):
+            return number
+
+# Whether a message holds the texts sent with its number.
+def held(got: Wrapped) -> bool:
+    match got:
+        case .Inside(inner, tag):
+            return sent_held(inner) and tag == said(sent_number(inner) + 1)
+        case .Plain(_):
+            return True
+";
+
+const LISTED_HELPERS: &str = "
+enum Listed:
+    Items(number: int, said: list[str])
+    Gone(number: int)
+
+# The message sent for `number`, or `Gone` for one below zero.
+def made(number: int) -> Listed:
+    if number < 0:
+        return .Gone(number=number)
+    return .Items(number=number, said=[said(number), said(number + 1)])
+
+def number_of(got: Listed) -> int:
+    match got:
+        case .Items(number, _):
+            return number
+        case .Gone(number):
+            return number
+
+# Whether a message holds the texts sent with its number.
+def held(got: Listed) -> bool:
+    match got:
+        case .Items(number, texts):
+            return len(texts) == 2 and texts[0] == said(number) and texts[1] == said(number + 1)
+        case .Gone(_):
+            return True
+";
+
 /// The most tasks sending into one channel `main` gathers from, and the most each sends.
 const MOST_SENDERS: usize = 3;
 const MOST_SENT: usize = 3;
@@ -275,8 +464,10 @@ struct Plan {
     /// Whether each of the `parallel` call's ranges takes `a`'s lock and adds 1.
     pieces_lock: bool,
     gather: Option<Gather>,
-    /// Whether the numbers sent to tasks and gathered are sent inside a `Note` with a text.
+    /// Whether the numbers sent to tasks and gathered are sent inside a message with a text.
     notes: bool,
+    /// What that message is, when they are.
+    shape: Shape,
     /// Each HTTP client's requests, in order, on its one connection.
     clients: Vec<Vec<Ask>>,
 }
@@ -488,11 +679,18 @@ fn plan(input: &[u8]) -> Plan {
     }
     let notes = bytes.below(2) == 1;
     let clients: Vec<Vec<Ask>> = (0..bytes.below(MOST_CLIENTS + 1)).map(|_| bytes.asks()).collect();
+    let shape = match bytes.below(5) {
+        1 => Shape::Flat,
+        2 => Shape::Carried,
+        3 => Shape::Wrapped,
+        4 => Shape::Listed,
+        _ => Shape::Note,
+    };
     // The HTTP server waits on the network too, so `main` never deadlocks beside it.
     if !clients.is_empty() {
         main.retain(|step| !matches!(step, MainStep::Stuck(_)));
     }
-    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather, notes, clients }
+    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather, notes, shape, clients }
 }
 
 impl Plan {
@@ -545,18 +743,18 @@ impl Plan {
 
     /// The type of what's sent to a task's inbox and gathered.
     fn message(&self) -> &'static str {
-        if self.notes { "Note" } else { "int" }
+        if self.notes { self.shape.name() } else { "int" }
     }
 
     /// What's sent for `number`, which is Fennec that gives an `int`.
     fn sent_as(&self, number: &str) -> String {
-        if self.notes { format!("Note(number={number}, said=said({number}))") } else { number.to_owned() }
+        if self.notes { format!("made({number})") } else { number.to_owned() }
     }
 
     /// What's printed of `got`, a message taken: its number, and with a `Note`, whether its text is
     /// the one sent with that number.
     fn shown(&self, got: &str) -> String {
-        if self.notes { format!("{got}.number, {got}.said == said({got}.number)") } else { got.to_owned() }
+        if self.notes { format!("number_of({got}), held({got})") } else { got.to_owned() }
     }
 
     /// What a printed message ends with past its number.
@@ -1108,12 +1306,11 @@ fn heading(plan: &Plan) -> String {
         out.push_str(&undone(plan));
     }
     if plan.sends_notes() {
-        out.push_str(
-            "\nstruct Note:\n    number: int\n    said: str\n\
-             \n# What a note of `number` says: for an odd number, a text long enough to need a block of its own.\n\
-             def said(number: int) -> str:\n    if number % 2 == 0:\n        return f\"n{number}\"\n    \
-             return f\"note {number} says something long enough to need a block of its own\"\n",
-        );
+        out.push_str(SAID);
+        if matches!(plan.shape, Shape::Flat | Shape::Carried | Shape::Wrapped) {
+            out.push_str(SENT);
+        }
+        out.push_str(plan.shape.helpers());
     }
     out.push_str(
         "\n# Counts `turns` turns, making way for others at the runtime's ticks.\n\

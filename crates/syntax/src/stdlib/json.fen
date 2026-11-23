@@ -182,13 +182,13 @@ struct JsonKey:
     def end_member(ref self):
         pass
 
-    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T]):
         pass
 
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tag: int, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
         # Never asked for: `exact` says no.
         pass
 
@@ -292,13 +292,13 @@ struct JsonWriter:
         self._first = True
         self._optional = False
 
-    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tag: int, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
         # Never asked for: `exact` says no.
         pass
 
@@ -587,9 +587,9 @@ struct TableFinder:
     _positions = dict[str, dict[(int, int), int]]()
     _where = dict[str, str]()
     _ids = list[(str, int, int, bool, str)]()
-    _tags = dict[str, int]()
-    ## Each slot's tag in a `Table` saved slot for slot, by the name of its items' type.
+    ## Each slot's tag and word in a `Table` saved slot for slot, by the name of its items' type.
     _slot_tags = dict[str, list[int]]()
+    _slot_words = dict[str, list[int]]()
     _path = list[str]()
     _problem = ""
     _optional = False
@@ -605,13 +605,14 @@ struct TableFinder:
     def positions(self) -> dict[str, dict[(int, int), int]]:
         return self._positions
 
-    ## Each `Table`'s tag, by the name of its items' type.
-    def tags(self) -> dict[str, int]:
-        return self._tags
-
     ## Each slot's tag in a `Table` saved slot for slot, by the name of its items' type.
     def slot_tags(self) -> dict[str, list[int]]:
         return self._slot_tags
+
+    ## Each slot's word, its generation or `-1` less one taken out, in a `Table` saved slot for
+    ## slot, by the name of its items' type.
+    def slot_words(self) -> dict[str, list[int]]:
+        return self._slot_words
 
     def int(ref self, value: int):
         pass
@@ -691,32 +692,31 @@ struct TableFinder:
     def end_member(ref self):
         _ = self._path.pop()
 
-    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T]):
         here = place_text(self._path)
         if kind in self._where:
             if self._problem == "":
                 self._problem = f"{self._where[kind]} and {here} are both a `Table[{kind}]`, so an Id can't say which it's in"
         else:
             self._where[kind] = here
-            self._tags[kind] = tag
             mut positions = dict[(int, int), int]()
             mut at = 0
             for id in ids:
-                # Its own tag: a copy that's been written gives its own items one of their own.
+                # By its own tag, the one its `add` took.
                 positions[(id_key(id), id_tag(id))] = at
                 at += 1
             self._positions[kind] = positions
         self.sequence(items)
 
-    def slots[T: Serializable](ref self, kind: str, tag: int, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
         here = place_text(self._path)
         if kind in self._where:
             if self._problem == "":
                 self._problem = f"{self._where[kind]} and {here} are both a `Table[{kind}]`, so an Id can't say which it's in"
         else:
             self._where[kind] = here
-            self._tags[kind] = tag
             self._slot_tags[kind] = tags
+            self._slot_words[kind] = slots
             self._positions[kind] = dict[(int, int), int]()
         self.sequence(items)
 
@@ -737,36 +737,35 @@ struct TableFinder:
                 return f"{at} is an Id, but nothing saved with it is a `Table[{kind}]`"
             if optional: continue
             where = self._where.get(kind) else "its Table"
-            another = f"{at} is an Id from another `Table[{kind}]` than {where}"
-            # Saved slot for slot, an `Id` whose item has gone is saved as it is, still gone: it
-            # only has to be from this `Table`, by the tag its slot keeps.
+            # Saved slot for slot, an `Id` is saved as it is where it can only find its own item
+            # after the load, or nothing.
             if self._exact:
-                if not tagged_in(self._tags, self._slot_tags, (kind, key, tag)):
-                    return another
+                if not saved_exactly(self._slot_tags, self._slot_words, (kind, key, tag)):
+                    return f"{at} is an Id that finds nothing in {where}, and could find another item once it's loaded"
                 continue
             positions = self._positions.get(kind) else dict[(int, int), int]()
             if (key, tag) not in positions:
-                # A copy that's been written holds items of more than one tag.
-                mine = tag == (self._tags.get(kind) else 0)
-                for _, found_tag in positions.keys():
-                    if found_tag == tag:
-                        mine = True
-                if not mine:
-                    return another
-                return f"{at} is an Id of something that's been taken out of {where}"
+                return f"{at} is an Id that finds nothing in {where}: its item was taken out, or it's from another `Table[{kind}]`"
         return ""
 
-## Whether an `Id` of `kind`, by its `id_key` and tag, is from the `Table` saved slot for slot of
-## that kind: its tag is the one its slot keeps, or, past the slots, the `Table`'s own. A copy of a
-## `Table` that's been written gives its own items a tag of their own, so one `Table`'s slots can
-## keep more than one.
-def tagged_in(tags: dict[str, int], slot_tags: dict[str, list[int]], id: (str, int, int)) -> bool:
+## Whether an `Id` of `kind`, by its `id_key` and tag, can be saved as its slot and generation with
+## the `Table` of that kind saved slot for slot, given each slot's tag and word as `table_slot_tags`
+## and `table_slots` give them. A load gives every slot one tag, and every `Id` saved with them, so
+## one is saved only where it can't find another item after: its slot holds its item, its tag the
+## slot's, or its slot has used its generation up, so nothing there will have it again.
+def saved_exactly(slot_tags: dict[str, list[int]], slot_words: dict[str, list[int]], id: (str, int, int)) -> bool:
     (kind, key, tag) = id
-    slot = key >> 32
-    kept = slot_tags.get(kind) else list[int]()
-    if slot < len(kept):
-        return kept[slot] == tag
-    return tag == (tags.get(kind) else 0)
+    (slot, generation) = (key >> 32, key & 4294967295)
+    tags = slot_tags.get(kind) else list[int]()
+    words = slot_words.get(kind) else list[int]()
+    if slot >= len(tags) or slot >= len(words):
+        return False
+    word = words[slot]
+    if word >= 0 and word == generation:
+        return tags[slot] == tag
+    # Taken out at a generation, the next `add` there has one past it.
+    reached = word if word >= 0 else -1 - word
+    return reached >= generation
 
 ## Where a path through a value is, as messages say it: "`units[0].target`", or "the value".
 def place_text(path: list[str]) -> str:

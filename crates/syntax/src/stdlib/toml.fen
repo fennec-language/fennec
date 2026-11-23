@@ -1260,13 +1260,13 @@ struct TomlWriter:
         outer.add(self._members.pop(-1), self._done)
         self._done = .Table(table=outer)
 
-    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tag: int, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
         # Never asked for: `exact` says no.
         pass
 

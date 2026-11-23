@@ -379,7 +379,7 @@ def main(stdout: Stdout) fails Crashed | Closed | Timeout:
     stdout.print("after")
 ```
 
-When the block ends, the task's inbox closes, the task sums what it was sent and prints `10`, and only then does `after` print. Channels are always bounded, so `send` waits when the task falls behind. This builds natively.
+When the block ends, the task's inbox closes, the task sums what it was sent and prints `10`, and only then does `after` print. Channels are always bounded, so `send` waits when the task falls behind.
 
 ## Hashing
 
@@ -503,9 +503,3 @@ Builds go through LLVM a function at a time and are cached, so an edit rebuilds 
 A build is the same bytes every time, wherever it's built:
 - **A `--release` build** is the same bytes in any folder, on any machine, at any time, as a release you hand out has to be for anyone to check it by building it again. The files it shows a failure in are named from the kit, as `src/main.fen`, never from the folders you keep it in.
 - **A dev build** is the same bytes built again in the same folder, at any time. It shows a failure at the path you gave, whole path and all, which is what you, or an agent reading the failure, want on your own machine.
-
-## Not there yet
-
-These are decided and planned, and `docs/language.md` says where each one stands:
-- pools;
-- `u64` and `f32`, and `wrapping_` and `saturating_` methods: `i8` to `i32` and `u8` to `u32` already run natively;

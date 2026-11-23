@@ -62,6 +62,7 @@ pub(crate) const MODULE: Module = Module {
         "new_tag",
         "table_tagged",
         "table_slots",
+        "table_slot_tags",
         "table_of_slots",
         "id_of_key",
         "stop",

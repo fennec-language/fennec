@@ -1,6 +1,6 @@
 from std import base64
 from std.collections import Id
-from std.intrinsics import id_key, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_same_at, text_size, type_name
+from std.intrinsics import id_key, id_tag, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_same_at, text_size, type_name
 from std.io import Reader, Writer, read_all
 from std.string import cut_input, quoted_input
 
@@ -188,7 +188,7 @@ struct JsonKey:
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+    def slots[T: Serializable](ref self, kind: str, tag: int, tags: list[int], slots: list[int], items: list[T]):
         # Never asked for: `exact` says no.
         pass
 
@@ -298,7 +298,7 @@ struct JsonWriter:
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+    def slots[T: Serializable](ref self, kind: str, tag: int, tags: list[int], slots: list[int], items: list[T]):
         # Never asked for: `exact` says no.
         pass
 
@@ -588,6 +588,8 @@ struct TableFinder:
     _where = dict[str, str]()
     _ids = list[(str, int, int, bool, str)]()
     _tags = dict[str, int]()
+    ## Each slot's tag in a `Table` saved slot for slot, by the name of its items' type.
+    _slot_tags = dict[str, list[int]]()
     _path = list[str]()
     _problem = ""
     _optional = False
@@ -606,6 +608,10 @@ struct TableFinder:
     ## Each `Table`'s tag, by the name of its items' type.
     def tags(self) -> dict[str, int]:
         return self._tags
+
+    ## Each slot's tag in a `Table` saved slot for slot, by the name of its items' type.
+    def slot_tags(self) -> dict[str, list[int]]:
+        return self._slot_tags
 
     def int(ref self, value: int):
         pass
@@ -696,12 +702,13 @@ struct TableFinder:
             mut positions = dict[(int, int), int]()
             mut at = 0
             for id in ids:
-                positions[(id_key(id), tag)] = at
+                # Its own tag: a copy that's been written gives its own items one of their own.
+                positions[(id_key(id), id_tag(id))] = at
                 at += 1
             self._positions[kind] = positions
         self.sequence(items)
 
-    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+    def slots[T: Serializable](ref self, kind: str, tag: int, tags: list[int], slots: list[int], items: list[T]):
         here = place_text(self._path)
         if kind in self._where:
             if self._problem == "":
@@ -709,6 +716,7 @@ struct TableFinder:
         else:
             self._where[kind] = here
             self._tags[kind] = tag
+            self._slot_tags[kind] = tags
             self._positions[kind] = dict[(int, int), int]()
         self.sequence(items)
 
@@ -729,13 +737,36 @@ struct TableFinder:
                 return f"{at} is an Id, but nothing saved with it is a `Table[{kind}]`"
             if optional: continue
             where = self._where.get(kind) else "its Table"
-            if tag != (self._tags.get(kind) else 0):
-                return f"{at} is an Id from another `Table[{kind}]` than {where}"
-            # Saved slot for slot, an `Id` whose item has gone is saved as it is, still gone.
+            another = f"{at} is an Id from another `Table[{kind}]` than {where}"
+            # Saved slot for slot, an `Id` whose item has gone is saved as it is, still gone: it
+            # only has to be from this `Table`, by the tag its slot keeps.
+            if self._exact:
+                if not tagged_in(self._tags, self._slot_tags, (kind, key, tag)):
+                    return another
+                continue
             positions = self._positions.get(kind) else dict[(int, int), int]()
-            if not self._exact and (key, tag) not in positions:
+            if (key, tag) not in positions:
+                # A copy that's been written holds items of more than one tag.
+                mine = tag == (self._tags.get(kind) else 0)
+                for _, found_tag in positions.keys():
+                    if found_tag == tag:
+                        mine = True
+                if not mine:
+                    return another
                 return f"{at} is an Id of something that's been taken out of {where}"
         return ""
+
+## Whether an `Id` of `kind`, by its `id_key` and tag, is from the `Table` saved slot for slot of
+## that kind: its tag is the one its slot keeps, or, past the slots, the `Table`'s own. A copy of a
+## `Table` that's been written gives its own items a tag of their own, so one `Table`'s slots can
+## keep more than one.
+def tagged_in(tags: dict[str, int], slot_tags: dict[str, list[int]], id: (str, int, int)) -> bool:
+    (kind, key, tag) = id
+    slot = key >> 32
+    kept = slot_tags.get(kind) else list[int]()
+    if slot < len(kept):
+        return kept[slot] == tag
+    return tag == (tags.get(kind) else 0)
 
 ## Where a path through a value is, as messages say it: "`units[0].target`", or "the value".
 def place_text(path: list[str]) -> str:

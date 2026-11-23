@@ -214,6 +214,12 @@ export def table_tagged[T](tag: int) -> Table[T]
 @intrinsic
 export def table_slots[T](table: Table[T]) -> list[int]
 
+## Each slot's tag: the tag of the `Table` its item, live or taken out, was added to. A copy
+## that's been written gives its own items a tag of its own, so a slot's isn't always the
+## `Table`'s.
+@intrinsic
+export def table_slot_tags[T](table: Table[T]) -> list[int]
+
 ## A `Table` of a tag with these slots, as `table_slots` gives them, holding `items` in its slots
 ## in use, in order. There have to be as many items as slots in use, each generation has to fit
 ## in 32 bits, and a load checks both first.

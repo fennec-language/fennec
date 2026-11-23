@@ -62,9 +62,11 @@ export interface Serializer:
     ## load holds the same slots and hands out the same `Id`s after it: what replays need.
     def exact(self) -> bool
 
-    ## A `Table` saved slot for slot, when `exact` says so: each slot as `table_slots` gives it,
-    ## then the items in the slots in use, in order.
-    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T])
+    ## A `Table` saved slot for slot, when `exact` says so: its tag and each slot's, as
+    ## `table_slot_tags` gives them, each slot as `table_slots` gives it, then the items in the
+    ## slots in use, in order. A slot's tag says which `Id`s are from this `Table`: a copy that's
+    ## been written gives its own items a tag of their own.
+    def slots[T: Serializable](ref self, kind: str, tag: int, tags: list[int], slots: list[int], items: list[T])
 
     ## An `Id` into a `Table` of `kind`, by its `id_key` and its `Table`'s tag, which is written as
     ## where its item is in that `Table`.

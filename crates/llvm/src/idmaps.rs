@@ -34,6 +34,7 @@ struct Parts {
     live: u32,
     free_from: u32,
     tag: u32,
+    slot_tags: u32,
     held: Kind,
 }
 
@@ -53,9 +54,10 @@ impl Emit<'_, '_, '_> {
         let (live, _) = self.field(kind, "live")?;
         let (free_from, _) = self.field(kind, "free_from")?;
         let (tag, _) = self.field(kind, "tag")?;
+        let (slot_tags, _) = self.field(kind, "slot_tags")?;
         let held = self.item_kind(list_item(&items_kind)?)?;
         self.module.define_types(&held);
-        Ok(Parts { items, generations, live, free_from, tag, held })
+        Ok(Parts { items, generations, live, free_from, tag, slot_tags, held })
     }
 
     /// An `Id`'s slot, generation and tag.
@@ -105,10 +107,86 @@ impl Emit<'_, '_, '_> {
         same
     }
 
+    /// Whether the `Table` whose block this is keeps `tag` for the slot `slot`: only one that's
+    /// been copied and written keeps a tag for each slot, and a slot past those keeps none.
+    fn slot_keeps(&mut self, block: &str, parts: &Parts, (slot, tag): (&str, &str)) -> String {
+        let (_, tags) = self.part(block, parts.slot_tags, false);
+        let count = self.list_length(&tags);
+        let within = self.temp();
+        self.line(&format!("{within} = icmp ult i64 {slot}, {count}"));
+        let before = self.current.clone();
+        let (read, done) = (self.label("slot_tag"), self.label("slot_tagged"));
+        self.line(&format!("br i1 {within}, label %{read}, label %{done}"));
+        self.start_block(&read);
+        let at = self.item_address(&tags, "i64", slot);
+        let (kept, same) = (self.temp(), self.temp());
+        self.line(&format!("{kept} = load i64, ptr {at}{ITEM_ACCESS}"));
+        self.line(&format!("{same} = icmp eq i64 {kept}, {tag}"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let keeps = self.temp();
+        self.line(&format!("{keeps} = phi i1 [ {same}, %{read} ], [ false, %{before} ]"));
+        keeps
+    }
+
+    /// The tag of the item in slot `slot`, live or removed: the one kept for it, or the `Table`'s
+    /// own where none is kept.
+    fn slot_tag(&mut self, block: &str, parts: &Parts, slot: &str) -> String {
+        let own = self.tag_of(block, parts);
+        let (_, tags) = self.part(block, parts.slot_tags, false);
+        let count = self.list_length(&tags);
+        let within = self.temp();
+        self.line(&format!("{within} = icmp ult i64 {slot}, {count}"));
+        let before = self.current.clone();
+        let (read, done) = (self.label("slot_tag"), self.label("slot_tagged"));
+        self.line(&format!("br i1 {within}, label %{read}, label %{done}"));
+        self.start_block(&read);
+        let at = self.item_address(&tags, "i64", slot);
+        let kept = self.temp();
+        self.line(&format!("{kept} = load i64, ptr {at}{ITEM_ACCESS}"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let tag = self.temp();
+        self.line(&format!("{tag} = phi i64 [ {kept}, %{read} ], [ {own}, %{before} ]"));
+        tag
+    }
+
+    /// Notes the `Table`'s own tag for the item just put in slot `slot`, in a copy that's been
+    /// written, which keeps a tag for each slot: on the end for a new slot, or in place of the
+    /// removed item's for one used again. A `Table` that keeps none needs nothing.
+    fn keep_slot_tag(&mut self, block: &str, parts: &Parts, slot: &str) {
+        let fields = self.offset(block, FIELDS_OFFSET);
+        let place = self.offset(&fields, parts.slot_tags);
+        let (tags, keeps, past) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{tags} = load ptr, ptr {place}"));
+        let count = self.list_length(&tags);
+        self.line(&format!("{keeps} = icmp ne i64 {count}, 0"));
+        let (keep, push, set, done) =
+            (self.label("keep_tag"), self.label("push_tag"), self.label("set_tag"), self.label("tag_kept"));
+        self.line(&format!("br i1 {keeps}, label %{keep}, label %{done}, !prof !0"));
+        self.start_block(&keep);
+        let own = self.tag_of(block, parts);
+        self.line(&format!("{past} = icmp eq i64 {slot}, {count}"));
+        self.line(&format!("br i1 {past}, label %{push}, label %{set}"));
+        self.start_block(&push);
+        self.push(&place, &Kind::Int, &own);
+        self.line(&format!("br label %{done}"));
+        self.start_block(&set);
+        let tags = self.list_for_item(block, parts.slot_tags, slot);
+        let at = self.item_address(&tags, "i64", slot);
+        self.line(&format!("store i64 {own}, ptr {at}{ITEM_ACCESS}"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+    }
+
     /// Ends the program because `id` finds nothing in the `Table` whose block this is, saying
-    /// whether it's from another `Table` or its item has been removed.
+    /// whether it's from another `Table` or its item has been removed: its tag is the `Table`'s
+    /// or its slot's.
     fn stop_missing(&mut self, block: &str, parts: &Parts, id: &IdParts, span: Span) {
-        let same = self.same_table(block, parts, id);
+        let own = self.same_table(block, parts, id);
+        let keeps = self.slot_keeps(block, parts, (&id.0, &id.2));
+        let same = self.temp();
+        self.line(&format!("{same} = or i1 {own}, {keeps}"));
         let (removed, another) = (self.literal(REMOVED), self.literal(ANOTHER));
         let text = self.temp();
         self.line(&format!("{text} = select i1 {same}, ptr {removed}, ptr {another}"));
@@ -149,31 +227,41 @@ impl Emit<'_, '_, '_> {
         self.item_to_set(&place, slot)
     }
 
-    /// Whether an `Id` still finds its item: from this `Table`, inside its slots, with the slot's
-    /// generation.
+    /// Whether an `Id` still finds its item: inside the `Table`'s slots, with the slot's
+    /// generation, and from this `Table`: its tag is the `Table`'s, or, in a copy that's been
+    /// written, the one its slot keeps. A slot's generation only goes up, so one with this
+    /// `Table`'s own tag needs no more: a slot it added or used again has a generation no item of
+    /// another copy's tag has there.
     fn finds(&mut self, block: &str, parts: &Parts, id: &IdParts) -> String {
-        let same = self.same_table(block, parts, id);
+        let own = self.same_table(block, parts, id);
         let (_, generations) = self.part(block, parts.generations, false);
         let (slot, generation) = (&id.0, &id.1);
         let length = self.list_length(&generations);
-        let (within, inside) = (self.temp(), self.temp());
+        let within = self.temp();
         self.line(&format!("{within} = icmp ult i64 {slot}, {length}"));
-        self.line(&format!("{inside} = and i1 {same}, {within}"));
-        let (check, outside, joined) = (self.label("check"), self.label("outside"), self.label("found"));
-        let before = self.current.clone();
-        self.line(&format!("br i1 {inside}, label %{check}, label %{outside}"));
+        let (check, other, outside, joined) =
+            (self.label("check"), self.label("other_tag"), self.label("outside"), self.label("found"));
+        self.line(&format!("br i1 {within}, label %{check}, label %{outside}"));
         self.start_block(&check);
         let at = self.item_address(&generations, "i64", slot);
         let (held, same) = (self.temp(), self.temp());
         self.line(&format!("{held} = load i64, ptr {at}{ITEM_ACCESS}"));
         self.line(&format!("{same} = icmp eq i64 {held}, {generation}"));
+        let checked = self.current.clone();
+        self.line(&format!("br i1 {own}, label %{joined}, label %{other}, !prof !8"));
+        self.start_block(&other);
+        let keeps = self.slot_keeps(block, parts, (slot, &id.2));
+        let both = self.temp();
+        self.line(&format!("{both} = and i1 {same}, {keeps}"));
+        let kept = self.current.clone();
         self.line(&format!("br label %{joined}"));
         self.start_block(&outside);
         self.line(&format!("br label %{joined}"));
         self.start_block(&joined);
         let found = self.temp();
-        self.line(&format!("{found} = phi i1 [ {same}, %{check} ], [ false, %{outside} ]"));
-        let _ = before;
+        self.line(&format!(
+            "{found} = phi i1 [ {same}, %{checked} ], [ {both}, %{kept} ], [ false, %{outside} ]"
+        ));
         found
     }
 
@@ -358,7 +446,7 @@ impl Emit<'_, '_, '_> {
                     self.line(&format!("{live} = icmp sge i64 {word}, 0"));
                     return self.assign(dest.ok_or("no result")?, &live);
                 }
-                let tag = self.tag_of(&block, &parts);
+                let tag = self.slot_tag(&block, &parts, &at);
                 let place = self.slot(dest.ok_or("no result")?);
                 self.write_id(&place, (&at, &word, &tag));
                 Ok(())
@@ -491,6 +579,7 @@ impl Emit<'_, '_, '_> {
                 let (slot, generation) = (self.temp(), self.temp());
                 self.line(&format!("{slot} = phi i64 [ {at}, %{reused} ], [ {length}, %{appended} ]"));
                 self.line(&format!("{generation} = phi i64 [ {again}, %{reused} ], [ 0, %{appended} ]"));
+                self.keep_slot_tag(&block, &parts, &slot);
                 let fields = self.offset(&block, FIELDS_OFFSET);
                 let live_at = self.offset(&fields, parts.live);
                 let (live, one_more) = (self.temp(), self.temp());
@@ -671,6 +760,7 @@ impl Emit<'_, '_, '_> {
                 self.retain_value(&generations, &list);
                 self.assign(dest, &generations)
             }
+            "intrinsics.table_slot_tags" => self.table_slot_tags(dest, given),
             "intrinsics.table_of_slots" => self.table_of_slots(dest, args),
             "intrinsics.table_tagged" => {
                 let (tag, _) = self.operand(given)?;
@@ -678,6 +768,39 @@ impl Emit<'_, '_, '_> {
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
+    }
+
+    /// Each slot's tag, as `table_slot_tags` gives them: the ones a copy that's been written keeps,
+    /// shared until one of them changes, or the `Table`'s own for every slot.
+    fn table_slot_tags(&mut self, dest: LocalId, given: &Operand) -> Result<(), String> {
+        let (block, kind) = self.operand(given)?;
+        let parts = self.parts(&kind)?;
+        let (_, tags) = self.part(&block, parts.slot_tags, false);
+        let count = self.list_length(&tags);
+        let keeps = self.temp();
+        self.line(&format!("{keeps} = icmp ne i64 {count}, 0"));
+        let (kept, fill, done) = (self.label("tags_kept"), self.label("tags_made"), self.label("tags"));
+        self.line(&format!("br i1 {keeps}, label %{kept}, label %{fill}"));
+        self.start_block(&kept);
+        let list = self.kind_of(dest)?.clone();
+        self.retain_value(&tags, &list);
+        let from_kept = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&fill);
+        let own = self.tag_of(&block, &parts);
+        let (_, generations) = self.part(&block, parts.generations, false);
+        let slots = self.list_length(&generations);
+        let made = self.new_list(fennec_layout::ListItem::Int, &slots);
+        let (at, end) = self.loop_begin(&slots);
+        let item = self.item_address(&made, "i64", &at);
+        self.line(&format!("store i64 {own}, ptr {item}{ITEM_ACCESS}"));
+        self.loop_end(&end);
+        let from_made = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let out = self.temp();
+        self.line(&format!("{out} = phi ptr [ {tags}, %{from_kept} ], [ {made}, %{from_made} ]"));
+        self.assign(dest, &out)
     }
 
     /// A new `Table` of a tag, with each slot as `table_slots` gives it and the items in the
@@ -740,7 +863,9 @@ impl Emit<'_, '_, '_> {
         let block = self.new_block(id)?;
         let fields = self.offset(&block, FIELDS_OFFSET);
         self.retain_value(&slots, &slots_kind);
-        for (offset, list) in [(parts.items, &out), (parts.generations, &slots)] {
+        // A loaded `Table` is one of one tag, which keeps no tag for each slot.
+        let tags = self.new_list(fennec_layout::ListItem::Int, "0");
+        for (offset, list) in [(parts.items, &out), (parts.generations, &slots), (parts.slot_tags, &tags)] {
             let place = self.offset(&fields, offset);
             self.line(&format!("store ptr {list}, ptr {place}"));
         }
@@ -772,7 +897,11 @@ impl Emit<'_, '_, '_> {
         let fields = self.offset(&block, FIELDS_OFFSET);
         let items = self.new_list(item, "0");
         let generations = self.new_list(fennec_layout::ListItem::Int, "0");
-        for (offset, list) in [(parts.items, &items), (parts.generations, &generations)] {
+        // A new `Table` keeps no tag for each slot: every one's is its own.
+        let tags = self.new_list(fennec_layout::ListItem::Int, "0");
+        for (offset, list) in
+            [(parts.items, &items), (parts.generations, &generations), (parts.slot_tags, &tags)]
+        {
             let at = self.offset(&fields, offset);
             self.line(&format!("store ptr {list}, ptr {at}"));
         }
@@ -873,7 +1002,7 @@ impl Emit<'_, '_, '_> {
         let parts = self.parts(&kind)?;
         let (block, _) = self.operand(&Operand::Local(map))?;
         if part == 0 {
-            let tag = self.tag_of(&block, &parts);
+            let tag = self.slot_tag(&block, &parts, &at);
             let base = self.slot(dest);
             self.write_id(&base, (&at, &generation, &tag));
             return Ok(());
@@ -898,7 +1027,6 @@ impl Emit<'_, '_, '_> {
         let live = self.temp();
         self.line(&format!("{live} = load i64, ptr {live_at}"));
         let out = self.new_list(item, &live);
-        let tag = self.tag_of(&block, parts);
         let (_, generations) = self.part(&block, parts.generations, false);
         let (_, items) = self.part(&block, parts.items, false);
         let length = self.list_length(&generations);
@@ -925,6 +1053,9 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{alive} = icmp sge i64 {generation}, 0"));
         self.line(&format!("br i1 {alive}, label %{keep}, label %{next}"));
         self.start_block(&keep);
+        // Each `Id` with its slot's tag, which in a copy that's been written isn't always the
+        // `Table`'s.
+        let tag = if name == "Table.values" { String::new() } else { self.slot_tag(&block, parts, &at) };
         let to = self.item_address(&out, &out_memory, &written);
         let from = self.item_address(&items, &memory, &at);
         let write_id = |emit: &mut Self, base: &str| emit.write_id(base, (&at, &generation, &tag));

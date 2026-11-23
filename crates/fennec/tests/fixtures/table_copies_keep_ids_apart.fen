@@ -1,0 +1,43 @@
+# Copies of a `Table` never hand out an `Id` that finds the other copy's item (#2424). The copy that
+# writes first takes a tag of its own for what it adds; each item already there keeps its tag in
+# its slot, so an `Id` from before the copy finds it in both until its slot changes.
+
+from std.collections import Id, Table
+
+struct Unit:
+    name: str
+    hp: int
+
+def found(table: Table[Unit], id: Id[Unit]) -> str:
+    unit = table.get(id) else Unit(name="nothing", hp=0)
+    return unit.name
+
+def main(stdout: Stdout):
+    mut original = Table[Unit]()
+    first = original.add(Unit(name="first", hp=1))
+    second = original.add(Unit(name="second", hp=2))
+    mut copy = original
+    # The copy writes first, so it's the one with a tag of its own.
+    in_copy = copy.add(Unit(name="copy's", hp=3))
+    in_original = original.add(Unit(name="original's", hp=4))
+    stdout.print("new ids differ", in_copy != in_original)
+    stdout.print("copy's in original", found(original, in_copy), "original's in copy", found(copy, in_original))
+    stdout.print("old ids in both", found(original, first), found(copy, first), found(original, second), found(copy, second))
+    # Both take out `second` and add again into its slot: each under its own tag.
+    _ = original.remove(second)
+    _ = copy.remove(second)
+    again_original = original.add(Unit(name="original again", hp=5))
+    again_copy = copy.add(Unit(name="copy again", hp=6))
+    stdout.print("the ids added again differ", again_original != again_copy)
+    stdout.print("each finds its own", found(original, again_original), found(copy, again_copy))
+    stdout.print("neither finds the other's", found(original, again_copy), found(copy, again_original))
+    stdout.print("the old id finds nothing", found(original, second), found(copy, second))
+    # A copy of the copy, written: what the copy had stays found, through both tags.
+    mut third = copy
+    in_third = third.add(Unit(name="third's", hp=7))
+    stdout.print("copy of a copy", found(third, first), found(third, again_copy), found(third, in_copy), found(third, in_third))
+    stdout.print("not in the copy", found(copy, in_third), "not in the original", found(original, in_third))
+    stdout.print("ids walked", len(third.ids()), found(third, third.ids()[0]), found(third, third.ids()[-1]))
+    for id, unit in third.items():
+        stdout.print("item", unit.name, found(third, id))
+    stdout.print("counts", len(original), len(copy), len(third))

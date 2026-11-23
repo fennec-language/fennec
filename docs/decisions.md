@@ -1480,7 +1480,7 @@ match tok:
 - A pinned compiler never changes by itself, and nothing fetches "latest" without being asked.
 - `fennec toolchain list`, `install` and `remove` manage toolchains.
 - A kit's version is `fennec = "0.4.2"` at the top of its `kit.toml`, found by walking up from the current folder.
-- A script outside a kit runs with `--version 0.4.2`, or else the version `fennec default 0.4.2` set. With neither, the command stops and says how to set one. In a kit, `--version` is an error, since `kit.toml` says.
+- A script outside a kit runs with `--version 0.4.2`, or else the version `fennec default 0.4.2` set, or else the newest stable version installed (2026-11-23, with `fennec` becoming the launcher). With none installed, the command stops and says how to get one; nothing is fetched unless asked. `fennec new` makes a kit with that same version. In a kit, `--version` is an error, since `kit.toml` says.
 - `fennec +0.4.2 build` runs that version anywhere, this once, and changes no pin.
 - `fennec toolchain link dev <path>` is for whoever works on Fennec itself: it runs the `fennec` in a folder of their own, like a checkout's `target/release`, with whatever LLVM that build finds, and fetches nothing. A kit asks for it with `fennec = "dev"`, which is never pinned, and `+dev` runs it once. `fennec toolchain remove dev` unlinks it and leaves the build.
 - `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.

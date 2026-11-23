@@ -1,21 +1,21 @@
 # Game math in `std.math`: vectors, quaternions and matrices. Every line this prints is checked
 # against glam, a widely used Rust math library, on the same inputs: `crates/fennec/tests/
 # game_math.rs` reads this example's `.out` beside what glam printed.
-from std.math import Mat3, Mat4, PI, Quat, Vec2, Vec3, Vec4
+from std.math import DMat3, DMat4, DQuat, DVec2, DVec3, DVec4, PI
 
-def show2(stdout: Stdout, label: str, vector: Vec2):
+def show2(stdout: Stdout, label: str, vector: DVec2):
     stdout.print(f"{label}: {vector.x} {vector.y}")
 
-def show3(stdout: Stdout, label: str, vector: Vec3):
+def show3(stdout: Stdout, label: str, vector: DVec3):
     stdout.print(f"{label}: {vector.x} {vector.y} {vector.z}")
 
-def show4(stdout: Stdout, label: str, vector: Vec4):
+def show4(stdout: Stdout, label: str, vector: DVec4):
     stdout.print(f"{label}: {vector.x} {vector.y} {vector.z} {vector.w}")
 
-def show_quat(stdout: Stdout, label: str, turn: Quat):
+def show_quat(stdout: Stdout, label: str, turn: DQuat):
     stdout.print(f"{label}: {turn.x} {turn.y} {turn.z} {turn.w}")
 
-def show_mat3(stdout: Stdout, label: str, matrix: Mat3):
+def show_mat3(stdout: Stdout, label: str, matrix: DMat3):
     first = matrix.x_axis
     second = matrix.y_axis
     third = matrix.z_axis
@@ -23,7 +23,7 @@ def show_mat3(stdout: Stdout, label: str, matrix: Mat3):
         f"{label}: {first.x} {first.y} {first.z} {second.x} {second.y} {second.z} {third.x} {third.y} {third.z}",
     )
 
-def show_mat4(stdout: Stdout, label: str, matrix: Mat4):
+def show_mat4(stdout: Stdout, label: str, matrix: DMat4):
     columns = [matrix.x_axis, matrix.y_axis, matrix.z_axis, matrix.w_axis]
     parts = [f"{column.x} {column.y} {column.z} {column.w}" for column in columns]
     joined = " ".join(parts)
@@ -33,21 +33,21 @@ def show(stdout: Stdout, label: str, value: float):
     stdout.print(f"{label}: {value}")
 
 def main(stdout: Stdout):
-    point = Vec3(x=1.5, y=-2.25, z=0.75)
-    arrow = Vec3(x=-0.5, y=4.0, z=3.125)
-    near = Vec4(x=0.1, y=0.2, z=-0.3, w=1.0)
-    far = Vec4(x=2.0, y=-1.0, z=0.5, w=0.25)
+    point = DVec3(x=1.5, y=-2.25, z=0.75)
+    arrow = DVec3(x=-0.5, y=4.0, z=3.125)
+    near = DVec4(x=0.1, y=0.2, z=-0.3, w=1.0)
+    far = DVec4(x=2.0, y=-1.0, z=0.5, w=0.25)
     flat_vectors(stdout)
     vectors(stdout, point=point, arrow=arrow, near=near, far=far)
-    axis = Vec3(x=1.0, y=2.0, z=2.0).normalize()
-    turn = Quat.from_axis_angle(axis, 0.8)
-    other = Quat.from_axis_angle(Vec3(z=1.0), -1.3)
+    axis = DVec3(x=1.0, y=2.0, z=2.0).normalize()
+    turn = DQuat.from_axis_angle(axis, 0.8)
+    other = DQuat.from_axis_angle(DVec3(z=1.0), -1.3)
     rotations(stdout, turn=turn, other=other, point=point)
     matrices(stdout, turn=turn, other=other, point=point, arrow=arrow, far=far)
 
 def flat_vectors(stdout: Stdout):
-    flat = Vec2(x=3.0, y=-4.0)
-    aside = Vec2(x=0.25, y=7.5)
+    flat = DVec2(x=3.0, y=-4.0)
+    aside = DVec2(x=0.25, y=7.5)
     show2(stdout, "vec2 add", flat + aside)
     show2(stdout, "vec2 sub", flat - aside)
     show2(stdout, "vec2 scale", flat * 1.75)
@@ -60,7 +60,7 @@ def flat_vectors(stdout: Stdout):
     show2(stdout, "vec2 min", flat.min(aside))
     show2(stdout, "vec2 max", flat.max(aside))
 
-def vectors(stdout: Stdout, point: Vec3, arrow: Vec3, near: Vec4, far: Vec4):
+def vectors(stdout: Stdout, point: DVec3, arrow: DVec3, near: DVec4, far: DVec4):
     show3(stdout, "vec3 add", point + arrow)
     show3(stdout, "vec3 sub", point - arrow)
     show3(stdout, "vec3 scale", point * -0.6)
@@ -71,7 +71,7 @@ def vectors(stdout: Stdout, point: Vec3, arrow: Vec3, near: Vec4, far: Vec4):
     show(stdout, "vec3 length", point.length())
     show(stdout, "vec3 length_squared", point.length_squared())
     show3(stdout, "vec3 normalize", point.normalize())
-    show3(stdout, "vec3 normalize zero", Vec3().normalize())
+    show3(stdout, "vec3 normalize zero", DVec3().normalize())
     show(stdout, "vec3 distance", point.distance(arrow))
     show3(stdout, "vec3 lerp", point.lerp(arrow, 0.7))
     show3(stdout, "vec3 min", point.min(arrow))
@@ -86,17 +86,17 @@ def vectors(stdout: Stdout, point: Vec3, arrow: Vec3, near: Vec4, far: Vec4):
     show4(stdout, "vec4 normalize", near.normalize())
     show4(stdout, "vec4 lerp", near.lerp(far, 0.25))
 
-def rotations(stdout: Stdout, turn: Quat, other: Quat, point: Vec3):
+def rotations(stdout: Stdout, turn: DQuat, other: DQuat, point: DVec3):
     show_quat(stdout, "quat from_axis_angle", turn)
-    show_quat(stdout, "quat from_rotation_x", Quat.from_rotation_x(0.4))
-    show_quat(stdout, "quat from_rotation_y", Quat.from_rotation_y(-1.1))
-    show_quat(stdout, "quat from_rotation_z", Quat.from_rotation_z(2.5))
-    show_quat(stdout, "quat from_euler", Quat.from_euler(yaw=0.3, pitch=-0.2, roll=0.9))
+    show_quat(stdout, "quat from_rotation_x", DQuat.from_rotation_x(0.4))
+    show_quat(stdout, "quat from_rotation_y", DQuat.from_rotation_y(-1.1))
+    show_quat(stdout, "quat from_rotation_z", DQuat.from_rotation_z(2.5))
+    show_quat(stdout, "quat from_euler", DQuat.from_euler(yaw=0.3, pitch=-0.2, roll=0.9))
     show_quat(stdout, "quat mul", turn * other)
     show3(stdout, "quat rotate", turn.rotate(point))
     show(stdout, "quat dot", turn.dot(other))
     show(stdout, "quat length", turn.length())
-    show_quat(stdout, "quat normalize", Quat(x=1.0, y=2.0, z=3.0, w=4.0).normalize())
+    show_quat(stdout, "quat normalize", DQuat(x=1.0, y=2.0, z=3.0, w=4.0).normalize())
     show_quat(stdout, "quat conjugate", turn.conjugate())
     show_quat(stdout, "quat inverse", turn.inverse())
     show_quat(stdout, "quat lerp", turn.lerp(other, 0.4))
@@ -104,30 +104,30 @@ def rotations(stdout: Stdout, turn: Quat, other: Quat, point: Vec3):
     show_quat(stdout, "quat slerp near", turn.slerp(turn, 0.5))
     show_quat(stdout, "quat slerp far", turn.slerp(other.conjugate(), 0.6))
 
-def matrices(stdout: Stdout, turn: Quat, other: Quat, point: Vec3, arrow: Vec3, far: Vec4):
-    turned = Mat3.from_quat(turn)
-    skew = Mat3(
-        x_axis=Vec3(x=2.0, y=0.5, z=-1.0),
-        y_axis=Vec3(x=0.0, y=3.0, z=0.25),
-        z_axis=Vec3(x=1.0, y=-2.0, z=1.5),
+def matrices(stdout: Stdout, turn: DQuat, other: DQuat, point: DVec3, arrow: DVec3, far: DVec4):
+    turned = DMat3.from_quat(turn)
+    skew = DMat3(
+        x_axis=DVec3(x=2.0, y=0.5, z=-1.0),
+        y_axis=DVec3(x=0.0, y=3.0, z=0.25),
+        z_axis=DVec3(x=1.0, y=-2.0, z=1.5),
     )
     show_mat3(stdout, "mat3 from_quat", turned)
     show_mat3(stdout, "mat3 mul", turned * skew)
     show3(stdout, "mat3 mul_vec3", skew.mul_vec3(arrow))
     show_mat3(stdout, "mat3 transpose", skew.transpose())
     show(stdout, "mat3 determinant", skew.determinant())
-    show_mat3(stdout, "mat3 inverse", skew.inverse() else Mat3())
+    show_mat3(stdout, "mat3 inverse", skew.inverse() else DMat3())
 
-    place = Mat4.from_scale_rotation_translation(
-        scale=Vec3(x=2.0, y=0.5, z=1.25),
+    place = DMat4.from_scale_rotation_translation(
+        scale=DVec3(x=2.0, y=0.5, z=1.25),
         rotation=turn,
-        translation=Vec3(x=10.0, y=-3.0, z=4.5),
+        translation=DVec3(x=10.0, y=-3.0, z=4.5),
     )
-    view = Mat4.look_at(eye=Vec3(x=4.0, y=3.0, z=8.0), target=Vec3(y=1.0), up=Vec3(y=1.0))
-    projection = Mat4.perspective(fov_y=PI / 3.0, aspect=16.0 / 9.0, near=0.1, far=500.0)
-    show_mat4(stdout, "mat4 translation", Mat4.translation(arrow))
-    show_mat4(stdout, "mat4 rotation", Mat4.rotation(other))
-    show_mat4(stdout, "mat4 scaling", Mat4.scaling(point))
+    view = DMat4.look_at(eye=DVec3(x=4.0, y=3.0, z=8.0), target=DVec3(y=1.0), up=DVec3(y=1.0))
+    projection = DMat4.perspective(fov_y=PI / 3.0, aspect=16.0 / 9.0, near=0.1, far=500.0)
+    show_mat4(stdout, "mat4 translation", DMat4.translation(arrow))
+    show_mat4(stdout, "mat4 rotation", DMat4.rotation(other))
+    show_mat4(stdout, "mat4 scaling", DMat4.scaling(point))
     show_mat4(stdout, "mat4 from_scale_rotation_translation", place)
     show_mat4(stdout, "mat4 look_at", view)
     show_mat4(stdout, "mat4 perspective", projection)
@@ -137,24 +137,24 @@ def matrices(stdout: Stdout, turn: Quat, other: Quat, point: Vec3, arrow: Vec3, 
     show3(stdout, "mat4 transform_vector", place.transform_vector(point))
     show_mat4(stdout, "mat4 transpose", place.transpose())
     show(stdout, "mat4 determinant", place.determinant())
-    show_mat4(stdout, "mat4 inverse", place.inverse() else Mat4())
-    show_mat4(stdout, "mat4 inverse view", view.inverse() else Mat4())
-    flat_matrix = Mat4.scaling(Vec3(x=1.0, y=0.0, z=1.0))
+    show_mat4(stdout, "mat4 inverse", place.inverse() else DMat4())
+    show_mat4(stdout, "mat4 inverse view", view.inverse() else DMat4())
+    flat_matrix = DMat4.scaling(DVec3(x=1.0, y=0.0, z=1.0))
     stdout.print("mat4 inverse flat:", flat_matrix.inverse() is None)
 
 test "a rotation and its inverse undo each other"():
-    turn = Quat.from_axis_angle(Vec3(x=0.0, y=1.0, z=0.0), 1.2)
-    back = turn.inverse().rotate(turn.rotate(Vec3(x=1.0, y=2.0, z=3.0)))
-    assert (back - Vec3(x=1.0, y=2.0, z=3.0)).length() < 1e-12
+    turn = DQuat.from_axis_angle(DVec3(x=0.0, y=1.0, z=0.0), 1.2)
+    back = turn.inverse().rotate(turn.rotate(DVec3(x=1.0, y=2.0, z=3.0)))
+    assert (back - DVec3(x=1.0, y=2.0, z=3.0)).length() < 1e-12
 
 test "a matrix times its inverse is the identity"():
-    place = Mat4.from_scale_rotation_translation(
-        scale=Vec3(x=2.0, y=3.0, z=0.5),
-        rotation=Quat.from_rotation_x(0.7),
-        translation=Vec3(x=1.0),
+    place = DMat4.from_scale_rotation_translation(
+        scale=DVec3(x=2.0, y=3.0, z=0.5),
+        rotation=DQuat.from_rotation_x(0.7),
+        translation=DVec3(x=1.0),
     )
-    undone = place * (place.inverse() else Mat4())
-    identity = Mat4()
+    undone = place * (place.inverse() else DMat4())
+    identity = DMat4()
     for column, wanted in [
         (undone.x_axis, identity.x_axis),
         (undone.y_axis, identity.y_axis),

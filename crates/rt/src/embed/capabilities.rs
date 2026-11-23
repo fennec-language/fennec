@@ -668,7 +668,7 @@ fn file_method(handle: i64, name: &str, given: &[Value], at: Span) -> i64 {
     attempt(|state: &mut State| done.map(|value| state.push(value)))
 }
 
-fn socket_method(handle: i64, name: &str, given: &[Value], at: Span) -> i64 {
+pub(in crate::embed) fn socket_method(handle: i64, name: &str, given: &[Value], at: Span) -> i64 {
     // A test's network is a fake the runtime holds, which never waits, so it runs here with the
     // state borrowed. The real one runs below with nothing borrowed, so a socket's wait can park
     // its task.

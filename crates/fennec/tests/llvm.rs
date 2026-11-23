@@ -16761,6 +16761,24 @@ def main(stdout: Stdout):
     )
 }
 
+/// `re.pattern_problem` says what's wrong with text that isn't a pattern, as a `Regex` built from
+/// it would, for a program to report a pattern from outside rather than stop on it.
+#[test]
+fn a_patterns_problem_is_what_a_regex_built_from_it_would_say() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "pattern_problems",
+        r#"from std.re import is_regex, pattern_problem
+
+def main(stdout: Stdout):
+    for pattern in ["[0-9+", "a{2,1}", "(" * 251 + "a" + ")" * 251]:
+        stdout.print(is_regex(pattern), pattern_problem(pattern))
+"#,
+    )
+}
+
 /// A task that crashes partway through filling a list lets go of what it made so far: a
 /// comprehension whose length is kept aside while it runs, and the keys `sorted(key=)` makes
 /// before a key crashes. What a task leaves comes back to the code that launched it, so a leak

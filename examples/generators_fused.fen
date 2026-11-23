@@ -1,4 +1,4 @@
-# Stages that fuse into one loop, which every engine has to run in the same order as asking
+# Stages that fuse into one loop, which has to run in the same order as asking
 # for each item in turn.
 
 struct Row:

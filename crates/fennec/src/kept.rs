@@ -25,6 +25,7 @@ use fennec_syntax::{Diagnostic, Module, Sources};
 /// kit, and the analyses and objects kept for builds in processes of their own. Past it, the kit
 /// built longest ago goes first, and its next build checks all of it. `FENNEC_KEPT_BUDGET` gives
 /// another, in bytes, for tests.
+#[cfg(unix)]
 const BUDGET: usize = 4 << 30;
 
 /// The checks kept, once the daemon keeps them.
@@ -418,7 +419,10 @@ pub(crate) fn verify_pending(home: &std::path::Path) -> Vec<PathBuf> {
 
 /// Lets go of the kits built longest ago while what's `held` comes to more than `budget`. Each kit
 /// let go of is dropped before `held` is asked again.
-#[cfg_attr(not(unix), expect(dead_code, reason = "only the build daemon, which is unix's alone, keeps kits"))]
+#[cfg_attr(
+    all(not(unix), not(test)),
+    expect(dead_code, reason = "only the build daemon, which is unix's alone, keeps kits")
+)]
 fn within_budget<K: Clone + Eq + std::hash::Hash, T: Built>(
     kits: &mut HashMap<K, T>,
     budget: usize,

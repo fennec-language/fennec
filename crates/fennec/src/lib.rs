@@ -7,7 +7,9 @@
 #[global_allocator]
 static ALLOCATOR: cap::Cap<mimalloc::MiMalloc> = cap::Cap::new(mimalloc::MiMalloc, usize::MAX);
 
-/// How many bytes this process holds allocated now.
+/// How many bytes this process holds allocated now. Only the build daemon, which is unix's alone,
+/// asks.
+#[cfg(unix)]
 pub(crate) fn held_bytes() -> usize {
     ALLOCATOR.allocated()
 }

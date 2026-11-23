@@ -6586,9 +6586,18 @@ fn a_test_command_gone_stops_its_tests_in_the_daemon() {
         .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
         .stdout(Stdio::null());
     let mut testing = command.stderr(std::fs::File::create(&said).unwrap()).spawn().unwrap();
-    // The tests' executable is in the Fennec folder's `work` while they run, and goes once
-    // they're done.
+    // The tests' executable is in the Fennec folder's `work`, from while it's built, which can be
+    // in a process of its own, till the tests are done. They're running once a process runs it.
+    let made_in: Vec<String> = [Some(home.clone()), home.canonicalize().ok()]
+        .into_iter()
+        .flatten()
+        .map(|home| home.join("work").join("fennec-tests-").to_string_lossy().into_owned())
+        .collect();
     let tests_running = || {
+        let listed = std::process::Command::new("ps").args(["-axww", "-o", "command="]).output().unwrap();
+        text(&listed.stdout).lines().any(|line| made_in.iter().any(|made| line.contains(made.as_str())))
+    };
+    let executable_left = || {
         std::fs::read_dir(home.join("work")).is_ok_and(|listing| {
             listing.flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("fennec-tests-"))
         })
@@ -6606,13 +6615,57 @@ fn a_test_command_gone_stops_its_tests_in_the_daemon() {
     testing.kill().unwrap();
     testing.wait().unwrap();
     let stopping = std::time::Instant::now();
-    while tests_running() {
-        assert!(stopping.elapsed().as_secs() < 30, "the daemon didn't stop the tests");
+    while tests_running() || executable_left() {
+        assert!(!tests_running() || stopping.elapsed().as_secs() < 30, "the daemon didn't stop the tests");
+        assert!(stopping.elapsed().as_secs() < 30, "the tests' executable was left in `work`");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let built = fennec_in_kit(&kit, &home, true, (&["build", "."], ""), false).unwrap();
     assert!(built.status.success(), "{}", text(&built.stderr));
     with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
+/// A `fennec test` that goes while its tests are being built in a process of their own, as on
+/// Ctrl-C, stops that process, and leaves nothing of the tests' executable in `work`, though the
+/// build had started it.
+#[cfg(unix)]
+#[test]
+fn a_test_command_gone_while_its_tests_build_leaves_nothing_behind() {
+    if !crate::llvm::ready() || !cfg!(debug_assertions) {
+        return;
+    }
+    let source = "def main(stdout: Stdout):\n    stdout.print(1)\n\ntest \"one\":\n    assert 1 == 1\n";
+    let (folder, kit, home) = kit_of("stopped-test-build", source).unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let noted = folder.join("child-pid");
+    let fennec = |args: &[&str]| child_daemon_fennec(&kit, &home, &noted, (args, true));
+    let status = || fennec(&["daemon", "status"]).output();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"]), &status).unwrap();
+    let mut testing = fennec(&["test"]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let waiting = std::time::Instant::now();
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&noted).ok().filter(|pid| !pid.is_empty()) {
+            break pid;
+        }
+        assert!(testing.try_wait().unwrap().is_none(), "the command ended before its tests were built");
+        assert!(waiting.elapsed().as_secs() < 300, "the tests' build process never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    testing.kill().unwrap();
+    testing.wait().unwrap();
+    assert!(ends(&pid), "the tests' build process outlived the command");
+    let left = || {
+        std::fs::read_dir(home.join("work")).is_ok_and(|listing| {
+            listing.flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("fennec-tests-"))
+        })
+    };
+    let stopping = std::time::Instant::now();
+    while left() {
+        assert!(stopping.elapsed().as_secs() < 30, "the tests' executable was left in `work`");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    fennec(&["daemon", "stop"]).output().unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 

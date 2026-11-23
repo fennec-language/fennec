@@ -350,7 +350,7 @@ impl Interp {
             for word in words {
                 let generation = u32::try_from(if word >= 0 { word } else { -1 - word }).unwrap_or(u32::MAX);
                 let held = if word >= 0 { items.next() } else { None };
-                table.slots.push(crate::value::Slot { generation, item: held });
+                table.slots.push(crate::value::Slot { generation, tag, item: held });
             }
             return Ok(Value::Table(Box::new(table)));
         }
@@ -363,7 +363,7 @@ impl Interp {
         let tag = self.read_tag(src, kind.clone(), span)?;
         let mut table = crate::value::Table::new(tag);
         for held in items.into_inner() {
-            table.add(held);
+            table.add(held, tag);
         }
         self.ask(src, "saw_table", vec![kind, Value::Int(super::as_int(count))], Vec::new(), span)?;
         Ok(Value::Table(Box::new(table)))

@@ -658,8 +658,7 @@ def read_request(
         target = whole.rest
         host = whole.host
     mut headers: dict[str, str] = {}
-    # The headers that say how the request is framed are kept as they're read, so none is looked
-    # up again after.
+    # The headers that frame the request are kept as they're read, so none is looked up after.
     mut sent_length: str? = None
     mut coding: str? = None
     mut asked = ""
@@ -672,19 +671,19 @@ def read_request(
         value = value_after(line, colon)
         # Two of these would let two servers read two different requests from the same bytes. Only
         # they're looked for before they're set, so any other header is looked up once.
-        if name == "content-length":
-            if sent_length is not None:
-                return .Bad(status=400, reason=f"there's more than one `{name}` header")
-            sent_length = value
-        elif name == "transfer-encoding":
-            if coding is not None:
-                return .Bad(status=400, reason=f"there's more than one `{name}` header")
-            coding = value
-        elif name == "host":
-            if name in headers:
-                return .Bad(status=400, reason=f"there's more than one `{name}` header")
-        elif name == "connection":
-            asked = value
+        match name:
+            case "content-length":
+                if sent_length is not None: return twice(name)
+                sent_length = value
+            case "transfer-encoding":
+                if coding is not None: return twice(name)
+                coding = value
+            case "host":
+                if name in headers: return twice(name)
+            case "connection":
+                asked = value.lower()
+            case _:
+                pass
         headers[name] = value
     if coding is not None:
         # Both, or a coding that isn't plainly `chunked`, is where two servers in a row disagree on
@@ -705,8 +704,6 @@ def read_request(
     if host is not None:
         headers["host"] = host
     version = parts[2]
-    if asked != "":
-        asked = asked.lower()
     keep = asked != "close" if version == "HTTP/1.1" else asked == "keep-alive"
     mut path = target
     mut query: dict[str, str] = {}
@@ -732,6 +729,10 @@ def read_request(
         ),
         keep=keep,
     )
+
+## The refusal of a request with more than one header `name`, which is one of those that frame it.
+def twice(name: str) -> RequestRead:
+    return .Bad(status=400, reason=f"there's more than one `{name}` header")
 
 ## A request's target written as a whole URL: its host, and the rest from its path on.
 struct WholeTarget:
@@ -769,15 +770,15 @@ def header_colon(line: str) -> int:
     size = text_size(line)
     mut colon = -1
     for at in range(size):
-        b = text_byte(line, at)
-        if b == 58:
+        byte = text_byte(line, at)
+        if byte == 58:
             colon = at
             break
-        if not is_token_byte(b): return -1
+        if not is_token_byte(byte): return -1
     if colon <= 0: return -1
     for at in range(colon + 1, size):
-        b = text_byte(line, at)
-        if (b < 32 and b != 9) or b == 127: return -1
+        byte = text_byte(line, at)
+        if (byte < 32 and byte != 9) or byte == 127: return -1
     return colon
 
 ## Why `line` isn't a header line `header_colon` takes, its checks in the order they're said.
@@ -802,25 +803,26 @@ def is_token_part(text: str, start: int, end: int) -> bool:
         if not is_token_byte(text_byte(text, at)): return False
     return True
 
-## Whether the byte `b` may be in a token.
-def is_token_byte(b: int) -> bool:
-    if (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57): return True
+## Whether `byte` may be in a token.
+def is_token_byte(byte: int) -> bool:
+    if (byte >= 97 and byte <= 122) or (byte >= 65 and byte <= 90) or (byte >= 48 and byte <= 57):
+        return True
     return (
-        b == 45
-        or b == 95
-        or b == 46
-        or b == 33
-        or b == 35
-        or b == 36
-        or b == 37
-        or b == 38
-        or b == 39
-        or b == 42
-        or b == 43
-        or b == 94
-        or b == 96
-        or b == 124
-        or b == 126
+        byte == 45
+        or byte == 95
+        or byte == 46
+        or byte == 33
+        or byte == 35
+        or byte == 36
+        or byte == 37
+        or byte == 38
+        or byte == 39
+        or byte == 42
+        or byte == 43
+        or byte == 94
+        or byte == 96
+        or byte == 124
+        or byte == 126
     )
 
 ## The first `end` bytes of `line`, a header's name, in lower case: cut out once, and made lower
@@ -852,8 +854,8 @@ def has_control(text: str, tab: bool) -> bool:
 ## Whether `text` can be a request's target: ASCII with no control character, read over once.
 def is_plain_target(text: str) -> bool:
     for at in range(text_size(text)):
-        b = text_byte(text, at)
-        if b < 32 or b >= 127: return False
+        byte = text_byte(text, at)
+        if byte < 32 or byte >= 127: return False
     return True
 
 ## Whether `text` is one or more digits and nothing else.

@@ -1,0 +1,7 @@
+error: `.NotFound` is a case of both `DiskError` and `NetError`, so say which
+  --> examples/errors/case_both_errors_have.fen:18:9
+   |
+18 |         case .NotFound(path):
+   |         ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: write which: `DiskError.NotFound(...)` or `NetError.NotFound(...)`

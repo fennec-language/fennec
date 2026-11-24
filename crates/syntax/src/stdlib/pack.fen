@@ -433,6 +433,12 @@ struct PackWriter:
         self._varint((value << 1) ^ (value >> 63))
 
     def float(ref self, value: float):
+        # Every NaN is written as one, the quiet NaN with no sign and no payload: which bits a NaN
+        # has depends on the machine that made it, and a save has to be the same bytes on every
+        # one. Any NaN loads back as NaN.
+        if value.is_nan():
+            self._word(QUIET_NAN_BITS)
+            return
         self._word(float_bits(value))
 
     def bool(ref self, value: bool):
@@ -538,6 +544,10 @@ struct PackWriter:
         # Going through it found nothing wrong, so it's optional: it's saved as missing.
         if optional:
             bytes_set(ref self._out, self._some_at, 0)
+
+## The bits `PackWriter` writes for every NaN: the quiet NaN with no sign and no payload,
+## `0x7FF8000000000000`, as Arm makes it and as Rust's `f64::NAN` is.
+QUIET_NAN_BITS = 9221120237041090560
 
 ## Reads bytes `PackWriter` wrote, for a value's `deserialize`.
 struct PackReader:

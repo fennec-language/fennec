@@ -1627,7 +1627,7 @@ mod split_tests {
             let block = state.heap.block(list.cast_unsigned()).unwrap_or_default();
             if headers {
                 let items = lists::items(block, 3);
-                let texts = text::texts(state, items.clone());
+                let texts = text::texts(state, items);
                 for (part, words) in texts.iter().zip(items.chunks(3)) {
                     let Ok(words) = <[u64; 3]>::try_from(words) else { continue };
                     if let Some(address) = text::block_of(&words) {

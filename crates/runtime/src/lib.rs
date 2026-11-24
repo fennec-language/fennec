@@ -4,11 +4,11 @@
 //!
 //! The functions are `fennec_rt::embed`'s; this crate gives them names a linker can find,
 //! and asks the system for what only it can give: Windows's fine timer, and a process's end.
-//! It also has mimalloc call it when it runs out of memory. Those are the things here Rust calls
-//! unsafe.
+//! It also has mimalloc call it when it runs out of memory, and on Linux with glibc keeps glibc's
+//! own allocator to one arena. Those are the things here Rust calls unsafe.
 #![expect(
     unsafe_code,
-    reason = "exporting the runtime's functions under fixed names, calling the system to end the process, and giving mimalloc its error handler"
+    reason = "exporting the runtime's functions under fixed names, calling the system to end the process, giving mimalloc its error handler, and keeping glibc's allocator to one arena"
 )]
 
 use fennec_rt::embed::guarded::rollback;
@@ -619,11 +619,39 @@ pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 
     fine_timer();
     #[cfg(not(feature = "sanitize"))]
     say_when_out_of_memory();
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    one_glibc_arena();
     let code = aot::run(entry, length, stop);
     #[cfg(windows)]
     end_process(code);
     #[cfg(not(windows))]
     code
+}
+
+/// Keeps glibc's allocator to its one main arena, before any worker starts. mimalloc doesn't take
+/// glibc's place, so what glibc allocates for itself comes from glibc's allocator: as a new
+/// thread's first thread-local value with a destructor registers it, with `calloc`
+/// (`__cxa_thread_atexit_impl`). By default glibc gives each new thread an arena of its own, and
+/// making one reserves 64 MiB of address space at once. A program short of address space, as one
+/// under `ulimit -v` running out of memory in several ranges at once is, then can't make it: glibc
+/// aborts with "failed to register TLS destructor: out of memory" and a core dump, before the
+/// runtime can say it ran out. That was one run in a thousand of
+/// `llvm::ranges_running_out_of_memory_at_once_say_so_once` under load, on Linux Arm in CI and in
+/// the VM. The one main arena grows a little at a time, and glibc's own allocations are few and
+/// small, so sharing it costs nothing a program would notice.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn one_glibc_arena() {
+    unsafe extern "C" {
+        /// glibc's, from malloc.h: sets one of its allocator's parameters, giving back 1 when it
+        /// did and 0 when it didn't.
+        fn mallopt(parameter: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    /// malloc.h's `M_ARENA_MAX`: the most arenas glibc's allocator makes.
+    const M_ARENA_MAX: std::ffi::c_int = -8;
+    // SAFETY: `mallopt` takes any parameter and value, and changes only how glibc's allocator
+    // chooses arenas for allocations made after it, from any thread. Nothing else runs yet: this is
+    // before the runtime starts a thread. If it isn't taken, glibc goes on as it was.
+    unsafe { mallopt(M_ARENA_MAX, 1) };
 }
 
 /// Asks Windows to tick its timer every millisecond while the program runs, as Go's runtime does.

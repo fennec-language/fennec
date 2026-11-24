@@ -488,6 +488,7 @@ impl Emit<'_, '_, '_> {
         }
         let Operand::Local(local) = handle else { return Ok(()) };
         self.proof_nothing_out(
+            handle,
             "nothing is out of its place when a failure has a lock put back what it changed",
         );
         self.undo_changes(handle)?;

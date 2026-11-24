@@ -715,20 +715,32 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store ptr {at}, ptr {slot}"));
     }
 
-    /// In a build that checks proofs, before a failure has a lock put back what it changed: no
-    /// value is out of its place. The rollback puts back what the dicts and lists hold, and unlike
-    /// a crash's way out, a failure's doesn't put back what's taken out first. A failure leaves a
-    /// lock's body through a branch of its own, so none comes between a take and its put back,
-    /// which are in one block; this says so if that ever stops holding. Only the places taken out
-    /// earlier in the function's text are known here. Said for a lock's normal end too, `why`
-    /// saying which: a place left out there, as one taken out again after its put back was, is
-    /// written over what holds it by a crash later in the function (#2516).
-    pub(crate) fn proof_nothing_out(&mut self, why: &str) {
+    /// In a build that checks proofs, where a lock's block ends, or a failure has it put back what
+    /// it changed: nothing taken out of the lock's own value is out of its place, `why` saying
+    /// which. A failure's rollback puts back what the value's dicts and lists hold, and unlike a
+    /// crash's way out, doesn't put back what's taken out first; a place left out at the block's end,
+    /// as one taken out again after its put back was, is written over the value by a crash later
+    /// in the function (#2516). A failure leaves a lock's body through a branch of its own, so none
+    /// comes between a take and its put back, which are in one block; this says so if that ever
+    /// stops holding. A value taken out of something else, a dict's value read to set back or a
+    /// `for ref` loop's item, may stay out across the lock, and isn't the lock's to check. Only
+    /// the places taken out earlier in the function's text are known here.
+    pub(crate) fn proof_nothing_out(&mut self, handle: &Operand, why: &str) {
         if !self.checks_proofs() {
             return;
         }
-        let mut slots: Vec<(usize, String)> =
-            self.places_out.iter().map(|(value, slot)| (*value, slot.clone())).collect();
+        let Operand::Local(handle) = handle else { return };
+        let under_the_lock = |root: LocalId| root == *handle || self.known.alias(root) == Some(*handle);
+        let mut slots: Vec<(usize, String)> = self
+            .places_out
+            .iter()
+            .filter(|(value, _)| {
+                self.known
+                    .place_taken(self.function, LocalId(**value))
+                    .is_some_and(|place| under_the_lock(place.root))
+            })
+            .map(|(value, slot)| (*value, slot.clone()))
+            .collect();
         slots.sort_unstable();
         let span = self.here_span();
         for (_, slot) in slots {

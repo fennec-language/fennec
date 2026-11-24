@@ -27466,7 +27466,8 @@ def main(stdout: Stdout):
         unit = back.units[id]
         target = unit.target
         stdout.print(unit.name, back.units[target].name if target is not None else "-")
-    # Slot for slot: the same slots and generations, and the Id whose item has gone still gone.
+    # Slot for slot: the same slots, and the Id whose item has gone saved as missing, since a
+    # load gives every slot one tag and it would find what's in its slot.
     exact = pack.dumps(world, exact=True)
     mut same = pack.loads[World](exact) except ParseError(): World()
     stdout.print(len(exact), exact[3], len(same.units), same.units[same.selected[1]].name)
@@ -27502,8 +27503,8 @@ def main(stdout: Stdout):
 "#;
 
 /// `std.pack` saves a `Table` as JSON does, by position, with an `Id` whose item has gone saved
-/// as missing, and with `exact=True` slot for slot: the gone `Id` still gone, and the next `add`
-/// in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
+/// as missing, and with `exact=True` slot for slot: the gone `Id` saved as missing there too, and
+/// the next `add` in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
 /// no truncation or changed byte crashes a load in either mode.
 #[test]
 fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
@@ -27513,7 +27514,7 @@ fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
     let printed = printed_by("pack_tables", PACK_TABLES)?;
     assert_eq!(
         printed,
-        "84 2 True True\nvex -\nkit vex\n95 88 2 kit\nTrue False\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[0]` is item 10 of `units`, which has only 3\nthe data ends too soon, at byte 75\ntruncated 0 changed 2520\ntruncated 0 changed 2850\n"
+        "84 2 True True\nvex -\nkit vex\n91 88 2 kit\nFalse True\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[1]` is item 10 of `units`, which has only 3\na number is written in more bytes than it needs, at byte 71\ntruncated 0 changed 2520\ntruncated 0 changed 2730\n"
     );
     Ok(())
 }
@@ -36090,10 +36091,10 @@ struct Words:
     def here(self, message: str) -> ParseError:
         return ParseError(message=message, line=0, column=0)
 
-    def saw_id(ref self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int, generation: int):
         pass
 
-    def saw_table(ref self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
         pass
 
     def tag(ref self, kind: str) -> int:

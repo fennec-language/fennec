@@ -53,42 +53,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(unix)]
 const BUILD: &str = env!("FENNEC_BUILD");
 
-/// What a command prints, and how it exits.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Outcome {
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-    pub(crate) code: u8,
-}
+pub(crate) use fennec_daemon::Outcome;
 
-impl Outcome {
-    pub(crate) fn failure(stderr: String) -> Self {
-        Outcome { stdout: String::new(), stderr, code: 1 }
-    }
-
-    pub(crate) fn print(self) -> ExitCode {
-        print!("{}", self.stdout);
-        eprint!("{}", self.stderr);
-        ExitCode::from(self.code)
-    }
-
-    /// The outcome as the daemon sends it: the code, the two lengths, then the two texts.
-    #[cfg(unix)]
-    fn encode(&self) -> String {
-        format!("{}\n{} {}\n{}{}", self.code, self.stdout.len(), self.stderr.len(), self.stdout, self.stderr)
-    }
-
-    #[cfg(unix)]
-    fn decode(text: &str) -> Option<Outcome> {
-        let (code, rest) = text.split_once('\n')?;
-        let (lengths, rest) = rest.split_once('\n')?;
-        let (stdout_len, stderr_len) = lengths.split_once(' ')?;
-        let (stdout_len, stderr_len): (usize, usize) = (stdout_len.parse().ok()?, stderr_len.parse().ok()?);
-        let stdout = rest.get(..stdout_len)?;
-        let stderr = rest.get(stdout_len..stdout_len + stderr_len)?;
-        Some(Outcome { stdout: stdout.to_owned(), stderr: stderr.to_owned(), code: code.parse().ok()? })
-    }
-}
+/// This build, as a daemon and the commands it answers name it.
+#[cfg(unix)]
+const THIS: fennec_daemon::Build<'static> = fennec_daemon::Build { version: VERSION, build: BUILD };
 
 /// `fennec daemon status`, `stop` and `serve`.
 pub(crate) fn command(action: &str) -> ExitCode {
@@ -244,12 +213,12 @@ mod unix {
 
     use fennec_build::Cache;
 
+    use fennec_daemon::{ONE_STREAM, TWO_STREAMS, Within, connect, one_stream, owned_privately};
+    #[cfg(test)]
+    use fennec_daemon::{environment, socket_owned_by};
+
     use super::{BUILD, Kind, NO_OUTPUT, Outcome, VERSION};
     use crate::changes::Snapshots;
-
-    /// How long a socket's path may be: a little under the 104 bytes macOS takes, and the 108
-    /// Linux does.
-    const LONGEST_SOCKET: usize = 100;
 
     /// How long a request has to arrive whole, once its connection is made, however it's sent:
     /// a byte at a time, each in time, doesn't make it longer. The commands that send them write
@@ -260,207 +229,25 @@ mod unix {
     const LONGEST_LINE: u64 = 4_096;
     const LARGEST_REQUEST: u64 = 1 << 20;
 
-    /// Where the daemon listens: in Fennec's folder, unless that path is too long for a socket, in
-    /// which case the user's runtime folder, or a short folder of its own under `/tmp` named by a
-    /// hash of Fennec's folder. None when none of those will do, and then commands do their work
-    /// themselves. Only the daemon, which listens there, `makes` that folder.
+    /// Where this build's daemon for this environment listens (`fennec_daemon::socket_path`).
     fn socket_path(home: &Path, makes: bool) -> Option<PathBuf> {
-        socket_in(home, std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from), makes)
-    }
-
-    /// The variables that differ from one terminal to the next and change nothing a build does,
-    /// left out of the environment's hash so one terminal's daemon serves the others'.
-    const PER_TERMINAL: [&str; 15] = [
-        "_",
-        "COLORFGBG",
-        "ITERM_PROFILE",
-        "ITERM_SESSION_ID",
-        "LC_TERMINAL",
-        "LC_TERMINAL_VERSION",
-        "OLDPWD",
-        "PWD",
-        "SHLVL",
-        "SSH_TTY",
-        "TERM_PROGRAM",
-        "TERM_PROGRAM_VERSION",
-        "TERM_SESSION_ID",
-        "TMUX_PANE",
-        "WINDOWID",
-    ];
-
-    /// What the allocator's own settings start with. They change how a process holds memory, not
-    /// what a build makes, and the daemon is started with one of its own (`start`).
-    const ALLOCATOR: &str = "MIMALLOC_";
-
-    /// A short hash of this process's environment but for what's only a terminal's: a daemon
-    /// builds in the environment it was started in, which `cc`, the linker and every setting read,
-    /// so a command whose environment differs has a daemon of its own.
-    fn environment() -> String {
-        environment_of(std::env::vars_os())
-    }
-
-    /// `environment`, of these variables.
-    fn environment_of(variables: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>) -> String {
-        use std::os::unix::ffi::OsStrExt as _;
-        let mut variables: Vec<(std::ffi::OsString, std::ffi::OsString)> = variables
-            .filter(|(name, _)| !PER_TERMINAL.iter().any(|terminal| name == terminal))
-            .filter(|(name, _)| !name.as_bytes().starts_with(ALLOCATOR.as_bytes()))
-            .collect();
-        variables.sort();
-        let mut text = Vec::new();
-        for (name, value) in &variables {
-            text.extend_from_slice(name.as_bytes());
-            text.push(0);
-            text.extend_from_slice(value.as_bytes());
-            text.push(0);
-        }
-        let hash = fennec_blake3::hash(&text).to_hex();
-        hash.get(..16).unwrap_or(&hash).to_owned()
+        fennec_daemon::socket_path(super::THIS, home, makes)
     }
 
     /// `socket_path`, with the user's runtime folder as given.
+    #[cfg(test)]
     fn socket_in(home: &Path, runtime: Option<PathBuf>, makes: bool) -> Option<PathBuf> {
-        let name = format!("{}{}.sock", this_build(), environment());
-        // Wherever it is, its folder is its user's alone: connecting needs a way into the folder,
-        // so nobody else can reach the daemon, which reads any file it's pointed at.
-        let preferred = home.join("daemon").join(&name);
-        if preferred.as_os_str().len() < LONGEST_SOCKET {
-            owned_privately(&home.join("daemon"), home, makes)?;
-            return Some(preferred);
-        }
-        let hash = home_hash(home);
-        // The user's own runtime folder, which only they can reach, as long as it is theirs alone.
-        if let Some(runtime) = runtime.filter(|runtime| owned_privately(runtime, home, false).is_some()) {
-            let socket = runtime.join(format!("fennec-{hash}-{name}"));
-            if socket.as_os_str().len() < LONGEST_SOCKET {
-                return Some(socket);
-            }
-        }
-        let folder = Path::new("/tmp").join(format!("fennec-{hash}"));
-        owned_privately(&folder, home, makes)?;
-        Some(folder.join(name))
+        fennec_daemon::socket_in(super::THIS, home, runtime, makes)
     }
 
-    /// How every socket of this build of Fennec starts: its version, then its build.
-    fn this_build() -> String {
-        format!("{VERSION}-{}-", BUILD.get(..16).unwrap_or(BUILD))
-    }
-
-    /// A short hash of Fennec's folder, naming its sockets outside it.
-    fn home_hash(home: &Path) -> String {
-        let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
-        hash.get(..16).unwrap_or(&hash).to_owned()
-    }
-
-    /// The sockets of this build's daemons, one for each environment commands ran in, in every
-    /// folder `socket_in` may choose. A folder that isn't the user's alone is passed over.
+    /// The sockets of this build's daemons, one for each environment commands ran in.
     fn sockets(home: &Path) -> Vec<PathBuf> {
-        let hash = home_hash(home);
-        let mut folders = vec![(home.join("daemon"), String::new())];
-        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-            folders.push((PathBuf::from(runtime), format!("fennec-{hash}-")));
-        }
-        folders.push((Path::new("/tmp").join(format!("fennec-{hash}")), String::new()));
-        let mut found = Vec::new();
-        for (folder, prefix) in folders {
-            let start = format!("{prefix}{}", this_build());
-            let Some(entries) =
-                owned_privately(&folder, home, false).and_then(|()| std::fs::read_dir(&folder).ok())
-            else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with(&start) && name.ends_with(".sock") {
-                    found.push(entry.path());
-                }
-            }
-        }
-        found.sort();
-        found
-    }
-
-    /// Whether `folder` will do for a socket: open to nobody but its owner, who owns Fennec's
-    /// folder at `home` too. `/tmp` is shared, so a folder someone else made there first, or one
-    /// others can reach, is never used. The daemon `makes` it if it isn't there; for a command
-    /// that only connects, one that isn't there will do, as there's nothing in it to connect to.
-    fn owned_privately(folder: &Path, home: &Path, makes: bool) -> Option<()> {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-        // What its group and everyone else may do with it, which has to be nothing.
-        const OTHERS: u32 = 0o077;
-        if makes {
-            match std::fs::DirBuilder::new().mode(0o700).create(folder) {
-                Err(err) if err.kind() != ErrorKind::AlreadyExists => return None,
-                _ => {}
-            }
-        }
-        // Not followed if it's a link, which could point anywhere.
-        let found = match std::fs::symlink_metadata(folder) {
-            Ok(found) => found,
-            Err(err) if err.kind() == ErrorKind::NotFound && !makes => return Some(()),
-            Err(_) => return None,
-        };
-        let owner = std::fs::metadata(home).ok()?.uid();
-        if !found.is_dir() || found.uid() != owner {
-            return None;
-        }
-        // One of its owner's own made before folders were private, the daemon makes private.
-        if found.mode() & OTHERS != 0 && makes {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700)).ok()?;
-            return Some(());
-        }
-        (found.mode() & OTHERS == 0).then_some(())
-    }
-
-    /// Connects to the daemon at `socket`, as long as the socket is the user's own: whoever owns
-    /// Fennec's folder at `home`. A socket another user bound in the folder before it was made
-    /// private is theirs, and they can't give it away, so its answers, and an editor's files sent
-    /// to it, never reach them.
-    fn connect(socket: &Path, home: &Path) -> Option<UnixStream> {
-        use std::os::unix::fs::MetadataExt as _;
-        let owner = std::fs::metadata(home).ok()?.uid();
-        socket_owned_by(socket, owner).then(|| UnixStream::connect(socket).ok()).flatten()
-    }
-
-    /// Whether `socket` is a socket, not followed if it's a link, that `owner` bound.
-    fn socket_owned_by(socket: &Path, owner: u32) -> bool {
-        use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
-        std::fs::symlink_metadata(socket)
-            .is_ok_and(|found| found.file_type().is_socket() && found.uid() == owner)
-    }
-
-    /// A connection read until a moment: each read waits only what's left, so a request sent a
-    /// byte at a time still has `REQUEST_WAIT` in all. With no moment, a read waits as long as it
-    /// takes, as an editor's session does.
-    struct Within {
-        stream: UnixStream,
-        until: Option<Instant>,
-    }
-
-    impl Read for Within {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            if let Some(until) = self.until {
-                let left = until.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    return Err(ErrorKind::TimedOut.into());
-                }
-                // macOS refuses a timeout, with "invalid argument", once the other end has closed the
-                // connection, as the daemon does after its whole answer. A read then gives the end
-                // at once, so it can't wait past the deadline either.
-                match self.stream.set_read_timeout(Some(left)) {
-                    Err(err) if err.kind() != ErrorKind::InvalidInput => return Err(err),
-                    _ => {}
-                }
-            }
-            self.stream.read(buf)
-        }
+        fennec_daemon::sockets(super::THIS, home)
     }
 
     /// The first line of every request: the version and build of the `fennec` asking.
     fn header() -> String {
-        format!("fennec {VERSION} {BUILD}")
+        super::THIS.header()
     }
 
     /// How often the daemon checks the cache against its cap.
@@ -675,13 +462,7 @@ mod unix {
     pub(super) fn served(home: &Path, kind: Kind, arguments: [&str; 3]) -> Option<Outcome> {
         let folder = std::env::current_dir().ok()?;
         let folder = folder.to_str()?;
-        let [first, second, third] = arguments;
-        let streams = if one_stream() { ONE_STREAM } else { TWO_STREAMS };
-        let lines = [folder, first, second, third, streams];
-        if lines.iter().any(|line| line.contains('\n') || line.contains('\r')) {
-            return None;
-        }
-        let request = format!("{}\n{}\n{}\nend\n", header(), kind.word(), lines.join("\n"));
+        let request = fennec_daemon::work_request(super::THIS, kind.word(), folder, arguments, one_stream())?;
         let socket = socket_path(home, false)?;
         let mut stream = if let Some(stream) = connect(&socket, home) {
             stream
@@ -698,22 +479,6 @@ mod unix {
             eprintln!("note: the build daemon gave no answer, so {}", kind.done_here());
         }
         outcome
-    }
-
-    /// What a request says when the command's standard output and error are one file, and when
-    /// they're two.
-    const ONE_STREAM: &str = "one stream";
-    const TWO_STREAMS: &str = "two streams";
-
-    /// Whether this command's standard output and error are one file, as a terminal or `2>&1`
-    /// makes them. The daemon then prints both into one, so what's printed reads in the order it
-    /// was, as it does from the command's own process.
-    fn one_stream() -> bool {
-        let (Ok(out), Ok(err)) = (rustix::fs::fstat(std::io::stdout()), rustix::fs::fstat(std::io::stderr()))
-        else {
-            return false;
-        };
-        (out.st_dev, out.st_ino) == (err.st_dev, err.st_ino)
     }
 
     /// Starts the daemon in the background and waits until it answers, for up to 2 seconds.
@@ -1390,21 +1155,6 @@ mod unix {
             std::fs::write(&plain, "").unwrap();
             assert!(!socket_owned_by(&plain, me));
             assert!(super::connect(&plain, &folder).is_none());
-        }
-
-        /// The environment's hash leaves out what differs from terminal to terminal and the
-        /// allocator's settings, which the daemon is started with one of, and nothing else.
-        #[test]
-        fn the_environment_hash_leaves_out_terminals_and_the_allocator() {
-            let of = |pairs: &[(&str, &str)]| {
-                super::environment_of(pairs.iter().map(|(name, value)| ((*name).into(), (*value).into())))
-            };
-            let base = of(&[("PATH", "/usr/bin"), ("CC", "cc")]);
-            let terminal =
-                of(&[("PATH", "/usr/bin"), ("PWD", "/x"), ("CC", "cc"), ("MIMALLOC_PURGE_DELAY", "0")]);
-            assert_eq!(base, terminal);
-            assert_ne!(base, of(&[("PATH", "/opt/bin"), ("CC", "cc")]));
-            assert_ne!(base, of(&[("PATH", "/usr/bin"), ("CC", "cc"), ("LD", "ld")]));
         }
 
         /// A daemon that has served one request, or none, goes after a minute with nothing to do, or

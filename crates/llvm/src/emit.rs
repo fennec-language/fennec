@@ -5803,6 +5803,68 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// The audit a dev build runs on what each unit kept passes what writing a program kept, and
+    /// names the unit when what it kept isn't so: a share missing what it added, one with
+    /// something more, a share or an asking that couldn't be kept, and layouts numbered another
+    /// way than asking again numbers them.
+    #[test]
+    fn the_audit_names_a_unit_whose_kept_share_isnt_what_it_added() -> Result<(), String> {
+        let source = "def total(items: list[list[int]]) -> int:\n    mut summed = 0\n    for item in items:\n        summed += len(item)\n    return summed\n\ndef main(stdout: Stdout):\n    stdout.print(total([[1], [2, 3]]), \"done\")\n    return\n";
+        let program = lowered(source)?;
+        let (_, _, layouts, kept) = emit_keeping(&program, Cpu::Usual, Shared::default(), (true, None))?;
+        crate::share::audit(&program, &layouts, &kept)?;
+        let sharing = kept
+            .iter()
+            .position(|unit| {
+                unit.function == "total" && unit.share.added.as_ref().is_some_and(|added| !added.is_empty())
+            })
+            .ok_or("`total` kept nothing it shares")?;
+        let changed = |change: &dyn Fn(&mut Kept)| -> Vec<Kept> {
+            let mut kept: Vec<Kept> = kept
+                .iter()
+                .map(|unit| Kept {
+                    function: unit.function.clone(),
+                    reads: unit.reads.clone(),
+                    share: unit.share.clone(),
+                    asked: unit.asked.clone(),
+                    wrote: unit.wrote.clone(),
+                })
+                .collect();
+            change(&mut kept[sharing]);
+            kept
+        };
+        let audited = |kept: &[Kept]| crate::share::audit(&program, &layouts, kept);
+        let less = changed(&|unit| {
+            if let Some(added) = unit.share.added.as_mut() {
+                added.pop();
+            }
+        });
+        assert_eq!(
+            audited(&less),
+            Err("what `total` kept isn't what it added to what units share".to_owned())
+        );
+        let more = changed(&|unit| {
+            if let Some(added) = unit.share.added.as_mut() {
+                added.push(Added::String("s_extra".to_owned(), "extra".to_owned()));
+            }
+        });
+        assert_eq!(
+            audited(&more),
+            Err("what `total` kept isn't what it added to what units share".to_owned())
+        );
+        let unshared = changed(&|unit| unit.share.added = None);
+        assert_eq!(audited(&unshared), Err("`total` shared a kind with no name".to_owned()));
+        let unasked = changed(&|unit| unit.asked = None);
+        assert_eq!(audited(&unasked), Err("`total` asked for a number of a kind with no name".to_owned()));
+        let other = lowered("def main(stdout: Stdout):\n    stdout.print({\"a\": [1.5]})\n    return\n")?;
+        let (_, _, other_layouts, _) = emit_keeping(&other, Cpu::Usual, Shared::default(), (true, None))?;
+        assert_eq!(
+            crate::share::audit(&program, &other_layouts, &kept),
+            Err("asking again for what the units asked numbers the layouts another way".to_owned())
+        );
+        Ok(())
+    }
+
     /// What a unit keeps of the places it shares moves with its function: kept from a program,
     /// then added again for the same program with lines added above every function, it gives
     /// what writing that program gives, every place moved.

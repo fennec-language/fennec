@@ -132,3 +132,13 @@ crates/llvm/src/rollback.rs
 replace match guard kind.counted() with true in Emit<'_, '_, '_>::words_of
 _ if kind.counted() => words.push((at, Word::Block)),
 The one kind that gets here uncounted is `Unit`, and no field holds one: a program keeping a value of type `nothing` isn't lowered, so it never builds.
+
+crates/llvm/src/share.rs
+replace < with <= in moves
+at != 0 && at < Span::PRELUDE
+Also counts a place at exactly `Span::PRELUDE` as moving, and none is there: that's byte 0 of the first library file, `errors.fen`, which opens with a doc comment the lexer skips, so no token, and no instruction, starts at it.
+
+crates/llvm/src/share.rs
+replace Share::keeping -> bool with true
+self.added.is_some()
+Only has a build that keeps no units call `add` anyway: with nothing kept, `add` keeps nothing and `add_places` finds no table, and the layouts note no reads, so nothing a build writes changes.

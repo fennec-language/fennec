@@ -1,0 +1,21 @@
+# `if x is not None:` lets a name, or a field path, be read as what it holds until something could
+# change it.
+
+struct Cell:
+    health: int
+
+struct Holder:
+    cell: Cell?
+
+def main(stdout: Stdout):
+    mut holder = Holder(cell=Cell(health=3))
+    if holder.cell is not None:
+        # a change inside it leaves it checked
+        holder.cell.health += 1
+        stdout.print(holder.cell.health)
+
+    maybe: int? = None
+    if maybe is not None:
+        stdout.print(maybe + 1)
+    else:
+        stdout.print("nothing")

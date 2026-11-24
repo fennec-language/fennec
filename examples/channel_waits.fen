@@ -1,0 +1,22 @@
+# A wait on a channel can have a time limit: `send_within` and `receive_within` fail with `Timeout`
+# when it runs out.
+from std.concurrent import Closed, Timeout, channel
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=1) as jobs:
+        # nothing has been sent, so the wait runs out
+        first = jobs.receive_within(10ms) except Timeout():
+            stdout.print("nothing came")
+            None
+        stdout.print(first)
+
+        jobs.send(1)?
+        # the channel is full, so this send waits, then gives up
+        jobs.send_within(2, 10ms) except why:
+            case Timeout():
+                stdout.print("no room")
+            case _:
+                fail why
+
+        next = jobs.receive_within(10ms) except Timeout(): None
+        stdout.print(next)

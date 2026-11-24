@@ -4,9 +4,11 @@
 //! fennec [--offline] <command>...       runs the command with the kit's toolchain
 //! fennec +<version> <command>...        runs it with that version, in a kit or not, this once
 //! fennec --version <version> <command>...  the version for a script outside a kit
-//! fennec default [<version>]            says or sets the version for scripts outside a kit
-//! fennec toolchain list                 the toolchains installed, and the default
-//! fennec toolchain install <version>
+//! fennec default [<version>]            says or sets the version for scripts outside a kit; with
+//!                                       none set, they run with the newest stable one installed
+//! fennec new <path>                     a new kit, made by the version for scripts, which it pins
+//! fennec toolchain list                 the toolchains installed, the one for scripts, and this kit's
+//! fennec toolchain install <version>    or `--latest`, the newest release
 //! fennec toolchain remove <version>     or unlinks a linked build, leaving it where it is
 //! fennec toolchain link <name> <path>   runs the `fennec` in a folder of your own, like a checkout's
 //!                                       `target/release`, as `<name>`: `fennec = "dev"` in a kit
@@ -63,8 +65,19 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["toolchain", "list"] => {
-            let default = launcher.default_version();
-            let mark = |name: &str| if default.as_deref() == Some(name) { " (default)" } else { "" };
+            // Which runs for scripts, set or the newest installed, and which this kit asks for.
+            let (default, scripts, this_kit) =
+                (launcher.default_version(), launcher.for_scripts(), launcher.kit_version(&here()?));
+            let mark = |name: &str| {
+                let mut marks = Vec::new();
+                if scripts.as_deref() == Some(name) {
+                    marks.push(if default.is_some() { "default" } else { "for scripts" });
+                }
+                if this_kit.as_deref() == Some(name) {
+                    marks.push("this kit");
+                }
+                if marks.is_empty() { String::new() } else { format!(" ({})", marks.join(", ")) }
+            };
             for version in launcher.installed() {
                 println!("{version}{}", mark(&version));
             }
@@ -74,12 +87,24 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         ["toolchain", "link", name, path] => launcher.link(name, Path::new(path)).map(|()| ExitCode::SUCCESS),
+        ["toolchain", "install", "--latest"] => {
+            let version = launcher.latest()?;
+            launcher.ensure(&version, None)?;
+            println!("{version}");
+            Ok(ExitCode::SUCCESS)
+        }
         ["toolchain", "install", version] => launcher.ensure(version, None).map(|_| ExitCode::SUCCESS),
         ["toolchain", "remove", version] => launcher.remove(version).map(|()| ExitCode::SUCCESS),
         ["default", version] => launcher.set_default(version).map(|()| ExitCode::SUCCESS),
         ["default"] => {
             println!("{}", launcher.default_version().ok_or(fennec_launcher::NO_DEFAULT)?);
             Ok(ExitCode::SUCCESS)
+        }
+        // A new kit is made outside any kit, so by the version for scripts, which the new
+        // `kit.toml` then asks for.
+        ["new", ..] => {
+            let version = launcher.for_scripts().ok_or(fennec_launcher::NO_TOOLCHAIN)?;
+            hand_off(&launcher.exactly(&version)?, args, offline)
         }
         ["--latest"] => {
             println!("{}", launcher.latest()?);
@@ -91,7 +116,7 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
             hand_off(&launcher.toolchain_for(&here)?, &["update".to_owned()], offline)
         }
         ["toolchain", ..] => {
-            Err("`fennec toolchain` takes `list`, `install <version>`, `remove <version>` or `link <name> <path>`"
+            Err("`fennec toolchain` takes `list`, `install <version>`, `install --latest`, `remove <version>` or `link <name> <path>`"
                 .to_owned())
         }
         _ => hand_off(&launcher.toolchain_for(&here()?)?, args, offline),

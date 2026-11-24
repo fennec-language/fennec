@@ -35,6 +35,8 @@ impl FnCx<'_> {
             self.error(Diagnostic::new(what, place.span).with_help(help));
         }
         let ty = self.expr(place);
+        // The name written is typed too, as the place's, for the typed tree.
+        self.record(at, &ty);
         self.declare(name, ty, true, at);
     }
 

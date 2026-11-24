@@ -3642,6 +3642,25 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
     );
 }
 
+/// `std.math`'s `sqrt`, `sin`, `cos` and `acos` take an `f32` and give one, computed in `f32` by
+/// `libm`'s own, the same bits everywhere, and `abs` of an `f32` is one. Given a `float`, each is
+/// what it was.
+#[test]
+fn std_math_takes_an_f32_and_gives_one() {
+    prints(
+        "
+        from std import math
+
+        def main(stdout: Stdout):
+            half: f32 = 0.5
+            root: f32 = math.sqrt(f32(2))
+            stdout.print(root, math.sin(half), math.cos(half), math.acos(half), abs(f32(-1.5)))
+            stdout.print(root * root, math.sqrt(2.0))
+        ",
+        "1.4142135 0.47942555 0.87758255 1.0471976 1.5\n1.9999999 1.4142135623730951\n",
+    );
+}
+
 /// `toml.loads` runs `std.toml`'s own reader, written in Fennec, in place of the runtime's,
 /// through the `def deserialize` the checker writes for each type, as the oracle models it: a
 /// field left out takes its default, an optional one is `None`, a `@skip` field keeps its

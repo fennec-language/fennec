@@ -441,6 +441,12 @@ struct PackWriter:
             return
         self._word(float_bits(value))
 
+    def f32(ref self, value: f32):
+        # Its 4 bytes, low first, with every NaN the one quiet NaN, as for a float.
+        bits = F32_QUIET_NAN_BITS if float(value).is_nan() else f32_bits(value)
+        for at in range(4):
+            bytes_push(ref self._out, (bits >> (8 * at)) & 255)
+
     def bool(ref self, value: bool):
         bytes_push(ref self._out, 1 if value else 0)
 
@@ -548,6 +554,38 @@ struct PackWriter:
 ## The bits `PackWriter` writes for every NaN: the quiet NaN with no sign and no payload,
 ## `0x7FF8000000000000`, as Arm makes it and as Rust's `f64::NAN` is.
 QUIET_NAN_BITS = 9221120237041090560
+
+## The bits `PackWriter` writes for every `f32` NaN: the quiet NaN with no sign and no payload,
+## `0x7FC00000`, as Rust's `f32::NAN` is.
+F32_QUIET_NAN_BITS = 2143289344
+
+## The 32 bits of an `f32` that isn't NaN. It widens to the float it is exactly, so its bits are
+## that float's, narrowed: an `f32` too small for its own exponent is a normal float, and its
+## fraction is shifted into place, with no bits lost.
+def f32_bits(value: f32) -> int:
+    wide = float_bits(float(value))
+    sign = ((wide >> 63) & 1) << 31
+    exponent = (wide >> 52) & 2047
+    fraction = wide & 4503599627370495
+    if exponent == 0: return sign
+    if exponent == 2047: return sign | 2139095040
+    narrow = exponent - 1023 + 127
+    if narrow >= 1: return sign | (narrow << 23) | (fraction >> 29)
+    return sign | ((fraction | 4503599627370496) >> (29 + 1 - narrow))
+
+## The `f32` with these 32 bits.
+def f32_of_bits(bits: int) -> f32:
+    negative = ((bits >> 31) & 1) == 1
+    exponent = (bits >> 23) & 255
+    fraction = bits & 8388607
+    if exponent == 0:
+        # Too small for its own exponent: the fraction times 2 to the -149, which a float holds
+        # exactly.
+        tiny = float(fraction) * 1.401298464324817e-45
+        return f32(-tiny if negative else tiny)
+    wide = 2047 if exponent == 255 else exponent - 127 + 1023
+    sign = (1 << 63) if negative else 0
+    return f32(float_of_bits(sign | (wide << 52) | (fraction << 29)))
 
 ## Reads bytes `PackWriter` wrote, for a value's `deserialize`.
 struct PackReader:
@@ -703,6 +741,14 @@ struct PackReader:
 
     def float(ref self) -> float fails ParseError:
         return float_of_bits(self._word()?)
+
+    def f32(ref self) -> f32 fails ParseError:
+        if self._at + 4 > len(self._data): fail self._fail("the data ends too soon")
+        mut bits = 0
+        for at in range(4):
+            bits = bits | (self._data[self._at + at] << (8 * at))
+        self._at += 4
+        return f32_of_bits(bits)
 
     def bool(ref self) -> bool fails ParseError:
         b = self._byte()?
@@ -883,6 +929,7 @@ struct PackReader:
 ## The letters a layout writes what a value is with: see `layout` in `std.intrinsics`.
 INT = 105
 FLOAT = 102
+F32 = 103
 BOOL = 98
 TEXT = 115
 BYTES = 121
@@ -1017,6 +1064,7 @@ struct PackByName:
         elif (
             kind != INT
             and kind != FLOAT
+            and kind != F32
             and kind != BOOL
             and kind != TEXT
             and kind != BYTES
@@ -1039,6 +1087,7 @@ struct PackByName:
         kind = self._kinds[node]
         if kind == INT or kind == ID: return "an int"
         if kind == FLOAT: return "a float"
+        if kind == F32: return "an f32"
         if kind == BOOL: return "a bool"
         if kind == TEXT: return "text"
         if kind == BYTES: return "bytes"
@@ -1074,6 +1123,8 @@ struct PackByName:
             _ = self._raw._varint()?
         elif kind == FLOAT:
             _ = self._raw._word()?
+        elif kind == F32:
+            _ = self._raw.f32()?
         elif kind == BOOL:
             _ = self._raw.bool()?
         elif kind == TEXT or kind == BYTES:
@@ -1126,8 +1177,15 @@ struct PackByName:
         kind = self._kind()
         # An int field that's a float now reads as one.
         if kind == INT: return float(self._raw.int()?)
+        # So does an f32 field, exactly.
+        if kind == F32: return float(self._raw.f32()?)
         if kind != FLOAT: fail self._was("a float")
         return self._raw.float()?
+
+    def f32(ref self) -> f32 fails ParseError:
+        # A float field that's an f32 now isn't read: it would lose what an f32 can't hold.
+        if self._kind() != F32: fail self._was("an f32")
+        return self._raw.f32()?
 
     def bool(ref self) -> bool fails ParseError:
         if self._kind() != BOOL: fail self._was("a bool")

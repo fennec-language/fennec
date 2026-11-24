@@ -875,6 +875,17 @@ struct TomlReader:
             case _:
                 fail self._misfit("float")
 
+    def f32(ref self) -> f32 fails ParseError:
+        # The document's numbers are read as floats, so an f32 is its float, rounded. An `f32`'s
+        # own shortest text, as TOML writes it, reads back as the same `f32`.
+        match self._here:
+            case .Float(x):
+                return f32(x)
+            case .Int(n):
+                return f32(n)
+            case _:
+                fail self._misfit("f32")
+
     def bool(ref self) -> bool fails ParseError:
         match self._here:
             case .Bool(b):
@@ -1172,6 +1183,12 @@ struct TomlWriter:
 
     def float(ref self, value: float):
         self._done = .Float(x=value)
+
+    def f32(ref self, value: f32):
+        # The float its shortest text reads as, so the document shows that text: `0.1`, not the
+        # float `0.1` widens to.
+        shown = float.parse(str(value)) except InvalidValue(): float(value)
+        self._done = .Float(x=shown)
 
     def bool(ref self, value: bool):
         self._done = .Bool(b=value)

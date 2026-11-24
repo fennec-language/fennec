@@ -3,6 +3,8 @@
 export interface Serializer:
     def int(ref self, value: int)
     def float(ref self, value: float)
+    ## An `f32`, which a format writes as the `f32` it is, not as the `float` it widens to.
+    def f32(ref self, value: f32)
     def bool(ref self, value: bool)
     def text(ref self, value: str)
     def bytes(ref self, value: bytes)
@@ -84,6 +86,9 @@ export interface Serializable:
 export interface Deserializer:
     def int(ref self) -> int fails ParseError
     def float(ref self) -> float fails ParseError
+    ## An `f32`, read as one: a format that saves text reads it straight to the nearest `f32`,
+    ## rounded once.
+    def f32(ref self) -> f32 fails ParseError
     def bool(ref self) -> bool fails ParseError
     def text(ref self) -> str fails ParseError
     def bytes(ref self) -> bytes fails ParseError

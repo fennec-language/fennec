@@ -1311,7 +1311,16 @@ impl FnCx<'_> {
                 }
                 given
             }
-            None => self.expr(default),
+            // `speed else 0.5` on an `f32?`: a number written out takes the size it stands in for.
+            None => match self.checker.settled(&value) {
+                Type::Optional(inner) | Type::Result(inner, _)
+                    if crate::expect::number_literal(default)
+                        && matches!(self.checker.settled(&inner), Type::Sized(_)) =>
+                {
+                    self.expr_as(default, &inner)
+                }
+                _ => self.expr(default),
+            },
         };
         match value {
             Type::Optional(inner) if matches!(*inner, Type::Result(..)) => {

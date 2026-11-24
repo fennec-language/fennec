@@ -1,0 +1,22 @@
+0.1 True True cdcccc3d
+-2.5 True True 000020c0
+16777216.0 True True 0000804b
+1e-45 True True 01000000
+3.4028235e38 True True ffff7f7f
+1e-7 True True 95bfd633
+-0.0 True True 00000080
+0000c07f 0000c07f
+nan
+{"level": 0.1, "peak": 1e30, "note": "hi"}
+level = 0.1
+peak = 1e30
+note = "hi"
+
+True True True
+Reading(level=0.25, peak=0.5, note="")
+1.0000001 1.0
+the text is too big for an f32
+the text should be an f32, but it's a str
+expected a digit in the exponent, but found the end of the text, at line 1, column 5
+0.10000000149011612
+the data was saved as a float, not an f32, at byte 14

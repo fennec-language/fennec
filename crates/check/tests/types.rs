@@ -192,6 +192,24 @@ fn literals_take_the_size_they_go_into() {
     );
 }
 
+/// A number written out after `else` takes the size of the optional it stands in for, as a field's
+/// default does where a struct's generated `deserialize` fills it in; and an `f32` can be saved.
+#[test]
+fn an_else_default_takes_the_optionals_size() {
+    let program = "
+        from std import json
+
+        struct Reading:
+            level: f32 = 0.5
+
+        def shown(stdout: Stdout, found: f32?, small: u8?):
+            level: f32 = found else 0.25
+            stdout.print(level, small else 7, json.dumps(Reading()))
+            stdout.print(small else 300)
+    ";
+    assert_eq!(problems(program), ["300 doesn't fit in u8 @ 300"]);
+}
+
 /// A set, dict or tuple literal written where one holding sized numbers goes takes their sizes,
 /// each number checked to fit, as a list literal's items are.
 #[test]

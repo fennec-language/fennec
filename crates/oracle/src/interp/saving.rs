@@ -59,6 +59,9 @@ impl Interp {
                 let float = Value::Float(crate::text::int_as_float(*n));
                 self.tell(out, "float", vec![float], Vec::new(), span)
             }
+            (Type::Sized(fennec_check::Num::F32), Value::F32(_)) => {
+                self.tell(out, "f32", vec![value.clone()], Vec::new(), span)
+            }
             (Type::Bool, Value::Bool(_)) => self.tell(out, "bool", vec![value.clone()], Vec::new(), span),
             (Type::Str | Type::LiteralStr, Value::Str(_)) => {
                 self.tell(out, "text", vec![value.clone()], Vec::new(), span)
@@ -245,6 +248,7 @@ impl Interp {
             Type::Param(_) => match owner {
                 "int" => Type::Int,
                 "float" => Type::Float,
+                "f32" => Type::Sized(fennec_check::Num::F32),
                 "bool" => Type::Bool,
                 "str" => Type::Str,
                 "bytes" => Type::Bytes,
@@ -277,6 +281,7 @@ impl Interp {
         match ty {
             Type::Int => self.ask(src, "int", Vec::new(), Vec::new(), span),
             Type::Float => self.ask(src, "float", Vec::new(), Vec::new(), span),
+            Type::Sized(fennec_check::Num::F32) => self.ask(src, "f32", Vec::new(), Vec::new(), span),
             Type::Bool => self.ask(src, "bool", Vec::new(), Vec::new(), span),
             Type::Str | Type::LiteralStr => self.ask(src, "text", Vec::new(), Vec::new(), span),
             Type::Bytes => self.ask(src, "bytes", Vec::new(), Vec::new(), span),
@@ -678,6 +683,7 @@ pub(crate) fn holds(member: &Type, value: &Value) -> bool {
     match (member, value) {
         (Type::Int, Value::Int(_))
         | (Type::Float, Value::Float(_))
+        | (Type::Sized(fennec_check::Num::F32), Value::F32(_))
         | (Type::Bool, Value::Bool(_))
         | (Type::Str | Type::LiteralStr, Value::Str(_))
         | (Type::Bytes, Value::Bytes(_))

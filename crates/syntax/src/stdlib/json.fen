@@ -93,6 +93,25 @@ def float_text(value: float) -> str:
         return f"{lead}{sign}{text_part(text, digits, text_size(text))}"
     return text
 
+## An `f32` as JSON writes it: its own shortest text, the one that reads back as the same `f32`,
+## with an exponent as `float_text` writes one.
+def f32_text(value: f32) -> str:
+    text = str(value)
+    size = text_size(text)
+    mut at = 0
+    while at < size and text_byte(text, at) != 101:
+        at += 1
+    if at == size: return text
+    mut digits = at + 1
+    negative = text_byte(text, digits) == 45
+    if negative or text_byte(text, digits) == 43:
+        digits += 1
+    while text_byte(text, digits) == 48 and digits + 1 < size:
+        digits += 1
+    lead = text_part(text, 0, at)
+    sign = "e-" if negative else "e"
+    return f"{lead}{sign}{text_part(text, digits, size)}"
+
 ## How a byte JSON can't hold as it is gets written.
 def escape_of(b: int) -> str:
     match b:
@@ -125,6 +144,9 @@ struct JsonKey:
         self.fits = True
 
     def float(ref self, value: float):
+        pass
+
+    def f32(ref self, value: f32):
         pass
 
     def bool(ref self, value: bool):
@@ -241,6 +263,13 @@ struct JsonWriter:
             self._unwritable = True
             return
         piece = float_text(value)
+        self._text += piece
+
+    def f32(ref self, value: f32):
+        if value - value != 0.0:
+            self._unwritable = True
+            return
+        piece = f32_text(value)
         self._text += piece
 
     def bool(ref self, value: bool):
@@ -499,6 +528,8 @@ def no_reason() -> ParseError:
     return ParseError(message="", line=0, column=0)
 
 def article(name: str) -> str:
+    # Said "eff thirty-two".
+    if name == "f32": return "an f32"
     first = text_byte(name, 0)
     if (
         first == 97
@@ -611,6 +642,11 @@ struct TableFinder:
         pass
 
     def float(ref self, value: float):
+        if self._floats and self._problem == "" and value - value != 0.0:
+            here = place_text(self._path)
+            self._problem = f"{here} is {value}, which JSON can't write: it has no NaN or infinity"
+
+    def f32(ref self, value: f32):
         if self._floats and self._problem == "" and value - value != 0.0:
             here = place_text(self._path)
             self._problem = f"{here} is {value}, which JSON can't write: it has no NaN or infinity"
@@ -979,6 +1015,25 @@ struct JsonReader:
         self._at = at
         value = float(whole) / POWERS[places]
         return -value if negative else value
+
+    ## An `f32`: JSON's number, checked as a float's is, then its text read again straight to the
+    ## nearest `f32`, so it's rounded once, as `f32.parse` rounds it.
+    def f32(ref self) -> f32 fails ParseError:
+        mut start = self._at
+        mut b = text_byte(self._source, start)
+        while b == 32 or b == 10 or b == 13 or b == 9:
+            start += 1
+            b = text_byte(self._source, start)
+        if b != 45 and (b < 48 or b > 57):
+            self._at = start
+            fail self._misfit("f32")
+        _ = self.float()?
+        value = f32(text_part(self._source, start, self._at)) except InvalidValue(): fail no_reason()
+        # A number too big for an f32 comes out as infinity, which isn't what it said.
+        if value - value != 0.0:
+            if not self._explain: fail no_reason()
+            fail ParseError(message=f"{self._where()} is too big for an f32", line=0, column=0)
+        return value
 
     ## A float the quick way can't be sure of, read by the runtime.
     def _long_float(ref self, start: int) -> float fails ParseError:

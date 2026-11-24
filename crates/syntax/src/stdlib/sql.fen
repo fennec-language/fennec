@@ -136,6 +136,10 @@ struct SqlRowReader:
         if kind != 2: fail self._wrong(kind, "a float")
         return self._rows.floats[at]
 
+    def f32(ref self) -> f32 fails ParseError:
+        # A database's floats are doubles, so it's the column's float, rounded once.
+        return f32(self.float()?)
+
     def bool(ref self) -> bool fails ParseError:
         kind = self._kind()?
         if kind != 1: fail self._wrong(kind, "a bool")

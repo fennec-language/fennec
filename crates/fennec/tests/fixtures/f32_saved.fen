@@ -1,0 +1,55 @@
+# An `f32` saved as itself: JSON writes and reads its own shortest text, rounded once, `std.pack`
+# its 4 bytes with every NaN the one quiet NaN, and TOML through its float. Read back, each is the
+# same `f32`; a struct of them goes through all three; and what can't be read says why.
+from std import json, math, pack, toml
+
+struct Reading:
+    level: f32
+    peak: f32 = 0.5
+    note = ""
+
+def main(stdout: Stdout):
+    for value in [
+        f32(0.1),
+        f32(-2.5),
+        f32(16777217),
+        f32(1.4e-45),
+        f32(3.4028235e38),
+        f32(1e-7),
+        f32(-0.0),
+    ]:
+        text = json.dumps(value)
+        back = json.loads[f32](text) except why:
+            stdout.print(why)
+            continue
+        packed = pack.dumps(value)
+        unpacked = pack.loads[f32](packed) except why:
+            stdout.print(why)
+            continue
+        stdout.print(text, back == value, unpacked == value, packed[14:].hex())
+    nan = f32(math.NAN)
+    stdout.print(pack.dumps(nan)[14:].hex(), pack.dumps(-nan)[14:].hex())
+    nan_back = pack.loads[f32](pack.dumps(-nan)) except ParseError(): f32(0)
+    stdout.print(nan_back)
+    reading = Reading(level=0.1, peak=1e30, note="hi")
+    shown = json.dumps(reading)
+    stdout.print(shown)
+    stdout.print(toml.dumps(reading))
+    from_json = json.loads[Reading](shown) except ParseError(): Reading(level=-1.0)
+    from_toml = toml.loads[Reading](toml.dumps(reading)) except ParseError(): Reading(level=-1.0)
+    from_pack = pack.loads[Reading](pack.dumps(reading)) except ParseError(): Reading(level=-1.0)
+    stdout.print(from_json == reading, from_toml == reading, from_pack == reading)
+    partial = json.loads[Reading]("{\"level\": 0.25}") except ParseError(): Reading(level=-1.0)
+    stdout.print(partial)
+    once = json.loads[f32]("1.00000005960464477539062501") except ParseError(): f32(0)
+    wide = float.parse("1.00000005960464477539062501") except InvalidValue(): 0.0
+    stdout.print(once, f32(wide))
+    for text in ["1e39", "\"x\"", "1.5e"]:
+        _ = json.loads[f32](text) except why:
+            stdout.print(why)
+            continue
+    widened = pack.loads[float](pack.dumps(f32(0.1))) except ParseError(): -1.0
+    stdout.print(widened)
+    _ = pack.loads[f32](pack.dumps(1.5)) except why:
+        stdout.print(why)
+        return

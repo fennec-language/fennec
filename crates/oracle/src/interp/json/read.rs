@@ -163,6 +163,21 @@ impl Interp {
                 Err(_) => unsupported("a number Rust can't read"),
             },
             (Type::Float, _) => Err(reading.misfit("float", node)),
+            // Read as a float first, as std does to check the number, and then straight to the
+            // nearest `f32`, rounded once.
+            (Type::Sized(fennec_check::Num::F32), Node::Number(number)) => {
+                match (number.parse::<f64>(), number.parse::<f32>()) {
+                    (Ok(wide), _) if wide.is_infinite() => {
+                        Err(says(format!("{} is too big for a float", reading.here())))
+                    }
+                    (_, Ok(x)) if x.is_infinite() => {
+                        Err(says(format!("{} is too big for an f32", reading.here())))
+                    }
+                    (_, Ok(x)) => Ok(Value::F32(x)),
+                    (_, Err(_)) => unsupported("a number Rust can't read"),
+                }
+            }
+            (Type::Sized(fennec_check::Num::F32), _) => Err(reading.misfit("f32", node)),
             (Type::Bool, Node::Bool(truth)) => Ok(Value::Bool(*truth)),
             (Type::Bool, _) => Err(reading.misfit("bool", node)),
             (Type::Str | Type::LiteralStr, Node::Str(text)) => Ok(Value::Str(Text::from(text.clone()))),
@@ -638,6 +653,7 @@ fn wanted(ty: &Type) -> Run<String> {
     Ok(match ty {
         Type::Int | Type::Id(_) => "int".to_owned(),
         Type::Float => "float".to_owned(),
+        Type::Sized(fennec_check::Num::F32) => "f32".to_owned(),
         Type::Bool => "bool".to_owned(),
         Type::Str | Type::LiteralStr => "str".to_owned(),
         Type::List(inner) => format!("list[{}]", type_name(inner)),

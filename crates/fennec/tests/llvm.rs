@@ -27166,6 +27166,20 @@ fn pack_headers_are_the_ones_docs_pack_md_pins() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An `f32` saves as itself: JSON's shortest text read back rounded once, `std.pack`'s 4 bytes with
+/// every NaN the one quiet NaN, `0x7FC00000`, and TOML through its float, each giving back the same
+/// `f32`. A float field loads an `f32` saved before, and an `f32` field refuses a float. The
+/// reference evaluator prints the same, in `oracle`'s `an_f32_saves_as_itself`.
+#[test]
+fn an_f32_saves_as_itself_in_json_pack_and_toml() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("f32_saved", include_str!("fixtures/f32_saved.fen"))?;
+    assert_eq!(printed, include_str!("fixtures/f32_saved.out"));
+    Ok(())
+}
+
 /// What the next test builds: many small values in one stream, read in order, by name, fed a
 /// byte at a time, cut off, and two `Packer`s' bytes one after the other.
 const PACK_STREAMS: &str = r#"from std import pack
@@ -36203,6 +36217,12 @@ struct Words:
         word = self.next()?
         x = float(word) except InvalidValue():
             fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
+        return x
+
+    def f32(ref self) -> f32 fails ParseError:
+        word = self.next()?
+        x = f32.parse(word) except InvalidValue():
+            fail ParseError(message=f"`{word}` should be an f32", line=0, column=self.at)
         return x
 
     def bool(ref self) -> bool fails ParseError:

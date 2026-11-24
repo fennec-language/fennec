@@ -4406,6 +4406,41 @@ fn a_write_nothing_after_can_undo_goes_unsaved_and_the_rest_go_back() -> std::io
     Ok(())
 }
 
+/// Values taken out of a dict or a list stay out across a lock and go back after it, with a lock
+/// that fails among them: built checking proofs, a lock's end and a failure's rollback check only
+/// what's taken out of the lock's own value, and both programs print what they do built plainly
+/// (#2516). A check of every value out stopped both, though nothing was wrong.
+#[test]
+fn values_out_of_a_dict_or_a_list_across_a_lock_are_not_the_lock_s_to_check() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_values_out")?;
+        let (program, executable) = (dir.join("values_out.fen"), dir.join("values_out"));
+        std::fs::write(&program, include_str!("fixtures/workers/lock_with_values_out_around_it.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            include_str!("fixtures/workers/lock_with_values_out_around_it.out"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// Locks taken alone begin and end in native code, with no log; two taken together, a save the
 /// runtime sees, a failure and a crash in a launched task each make the log first. Whatever the
 /// mix, what came before a lock that failed or crashed goes back exactly, and the rest is kept.

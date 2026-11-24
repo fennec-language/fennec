@@ -1028,7 +1028,7 @@ mod tests {
         let Ok(tools) = Tools::find() else {
             return Ok(());
         };
-        let source = "def main(stdout: Stdout):\n    got = float(\"1.5\") except why:\n        stdout.print(why)\n        return\n    stdout.print(got)\n";
+        let source = "def main(stdout: Stdout):\n    got = float.parse(\"1.5\") except why:\n        stdout.print(why)\n        return\n    stdout.print(got)\n";
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let mut program = fennec_ir::lower(&module, &checked);

@@ -66,6 +66,8 @@ pub(super) fn formatted(value: &Value, spec: Option<&str>) -> Option<String> {
     let text = match (value, kind, precision) {
         (Value::Int(n), "" | "d", None) => n.to_string(),
         (Value::Int(n), "" | "f", Some(places)) => format!("{:.places$}", super::builtins::to_float(*n)),
+        // A NaN or an infinity prints as it does without a spec, so a NaN is `nan`, not Rust's `NaN`.
+        (Value::Float(x), "" | "f", Some(_)) if !x.is_finite() => fennec_syntax::dump::float(*x),
         (Value::Float(x), "" | "f", Some(places)) => format!("{x:.places$}"),
         (Value::Float(x), "" | "f", None) => fennec_syntax::dump::float(*x),
         _ => return None,

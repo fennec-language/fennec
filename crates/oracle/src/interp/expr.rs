@@ -227,7 +227,7 @@ impl Interp {
     /// What a name means where it's read: a local, a constant, a function, or a builtin.
     pub(crate) fn name_value(&mut self, name: &str, span: Span) -> Run<Value> {
         if let Some(value) = self.lookup(name, span)? {
-            return Ok(value);
+            return Ok(self.as_read(value, span));
         }
         if self.program.constant_at(name, span)
             && let Some(value) = self.constant(name)?
@@ -310,7 +310,8 @@ impl Interp {
         if !except {
             return match self.chain(value)? {
                 None | Some(Value::None) => self.default_of(default, None),
-                Some(found) => Ok(found),
+                // `else` takes off one level: a `T??` holding an `int?` that's `None` gives it.
+                Some(found) => Ok(found.unwrapped()),
             };
         }
         let ran = match &value.kind {

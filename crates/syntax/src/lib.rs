@@ -23,8 +23,8 @@ pub mod visit;
 
 pub use ast::{
     Annotation, Arg, BinOp, Blob, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic,
-    HOLDABLE, Holds, Import, Interface, Item, MatchArm, Module, Param, Pattern, REF, Stmt, StmtKind, TestDef,
-    TypeDef, TypeExpr, UnaryOp, WithName,
+    HOLDABLE, Holds, Import, Interface, Item, MatchArm, Module, OPTIONAL, Param, Pattern, REF, Stmt,
+    StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp, WithName,
 };
 pub use diagnostic::{Also, Diagnostic, Edit, HELP_MARK, Hint, KIT_MARK, apply_fixes, without_kits};
 pub use doc_examples::doc_examples;

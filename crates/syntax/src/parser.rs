@@ -7,8 +7,8 @@ mod stmt;
 mod template;
 
 use crate::ast::{
-    Case, ExprKind, Extension, Field, FnDef, Generic, Import, Interface, Item, Module, Param, Stmt, StmtKind,
-    TestDef, TypeDef, TypeExpr,
+    Case, ExprKind, Extension, Field, FnDef, Generic, Import, Interface, Item, Module, OPTIONAL, Param, Stmt,
+    StmtKind, TestDef, TypeDef, TypeExpr,
 };
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
@@ -1003,7 +1003,8 @@ impl Parser {
                 && !self.at_p(Punct::Arrow)
             {
                 let optional = self.eat_p(Punct::Question);
-                return Ok(TypeExpr { optional, span: start.to(self.prev_span()), ..only.clone() });
+                let ty = TypeExpr { optional, span: start.to(self.prev_span()), ..only.clone() };
+                return Ok(self.more_optional(ty, start));
             }
             // `(int, str) -> bool`: a function type, its return type last. One that can fail
             // says so, as in `(str) -> int fails ParseError`, which is written in as its own
@@ -1044,7 +1045,20 @@ impl Parser {
             self.expect_p(Punct::RBracket)?;
         }
         let optional = self.eat_p(Punct::Question);
-        Ok(TypeExpr { name, args, optional, span: start.to(self.prev_span()) })
+        let ty = TypeExpr { name, args, optional, span: start.to(self.prev_span()) };
+        Ok(self.more_optional(ty, start))
+    }
+
+    /// `int??`: each `?` after an optional's is an optional of it, which stays apart from it, so
+    /// `None` and an optional holding `None` are told apart. It's written as the `?` type around
+    /// it, as `|` and `->` are.
+    fn more_optional(&mut self, mut ty: TypeExpr, start: Span) -> TypeExpr {
+        while (ty.optional || ty.name == OPTIONAL) && self.at_p(Punct::Question) {
+            self.advance();
+            let span = start.to(self.prev_span());
+            ty = TypeExpr { name: OPTIONAL.to_owned(), args: vec![ty], optional: false, span };
+        }
+        ty
     }
 }
 

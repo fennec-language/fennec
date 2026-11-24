@@ -2457,11 +2457,12 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &list)
     }
 
-    /// A list of constants, like `embed_folder`'s paths and files: made the first time it's
-    /// reached and kept for the whole run, as a constant's value is, and handed out with one more
-    /// owner each time after. Nothing changes one in place, as it can't be changed. In a program
-    /// with tasks it's made each time instead, since a task's thread can't make a block every
-    /// thread reads once they've started.
+    /// A list of constants, `embed_folder`'s paths and files: made the first time each thread
+    /// reaches it, by the runtime, as a block that lives for the whole run on that thread, kept in
+    /// a global, and handed out with one more owner each time after (#2429). Its items are made
+    /// that way too: string literals and `embed_file`'s bytes. With tasks, the global is each
+    /// thread's own, as `embed_file`'s is, since only the thread that made a block reads it. Nothing
+    /// changes one in place: its count is too high for any to have it alone.
     pub(crate) fn constant_list(
         &mut self,
         dest: LocalId,
@@ -2469,13 +2470,14 @@ impl Emit<'_, '_, '_> {
         block: usize,
     ) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
-        if self.module.threads || !matches!(kind, Kind::List(_)) || self.array_shape(&kind).is_some() {
+        if !matches!(kind, Kind::List(_)) || self.array_shape(&kind).is_some() {
             return self.make_list(dest, items, block);
         }
         let site = self.label("list");
         let global = format!("@\"f_{}.{site}\"", self.function.name);
+        let local = if self.module.threads { "thread_local(initialexec) " } else { "" };
         // One for every module, as another module may have a copy of this function to inline.
-        self.declare(&format!("{global} = linkonce_odr hidden global ptr null, align 8"));
+        self.declare(&format!("{global} = linkonce_odr hidden {local}global ptr null, align 8"));
         let (kept, none) = (self.temp(), self.temp());
         self.line(&format!("{kept} = load ptr, ptr {global}, align 8"));
         self.line(&format!("{none} = icmp eq ptr {kept}, null"));
@@ -2485,14 +2487,12 @@ impl Emit<'_, '_, '_> {
         self.start_block(&first);
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
-        let made = self.new_list(item, &items.len().to_string());
+        let made = self.new_list_with(item, &items.len().to_string(), "fennec_list_constant");
         let memory = held.memory(self.module.layouts);
         for (position, value) in items.iter().enumerate() {
             let at = self.item_address(&made, &memory, &position.to_string());
             self.fill(&held, value, &at, ITEM_ACCESS)?;
         }
-        self.declare("declare void @fennec_constant_kept(ptr) nounwind");
-        self.line(&format!("call void @fennec_constant_kept(ptr {made})"));
         self.line(&format!("store ptr {made}, ptr {global}, align 8"));
         let made_end = self.current.clone();
         self.line(&format!("br label %{ready}"));

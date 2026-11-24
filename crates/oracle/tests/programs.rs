@@ -3651,6 +3651,47 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
     );
 }
 
+/// `std.math`'s `sqrt`, `sin`, `cos` and `acos` take an `f32` and give one, computed in `f32` by
+/// `libm`'s own, the same bits everywhere, and `abs` of an `f32` is one. Given a `float`, each is
+/// what it was.
+#[test]
+fn std_math_takes_an_f32_and_gives_one() {
+    prints(
+        "
+        from std import math
+
+        def main(stdout: Stdout):
+            half: f32 = 0.5
+            root: f32 = math.sqrt(f32(2))
+            stdout.print(root, math.sin(half), math.cos(half), math.acos(half), abs(f32(-1.5)))
+            stdout.print(root * root, math.sqrt(2.0))
+        ",
+        "1.4142135 0.47942555 0.87758255 1.0471976 1.5\n1.9999999 1.4142135623730951\n",
+    );
+}
+
+/// `f32.parse` reads text straight to the nearest `f32`, rounded once. Read as a `float` first and
+/// converted, a number just past halfway between two `f32`s lands on halfway and rounds to the
+/// even one: this one reads as the `f32` after 1, and through a `float` as 1. What isn't a number
+/// fails, saying so.
+#[test]
+fn f32_parse_rounds_once() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            once = f32.parse('1.00000005960464477539062501') except InvalidValue(): f32(0)
+            wide = float.parse('1.00000005960464477539062501') except InvalidValue(): 0.0
+            twice = f32(wide)
+            bad = f32.parse('1,5') except why:
+                stdout.print(why)
+                f32(0)
+            spaced = f32.parse(' -2e3 ') except InvalidValue(): f32(0)
+            stdout.print(once, twice, once == twice, bad, spaced)
+        ",
+        "\"1,5\" isn't a float\n1.0000001 1.0 False 0.0 -2000.0\n",
+    );
+}
+
 /// `toml.loads` runs `std.toml`'s own reader, written in Fennec, in place of the runtime's,
 /// through the `def deserialize` the checker writes for each type, as the oracle models it: a
 /// field left out takes its default, an optional one is `None`, a `@skip` field keeps its

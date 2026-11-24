@@ -464,6 +464,27 @@ pub extern "C" fn new(element: i64, count: i64) -> i64 {
     })
 }
 
+/// `fennec_list_constant(element, count)`: a list of `count` items of a kind, all zero, for native
+/// code to fill once with a constant's items, as `embed_folder`'s paths and files (#2429). It lives
+/// for the whole run on the thread that asks: native code keeps one per thread and never lets it
+/// go, so no task's end may take it away, and its count keeps anything from changing it in place.
+pub extern "C" fn constant(element: i64, count: i64) -> i64 {
+    super::made_with("fennec_list_constant", |state| {
+        let Some((at, stride)) = item_words(state, element) else { return 0 };
+        let count = usize::try_from(count).unwrap_or(0);
+        let mut block = build(state, at, stride, &[], count);
+        if let Some(length) = block.get_mut(2) {
+            *length = u64::try_from(count).unwrap_or(0);
+        }
+        if let Some(owners) = block.first_mut() {
+            *owners = super::heap::NEVER_FREED_COUNT;
+        }
+        let address = i64::try_from(block.as_ptr().addr()).unwrap_or(0);
+        state.heap.adopt(&mut vec![block]);
+        address
+    })
+}
+
 /// A new empty list owned once, with room for `room` items, for a loop that knows about how
 /// many it will add. A long list's memory isn't touched until it's used.
 pub extern "C" fn with_room(element: i64, room: i64) -> i64 {

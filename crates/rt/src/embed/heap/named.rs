@@ -114,19 +114,28 @@ fn id_map(instance: &Instance) -> Option<Table> {
         _ => None,
     };
     let (items, generations) = (list("items")?, list("generations")?);
-    let slots = items.iter().zip(generations.iter()).map(|(item, generation)| {
-        let Value::Int(generation) = generation else { return None };
-        Some(if *generation < 0 {
-            Slot { generation: u32::try_from(-1 - generation).ok()?, value: None }
-        } else {
-            Slot { generation: u32::try_from(*generation).ok()?, value: Some(item.clone()) }
-        })
-    });
-    let tag = match instance.field("tag")? {
-        Value::Int(tag) => u64::try_from(*tag).ok()?,
+    // Each slot's tag, as a layout since #2424 keeps them, or the one tag of a `Table` laid out
+    // before, which every slot had.
+    let tags: Vec<u64> = match (instance.field("slot_tags"), instance.field("tag")) {
+        (Some(_), _) => list("slot_tags")?
+            .iter()
+            .map(|tag| match tag {
+                Value::Int(tag) => u64::try_from(*tag).ok(),
+                _ => None,
+            })
+            .collect::<Option<_>>()?,
+        (None, Some(Value::Int(tag))) => vec![u64::try_from(*tag).ok()?; generations.len()],
         _ => return None,
     };
-    Some(Table::tagged(slots.collect::<Option<_>>()?, tag))
+    let slots = items.iter().zip(generations.iter()).zip(tags).map(|((item, generation), tag)| {
+        let Value::Int(generation) = generation else { return None };
+        Some(if *generation < 0 {
+            Slot { generation: u32::try_from(-1 - generation).ok()?, tag, value: None }
+        } else {
+            Slot { generation: u32::try_from(*generation).ok()?, tag, value: Some(item.clone()) }
+        })
+    });
+    Some(Table::new(slots.collect::<Option<_>>()?))
 }
 
 /// What `write_named` did.
@@ -227,7 +236,17 @@ fn write_id_map(
     words.push(u64::try_from(live).ok()?);
     // Where to start looking for a free slot: from the first is always right.
     words.push(0);
-    words.push(map.tag);
+    let tags: Vec<u64> = map.slots.iter().map(|slot| slot.tag).collect();
+    for (field, _) in fields.iter().skip(4) {
+        match field.as_ref() {
+            "slot_tags" => {
+                words.push(u64::try_from(super::super::lists::list_of_items(state, &ints, &tags)).ok()?);
+            }
+            // A `Table` laid out before #2424 holds one tag, which every slot of one it made has.
+            "tag" => words.push(tags.first().copied().unwrap_or_else(crate::value::new_tag)),
+            _ => return None,
+        }
+    }
     Some(())
 }
 

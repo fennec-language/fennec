@@ -3815,6 +3815,25 @@ fn a_flat_message_crosses_a_channel_as_its_words() -> std::io::Result<()> {
     )
 }
 
+/// Enums in messages: an enum, a struct holding one, an enum holding another, a union and a struct
+/// holding one, a struct holding an optional number, and an enum with a case holding a list, which
+/// isn't flat. A struct holding a flat enum crosses as its words, with a copy of the blocks only its
+/// case names. Each case arrives as sent while the sender changes its own. It prints the same with
+/// `FENNEC_BLOCK_MESSAGES=1`, in dev and release, and ends with nothing held. CI runs it under the
+/// address and thread sanitizers, at 1, 4 and 8 threads.
+#[test]
+fn an_enum_in_a_message_crosses_whole_as_its_words_or_a_block() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BLOCK_MESSAGES",
+        "enum_messages",
+        include_str!("fixtures/workers/enum_messages.fen"),
+        include_str!("fixtures/workers/enum_messages.out"),
+    )
+}
+
 /// Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
 /// under its error, a number that doesn't fit its size, and a pick from a range given backwards.
 /// Each ends its task as a crash and the program goes on, with nothing left of the messages. The
@@ -16742,6 +16761,24 @@ def main(stdout: Stdout):
     )
 }
 
+/// `re.pattern_problem` says what's wrong with text that isn't a pattern, as a `Regex` built from
+/// it would, for a program to report a pattern from outside rather than stop on it.
+#[test]
+fn a_patterns_problem_is_what_a_regex_built_from_it_would_say() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "pattern_problems",
+        r#"from std.re import is_regex, pattern_problem
+
+def main(stdout: Stdout):
+    for pattern in ["[0-9+", "a{2,1}", "(" * 251 + "a" + ")" * 251]:
+        stdout.print(is_regex(pattern), pattern_problem(pattern))
+"#,
+    )
+}
+
 /// A task that crashes partway through filling a list lets go of what it made so far: a
 /// comprehension whose length is kept aside while it runs, and the keys `sorted(key=)` makes
 /// before a key crashes. What a task leaves comes back to the code that launched it, so a leak
@@ -29219,6 +29256,23 @@ fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
         assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
     }
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// No two items ever have the same `Id`, in any copy of a `Table`, however it was made (#2424): a copy
+/// changed, one sent on a channel, one a launched task is given, one read out of a lock, and a lock
+/// that fails and puts the `Table` back. An `Id` made before a copy finds its item in both, and one
+/// made after only where it was made. It prints what the reference evaluator prints, in both
+/// builds, with nothing left.
+#[test]
+fn no_two_items_have_the_same_id_in_any_copy_of_a_table() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/tables_copied.fen");
+    let wanted = include_str!("fixtures/tables_copied.out");
+    prints_in_both_builds("tables_copied", source, wanted)?;
+    assert!(counts_of("tables_copied_counts", source)?.ends_with(" live 0"));
     Ok(())
 }
 

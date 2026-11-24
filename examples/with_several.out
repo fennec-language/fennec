@@ -1,0 +1,9 @@
+open a
+open b
+inside A and B
+close b
+close a
+split
+reader and writer
+joined
+2

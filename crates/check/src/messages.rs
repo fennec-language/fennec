@@ -123,7 +123,7 @@ pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
         && **value == Type::Bool
     {
         return Diagnostic::new(format!("`{keyword}` needs a bool, but this can fail"), span)
-            .with_help("pass the failure up with `?`, or give the answer for a failure with `else`")
+            .with_help("pass the failure up with `?`, or handle it with `except why:` first")
             .with_fix(Span { start: span.end, end: span.end }, "?");
     }
     let help = if ty.is_collection() {

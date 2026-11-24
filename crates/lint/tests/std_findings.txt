@@ -91,40 +91,6 @@ json.fen: [short-name] `c` is too short to say what it is: write a word
 json.fen: [short-name] `c` is too short to say what it is: write a word
 json.fen: [short-name] `e` is too short to say what it is: write a word
 math.fen: [assert-outside-tests] `assert` is for tests
-math.fen: [missing-doc] the exported method `+` has no doc comment
-math.fen: [missing-doc] the exported method `+` has no doc comment
-math.fen: [missing-doc] the exported method `+` has no doc comment
-math.fen: [missing-doc] the exported method `-` has no doc comment
-math.fen: [missing-doc] the exported method `-` has no doc comment
-math.fen: [missing-doc] the exported method `-` has no doc comment
-math.fen: [missing-doc] the exported method `abs` has no doc comment
-math.fen: [missing-doc] the exported method `abs` has no doc comment
-math.fen: [missing-doc] the exported method `abs` has no doc comment
-math.fen: [missing-doc] the exported method `determinant` has no doc comment
-math.fen: [missing-doc] the exported method `determinant` has no doc comment
-math.fen: [missing-doc] the exported method `distance` has no doc comment
-math.fen: [missing-doc] the exported method `distance` has no doc comment
-math.fen: [missing-doc] the exported method `distance` has no doc comment
-math.fen: [missing-doc] the exported method `dot` has no doc comment
-math.fen: [missing-doc] the exported method `dot` has no doc comment
-math.fen: [missing-doc] the exported method `dot` has no doc comment
-math.fen: [missing-doc] the exported method `dot` has no doc comment
-math.fen: [missing-doc] the exported method `from_rotation_x` has no doc comment
-math.fen: [missing-doc] the exported method `from_rotation_y` has no doc comment
-math.fen: [missing-doc] the exported method `from_rotation_z` has no doc comment
-math.fen: [missing-doc] the exported method `identity` has no doc comment
-math.fen: [missing-doc] the exported method `identity` has no doc comment
-math.fen: [missing-doc] the exported method `identity` has no doc comment
-math.fen: [missing-doc] the exported method `length_squared` has no doc comment
-math.fen: [missing-doc] the exported method `length_squared` has no doc comment
-math.fen: [missing-doc] the exported method `length_squared` has no doc comment
-math.fen: [missing-doc] the exported method `length` has no doc comment
-math.fen: [missing-doc] the exported method `length` has no doc comment
-math.fen: [missing-doc] the exported method `length` has no doc comment
-math.fen: [missing-doc] the exported method `length` has no doc comment
-math.fen: [missing-doc] the exported method `zero` has no doc comment
-math.fen: [missing-doc] the exported method `zero` has no doc comment
-math.fen: [missing-doc] the exported method `zero` has no doc comment
 math.fen: [short-name] `a0` is too short to say what it is: write a word
 math.fen: [short-name] `a0` is too short to say what it is: write a word
 math.fen: [short-name] `a1` is too short to say what it is: write a word
@@ -141,27 +107,6 @@ math.fen: [short-name] `a6` is too short to say what it is: write a word
 math.fen: [short-name] `a6` is too short to say what it is: write a word
 math.fen: [short-name] `a7` is too short to say what it is: write a word
 math.fen: [short-name] `a7` is too short to say what it is: write a word
-math.fen: [short-name] `w` is too short to say what it is: write a word
-math.fen: [short-name] `w` is too short to say what it is: write a word
-math.fen: [short-name] `w` is too short to say what it is: write a word
-math.fen: [short-name] `wx` is too short to say what it is: write a word
-math.fen: [short-name] `wy` is too short to say what it is: write a word
-math.fen: [short-name] `wz` is too short to say what it is: write a word
-math.fen: [short-name] `x2` is too short to say what it is: write a word
-math.fen: [short-name] `xw` is too short to say what it is: write a word
-math.fen: [short-name] `xx` is too short to say what it is: write a word
-math.fen: [short-name] `xy` is too short to say what it is: write a word
-math.fen: [short-name] `xy` is too short to say what it is: write a word
-math.fen: [short-name] `xz` is too short to say what it is: write a word
-math.fen: [short-name] `xz` is too short to say what it is: write a word
-math.fen: [short-name] `y2` is too short to say what it is: write a word
-math.fen: [short-name] `yw` is too short to say what it is: write a word
-math.fen: [short-name] `yy` is too short to say what it is: write a word
-math.fen: [short-name] `yz` is too short to say what it is: write a word
-math.fen: [short-name] `yz` is too short to say what it is: write a word
-math.fen: [short-name] `z2` is too short to say what it is: write a word
-math.fen: [short-name] `zw` is too short to say what it is: write a word
-math.fen: [short-name] `zz` is too short to say what it is: write a word
 net.fen: [long-function] `read_request` is 97 lines, and a function can be 80
 net.fen: [missing-doc] the exported method `flush` has no doc comment
 net.fen: [missing-doc] the exported method `lines` has no doc comment

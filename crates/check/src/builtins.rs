@@ -843,7 +843,7 @@ impl FnCx<'_> {
             if !matches!(first, Type::Int | Type::Float | Type::Sized(_) | Type::Unknown) {
                 let message = format!("`{name}(...)` converts a number, not {}", a(first));
                 let help = if *first == Type::Str {
-                    format!("read the text as a number first, as `{name}(float(text)?)`")
+                    format!("read the text with `{name}.parse`, as `{name}.parse(text)?`")
                 } else {
                     format!("pass a number, as `{name}(1.5)`")
                 };
@@ -856,7 +856,7 @@ impl FnCx<'_> {
         if !integer {
             let message = format!("`{name}(...)` converts an integer, not {}", a(first));
             let help = match self.checker.settled(first) {
-                Type::Str => format!("read it as an int first: `{name}(int(text)?)`"),
+                Type::Str => format!("read the text with `{name}.parse`, as `{name}.parse(text)?`"),
                 Type::Float => {
                     format!("make it a whole number first: `{name}(round(x))` or `{name}(int(x))`")
                 }

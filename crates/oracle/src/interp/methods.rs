@@ -241,10 +241,10 @@ impl Interp {
                 Ok(x) => Ok(Value::Float(x)),
                 Err(_) => Err(not_a_number(text, "a float", span)),
             },
-            // Read straight to the nearest `f32`, rounded once.
+            // Read straight to the nearest `f32`, rounded once; text that isn't one fails as `float`'s does.
             ("f32", "parse", [Value::Str(text)]) => match text.trim().parse::<f32>() {
                 Ok(x) => Ok(Value::F32(x)),
-                Err(_) => Err(not_a_number(text, "an f32", span)),
+                Err(_) => Err(not_a_number(text, "a float", span)),
             },
             ("bytes", "fromhex", [Value::Str(text)]) => match from_hex(text) {
                 Ok(data) => Ok(Value::Bytes(data)),

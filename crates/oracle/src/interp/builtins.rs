@@ -127,7 +127,8 @@ impl Interp {
                 // std's `f32.parse`: text read straight to the nearest `f32`, rounded once.
                 Value::Str(text) => match text.trim().parse::<f32>() {
                     Ok(x) => Ok(Value::F32(x)),
-                    Err(_) => Err(not_a_number(&text, "an f32", span)),
+                    // Text that isn't one says so as `float`'s does, as `u8.parse` says `int`'s.
+                    Err(_) => Err(not_a_number(&text, "a float", span)),
                 },
                 other => unsupported(format!("`f32` of a {}", other.kind())),
             },

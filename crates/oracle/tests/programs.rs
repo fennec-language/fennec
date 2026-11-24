@@ -3683,7 +3683,7 @@ fn f32_parse_rounds_once() {
             spaced = f32.parse(' -2e3 ') except InvalidValue(): f32(0)
             stdout.print(once, twice, once == twice, bad, spaced)
         ",
-        "\"1,5\" isn't an f32\n1.0000001 1.0 False 0.0 -2000.0\n",
+        "\"1,5\" isn't a float\n1.0000001 1.0 False 0.0 -2000.0\n",
     );
 }
 

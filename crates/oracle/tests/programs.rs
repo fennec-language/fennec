@@ -3661,6 +3661,28 @@ fn std_math_takes_an_f32_and_gives_one() {
     );
 }
 
+/// `f32.parse` reads text straight to the nearest `f32`, rounded once. Read as a `float` first and
+/// converted, a number just past halfway between two `f32`s lands on halfway and rounds to the
+/// even one: this one reads as the `f32` after 1, and through a `float` as 1. What isn't a number
+/// fails, saying so.
+#[test]
+fn f32_parse_rounds_once() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            once = f32.parse('1.00000005960464477539062501') except InvalidValue(): f32(0)
+            wide = float.parse('1.00000005960464477539062501') except InvalidValue(): 0.0
+            twice = f32(wide)
+            bad = f32.parse('1,5') except why:
+                stdout.print(why)
+                f32(0)
+            spaced = f32.parse(' -2e3 ') except InvalidValue(): f32(0)
+            stdout.print(once, twice, once == twice, bad, spaced)
+        ",
+        "\"1,5\" isn't an f32\n1.0000001 1.0 False 0.0 -2000.0\n",
+    );
+}
+
 /// `toml.loads` runs `std.toml`'s own reader, written in Fennec, in place of the runtime's,
 /// through the `def deserialize` the checker writes for each type, as the oracle models it: a
 /// field left out takes its default, an optional one is `None`, a `@skip` field keeps its

@@ -355,3 +355,18 @@ extend u64:
         # Checked by division first, so no product is past the top.
         if self != 0 and other > top // self: return top
         return self * other
+
+## `f32`'s methods written in Fennec.
+extend f32:
+    ## The `f32` `text` writes, as `"1.5"`, `"-2e3"` or `"inf"`, with space around it: read straight
+    ## to the nearest `f32`, so it's rounded once, which reading a `float` and converting it isn't
+    ## always. `"nan"` and `"inf"` read as NaN and infinity, as `float.parse` reads them. Anything
+    ## else fails, saying what it was given.
+    ##
+    ## ```fennec
+    ## assert f32.parse(" 1.5 ")? == f32(1.5)
+    ## assert f32.parse("1.00000005960464477539062501")? > f32(1)
+    ## assert f32.parse("1,5") fails InvalidValue()
+    ## ```
+    def parse(text: str) -> f32 fails InvalidValue:
+        return f32(text)?

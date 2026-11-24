@@ -835,6 +835,11 @@ impl FnCx<'_> {
     fn sized_conversion(&mut self, num: crate::types::Num, first: &Type, at: Span) -> Type {
         let name = num.name();
         if num.is_float() {
+            // std's `f32.parse` reads text straight to the nearest `f32`, so it's rounded once:
+            // written over this, as `int.parse` is over `int(text)`. A program writes `.parse`.
+            if *first == Type::Str && at.in_prelude() {
+                return Type::result(Type::Sized(num), Type::named("InvalidValue"));
+            }
             if !matches!(first, Type::Int | Type::Float | Type::Sized(_) | Type::Unknown) {
                 let message = format!("`{name}(...)` converts a number, not {}", a(first));
                 let help = if *first == Type::Str {

@@ -1016,6 +1016,91 @@ mod tests {
         }
     }
 
+    /// An `f32`'s `math.sqrt`, `math.sin`, `math.cos` and `math.acos`, its `abs`, and `f32(text)`,
+    /// written as IR, as the checker gives them once it types them: each an `f32`, by LLVM's `f32`
+    /// square root and `fabs`, `libm`'s `f32` functions through the runtime, and the runtime's
+    /// reading of text straight to an `f32`. Nothing else makes these yet, so the IR is written
+    /// here, and LLVM checks what's made of it.
+    #[test]
+    fn an_f32s_math_and_reading_one_from_text_are_its_own() -> Result<(), String> {
+        use fennec_check::{Num, Type};
+        use fennec_ir::{Block, Inst, InstKind, Local, LocalId, Operand, Terminator};
+        let Ok(tools) = Tools::find() else {
+            return Ok(());
+        };
+        let source = "def main(stdout: Stdout):\n    got = float(\"1.5\") except why:\n        stdout.print(why)\n        return\n    stdout.print(got)\n";
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let mut program = fennec_ir::lower(&module, &checked);
+        let f32_ty = Type::Sized(Num::F32);
+        let read = Type::Result(Box::new(f32_ty.clone()), Box::new(Type::Named("InvalidValue".to_owned())));
+        let local =
+            |name: &str, ty: &Type| Local { name: Some(name.to_owned()), ty: ty.clone(), copied: false };
+        let builtin = |dest: usize, name: &str, from: usize| Inst {
+            kind: InstKind::Builtin {
+                dest: Some(LocalId(dest)),
+                name: name.to_owned(),
+                args: vec![Operand::Local(LocalId(from))],
+                changes: false,
+            },
+            span: fennec_syntax::Span::default(),
+        };
+        program.functions.push(fennec_ir::Function {
+            name: "f32_math".to_owned(),
+            params: 2,
+            mut_params: Vec::new(),
+            returns: f32_ty.clone(),
+            locals: vec![
+                local("x", &f32_ty),
+                local("text", &Type::Str),
+                local("root", &f32_ty),
+                local("sine", &f32_ty),
+                local("cosine", &f32_ty),
+                local("angle", &f32_ty),
+                local("size", &f32_ty),
+                local("read", &read),
+            ],
+            blocks: vec![Block {
+                insts: vec![
+                    builtin(2, "math.sqrt", 0),
+                    builtin(3, "math.sin", 2),
+                    builtin(4, "math.cos", 3),
+                    builtin(5, "math.acos", 4),
+                    builtin(6, "f32.abs", 5),
+                    builtin(7, "f32", 1),
+                ],
+                end: Terminator::Return(Some(Operand::Local(LocalId(6)))),
+            }],
+            counts: Vec::new(),
+            places: Vec::new(),
+        });
+        let (units, _, _) = crate::emit(&program)?;
+        let unit = units.iter().find(|unit| unit.function == "f32_math").ok_or("no unit for `f32_math`")?;
+        for wanted in [
+            "call float @llvm.sqrt.f32(",
+            "call double @fennec_sinf(",
+            "call double @fennec_cosf(",
+            "call double @fennec_acosf(",
+            "@llvm.fabs",
+            "@fennec_parse_f32",
+        ] {
+            assert!(unit.text.contains(wanted), "no {wanted} in:\n{}", unit.text);
+        }
+        let work = std::env::temp_dir().join(format!("fennec-f32-math-{}", std::process::id()));
+        std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
+        let input = work.join("f32_math.ll");
+        let verified = std::fs::write(&input, marked(&unit.text).as_bytes())
+            .map_err(|err| err.to_string())
+            .and_then(|()| {
+                run(
+                    Command::new(&tools.opt).args(["-passes=verify", "-disable-output"]).arg(&input),
+                    "opt on `f32_math`",
+                )
+            });
+        let _ = std::fs::remove_dir_all(&work);
+        verified.map_err(|why| format!("{why}\n{}", unit.text))
+    }
+
     /// An optional of an optional, `T??`, is held as an `Option[T?]` enum for every way a `T?` is
     /// held: an enum of its own for an int, a bool or a struct kept in place, a block's address or
     /// null for a boxed struct or a list, and a string's header. Making one, copying it, asking

@@ -432,6 +432,54 @@ fn after_an_edit(dir: &Path, edit: &str) -> std::io::Result<Vec<Output>> {
     (0..2).map(|_| run(&home, dir)).collect()
 }
 
+/// How many kits' states Fennec's folder `home` keeps: one for a kit whose tests all passed, which
+/// the next run holds the kit's files against before reading any of them, and others for what a
+/// run kept of it.
+fn kit_states(home: &Path) -> usize {
+    let mut folders = vec![home.to_path_buf()];
+    let mut states = 0;
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.parent().is_some_and(|parent| parent.ends_with("kit-state")) {
+                states += 1;
+            }
+        }
+    }
+    states
+}
+
+/// A kit with no tests passes them all, and that's kept as when a kit's one test passes, so the run
+/// after one with no change finds nothing to run without reading the kit. That's so whether no file
+/// says `test "` or only a comment does. A test written after runs first all the same.
+#[test]
+fn a_kit_with_no_tests_is_kept_as_passing_them_and_a_test_added_runs_first() {
+    let main = "def main(stdout: Stdout):\n    stdout.print(1)\n";
+    let passing = "test \"passes\":\n    assert 1 == 1\n";
+    let tested = kit_of("one_test", &[("main.fen", main), ("checks.fen", passing)]).unwrap();
+    for _ in 0..2 {
+        assert_eq!(stdout(&run(&tested.join("home"), &tested).unwrap()), "1\n");
+    }
+    let kept = kit_states(&tested.join("home"));
+    std::fs::remove_dir_all(&tested).unwrap();
+    for (name, comment) in [("no_tests", ""), ("no_tests_said", "## Write `test \"name\":` for a test.\n")] {
+        let dir = kit_of(name, &[("main.fen", &format!("{comment}{main}"))]).unwrap();
+        let home = dir.join("home");
+        for _ in 0..2 {
+            assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n", "{name}");
+            assert_eq!(kit_states(&home), kept, "{name}");
+        }
+        std::fs::write(dir.join("src/more.fen"), "test \"more\":\n    assert 1 == 2\n").unwrap();
+        let stopped = run(&home, &dir).unwrap();
+        assert_eq!(stopped.status.code(), Some(1), "{name}");
+        assert_eq!(stdout(&stopped), "", "{name}");
+        assert_eq!(kit_states(&home), kept - 1, "{name}: a failed test forgets the kit's state");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 /// A leading-dot case with nothing to say which enum it's from is refused when more than one enum
 /// in the kit has it, even after runs that checked only the edited file and what it imports, which
 /// see one of them.

@@ -669,6 +669,13 @@ pub(crate) fn remember(
     store_with_facts(cache, name, &with_embedded(files, program), facts)
 }
 
+/// Notes that a kit with these files, and no tests, passes them all: its state with no facts, which
+/// is all a run looks at. `fennec test` finds no facts for it, so it checks all of the kit, and then
+/// remembers it in full.
+pub(crate) fn note_no_tests((cache, name): (&Cache, &str), files: &[KitFile]) -> std::io::Result<()> {
+    cache.store_kit_state(name, BUILD, files)
+}
+
 /// Forgets what's remembered, since a test failed.
 pub(crate) fn forget((cache, name): (&Cache, &str)) {
     cache.clear_kit_state(name, BUILD);

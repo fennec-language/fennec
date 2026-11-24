@@ -46,7 +46,9 @@ impl Emit<'_, '_, '_> {
             ("PI" | "math.PI", [], []) => {
                 dest.and_then(|dest| self.assign(dest, &float_text(std::f64::consts::PI)))
             }
-            ("float.abs", [value], [Some(Kind::Float)]) => dest.and_then(|dest| {
+            // An `f32`'s is the `f64` holding it without its sign, which is exactly an `f32` too.
+            ("float.abs", [value], [Some(Kind::Float)])
+            | ("f32.abs" | "float.abs", [value], [Some(Kind::F32)]) => dest.and_then(|dest| {
                 let (value, _) = self.operand(value)?;
                 let absolute = self.float_call("fabs", &value);
                 self.assign(dest, &absolute)
@@ -103,6 +105,16 @@ impl Emit<'_, '_, '_> {
             ("math.acos", [value], [Some(Kind::Float | Kind::Int)]) => {
                 dest.and_then(|dest| self.turned(dest, "fennec_acos", value))
             }
+            // An `f32`'s, by `libm`'s `f32` functions, the same bits on every platform.
+            ("math.sin", [value], [Some(Kind::F32)]) => {
+                dest.and_then(|dest| self.turned(dest, "fennec_sinf", value))
+            }
+            ("math.cos", [value], [Some(Kind::F32)]) => {
+                dest.and_then(|dest| self.turned(dest, "fennec_cosf", value))
+            }
+            ("math.acos", [value], [Some(Kind::F32)]) => {
+                dest.and_then(|dest| self.turned(dest, "fennec_acosf", value))
+            }
             ("math.exp", [value], [Some(Kind::Float | Kind::Int)]) => {
                 dest.and_then(|dest| self.turned(dest, "fennec_exp", value))
             }
@@ -150,7 +162,7 @@ impl Emit<'_, '_, '_> {
             ("list.contains", [list, item], [Some(Kind::List(_)), _]) => {
                 dest.and_then(|dest| self.list_contains(dest, list, item))
             }
-            ("int" | "float", [text], [Some(Kind::Str)]) => {
+            ("int" | "float" | "f32", [text], [Some(Kind::Str)]) => {
                 dest.and_then(|dest| self.number_of_text(dest, name, text))
             }
             ("list", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.chars(dest, text)),
@@ -327,7 +339,9 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &nearest)
     }
 
-    /// `int(text)` or `float(text)`: `Ok` with the number, or `Err` with an `InvalidValue`.
+    /// `int(text)`, `float(text)` or `f32(text)`: `Ok` with the number, or `Err` with an
+    /// `InvalidValue`. An `f32` is read straight to the nearest `f32`, and its message is a
+    /// float's.
     pub(crate) fn number_of_text(&mut self, dest: LocalId, name: &str, text: &Operand) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         let (ok_case, ok_fields) = self.case_of(&kind, "Ok")?;
@@ -365,7 +379,7 @@ impl Emit<'_, '_, '_> {
         };
         // A float's text goes to the runtime as its header's words, read where it is: only text
         // that isn't a float is made a block, for the message that says so.
-        let by_header = name == "float" && self.headers();
+        let by_header = matches!(name, "float" | "f32") && self.headers();
         let (block, made) = if by_header {
             (None, None)
         } else if self.headers() {
@@ -377,15 +391,19 @@ impl Emit<'_, '_, '_> {
         let bits_at = self.place_for(&Kind::Int);
         let (read, bits, is_number) = (self.temp(), self.temp(), self.temp());
         if let Some(block) = &block {
-            let function = if name == "int" { "fennec_parse_int" } else { "fennec_parse_float" };
+            let function = match name {
+                "int" => "fennec_parse_int",
+                "f32" => "fennec_parse_f32",
+                _ => "fennec_parse_float",
+            };
             self.declare(&format!("declare i64 @{function}(ptr, ptr) nounwind"));
             self.line(&format!("{read} = call i64 @{function}(ptr {block}, ptr {bits_at})"));
         } else {
             let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&value, at));
-            self.declare("declare i64 @fennec_parse_float_header(i64, i64, i64, ptr) nounwind");
-            self.line(&format!(
-                "{read} = call i64 @fennec_parse_float_header(i64 {t0}, i64 {t1}, i64 {t2}, ptr {bits_at})"
-            ));
+            let function =
+                if name == "f32" { "fennec_parse_f32_header" } else { "fennec_parse_float_header" };
+            self.declare(&format!("declare i64 @{function}(i64, i64, i64, ptr) nounwind"));
+            self.line(&format!("{read} = call i64 @{function}(i64 {t0}, i64 {t1}, i64 {t2}, ptr {bits_at})"));
         }
         self.line(&format!("{is_number} = icmp ne i64 {read}, 0"));
         let (good, bad, joined) = (self.label("number"), self.label("not_number"), self.label("read"));

@@ -116,8 +116,7 @@ extend str:
         pad = width - len(self)
         # As wide already, as most numbers padded are: the text as it is, with nothing made.
         if pad <= 0: return self
-        if self.startswith("-") or self.startswith("+"):
-            return self[:1] + "0" * pad + self[1:]
+        if self.startswith("-") or self.startswith("+"): return self[:1] + "0" * pad + self[1:]
         return "0" * pad + self
 
     ## The text without `prefix` at its start, or as it is if it doesn't start with it.

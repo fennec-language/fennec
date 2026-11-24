@@ -1,5 +1,5 @@
 ## `list`'s methods written in Fennec. Growing, shrinking and reading a slot are machine
-## operations the engines provide.
+## operations the compiler gives.
 extend list[T]:
     ## Adds every item of `more` to the end, in order.
     ##
@@ -126,7 +126,7 @@ extend list[T: Deserializable]:
     def deserialize(ref src: Deserializer) -> list[T] fails ParseError:
         return src.sequence[T]()?
 
-## `list`'s methods the engines provide. Each is declared here for its signature and its doc, and a
+## `list`'s methods the compiler gives. Each is declared here for its signature and its doc, and a
 ## test holds it to the checker's own.
 extend list[T]:
     ## How many items it has.
@@ -160,7 +160,7 @@ extend list[T]:
     @intrinsic
     def pop(ref self) -> T?
 
-## `Buffer`'s methods the engines provide: the growable, counted run of slots a `list` is built on.
+## `Buffer`'s methods the compiler gives: the growable, counted run of slots a `list` is built on.
 ## Each is declared here for its signature and its doc, and a test holds it to the checker's own.
 extend Buffer[T]:
     ## How many items it has.

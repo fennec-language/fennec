@@ -386,9 +386,7 @@ impl FnCx<'_> {
                 "this arrow function can fail, but where it's passed takes one that can't",
                 body.span,
             )
-            .with_help(
-                "give a value for a failure with `else` inside it, or write a loop, which can use `?`",
-            ),
+            .with_help("handle the failure inside it with `except`, or write a loop, which can use `?`"),
         );
     }
 

@@ -639,6 +639,12 @@ struct State {
     /// time a dict of values in place asks: its width is a walk over the kind's type, which every
     /// call for such a dict would otherwise make.
     value_widths: std::cell::OnceCell<Box<[usize]>>,
+    /// Where each kind's words name blocks when it's sent or taken as a message's words, worked
+    /// out the first time a message is (see `channels::words`): `None` for a kind that isn't flat.
+    message_plans: std::cell::OnceCell<Box<[Option<channels::MessagePlan>]>>,
+    /// The places of a message's words that name blocks, and the blocks copied for it, kept
+    /// between sends so a send doesn't make them again.
+    message_lists: (Vec<usize>, Vec<u64>),
 }
 
 thread_local! {
@@ -755,6 +761,8 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         trace: Trace::default(),
         dict_value: std::cell::OnceCell::new(),
         value_widths: std::cell::OnceCell::new(),
+        message_plans: std::cell::OnceCell::new(),
+        message_lists: (Vec::new(), Vec::new()),
     }));
 }
 

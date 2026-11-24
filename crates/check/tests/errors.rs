@@ -563,6 +563,34 @@ fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
     );
 }
 
+/// A leading-dot case that more than one of the errors it could be has, as `.NotFound` where
+/// `DiskError | NetError` both have one, names each and shows each written out, matched or built.
+/// Written with its type, it's fine.
+#[test]
+fn a_case_that_several_errors_have_names_each() {
+    let errors = "error DiskError:\n    NotFound(path: str)\n    Full\n\n\
+                  error NetError:\n    NotFound(path: str)\n    Refused\n\n\
+                  error CacheError:\n    NotFound(path: str)\n\n";
+    let both = "`.NotFound` is a case of both `DiskError` and `NetError`, so say which";
+    let matched = format!(
+        "{errors}def load(path: str) -> str fails DiskError | NetError:\n    if path == \"\": fail DiskError.Full()\n    return path\n\n\
+         def main(stdout: Stdout):\n    text = load(\"a\") except why:\n        case .NotFound(path):\n            \
+         stdout.print(path)\n            return\n        case _:\n            stdout.print(why)\n            return\n    stdout.print(text)\n"
+    );
+    let found = problems(&matched);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found.iter().all(|one| one.starts_with(&format!("{both} @ case .NotFound(path):"))), "{found:?}");
+    let built = format!(
+        "{errors}def load(path: str) -> str fails DiskError | NetError | CacheError:\n    fail .NotFound(path)\n"
+    );
+    assert_eq!(
+        problems(&built),
+        ["`.NotFound` is a case of `CacheError`, `DiskError` and `NetError`, so say which @ .NotFound"]
+    );
+    let written = matched.replace("case .NotFound(path):", "case DiskError.NotFound(path):");
+    assert_eq!(problems(&written), Vec::<String>::new());
+}
+
 #[test]
 fn only_the_error_fails_names_can_escape() {
     assert_eq!(

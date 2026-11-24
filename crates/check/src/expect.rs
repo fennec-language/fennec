@@ -371,7 +371,12 @@ impl FnCx<'_> {
             Type::Errors(names) => {
                 let having: Vec<String> =
                     names.into_iter().filter(|name| self.has_case(name, case)).collect();
-                let [owner] = having.as_slice() else { return None };
+                // More than one has it: which is meant has to be written. It's checked on as the
+                // first, so nothing more is said of it.
+                if having.len() > 1 {
+                    self.error(crate::messages::shared_case(&having, case, span));
+                }
+                let owner = having.first()?;
                 self.checker.cases.insert((span.start, span.end), owner.clone());
                 return Some(owner.clone());
             }

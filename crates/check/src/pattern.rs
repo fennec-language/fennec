@@ -709,6 +709,11 @@ impl FnCx<'_> {
             if let [owner] = having.as_slice() {
                 return Some((owner.clone(), Some(name.to_owned())));
             }
+            // `.NotFound` where `IoError` and `NetError` both have one: it could be either.
+            if dotted && having.len() > 1 {
+                self.error(crate::messages::shared_case(&having, name, span));
+                return None;
+            }
             if dotted {
                 let message = format!("none of `{}` has a case called `{name}`", owners.join(" | "));
                 let help = self.cases_help(owners, name);

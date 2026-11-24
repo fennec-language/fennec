@@ -1,5 +1,5 @@
 //! Optionals: a `T?` can't be used as a `T` until it's known not to be None, by an `is None`
-//! check, `?`, `?.` or `else`. `match` over an enum covers every case.
+//! check or `else`. `match` over an enum covers every case.
 
 use crate::{helps, problems};
 

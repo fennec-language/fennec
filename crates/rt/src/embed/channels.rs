@@ -44,7 +44,7 @@ enum Message {
     /// `.Every`: each takes a copy of its own.
     Shared(u64, Arc<Table>),
     /// A flat message's words, with copies of the blocks they name (see `words`).
-    Words(Box<words::Flat>),
+    Words(words::Flat),
     /// The same, kept for every listener of a channel to `.Every`: each takes copies of its own.
     SharedWords(Arc<words::Flat>),
 }
@@ -891,6 +891,7 @@ fn wake(waiting: Notes) {
 mod every;
 pub use every::{channel_listen, channel_new_every};
 mod words;
+pub(super) use words::Plan as MessagePlan;
 pub use words::{channel_receive_words, channel_send_words};
 
 #[cfg(test)]

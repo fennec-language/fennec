@@ -1,0 +1,45 @@
+# Every NaN packs to the same bytes, whatever its sign and payload: which bits a NaN has depends on
+# the machine that made it, as `INFINITY - INFINITY` has its sign bit set on x86-64 and not on
+# Arm, and a save has to be the same bytes on every machine. Each NaN here is loaded from bytes
+# that hold it exactly, then packed again. Any NaN loads back as NaN.
+from std import pack
+from std.math import INFINITY, NAN
+
+## The bytes `pack.dumps` gives for a float whose 8 bytes are `bits`, low byte first.
+def float_saved_as(bits: list[int]) -> bytes:
+    plain = pack.dumps(0.0)
+    return plain[0:len(plain) - 8] + bytes(bits)
+
+## A NaN of each sign and payload, as each 8 bytes, low byte first.
+NANS = [
+    # The quiet NaN with no sign, as Arm makes it.
+    [0, 0, 0, 0, 0, 0, 248, 127],
+    # The quiet NaN with its sign set, as x86-64 makes it.
+    [0, 0, 0, 0, 0, 0, 248, 255],
+    # Quiet NaNs with payloads.
+    [1, 0, 0, 0, 0, 0, 248, 127],
+    [255, 255, 255, 255, 255, 255, 255, 255],
+    # Signaling NaNs, of each sign.
+    [1, 0, 0, 0, 0, 0, 240, 127],
+    [0, 0, 0, 0, 0, 0, 244, 255],
+]
+
+def main(stdout: Stdout) fails ParseError:
+    for bits in NANS:
+        nan = pack.loads[float](float_saved_as(bits))?
+        stdout.print(nan.is_nan(), pack.dumps(nan).hex())
+    # And the NaNs a program makes, which differ by machine.
+    for nan in [NAN, -NAN, INFINITY - INFINITY, 0.0 * INFINITY]:
+        stdout.print(nan.is_nan(), pack.dumps(nan).hex())
+    stdout.print(pack.dumps(1.5).hex())
+
+test "every NaN packs to the bytes of the quiet NaN with no sign"():
+    canonical = float_saved_as(NANS[0])
+    for bits in NANS:
+        nan = pack.loads[float](float_saved_as(bits))?
+        assert nan.is_nan()
+        assert pack.dumps(nan) == canonical
+    for nan in [NAN, -NAN, INFINITY - INFINITY, 0.0 * INFINITY]:
+        assert pack.dumps(nan) == canonical
+    # A number that isn't NaN packs as its own bits.
+    assert pack.dumps(-0.0) != pack.dumps(0.0)

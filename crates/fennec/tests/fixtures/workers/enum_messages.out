@@ -19,4 +19,12 @@ counted 1 5
 counted 2 None
 listing empty
 listing ["one", "a text long enough to need a block of its own, number 6"]
-sender kept a text long enough to need a block of its own, number 1 (changed by the sender) 0 1 2
+color Color.Red
+color Color.Blue
+measured 2.5 True -7
+raw 67 bytes([98, 121, 116, 101, 115])
+raw 0 bytes([])
+named a text long enough to need a block of its own, number 7
+named no label
+at 8 [a text long enough to need a block of its own, number 8] Color.Green
+sender kept a text long enough to need a block of its own, number 1 (changed by the sender) 0 1 2 68

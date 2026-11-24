@@ -1,7 +1,8 @@
 # Enums in messages, sent to a task: an enum, a struct holding one, an enum holding another, a
 # union and a struct holding one, a struct holding an optional number, and an enum with a case
-# that holds a list, which isn't flat. Each case is sent, its strings short, long and
-# missing, and each arrives as it was sent while the sender changes its own after. It prints the
+# that holds a list, which isn't flat; an enum of only names, and one whose cases hold a float, a
+# bool, a sized number, bytes, an optional string and a struct kept in place. Each case is sent,
+# its strings short, long and missing, and each arrives as it was sent while the sender changes its own after. It prints the
 # same with flat messages sent as their words and with FENNEC_BLOCK_MESSAGES=1, and ends with
 # nothing held.
 from std.concurrent import Closed, Crashed, Inbox
@@ -39,6 +40,21 @@ struct Counted:
 enum Listing:
     Empty
     Items(items: list[str])
+
+enum Color:
+    Red
+    Green
+    Blue
+
+struct Spot:
+    x: int
+    name: str
+
+enum Reading:
+    Measured(value: float, ok: bool, small: i16)
+    Raw(data: bytes)
+    Named(label: str?)
+    At(spot: Spot, color: Color)
 
 def long_text(number: int) -> str:
     return f"a text long enough to need a block of its own, number {number}"
@@ -95,6 +111,22 @@ def listings(inbox: Inbox[Listing], stdout: Stdout):
             case .Items(items):
                 stdout.print("listing", items)
 
+def colors(inbox: Inbox[Color], stdout: Stdout):
+    for got in inbox:
+        stdout.print("color", got)
+
+def readings(inbox: Inbox[Reading], stdout: Stdout):
+    for got in inbox:
+        match got:
+            case .Measured(value, ok, small):
+                stdout.print("measured", value, ok, small)
+            case .Raw(data):
+                stdout.print("raw", len(data), data[:5])
+            case .Named(label):
+                stdout.print("named", label else "no label")
+            case .At(spot, color):
+                stdout.print("at", spot.x, f"[{spot.name}]", color)
+
 def sent(stdout: Stdout) fails Closed | Crashed:
     mut text = long_text(1)
     with launch((inbox) => events(inbox, stdout))? as sends:
@@ -127,7 +159,19 @@ def sent(stdout: Stdout) fails Closed | Crashed:
     with launch((inbox) => listings(inbox, stdout))? as sends:
         sends.send(.Empty())?
         sends.send(.Items(items=["one", long_text(6)]))?
-    stdout.print("sender kept", text)
+    with launch((inbox) => colors(inbox, stdout))? as sends:
+        sends.send(.Red())?
+        sends.send(.Blue())?
+    mut data = "bytes long enough to be a block of their own, sent and then changed".encode()
+    with launch((inbox) => readings(inbox, stdout))? as sends:
+        sends.send(.Measured(value=2.5, ok=True, small=-7))?
+        sends.send(.Raw(data=data))?
+        sends.send(.Raw(data="".encode()))?
+        sends.send(.Named(label=long_text(7)))?
+        sends.send(.Named(label=None))?
+        sends.send(.At(spot=Spot(x=8, name=long_text(8)), color=.Green()))?
+        data += "!".encode()
+    stdout.print("sender kept", text, len(data))
     return
 
 def main(stdout: Stdout):

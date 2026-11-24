@@ -28,8 +28,6 @@ fennec_notes_frame in-cant-fail 0
 fennec_notes_frame unchecked 2
 fennec_notes_list unchecked 0
 fennec_parse_int unchecked 5
-fennec_regex_groups unchecked 1
-fennec_regex_is_valid unchecked 3
 fennec_str_compare in-cant-fail 5
 fennec_str_find_header unchecked 0
 fennec_text_contains unchecked 0

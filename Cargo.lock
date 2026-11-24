@@ -374,6 +374,7 @@ dependencies = [
  "fennec-re",
  "fennec-rt",
  "fennec-syntax",
+ "socket2",
 ]
 
 [[package]]

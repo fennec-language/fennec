@@ -142,7 +142,7 @@ impl Emit<'_, '_, '_> {
     /// The number of a message's kind in the runtime's table, and how many words it's laid out in,
     /// when it crosses a channel as its words: when it's flat, as the runtime says
     /// (`Element::is_flat_message`, the one place that's decided), and held in place, a string's
-    /// header or a plain struct. A number or a bool is one word anyway.
+    /// header, or a plain struct or enum. A number or a bool is one word anyway.
     fn flat_message(&mut self, kind: &Kind) -> Option<(String, usize)> {
         if !messages_as_words() {
             return None;
@@ -150,7 +150,7 @@ impl Emit<'_, '_, '_> {
         let layouts = self.module.layouts;
         let item = match kind {
             Kind::Str if self.headers() => ListItem::Str,
-            Kind::Struct(id) => ListItem::Struct(*id),
+            Kind::Struct(id) | Kind::Enum(id) => ListItem::Struct(*id),
             _ => return None,
         };
         let flat =

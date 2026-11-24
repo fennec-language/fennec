@@ -7527,6 +7527,57 @@ fn optionals_that_are_none_reach_another_task_as_none_every_way() -> std::io::Re
     Ok(())
 }
 
+/// An optional of an optional keeps a `None` inside apart from `None` (#2413): a `None` popped
+/// out of a `list[int?]` isn't the list being empty, a generic `T?` of a `Point?` that holds
+/// `None` isn't nothing found, and an `Inbox[int?]` hears a `None` that was sent, and goes on to
+/// the messages after it, where it once read the message's block as its number and kept it.
+#[test]
+fn an_optional_of_an_optional_keeps_a_none_inside_apart() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("nested_optionals", NESTED_OPTIONALS, NESTED_OPTIONALS_PRINTS)?;
+    assert!(counts_of("nested_optionals_counts", NESTED_OPTIONALS)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NESTED_OPTIONALS: &str = r#"from std.concurrent import Closed, Crashed, Inbox
+
+struct Point:
+    x: int
+
+def first_of[T](items: list[T]) -> T?:
+    if len(items) == 0:
+        return None
+    return items[0]
+
+def gather(inbox: Inbox[int?], stdout: Stdout):
+    for got in inbox:
+        stdout.print("got", got, got is None)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    none_int: int? = None
+    mut numbers: list[int?] = [7, none_int]
+    first_pop = numbers.pop() else 99
+    second_pop = numbers.pop() else 99
+    third_pop = numbers.pop() else 99
+    stdout.print(first_pop, second_pop, third_pop)
+    none_point: Point? = None
+    points: list[Point?] = [none_point]
+    found = first_of(points)
+    stdout.print(found is None, (found else Point(x=1)) is None)
+    nothing: list[Point?] = []
+    stdout.print(first_of(nothing) is None)
+    with launch((inbox) => gather(inbox, stdout))? as sends:
+        sends.send(12)?
+        sends.send(none_int)?
+        sends.send(3)?
+    return
+"#;
+
+const NESTED_OPTIONALS_PRINTS: &str =
+    "None 7 99\nFalse True\nTrue\ngot 12 False\ngot None True\ngot 3 False\n";
+
 const NONE_EVERY_WAY: &str = r#"# Optionals that are `None` going every way a value goes to another task: a channel, a task's
 # captures, `parallel`'s items and what it gives back, and a lock, for `str?`, `list[int]?` and
 # `dict[str, int]?`, each inside a tuple, and where one can be, alone.
@@ -9775,6 +9826,10 @@ fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
         // first, which a replay says as its recording did (Fable 5.2's review, 2026-11-20).
         "skipped_would_wait",
         "range_at_block_end",
+        // A listener's receive on a channel to `.Every` waits past its recording's end, as any
+        // receive with no time limit does (#2430).
+        "listener_alone",
+        "listener_in_a_task",
     ];
     for name in deadlocking {
         let dir = folder(&format!("deadlock-replays-{name}"))?;
@@ -9825,7 +9880,9 @@ fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
 /// blocks' ends with no time limit, the program stops with exit code 1, after what it printed,
 /// saying who waits for what, as Go's "all goroutines are asleep" does. Without threads, `main`
 /// alone; with them, two tasks on each other's channels, a task at a full channel, the last task
-/// that could move ending, and a task waiting at a block's end of its own.
+/// that could move ending, and a task waiting at a block's end of its own. A listener of a channel
+/// to `.Every` with nothing new for it is one of the waits too: `main`'s, with a message kept from
+/// before it listened, and a task's (#2430).
 #[test]
 fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -9835,6 +9892,11 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
     let main_for =
         |task: u32| format!("  main is waiting at the end of a `with launch` block, for task {task}\n");
     let receives = |task: u32| format!("  task {task} is waiting to receive on a channel that's empty\n");
+    let listens = |who: &str| {
+        format!(
+            "  {who} is waiting to receive as a listener of a channel to `.Every`, with nothing new for it\n"
+        )
+    };
     let cases = [
         ("receive_alone", "before\n", "  main is waiting to receive on a channel that's empty\n".to_owned()),
         ("each_other", "both launched\n", format!("{}{}{}", main_for(2), receives(1), receives(2))),
@@ -9845,6 +9907,8 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
             format!("{}  task 1 is waiting to send on a channel that's full\n", main_for(1)),
         ),
         ("last_ends", "napped\n", format!("{}{}", main_for(2), receives(2))),
+        ("listener_alone", "listening\n", listens("main")),
+        ("listener_in_a_task", "launched\n", format!("{}{}", main_for(1), listens("task 1"))),
         (
             "inside_a_task",
             "launched inside\n",
@@ -9948,7 +10012,7 @@ fn a_parallel_call_that_can_still_end_is_never_a_deadlock() -> std::io::Result<(
 }
 
 /// A wait that something can still end is never taken for a deadlock: a receive with a time limit;
-/// one whose sender naps first; one a crash of the task its code launched cuts short, which
+/// one whose sender naps first; a listener of a channel to `.Every` whose sender naps first; one a crash of the task its code launched cuts short, which
 /// changes nothing on the channel; a task stopped while it counts that only then comes to a
 /// receive, while its launcher waits at the block's end with no time limit left (from Fable 5.2's
 /// review of the design); and, where there's `sleep` to run, a task waiting on `main` while `main`
@@ -9961,6 +10025,7 @@ fn a_wait_something_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
     let mut cases = vec![
         ("timeout_fine", "gave up\n", ""),
         ("sender_naps", "7\n", ""),
+        ("listener_naps", "heard 1\nheard 2\nheard 3\n", ""),
         (
             "crash_wakes",
             "it crashed\n",
@@ -34494,7 +34559,7 @@ def main(stdout: Stdout):
     rows.append([1, 2])
     rows.append(None)
     rows.append([3])
-    stdout.print(len(rows.pop() else [9, 9, 9]), len(rows.pop() else [9, 9, 9]), len(rows.pop(0) else [9]), len(rows))
+    stdout.print(len((rows.pop() else None) else [9, 9, 9]), len((rows.pop() else None) else [9, 9, 9]), len(rows.pop(0) else [9]), len(rows))
     rows.append([4, 5])
     _ = rows.pop(0)
     stdout.print(len(rows))
@@ -34502,13 +34567,13 @@ def main(stdout: Stdout):
     points.append(Point(x=5))
     points.append(None)
     points.append(Point(x=7))
-    stdout.print((points.pop() else Point(x=0)).x, (points.pop() else Point(x=-1)).x, (points.pop(0) else Point(x=0)).x, len(points))
+    stdout.print(((points.pop() else None) else Point(x=0)).x, ((points.pop() else None) else Point(x=-1)).x, (points.pop(0) else Point(x=0)).x, len(points))
     points.append(Point(x=8))
     _ = points.pop()
     stdout.print(len(points))
     return
 "#,
-        "fox a word long enough to be held in a block of its own none 1\nkit 0 empty\nkit 0\n1 3 2 0\n0\n7 -1 5 0\n0\n",
+        "fox a word long enough to be held in a block of its own None 1\nkit 0 empty\nkit 0\n1 3 2 0\n0\n7 -1 5 0\n0\n",
     )
 }
 
@@ -35763,10 +35828,12 @@ def main(stdout: Stdout):
     )
 }
 
-/// A generic's `T?` with `T` an optional is that optional, as the checker has it: `first` of a
-/// `list[str?]` gives back a `str?`, and a `SortedMap[int, str?]`'s `get` and `remove` do too.
+/// A generic's `T?` with `T` an optional is an optional of it, which keeps a `None` inside apart
+/// (#2413): `first` of a `list[str?]` holding `None` found something, and so did a
+/// `SortedMap[int, str?]`'s `get` and `remove` of a key whose value is `None`. Pinned when the two
+/// were the same, it now pins what decisions.md has: `T??` never collapses into `T?`.
 #[test]
-fn an_optional_of_an_optional_is_the_optional_as_pinned() -> std::io::Result<()> {
+fn an_optional_of_an_optional_keeps_its_none_apart_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -36553,7 +36620,7 @@ def main(stdout: Stdout):
     add_value2 = add("1", b="two") except InvalidValue(): -1
     stdout.print(add_value, add_value2)
     for pattern in ["[0-9]+", "[0-9+"]:
-        regex = Regex(pattern) except error:
+        regex = Regex.parse(pattern) except error:
             stdout.print(error.message)
             continue
         stdout.print(regex.pattern)

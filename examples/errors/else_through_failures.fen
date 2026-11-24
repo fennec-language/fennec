@@ -1,0 +1,17 @@
+# `else` is for a value that's missing. A chain ending in `else` that goes through a call that can
+# fail is refused at that call, which gets its own line with `except`:
+#     part = find(2) except Lost(): None
+#     stdout.print(part.name else "?")
+
+error Lost:
+    why: str
+
+struct Part:
+    name: str
+
+def find(n: int) -> Part fails Lost:
+    if n > 1: fail Lost(why="no such part")
+    return Part(name="gear")
+
+def main(stdout: Stdout):
+    stdout.print(find(2).name else "?")

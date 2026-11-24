@@ -582,6 +582,18 @@ fn a_list_written_where_a_list_of_optionals_goes_is_one() {
     assert!(problems(program)[0].contains("numbers[0]"), "{:?}", problems(program));
 }
 
+/// An optional of an optional, `int??`, is written as two `?` and stays apart from `int?` (#2413):
+/// `else` takes off one of them, and an `int?` given where one goes is the one inside.
+#[test]
+fn an_optional_of_an_optional_stays_apart_from_the_optional() {
+    let program = "def peeled(held: int??) -> int?:\n    return held else 5\n\n\
+                   def wrapped(held: int?) -> int??:\n    return held\n\n\
+                   def main(stdout: Stdout):\n    inner: int? = None\n    stdout.print(peeled(wrapped(inner)))\n";
+    assert_eq!(problems(program), Vec::<String>::new());
+    let flat = "def flat(held: int??) -> int:\n    return held else 5\n";
+    assert_eq!(problems(flat), ["this might be None @ held else 5"]);
+}
+
 #[test]
 fn what_a_mut_parameter_can_make_none_is_checked_again() {
     let program = "
@@ -730,27 +742,32 @@ def run(names: list[str]):
     )
 }
 
+/// A chain ending in `else` that goes through a call that can fail is refused at the call:
+/// `else` is for a missing value, and a failure is handled with `except` on a line of its own.
+/// `.expect(...)` reads the value, and the line the refusal shows checks.
 #[test]
-fn an_else_chain_stops_at_a_failing_step_too() {
+fn an_else_chain_through_a_failing_step_is_refused() {
     let empty: [&str; 0] = [];
     let types = "error Lost:\n    why: str\n\nstruct Part:\n    name = \"\"\n\n    def again(self) -> Part fails Lost:\n        return self\n\ndef find(n: int) -> Part fails Lost:\n    if n > 1: fail Lost(why=\"big\")\n    return Part()\n";
     let kept = |body: &str| crate::in_main_after(types, &format!("{body}\nstdout.print(1)\n"));
+    let refused = |at: &str| {
+        format!(
+            "this can fail, and `else` doesn't handle a failure: `else` is for a value that's missing @ {at}"
+        )
+    };
+    for body in ["name: str = find(1).name else \"?\"", "size: int = len(find(1).name else \"\")"] {
+        assert_eq!(kept(body), [refused("find(1)")], "{body}");
+    }
+    // Each call in the chain that can fail is named.
+    for body in ["name: str = find(1).again().name else \"?\"", "part: Part = find(1).again() else Part()"] {
+        assert_eq!(kept(body), [refused("find(1)"), refused("find(1).again()")], "{body}");
+    }
     for body in [
-        "name: str = find(1).name else \"?\"\nstdout.print(name)",
-        "size: int = len(find(1).name else \"\")\nstdout.print(size)",
         "kept: str = find(1).expect(\"there\").name\nstdout.print(kept)",
+        "found = find(1) except Lost(): None\nname: str = found.name else \"?\"\nstdout.print(name)",
     ] {
         assert_eq!(kept(body), empty, "{body}");
     }
-    let second = kept("name: str = find(1).again().name else \"?\"\nstdout.print(name)");
-    assert_eq!(second, ["this is the result of something that can fail @ find(1).again().name"]);
-    let twice = kept("part: Part = find(1).again() else Part()\nstdout.print(part.name)");
-    assert_eq!(
-        twice,
-        ["two steps of this chain can fail, and `else` stops at one @ find(1).again() else Part()"]
-    );
     let said = kept("stdout.print(find(1).name)");
     assert_eq!(said, ["this is the result of something that can fail @ find(1).name"]);
-    let bracketed = kept("stdout.print((find(1).name else \"?\") + find(2).name)");
-    assert_eq!(bracketed, ["this is the result of something that can fail @ find(2).name"]);
 }

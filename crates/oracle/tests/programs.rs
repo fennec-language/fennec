@@ -2461,8 +2461,10 @@ fn a_loop_and_a_block_keep_their_names_to_themselves() {
     );
 }
 
+/// A call that can fail gets its own line with `except`, and a chain from what it gave ends in
+/// `else` at the first step that's missing.
 #[test]
-fn an_else_ends_a_chain_at_a_missing_or_failed_step() {
+fn an_else_ends_a_chain_at_a_missing_step() {
     prints(
         "
         error Lost:
@@ -2476,7 +2478,9 @@ fn an_else_ends_a_chain_at_a_missing_or_failed_step() {
             return Part(name='gear')
 
         def main(stdout: Stdout):
-            stdout.print(find(1).name else '?', find(2).name else '?')
+            first = find(1) except Lost(): None
+            second = find(2) except Lost(): None
+            stdout.print(first.name else '?', second.name else '?')
             counts = {'a': 1}
             stdout.print(counts.get('b') else 0, counts.get('a') else 0)
         ",
@@ -5770,6 +5774,55 @@ fn two_shared_values_are_equal_when_they_hold_equal_values() {
             stdout.print(first == second, first != second)
         ",
         "True True True\nFalse True\n",
+    );
+}
+
+/// An optional of an optional keeps a `None` inside apart from `None`, nothing found (#2413): a
+/// `None` popped, got or removed from a `list[int?]` or a `SortedMap[int, str?]`, and a generic
+/// `T?` or an `int??` returned that holds an `int?` that's `None`. `else` takes off one level, as
+/// narrowing with `is not None` does, and it prints as what it holds. Held to native code, debug
+/// and release.
+#[test]
+fn an_optional_of_an_optional_keeps_a_none_inside_apart() {
+    prints(
+        r#"
+        from std.collections import SortedMap
+
+        def first_of[T](items: list[T]) -> T?:
+            if len(items) == 0:
+                return None
+            return items[0]
+
+        def held_as_found(given: int?) -> int??:
+            return given
+
+        def described(found: int??) -> str:
+            match found:
+                case None:
+                    return "nothing"
+                case inner:
+                    return f"found {inner}"
+
+        def main(stdout: Stdout):
+            none_int: int? = None
+            mut numbers: list[int?] = [none_int, 5]
+            stdout.print(numbers.get(0) is None, numbers.get(9) is None, numbers.get(0) else 8, numbers.get(9) else 8)
+            stdout.print(numbers.remove(none_int) is None, numbers.remove(none_int) is None, len(numbers))
+            mut map = SortedMap[int, str?]()
+            none_str: str? = None
+            map[1] = none_str
+            stdout.print(map.get(1) is None, map.get(2) is None, map.get(1) else "missing", map.get(2) else "missing")
+            stdout.print(map.remove(1) is None, map.remove(1) is None)
+            held: list[int?] = [none_int]
+            found = first_of(held)
+            if found is not None:
+                stdout.print("narrowed", found is None, found)
+            stdout.print(f"shown {found}", described(found), described(held_as_found(none_int)), described(held_as_found(3)))
+            nothing: list[int?] = []
+            stdout.print(described(first_of(nothing)), held_as_found(none_int) is None)
+            return
+        "#,
+        "False True None 8\nFalse True 1\nFalse True None missing\nFalse True\nnarrowed True None\nshown None found None found None found 3\nnothing False\n",
     );
 }
 

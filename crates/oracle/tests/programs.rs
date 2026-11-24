@@ -1027,7 +1027,7 @@ fn saving_holds_unions_tables_ids_and_rules_through_every_format() {
             SAVED_UNION_JSON_LOADS,
             r#"Holder(shape=Square(side=2.0))
 refused `shape` is "Triangle", which is none of `Circle | Square`
-refused 
+refused `shape` has "Square" after its member, but a union is written as an object with its member as the only key
 refused `shape` should be a Circle | Square, but it's an object
 refused `shape.Circle` should be a Circle, but it's an int
 refused `shape` should be a Circle | Square, but it's a str

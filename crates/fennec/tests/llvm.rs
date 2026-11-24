@@ -3815,6 +3815,25 @@ fn a_flat_message_crosses_a_channel_as_its_words() -> std::io::Result<()> {
     )
 }
 
+/// Enums in messages: an enum, a struct holding one, an enum holding another, a union and a struct
+/// holding one, a struct holding an optional number, and an enum with a case holding a list, which
+/// isn't flat. A struct holding a flat enum crosses as its words, with a copy of the blocks only its
+/// case names. Each case arrives as sent while the sender changes its own. It prints the same with
+/// `FENNEC_BLOCK_MESSAGES=1`, in dev and release, and ends with nothing held. CI runs it under the
+/// address and thread sanitizers, at 1, 4 and 8 threads.
+#[test]
+fn an_enum_in_a_message_crosses_whole_as_its_words_or_a_block() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BLOCK_MESSAGES",
+        "enum_messages",
+        include_str!("fixtures/workers/enum_messages.fen"),
+        include_str!("fixtures/workers/enum_messages.out"),
+    )
+}
+
 /// Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
 /// under its error, a number that doesn't fit its size, and a pick from a range given backwards.
 /// Each ends its task as a crash and the program goes on, with nothing left of the messages. The
@@ -8070,6 +8089,24 @@ def main(stdout: Stdout):
          18446744073709551616 doesn't fit in u64, which holds 0 to 18446744073709551615\n"
     );
     Ok(())
+}
+
+/// Each sized integer's `wrapping_add`, `wrapping_sub` and `wrapping_mul`, its `saturating_mul`, a
+/// `u64`'s saturating `+` and `-`, and all six of `int`'s, are worked out natively: the operation on
+/// the word cut to the size's bits, a product held to the size's ends, or LLVM's `*.sat`. A
+/// saturating `+` or `-` below 64 bits stays the standard library's. Each gives what the standard
+/// library's own Fennec for it gives, copied into the program as plain functions: every pair of a
+/// size's edge values and a spread between, for every size, in dev and release.
+#[test]
+fn sized_wrapping_and_saturating_arithmetic_is_native_and_the_same() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "sized_native",
+        include_str!("fixtures/sized_wrapping.fen"),
+        include_str!("fixtures/sized_wrapping.out"),
+    )
 }
 
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
@@ -16724,6 +16761,24 @@ def main(stdout: Stdout):
     )
 }
 
+/// `re.pattern_problem` says what's wrong with text that isn't a pattern, as a `Regex` built from
+/// it would, for a program to report a pattern from outside rather than stop on it.
+#[test]
+fn a_patterns_problem_is_what_a_regex_built_from_it_would_say() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "pattern_problems",
+        r#"from std.re import is_regex, pattern_problem
+
+def main(stdout: Stdout):
+    for pattern in ["[0-9+", "a{2,1}", "(" * 251 + "a" + ")" * 251]:
+        stdout.print(is_regex(pattern), pattern_problem(pattern))
+"#,
+    )
+}
+
 /// A task that crashes partway through filling a list lets go of what it made so far: a
 /// comprehension whose length is kept aside while it runs, and the keys `sorted(key=)` makes
 /// before a key crashes. What a task leaves comes back to the code that launched it, so a leak
@@ -21572,6 +21627,51 @@ fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
         "lock_failure_enum_fields",
         include_str!("fixtures/lock_failure_enum_fields.fen"),
         "kinds that kept a change: 0\n",
+    )
+}
+
+/// A whole field holding an enum of plain words, more than one of them, is put back word by word
+/// when the block fails, whichever case it held and was given, and the fields beside it with it.
+/// Each word of such an enum is its own word in the lock's log, so one put back at another's
+/// place, or not at all, leaves a mix of the two cases.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_each_word_of_an_enum_holding_only_numbers() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_plain_enum",
+        r#"error Nope:
+    why: str
+
+enum Spot:
+    Place(x: int, y: int)
+    Scaled(by: float, flipped: bool)
+    Off
+
+struct Board:
+    name: str
+    n: int
+    spot: Spot
+    last: int
+
+def fails_after(board: shared Board, to: Spot) fails Nope:
+    lock board as ref held:
+        held.spot = to
+        held.n += 1
+        held.last += 1
+        fail Nope(why="undone")
+
+def main(stdout: Stdout):
+    for start in [Spot.Place(x=3, y=4), Spot.Scaled(by=1.5, flipped=True), Spot.Off]:
+        shared board = Board(name="b", n=1, spot=start, last=7)
+        for to in [Spot.Place(x=30, y=40), Spot.Scaled(by=2.5, flipped=False), Spot.Off]:
+            fails_after(board, to=to) except Nope():
+                pass
+        lock board as held:
+            stdout.print(held.n, held.spot, held.last)
+"#,
+        "1 Spot.Place(x=3, y=4) 7\n1 Spot.Scaled(by=1.5, flipped=True) 7\n1 Spot.Off 7\n",
     )
 }
 

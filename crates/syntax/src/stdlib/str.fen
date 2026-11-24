@@ -1,4 +1,4 @@
-## `str`'s methods written in Fennec. The rest are machine operations the engines provide.
+## `str`'s methods written in Fennec. The rest are machine operations the compiler gives.
 from std.intrinsics import stop, text_part, text_size
 
 extend str:
@@ -302,7 +302,7 @@ extend str:
     def deserialize(ref src: Deserializer) -> str fails ParseError:
         return src.text()?
 
-## `str`'s methods the engines provide. Each is declared here for its signature and its doc, and a
+## `str`'s methods the compiler gives. Each is declared here for its signature and its doc, and a
 ## test holds it to the checker's own.
 extend str:
     ## How many characters the text has: `len("café")` is 4.

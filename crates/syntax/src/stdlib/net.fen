@@ -392,13 +392,12 @@ NOT_FOUND = Response(status=404, body="there's nothing here".encode())
 ##
 ## `server.serve(router)` answers each request a server gets with it.
 ##
-## A route's `{name}` matches one segment of the path, which its handler reads from `Captured` by
-## its place among the route's parameters. A handler gives `Response.not_found()` for a segment
-## that isn't what it takes, like `abc` for an `int`, the 404 a path no route has gets too.
-## `router.get(path, handler)`, with the compiler checking each route's names against its
-## handler's parameters, comes next. A path a route has with a method it doesn't take is a 405,
-## saying the ones it takes in `Allow`, and a `HEAD` is answered by a route's `GET` when it has no
-## `HEAD`. A segment written out matches before a parameter does, and a `/` at a path's end is
+## A route's `{name}` matches one segment of the path. `router.get(path, handler)`, and `post`,
+## `put`, `patch` and `delete`, add a route checked where it's written: the handler takes each
+## parameter by name, as a `str`, an `int` or a sized int, and a segment that doesn't read as its
+## type, like `abc` for an `int`, answers 404, as a path no route has. A path a route has with a
+## method it doesn't take is a 405, saying the ones it takes in `Allow`, and a `HEAD` is answered
+## by a route's `GET` when it has no `HEAD`. A segment written out matches before a parameter does, and a `/` at a path's end is
 ## passed over. Routes go into a tree as they're added, so finding one walks the path once.
 export struct Router:
     _nodes = [RouteNode()]
@@ -589,61 +588,55 @@ def read_body(connection: Connection, written: str, timeout: Duration) -> BodyRe
     if len(body) < length: return .Refused(status=400, reason="the body ended early")
     return .Read(body=body)
 
-## The runtime's words for a line it won't read: one too long, and one ended by a bare line feed.
-LONG_LINE = "a line was longer than 1048576 bytes"
+## The runtime's words for a line ended by a bare line feed, which it won't read.
 BARE_LINE_FEED = "a line ended without a carriage return"
 
 ## What a request line longer than a whole head may be is refused with: a 414, as HTTP/1.1 has a
 ## server answer a target longer than it takes.
 LONG_REQUEST_LINE = "the request line is too long"
 
-## The next request, with a line the runtime won't read answered rather than dropped. A request
-## line too long gets a 414, and a header line too long a 431. One ended by a bare line feed gets
-## a 400: a proxy that takes one and a server that doesn't would read where a request ends
-## differently.
+## The next request, its head read in one call with its limits, and a line ended by a bare line
+## feed answered with a 400 rather than dropped: a proxy that takes one and a server that doesn't
+## would read where a request ends differently. A request line longer than a whole head gets
+## a 414, and a head too big in all a 431, before either is taken apart.
 def next_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
     # The whole request, its head and body, has to come within `timeout`, not each read of it, so
     # a client sending a byte at a time can't hold the connection for longer than that.
     connection._reads_within(timeout)
-    found = request_line(connection, timeout) except error:
-        return unread_line(error, long_status=414, long_reason=LONG_REQUEST_LINE)?
-    first = found else return .Done
-    read = read_request(connection, first, timeout) except error:
-        return unread_line(error, long_status=431, long_reason="a line of the request is too long")?
-    return read
+    head = read_head(
+        connection,
+        most_bytes=MOST_HEADER_BYTES,
+        most_lines=MOST_HEADERS,
+        most_blank=MOST_BLANK_LINES,
+        timeout=timeout,
+    ) except error:
+        match error:
+            case .Other(reason=reason):
+                if reason == BARE_LINE_FEED:
+                    return .Bad(status=400, reason="a line ended without a carriage return")
+            case _:
+                pass
+        fail error
+    return match head:
+        case .Lines(lines=lines):
+            read_request(connection, lines, timeout)?
+        case .Ended:
+            .Done
+        case .Unended:
+            .Bad(status=400, reason="the headers didn't end")
+        case .LongFirst:
+            .Bad(status=414, reason=LONG_REQUEST_LINE)
+        case .TooBig:
+            .Bad(status=431, reason="the headers are too big")
 
-## A line the runtime won't read, answered: one too long with `long_status`, and one ended by a
-## bare line feed with a 400. Any other failure is passed on.
-def unread_line(error: NetError, long_status: int, long_reason: str) -> RequestRead fails NetError:
-    match error:
-        case .Other(reason):
-            if reason == LONG_LINE: return .Bad(status=long_status, reason=long_reason)
-            if reason == BARE_LINE_FEED:
-                return .Bad(status=400, reason="a line ended without a carriage return")
-        case _:
-            pass
-    fail error
-
-## A request's first line, or `None` at the end of what was sent. A blank line or two before it is
-## passed over, as HTTP/1.1 says a server should: some clients send one after a body.
-def request_line(connection: Connection, timeout: Duration) -> str? fails NetError:
-    mut first = connection.read_line(timeout=timeout, crlf=True)? else return None
-    mut blank = 0
-    while first == "" and blank < MOST_BLANK_LINES:
-        blank += 1
-        first = connection.read_line(timeout=timeout, crlf=True)? else return None
-    if first == "": return None
-    return first
-
-## The request whose first line is `first`, read from the rest of its head and its body.
+## The request whose head is `lines`, its request line and then its header lines, each within the
+## head's limits already, read with its body.
 def read_request(
     connection: Connection,
-    first: str,
+    lines: list[str],
     timeout: Duration,
 ) -> RequestRead fails NetError:
-    # The whole head may hold no more than `MOST_HEADER_BYTES`, so a first line longer than that
-    # is refused before it's taken apart.
-    if text_size(first) > MOST_HEADER_BYTES: return .Bad(status=414, reason=LONG_REQUEST_LINE)
+    first = lines[0]
     parts = first.split(" ")
     if len(parts) != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
@@ -669,20 +662,8 @@ def read_request(
         target = whole.rest
         host = whole.host
     mut headers: dict[str, str] = {}
-    # In bytes, as the limit is: a header of characters UTF-8 writes in two or more bytes counts
-    # each of them.
-    mut size = text_size(first)
-    mut lines = 0
-    while True:
-        line = connection.read_line(timeout=timeout, crlf=True)? else return .Bad(
-            status=400,
-            reason="the headers didn't end",
-        )
-        if line == "": break
-        size += text_size(line)
-        lines += 1
-        if lines > MOST_HEADERS or size > MOST_HEADER_BYTES:
-            return .Bad(status=431, reason="the headers are too big")
+    for at in range(1, len(lines)):
+        line = lines[at]
         # A line that starts with a space would continue the last header, which some read as a
         # new one, and a control character is read differently by different servers.
         if text_byte(line, 0) == 32 or text_byte(line, 0) == 9 or has_control(line, True):

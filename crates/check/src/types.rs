@@ -519,7 +519,16 @@ impl Type {
             Type::Iterator(item, None) => plain("Iterator", vec![item.written(span)?]),
             Type::Dict(key, value) => plain("dict", vec![key.written(span)?, value.written(span)?]),
             Type::Tuple(items) => plain("tuple", all(items)?),
-            Type::Optional(inner) => TypeExpr { optional: true, ..inner.written(span)? },
+            Type::Optional(inner) => match inner.written(span)? {
+                // An optional of an optional is written around it: `int??`.
+                held if held.optional || held.name == fennec_syntax::OPTIONAL => TypeExpr {
+                    name: fennec_syntax::OPTIONAL.to_owned(),
+                    args: vec![held],
+                    optional: false,
+                    span,
+                },
+                held => TypeExpr { optional: true, ..held },
+            },
             Type::Union(members) => plain("|", all(members)?),
             Type::Errors(errors) => match errors.as_slice() {
                 [one] => plain(one, Vec::new()),

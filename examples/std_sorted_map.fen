@@ -92,11 +92,12 @@ test "a range of keys":
     assert map.between(290, 1000) == [(291, 582), (294, 588), (297, 594)]
     assert len(map.between(0, 300)) == 100
 
-test "values can be None":
+test "values can be None, kept apart from a key that's missing":
     mut map = SortedMap[int, str?]()
     map[1] = None
-    assert 1 in map and map.get(1) is None
-    assert map.remove(1) is None
+    assert 1 in map and map.get(1) is not None and (map.get(1) else "missing") is None
+    assert map.get(2) is None
+    assert (map.remove(1) else "missing") is None
     assert len(map) == 0 and 1 not in map
     assert map.remove(1) is None
 

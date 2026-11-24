@@ -178,7 +178,6 @@ fn keep_parses() {
 
 /// The command, on this process's arguments.
 fn command() -> ExitCode {
-    fennec_rt::use_tls();
     keep_parses();
     builds_checking();
     let Some(args) = arguments() else {

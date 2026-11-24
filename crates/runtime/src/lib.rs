@@ -127,6 +127,10 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_notes_shown",
     "fennec_not_a_number",
     "fennec_regex_problem",
+    // Questions about a pattern, answered under `with`, which sets no flag: whether it's one, and
+    // how many groups it has, -1 for one that isn't.
+    "fennec_regex_is_valid",
+    "fennec_regex_groups",
     // A block, or 0 for none, which native code tests for as an answer: a code that isn't a
     // character, bytes that aren't UTF-8, a key that isn't there. None sets the flag.
     "fennec_str_from_code",

@@ -1,0 +1,7 @@
+error: this can fail, and `else` doesn't handle a failure: `else` is for a value that's missing
+  --> examples/errors/else_through_failures.fen:17:18
+   |
+17 |     stdout.print(find(2).name else "?")
+   |                  ^^^^^^^
+   |
+   = help: give the call its own line with `except`, as `found = find(id) except why:` or `found = find(id) except Lost(): None`, then go on from it: `found.name else "?"`

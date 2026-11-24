@@ -1,8 +1,12 @@
 //! `fennec fix` for a capability a function uses but wasn't given, like `fs` in a function that
 //! takes no `Fs`: it gives the function the parameter, passes it at every call, and gives each
-//! caller the parameter in turn, up to the first that has one, `main`, or a test. It only makes
-//! changes that can't mean anything else, so where a function in the chain is a method, or is
-//! named anywhere but in a plain call, it makes none and the error stays.
+//! caller the parameter in turn, up to the first that has one, or a test. It only makes changes
+//! that can't mean anything else, so where a function in the chain is a method, or is named
+//! anywhere but in a plain call, it makes none and the error stays.
+//!
+//! It never adds to `main`. What `main` takes is what the program may do, its grant, so only a
+//! person widens it: when the chain reaches a `main` without the capability, it makes no change
+//! anywhere, and the error says what to add to `main` if the program should do that.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -31,12 +35,63 @@ pub fn add_capability_fixes(diagnostics: &mut [Diagnostic], module: &Module, sou
     }
     for ((name, ty), owners) in asked {
         let first = owners.first().map(|(at, _)| *at);
-        let starts = owners.into_iter().map(|(_, owner)| owner).collect();
-        let edits = Threading { kit: &kit, sources, name: &name, ty: &ty }.edits(starts);
-        if let (Some(first), Some(edits)) = (first.and_then(|first| diagnostics.get_mut(first)), edits) {
-            first.fixes.extend(edits);
+        let starts = owners.iter().map(|(_, owner)| *owner).collect();
+        let threading = Threading { kit: &kit, sources, name: &name, ty: &ty };
+        match threading.edits(starts) {
+            Ok(edits) => {
+                if let Some(first) = first.and_then(|first| diagnostics.get_mut(first)) {
+                    first.fixes.extend(edits);
+                }
+            }
+            Err(Stopped::NotPlain) => {}
+            Err(Stopped::AtMain) => {
+                for (at, owner) in owners {
+                    let Some(diagnostic) = diagnostics.get_mut(at) else { continue };
+                    let user = match owner {
+                        Owner::Function(function) => format!("`{function}`"),
+                        Owner::Test(_) => "a test".to_owned(),
+                    };
+                    let a = if matches!(ty.as_str(), "Fs" | "Args" | "Env" | "Entropy") { "an" } else { "a" };
+                    diagnostic.message = if owner == Owner::Function("main") {
+                        format!("`main` uses {a} `{ty}`, and doesn't take one")
+                    } else {
+                        format!("{user} uses {a} `{ty}`, and `main` doesn't take one")
+                    };
+                    diagnostic.help = Some(format!(
+                        "`fennec fix` doesn't give `main` a capability: add `{name}: {ty}` to `main` if this program should {}",
+                        what_it_lets(&ty)
+                    ));
+                }
+            }
         }
     }
+}
+
+/// What a capability lets a program do, in words, for the help that says to add it to `main`.
+fn what_it_lets(ty: &str) -> &'static str {
+    match ty {
+        "Fs" => "touch files",
+        "Net" => "use the network",
+        "Clock" => "read the clock",
+        "Entropy" => "draw random numbers",
+        "Stdin" => "read its input",
+        "Stdout" => "print",
+        "Stderr" => "write to its error output",
+        "Args" => "read its arguments",
+        "Env" => "read its environment",
+        "Process" => "start other programs",
+        "Signals" => "handle signals",
+        _ => "use it",
+    }
+}
+
+/// Why a capability isn't threaded through.
+enum Stopped {
+    /// A function in the chain is a method, named other than in a call, or has something else by
+    /// the capability's name: giving it the parameter could mean something else.
+    NotPlain,
+    /// The chain reaches a `main` that doesn't take it, and only a person widens `main`.
+    AtMain,
 }
 
 /// The capability an error says a function wasn't given, by its name and its type, when it's one
@@ -220,8 +275,8 @@ struct Threading<'k, 'm> {
 
 impl<'m> Threading<'_, 'm> {
     /// The edits that give each of `starts` the capability and pass it down from where it's held,
-    /// or None where that's more than a plain change.
-    fn edits(&self, starts: Vec<Owner<'m>>) -> Option<Vec<Edit>> {
+    /// or why there are none: more than a plain change, or a `main` that would have to be given it.
+    fn edits(&self, starts: Vec<Owner<'m>>) -> Result<Vec<Edit>, Stopped> {
         let mut given: BTreeSet<Owner<'m>> = BTreeSet::new();
         let mut waiting = starts;
         let mut edits: Vec<Edit> = Vec::new();
@@ -230,15 +285,16 @@ impl<'m> Threading<'_, 'm> {
                 continue;
             }
             if !matches!(self.held_by(owner), Held::Not) {
-                return None;
+                return Err(Stopped::NotPlain);
             }
-            edits.push(self.parameter(owner)?);
+            // `main`'s parameters are the program's grant: never widened here, so nothing is.
+            if owner == Owner::Function("main") {
+                return Err(Stopped::AtMain);
+            }
+            edits.push(self.parameter(owner).ok_or(Stopped::NotPlain)?);
             let Owner::Function(function) = owner else { continue };
-            if function == "main" {
-                continue;
-            }
             if self.kit.named_otherwise.contains(function) {
-                return None;
+                return Err(Stopped::NotPlain);
             }
             for (caller, call) in self.kit.calls.get(function).into_iter().flatten() {
                 let passed = match self.held_by(*caller) {
@@ -247,14 +303,14 @@ impl<'m> Threading<'_, 'm> {
                         waiting.push(*caller);
                         self.name
                     }
-                    Held::NameTaken => return None,
+                    Held::NameTaken => return Err(Stopped::NotPlain),
                 };
-                edits.push(self.argument(call, passed)?);
+                edits.push(self.argument(call, passed).ok_or(Stopped::NotPlain)?);
             }
         }
         edits.sort_by_key(|edit| (edit.span.start, edit.span.end));
         edits.dedup();
-        Some(edits)
+        Ok(edits)
     }
 
     /// Whether `owner` takes the capability already, and what it calls it.

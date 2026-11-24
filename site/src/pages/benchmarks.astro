@@ -33,7 +33,7 @@ const ms = (value: number) => value.toLocaleString('en-US', { minimumFractionDig
     </p>
     <div class="table">
       <div class="tr th two">
-        <span>Program</span><span>By instructions</span>
+        <span>Program</span><span>Apple M5 · by instructions</span><span>Linux Arm · clock</span><span>Linux x86-64 · clock</span>
       </div>
       {
         programs.map((program) => (
@@ -46,12 +46,14 @@ const ms = (value: number) => value.toLocaleString('en-US', { minimumFractionDig
               </span>
               <strong>{program.instructions.toFixed(1)}%</strong>
             </span>
+            <span class="num">{program.ci_clock.linux_arm.toFixed(1)}%</span>
+            <span class="num">{program.ci_clock.linux_x86.toFixed(1)}%</span>
           </div>
         ))
       }
     </div>
     <p class="note">
-      Physics trails because its bounds and overflow checks stay on: speed never comes from dropping a check. An HTTP handler, api_handler, runs at about half Rust's speed per request on Linux by clock ({score.ci.api_handler_linux}%), and the runtime's allocation and copies are being worked on.
+      The Linux columns are CI's own runs by clock, best of the suite's runs, on {score.ci.date}; the macOS runner is left out because its spread is too wide to quote. Physics trails because its bounds and overflow checks stay on: speed never comes from dropping a check. An HTTP handler, api_handler, runs at about {score.ci.api_handler_linux}% of Rust's speed per request on Linux by clock, and the runtime's allocation and copies are being worked on.
     </p>
   </section>
 
@@ -108,7 +110,21 @@ const ms = (value: number) => value.toLocaleString('en-US', { minimumFractionDig
 
 <style>
   .tr.two {
-    grid-template-columns: 1fr 4fr !important;
+    grid-template-columns: 1.1fr 3fr 0.9fr 0.9fr !important;
+  }
+
+  .tr.two .num {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (max-width: 720px) {
+    .tr.two {
+      grid-template-columns: 1fr 1.6fr 0.8fr 0.8fr !important;
+      font-size: 0.8rem;
+    }
   }
 
   .name small {

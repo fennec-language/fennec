@@ -59,6 +59,10 @@ def main(stdout: Stdout):
 const programs = [...score.programs].sort((a, b) => b.instructions - a.instructions);
 const low = Math.min(...programs.map((p) => p.instructions));
 const high = Math.max(...programs.map((p) => p.instructions));
+// The same programs by clock in CI on Linux, both machines: the range a careful reader would check.
+const clocks = programs.flatMap((p) => [p.ci_clock.linux_arm, p.ci_clock.linux_x86]);
+const clockLow = Math.min(...clocks);
+const clockHigh = Math.max(...clocks);
 // Bars run from 0 to 150%, with Rust at 100%.
 const scale = 150;
 const at = (v: number) => `${(Math.min(v, scale) / scale) * 100}%`;
@@ -161,8 +165,8 @@ kit.lock: `metrics` now holds `Net`, first handed over at src/main.fen:6:12
     <div class="wrap proof-grid">
       <div class="cell">
         <div class="big">{Math.round(low)}–{Math.round(high)}<small>%</small></div>
-        <p>of Rust's speed by instructions, across eight real programs.</p>
-        <span class="src">Scoreboard · Apple M5 · {score.date}</span>
+        <p>of Rust's speed by instructions on an Apple M5, across eight real programs. By clock on Linux in CI, {Math.round(clockLow)}–{Math.round(clockHigh)}%.</p>
+        <span class="src">Scoreboard and CI · {score.date}</span>
       </div>
       <div class="cell">
         <div class="big">0</div>
@@ -304,9 +308,10 @@ kit.lock: `metrics` now holds `Net`, first handed over at src/main.fen:6:12
       <div>
         <div class="head">
           <span class="eyebrow">Speed, measured</span>
-          <h2>Near Rust on real programs, with the misses shown.</h2>
+          <h2>Close to Rust on real programs, and where it isn't.</h2>
           <p>{score.note}</p>
         </div>
+        <span class="label">Apple M5 · by instructions</span>
         <div class="bars">
           {
             programs.map((p) => (
@@ -342,8 +347,8 @@ kit.lock: `metrics` now holds `Net`, first handed over at src/main.fen:6:12
       </div>
       <aside class="aside">
         <div><b>Physics: 82.6%</b><span>Its bounds and overflow checks stay on. Speed never comes from dropping a check.</span></div>
-        <div><b>HTTP: about half Rust's speed per request</b><span>api_handler runs at {score.ci.api_handler_linux}% by clock on Linux today. The runtime's allocation and copies are being worked on.</span></div>
-        <div><b>The whole suite in CI: {score.ci.suite.linux_x86}–{score.ci.suite.linux_arm}%</b><span>By clock: {score.ci.suite.linux_arm}% on Linux Arm, {score.ci.suite.linux_x86}% on Linux x86-64 and {score.ci.suite.macos}% on macOS.</span></div>
+        <div><b>HTTP: about {score.ci.api_handler_linux}% of Rust per request</b><span>api_handler, by clock on Linux today. The runtime's allocation and copies are being worked on.</span></div>
+        <div><b>On Linux in CI, by clock: {Math.round(clockLow)}–{Math.round(clockHigh)}%</b><span>The same eight programs on Linux Arm and x86-64. The x86-64 machine is slower than the Mac here: from {Math.round(Math.min(...programs.map((p) => p.ci_clock.linux_x86)))}% to {Math.round(Math.max(...programs.map((p) => p.ci_clock.linux_x86)))}%.</span></div>
         <a class="button" href={`${base}benchmarks/`}>Every benchmark →</a>
       </aside>
     </div>
@@ -514,10 +519,22 @@ version = "0.1.0"
     gap: 0.6rem;
   }
 
+  /* On a phone, Scout goes below the words, never behind them. */
   @media (max-width: 860px) {
+    .hero {
+      display: flex;
+      flex-direction: column;
+    }
+    .hero-art {
+      order: 2;
+    }
     .hero-art img {
-      object-position: 78% 50%;
-      opacity: 0.3;
+      position: static;
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      object-position: 80% 50%;
     }
     .hero-inner {
       min-height: 0;
@@ -822,6 +839,15 @@ version = "0.1.0"
     gap: 0.6rem;
   }
 
+  .label {
+    display: block;
+    margin-bottom: 0.9rem;
+    font: 500 0.72rem var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
   .bar-row,
   .axis {
     display: grid;
@@ -1018,10 +1044,21 @@ version = "0.1.0"
     }
   }
 
+  /* The ear pattern as low-contrast texture. This band has no mark or wordmark in it, by rule. */
   .scout-band {
     background:
       radial-gradient(120% 80% at 80% 0%, rgba(245, 154, 62, 0.1), transparent 60%),
+      url('/brand/fennec-pattern-dark.svg') 0 0 / 88px 88px,
       var(--bg);
+  }
+
+  @media (prefers-color-scheme: light) {
+    .scout-band {
+      background:
+        radial-gradient(120% 80% at 80% 0%, rgba(245, 154, 62, 0.1), transparent 60%),
+        url('/brand/fennec-pattern-cream.svg') 0 0 / 88px 88px,
+        var(--bg);
+    }
   }
 
   .wardrobe {
@@ -1033,6 +1070,7 @@ version = "0.1.0"
   .wardrobe figure {
     margin: 0;
     display: grid;
+    align-content: start;
     gap: 0.6rem;
   }
 

@@ -93,10 +93,21 @@ const base = import.meta.env.BASE_URL;
     color: #fff6ea;
   }
 
+  /* On a phone, Scout goes below the words, never behind them. */
   @media (max-width: 700px) {
+    .lost {
+      flex-direction: column;
+    }
     .lost img {
-      object-position: 62% 50%;
-      opacity: 0.55;
+      position: static;
+      order: 2;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 4 / 3;
+      object-position: 50% 60%;
+    }
+    .copy {
+      padding-block: 3rem 1.5rem;
     }
   }
 </style>

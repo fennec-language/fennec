@@ -42,7 +42,7 @@ description: What Fennec does today, what's being built next, and the design que
 - Notes on errors, so a cleanup that fails after a failure hides neither one.
 - A function that can fail says `fails` in its signature, a failure passes up only with `?`, and what can fail is read only through `?` and `except`. `fennec fix` writes the first two.
 - `with` and `lend`, for sources of your own and for files: `fs.create` puts a file in place only when its block ends, synced to the disk, and `fs.open` reads in lines or chunks.
-- Capabilities: `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net`.
+- Capabilities, all eleven: `Stdout`, `Stderr`, `Stdin`, `Args`, `Env`, `Fs`, `Clock`, `Entropy`, `Process`, `Signals` and `Net`.
 - Float sums and `math.dot` that add in one fixed pattern, the same bits everywhere. `xs.swap(i, j)`.
 - Operators chosen by their right-hand type, so units of measure are plain structs, with no new syntax.
 

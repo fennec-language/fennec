@@ -968,7 +968,7 @@ def parse_save(data: str) -> list[str]:
     return data.split()
 ```
 
-Calling `print`, or using `stdout` in a function that wasn't given it, is an error that says how to pass it in. `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net` work today. `clock.now()` reads a monotonic clock, for measuring, and `clock.time()` reads the wall clock as a `Time` in UTC.
+Calling `print`, or using `stdout` in a function that wasn't given it, is an error that says how to pass it in. `Stdout`, `Stderr`, `Stdin`, `Args`, `Env`, `Fs`, `Clock`, `Entropy`, `Process`, `Signals` and `Net` work today: all eleven. `clock.now()` reads a monotonic clock, for measuring, and `clock.time()` reads the wall clock as a `Time` in UTC.
 
 ## Tests
 

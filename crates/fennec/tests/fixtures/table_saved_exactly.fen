@@ -1,0 +1,35 @@
+# A `Table` saved slot for slot (#2424). An `Id` saves as its slot only where it finds its item: one
+# whose item has gone saves as missing when it's optional, since after the load it would find what's
+# in its slot. And a load refuses an `Id` whose generation isn't its slot's, as an earlier version
+# saved one: these bytes are main's from before, an `Id` of an item taken out and its slot used again.
+from std import pack
+from std.collections import Id, Table
+
+struct Unit:
+    hp: int
+
+struct Saved:
+    units: Table[Unit]
+    chosen: Id[Unit]
+
+struct Kept:
+    units: Table[Unit]
+    chosen: Id[Unit]
+    maybe: Id[Unit]?
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    stale = units.add(Unit(hp=1))
+    _ = units.remove(stale)
+    live = units.add(Unit(hp=2))
+    data = pack.dumps(Kept(units=units, chosen=live, maybe=stale), exact=True)
+    back = pack.loads[Kept](data) except why:
+        stdout.print("failed", why)
+        return
+    stdout.print("live", back.units[back.chosen].hp, "stale saved as missing", back.maybe is None)
+    old = bytes([70, 80, 75, 88, 138, 128, 98, 226, 132, 170, 101, 64, 29, 83, 32, 50, 32, 117, 110, 105, 116, 115, 32, 84, 32, 83, 32, 49, 32, 104, 112, 32, 105, 32, 99, 104, 111, 115, 101, 110, 32, 73, 1, 2, 1, 4, 0, 0])
+    loaded = pack.loads[Saved](old) except why:
+        stdout.print("an old file's stale Id:", why)
+        return
+    stdout.print("loaded", len(loaded.units))
+    return

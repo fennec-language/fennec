@@ -29121,6 +29121,41 @@ fn copies_of_a_table_never_hand_out_one_id() -> std::io::Result<()> {
     )
 }
 
+/// A `Table` saved slot for slot keeps its slots, and an `Id` saves as its slot only where it finds
+/// its item: one whose item has gone saves as missing when it's optional, and stops the save when it
+/// isn't, since after the load it would find whatever is in its slot. A load refuses an `Id` whose
+/// generation isn't its slot's, as main saved one before (#2424). In dev and release.
+#[test]
+fn a_table_saved_exactly_keeps_no_id_whose_item_has_gone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_saved_exactly",
+        include_str!("fixtures/table_saved_exactly.fen"),
+        include_str!("fixtures/table_saved_exactly.out"),
+    )?;
+    let program = "from std import pack\nfrom std.collections import Id, Table\n\nstruct Unit:\n    hp: int\n\nstruct Saved:\n    units: Table[Unit]\n    chosen: Id[Unit]\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    stale = units.add(Unit(hp=1))\n    _ = units.remove(stale)\n    data = pack.dumps(Saved(units=units, chosen=stale), exact=True)\n    stdout.print(len(data))\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("table_saved_exactly_stale")?;
+        let (at, executable) = (dir.join("stale.fen"), dir.join("stale"));
+        std::fs::write(&at, program)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([at.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        let why = "`chosen` is an Id that finds nothing in `units`: its item was taken out, or it's from another `Table[Unit]`";
+        assert!(said.contains(why), "{how:?}: {said}");
+    }
+    Ok(())
+}
+
 /// An item taken out of a `Table` to change in place never changes a copy of the `Table`: it's
 /// made alone before the item is taken. A copy kept as a local, as a field of a copied struct,
 /// by a caller passing it as `ref`, and by another task, of items holding a dict and of plain

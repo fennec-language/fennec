@@ -1,0 +1,2 @@
+error: a deadlock: every task is waiting for another, and nothing can wake them
+  main is waiting to receive as a listener of a channel to `.Every`, with nothing new for it

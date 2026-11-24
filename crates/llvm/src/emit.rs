@@ -3757,9 +3757,18 @@ impl Emit<'_, '_, '_> {
                 let negative = self.temp();
                 self.line(&format!("{negative} = fcmp olt double {value}, {}", float_text(0.0)));
                 self.fail_if(&negative, NEGATIVE_SQRT, span);
-                self.declare("declare double @llvm.sqrt.f64(double)");
                 let temp = self.temp();
-                self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
+                if kind == Kind::F32 {
+                    // An `f32`'s square root, which IEEE makes exact, as the `f64` holding it.
+                    let (narrow, root) = (self.temp(), self.temp());
+                    self.declare("declare float @llvm.sqrt.f32(float)");
+                    self.line(&format!("{narrow} = fptrunc double {value} to float"));
+                    self.line(&format!("{root} = call float @llvm.sqrt.f32(float {narrow})"));
+                    self.line(&format!("{temp} = fpext float {root} to double"));
+                } else {
+                    self.declare("declare double @llvm.sqrt.f64(double)");
+                    self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
+                }
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             "int.abs" => {
@@ -4771,6 +4780,27 @@ mod tests {
         }
         let text = text_of(source, "names")?;
         assert!(text.contains("call void @fennec_list_clear("), "{text}");
+        Ok(())
+    }
+
+    /// An enum whose every case is flat crosses a channel as its words, sent and taken through
+    /// this thread's buffer, as a flat struct does. One with a case holding a list still goes as a
+    /// block.
+    #[test]
+    fn a_flat_enum_goes_as_its_words_and_one_holding_a_list_as_a_block() -> Result<(), String> {
+        let source = "from std.concurrent import Closed, Crashed, Inbox\n\nenum Event:\n    Join(user: int, room: int)\n    Say(user: int, text: str)\n    Quiet\n\nenum Listing:\n    Empty\n    Items(items: list[str])\n\ndef events(inbox: Inbox[Event], stdout: Stdout):\n    for got in inbox:\n        stdout.print(got)\n\ndef listings(inbox: Inbox[Listing], stdout: Stdout):\n    for got in inbox:\n        stdout.print(got)\n\ndef sent(stdout: Stdout) fails Closed | Crashed:\n    with launch((inbox) => events(inbox, stdout))? as sends:\n        sends.send(.Say(user=1, text=\"hello\"))?\n    with launch((inbox) => listings(inbox, stdout))? as sends:\n        sends.send(.Empty())?\n    return\n\ndef main(stdout: Stdout):\n    sent(stdout) except why:\n        stdout.print(\"failed\", why)\n    return\n";
+        let (units, _, _) = emit(&lowered(source)?)?;
+        let calls = |of: &str, call: &str| {
+            units.iter().filter(|unit| unit.function.contains(of) && unit.text.contains(call)).count()
+        };
+        // Sent and taken as words, never as a block.
+        assert!(calls("[Event]", "call i64 @fennec_channel_send_words(") > 0, "no words sent");
+        assert!(calls("[Event]", "call i64 @fennec_channel_receive_words(") > 0, "no words taken");
+        assert_eq!(calls("[Event]", "call i64 @fennec_channel_send("), 0);
+        assert_eq!(calls("[Event]", "call i64 @fennec_channel_receive("), 0);
+        // A case holding a list isn't flat.
+        assert!(calls("[Listing]", "call i64 @fennec_channel_send(") > 0, "no block sent");
+        assert_eq!(calls("[Listing]", "call i64 @fennec_channel_send_words("), 0);
         Ok(())
     }
 

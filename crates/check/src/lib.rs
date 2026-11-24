@@ -1242,7 +1242,6 @@ fn differing_table(one: &Checked, other: &Checked) -> &'static str {
         method_calls,
         array_zeros,
         optional_steps,
-        failing_steps,
         std_names,
         std_calls,
         field_args,
@@ -1570,9 +1569,6 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
                     }
                 }
             }
-            if checked.failing_steps.contains(&span) {
-                fennec_syntax::visit::none_on_failure(expr);
-            }
             if checked.optional_steps.contains(&span)
                 && let ExprKind::Attr { optional, .. } = &mut expr.kind
             {
@@ -1898,8 +1894,6 @@ pub struct Checked {
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     optional_steps: BTreeSet<(u32, u32)>,
-    /// Those read from something that can fail, which is written in as `value else None`.
-    failing_steps: BTreeSet<(u32, u32)>,
     /// Each `array[T, N]()` and the zero it's filled with, written in as `array.new(zero)`.
     array_zeros: BTreeMap<(u32, u32), Expr>,
 }

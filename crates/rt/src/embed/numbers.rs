@@ -78,6 +78,34 @@ pub extern "C" fn parse_float(text: i64, bits: &mut i64) -> i64 {
     })
 }
 
+/// `f32(text)`, as [`parse_float`] reads a float: the `f32` nearest the text, read straight to it
+/// rather than through an `f64`, which could round twice, with the bits of the `f64` that's exactly
+/// it written to `bits`, as native code holds an `f32`.
+pub extern "C" fn parse_f32(text: i64, bits: &mut i64) -> i64 {
+    with(|state| match parsed::<f32>(state, text) {
+        Some(number) => {
+            *bits = f64::from(number).to_bits().cast_signed();
+            1
+        }
+        None => 0,
+    })
+}
+
+/// `f32(text)` for a text given as its header, as [`parse_float_header`] reads a float.
+pub extern "C" fn parse_f32_header(t0: u64, t1: u64, t2: u64, bits: &mut i64) -> i64 {
+    with(|state| {
+        let header = [t0, t1, t2];
+        let (words, length) = super::text::bytes_of(state, &header);
+        match parsed_words::<f32>(words, length) {
+            Some(number) => {
+                *bits = f64::from(number).to_bits().cast_signed();
+                1
+            }
+            None => 0,
+        }
+    })
+}
+
 /// `fennec_parse_float_header(text, bits)`: `float(text)` for a text given as its header, inline
 /// or holding a block, so a short one is read where it is and none is made a block first. Whether
 /// it was a float, with its bits written to `bits`, as [`parse_float`] says.
@@ -127,4 +155,43 @@ pub(crate) fn with_commas(n: usize) -> String {
         out.push(digit);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parsed_words;
+
+    /// Text as a header's words hold it: its bytes, eight to a word.
+    fn words(text: &str) -> (Vec<u64>, usize) {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.resize(bytes.len().div_ceil(8) * 8, 0);
+        let words =
+            bytes.chunks(8).map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]))).collect();
+        (words, text.len())
+    }
+
+    fn f32_of(text: &str) -> Option<f32> {
+        let (words, length) = words(text);
+        parsed_words::<f32>(&words, length)
+    }
+
+    /// `f32(text)` reads text straight to the nearest `f32`: just past halfway from one to the next
+    /// `f32` rounds up, where reading it to an `f64` first would land on halfway, then round down to
+    /// one. Around it, space is let be, `nan` and `inf` read as `float` reads them, and text that
+    /// isn't a number reads as nothing.
+    #[test]
+    fn an_f32_is_read_straight_to_the_nearest() {
+        let just_past_half = "1.00000005960464477539062500001";
+        assert_eq!(f32_of(just_past_half), Some(1.000_000_1));
+        let through_f64: f64 = just_past_half.parse().unwrap_or(0.0);
+        #[expect(clippy::cast_possible_truncation, reason = "the f64 rounded to an f32, as said")]
+        let twice = through_f64 as f32;
+        assert_eq!(twice, 1.0);
+        assert_eq!(f32_of(" 0.1 "), Some(0.1));
+        assert_eq!(f32_of("inf"), Some(f32::INFINITY));
+        assert!(f32_of("nan").is_some_and(f32::is_nan));
+        assert_eq!(f32_of("1e39"), Some(f32::INFINITY));
+        assert_eq!(f32_of("fox"), None);
+        assert_eq!(f32_of(""), None);
+    }
 }

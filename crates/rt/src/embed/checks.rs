@@ -181,6 +181,79 @@ pub extern "C" fn log(x: f64) -> f64 {
     libm::log(x)
 }
 
+// An `f32`'s, by `libm`'s `f32` functions. Native code holds an `f32` as the `f64` that's exactly
+// its value, so each takes and gives that: narrowing it is exact, as widening the answer is.
+
+pub extern "C" fn sinf(x: f64) -> f64 {
+    f64::from(libm::sinf(narrow(x)))
+}
+
+pub extern "C" fn cosf(x: f64) -> f64 {
+    f64::from(libm::cosf(narrow(x)))
+}
+
+pub extern "C" fn acosf(x: f64) -> f64 {
+    f64::from(libm::acosf(narrow(x)))
+}
+
+/// The `f32` an `f64` holding one is.
+#[expect(clippy::cast_possible_truncation, reason = "the f64 holds an f32 exactly")]
+fn narrow(x: f64) -> f32 {
+    x as f32
+}
+
+#[cfg(test)]
+mod f32_tests {
+    use super::{acosf, cosf, sinf};
+
+    /// Each input's `sin`, `cos` and `acos` as `f32` bits, or `None` for NaN, whose sign bit
+    /// platforms differ on. Pinned so a platform whose numbers differ, or a change away from
+    /// `libm`'s own functions, fails here.
+    const PINNED: [(f32, u32, u32, Option<u32>); 12] = [
+        (0.0, 0x0000_0000, 0x3f80_0000, Some(0x3fc9_0fda)),
+        (-0.0, 0x8000_0000, 0x3f80_0000, Some(0x3fc9_0fda)),
+        (0.5, 0x3ef5_7744, 0x3f60_a940, Some(0x3f86_0a92)),
+        (-0.5, 0xbef5_7744, 0x3f60_a940, Some(0x4006_0a92)),
+        (1.0, 0x3f57_6aa4, 0x3f0a_5140, Some(0x0000_0000)),
+        (-1.0, 0xbf57_6aa4, 0x3f0a_5140, Some(0x4049_0fda)),
+        (0.1, 0x3dcc_7577, 0x3f7e_b898, Some(0x3fbc_3d91)),
+        (2.0, 0x3f68_c7b7, 0xbed5_1133, None),
+        (std::f32::consts::PI, 0xb3bb_bd2e, 0xbf80_0000, None),
+        (100.0, 0xbf01_a12e, 0x3f5c_c0ee, None),
+        (1.0e-30, 0x0da2_4260, 0x3f80_0000, Some(0x3fc9_0fda)),
+        (12_345.678, 0xbf34_4b08, 0x3f35_be20, None),
+    ];
+
+    #[expect(clippy::cast_possible_truncation, reason = "each answer is an f32's exactly")]
+    fn bits(x: f64) -> u32 {
+        (x as f32).to_bits()
+    }
+
+    #[test]
+    fn sin_cos_and_acos_of_an_f32_are_the_same_bits_everywhere() {
+        for (x, sin, cos, acos) in PINNED {
+            let wide = f64::from(x);
+            assert_eq!(bits(sinf(wide)), sin, "sin {x}");
+            assert_eq!(bits(cosf(wide)), cos, "cos {x}");
+            match acos {
+                Some(acos) => assert_eq!(bits(acosf(wide)), acos, "acos {x}"),
+                None => assert!(acosf(wide).is_nan(), "acos {x}"),
+            }
+        }
+    }
+
+    /// What the reference evaluator prints for `sqrt(2)`, `sin(0.5)`, `cos(0.5)` and `acos(0.5)`
+    /// on an `f32`, as an `f32` prints: its shortest text that reads back as it.
+    #[test]
+    fn an_f32_prints_what_the_reference_evaluator_does() {
+        let shown = |x: f64| format!("{}", f32::from_bits(bits(x)));
+        assert_eq!(format!("{}", 2.0_f32.sqrt()), "1.4142135");
+        assert_eq!(shown(sinf(0.5)), "0.47942555");
+        assert_eq!(shown(cosf(0.5)), "0.87758255");
+        assert_eq!(shown(acosf(0.5)), "1.0471976");
+    }
+}
+
 #[cfg(test)]
 mod round_tests {
     use super::{EXACT_TENS, MOST_TENS, round_places, ten_to};

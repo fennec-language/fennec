@@ -13,7 +13,6 @@
 
 mod kit;
 mod unpack;
-mod web;
 
 use std::path::{Path, PathBuf};
 
@@ -107,6 +106,74 @@ fn names_one(word: &str) -> bool {
     kit::plain_version(word) || kit::linked_name(word)
 }
 
+/// How a launcher reaches the network, for the few commands that fetch.
+pub trait Web {
+    /// The bytes at `url`, of which there are at most `most`.
+    ///
+    /// # Errors
+    ///
+    /// When they can't be fetched, or there are more, saying why.
+    fn fetch(&self, url: &str, most: u64) -> Result<Vec<u8>, String>;
+
+    /// Where `url` redirects to, without following it.
+    ///
+    /// # Errors
+    ///
+    /// When it can't be asked, or doesn't redirect.
+    fn redirect(&self, url: &str) -> Result<String, String>;
+}
+
+/// The most a fetch with no size to go by takes in: a manifest, its signatures, a `latest`. An
+/// archive's size comes from its signed manifest, and is all its fetch takes in.
+pub const MOST_BYTES: u64 = 1 << 20;
+
+/// Fetching through `fennec-fetch`, the program beside the launcher that does the network's
+/// work, over HTTPS checked against what the operating system trusts, started only when something
+/// has to be fetched. What it fetches comes back on its output. The launcher links nothing for
+/// HTTPS: on macOS that alone costs every command milliseconds to start.
+pub struct Helper(pub PathBuf);
+
+impl Helper {
+    /// `fennec-fetch` beside the program running.
+    ///
+    /// # Errors
+    ///
+    /// When the program running can't be found.
+    pub fn beside_this() -> Result<Self, String> {
+        let this = std::env::current_exe().map_err(|err| format!("couldn't find the launcher: {err}"))?;
+        Ok(Helper(this.with_file_name(format!("fennec-fetch{}", std::env::consts::EXE_SUFFIX))))
+    }
+
+    fn run(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let ran = std::process::Command::new(&self.0)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|err| format!("couldn't run {} to fetch: {err}", self.0.display()))?;
+        if !ran.status.success() {
+            let said = String::from_utf8_lossy(&ran.stderr);
+            let said = said.trim().strip_prefix("error: ").unwrap_or(said.trim());
+            return Err(if said.is_empty() {
+                format!("{} failed", self.0.display())
+            } else {
+                said.to_owned()
+            });
+        }
+        Ok(ran.stdout)
+    }
+}
+
+impl Web for Helper {
+    fn fetch(&self, url: &str, most: u64) -> Result<Vec<u8>, String> {
+        self.run(&["fetch", url, &most.to_string()])
+    }
+
+    fn redirect(&self, url: &str) -> Result<String, String> {
+        let said = self.run(&["redirect", url])?;
+        Ok(String::from_utf8_lossy(&said).trim().to_owned())
+    }
+}
+
 /// What a launcher knows: where toolchains go, where releases come from, and whom it trusts.
 pub struct Launcher {
     /// Fennec's folder, `~/.fennec` unless `FENNEC_HOME` says otherwise.
@@ -119,6 +186,8 @@ pub struct Launcher {
     pub trusted: Vec<PublicKey>,
     /// The platform whose archive it installs.
     pub target: String,
+    /// How it fetches what it has to.
+    pub web: Box<dyn Web>,
 }
 
 impl Launcher {
@@ -394,13 +463,13 @@ impl Launcher {
         }
         let version = if self.dist == RELEASES {
             let page = RELEASES.trim_end_matches("/download");
-            let tag = web::redirect(&format!("{page}/latest"))?;
+            let tag = self.web.redirect(&format!("{page}/latest"))?;
             let (_, version) = tag.rsplit_once("/tag/v").ok_or("the release page has no release yet")?;
             version.to_owned()
         } else {
             let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist).trim_end_matches('/');
             let latest = if dist.starts_with("https://") || dist.starts_with("http://") {
-                web::fetch(&format!("{dist}/latest"))?
+                self.web.fetch(&format!("{dist}/latest"), MOST_BYTES)?
             } else {
                 std::fs::read(Path::new(dist).join("latest"))
                     .map_err(|err| format!("couldn't read {dist}/latest: {err}"))?
@@ -467,7 +536,7 @@ impl Launcher {
     fn fetch_at_most(&self, version: &str, file: &str, most: u64) -> Result<Vec<u8>, String> {
         let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);
         if dist.starts_with("https://") || dist.starts_with("http://") {
-            return web::fetch_at_most(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), most);
+            return self.web.fetch(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), most);
         }
         let path = Path::new(dist).join(format!("v{version}")).join(file);
         let size =
@@ -490,7 +559,7 @@ impl Launcher {
     fn fetch(&self, version: &str, file: &str) -> Result<Vec<u8>, String> {
         let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);
         if dist.starts_with("https://") || dist.starts_with("http://") {
-            return web::fetch(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')));
+            return self.web.fetch(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), MOST_BYTES);
         }
         let path = Path::new(dist).join(format!("v{version}")).join(file);
         std::fs::read(&path).map_err(|err| format!("couldn't read {}: {err}", path.display()))

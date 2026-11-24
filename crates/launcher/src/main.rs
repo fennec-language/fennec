@@ -17,6 +17,10 @@
 //! fennec --latest                       the newest release, the only thing that asks
 //! ```
 //!
+//! It hands a command over in about the time a program takes to start: it reads the kit's files and
+//! runs the toolchain, and reaches the network only through `fennec-fetch`, beside it, when
+//! something has to be fetched (see `fennec_launcher::Helper`).
+//!
 //! `--offline`, or `FENNEC_OFFLINE`, never fetches, and the toolchain is told so too. `FENNEC_DIST` is where releases come from, a
 //! mirror's address or a folder, and `FENNEC_HOME` where they go.
 #![expect(clippy::print_stdout, reason = "the launcher lists toolchains")]
@@ -25,7 +29,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fennec_launcher::{Asked, Launcher, Pick, RELEASES, TARGET};
+use fennec_launcher::{Asked, Helper, Launcher, Pick, RELEASES, TARGET};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -53,6 +57,7 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
         offline,
         trusted: fennec_dist::release_keys()?,
         target: TARGET.to_owned(),
+        web: Box::new(Helper::beside_this()?),
     };
     let here = || std::env::current_dir().map_err(|err| format!("couldn't tell which folder this is: {err}"));
     match asked.pick {
@@ -123,17 +128,22 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
     }
 }
 
-/// Runs the toolchain's `fennec` in place of this process, with the same arguments.
+/// Runs the toolchain's `fennec` in place of this process, with the same arguments, called `fennec`
+/// as the launcher was: signals, the exit code and every stream go straight to it.
 #[cfg(unix)]
 fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
     use std::os::unix::process::CommandExt as _;
-    let err = toolchain(command, args, offline).exec();
+    let err = toolchain(command, args, offline).arg0("fennec").exec();
     Err(format!("couldn't run {}: {err}", command.display()))
 }
 
-/// Runs the toolchain's `fennec`, with the same arguments, and exits as it does.
+/// Runs the toolchain's `fennec`, with the same arguments, and exits as it does. Ctrl-C reaches
+/// every program in the console, so the launcher lets it go by and waits: the toolchain decides
+/// what it means, and the launcher exits as it does, rather than leaving it running behind a prompt.
 #[cfg(not(unix))]
 fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
+    ctrlc::set_handler(|| {})
+        .map_err(|err| format!("couldn't let Ctrl-C through to the toolchain: {err}"))?;
     let status = toolchain(command, args, offline)
         .status()
         .map_err(|err| format!("couldn't run {}: {err}", command.display()))?;

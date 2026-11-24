@@ -18,6 +18,7 @@ impl Interp {
     pub(crate) fn display(&mut self, value: &Value) -> Run<String> {
         match value {
             Value::Str(text) => Ok(text.as_str().to_owned()),
+            Value::Some(inner) => self.display(inner),
             Value::Instance(instance) if self.is_error(&instance.ty) => self.words(instance),
             other => self.repr(other),
         }
@@ -101,6 +102,8 @@ impl Interp {
         match value {
             Value::Unit => {}
             Value::None => out.push_str("None"),
+            // An optional holding an optional shows as what it holds.
+            Value::Some(inner) => self.repr_into(inner, out)?,
             Value::Bool(true) => out.push_str("True"),
             Value::Bool(false) => out.push_str("False"),
             Value::Int(n) => out.push_str(&n.to_string()),
@@ -427,6 +430,7 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
     let _deeper = super::deeper()?;
     Ok(match (left, right) {
         (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
+        (Value::Some(a), Value::Some(b)) => plain_equal(a, b)?,
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Int(a), Value::Int(b)) => a == b,
         (Value::Sized(x, a), Value::Sized(y, b)) => x == y && a == b,

@@ -10,6 +10,7 @@ use fennec_syntax::{Arg, Expr, FnDef, Span, TypeExpr};
 
 use super::Interp;
 use super::json::filled;
+use crate::value::Value;
 
 /// Type parameters by name, each with the type it stands for in one call.
 pub(crate) type Bound = Vec<(String, Type)>;
@@ -33,6 +34,47 @@ impl Interp {
             at = frame.parent.and_then(|parent| self.frames.iter().rfind(|frame| frame.id == parent));
         }
         ty
+    }
+
+    /// How many levels of optional a type written as a function's return is, in the running
+    /// call: 1 for `int?`, 2 for `int??`, and 2 for `T?` where `T` stands for an `int?`.
+    pub(crate) fn levels_written(&self, written: &TypeExpr) -> usize {
+        let within = match (written.name.as_str(), written.args.as_slice()) {
+            (fennec_syntax::OPTIONAL, [held]) => 1 + self.levels_written(held),
+            ("fails", [returns, _]) => self.levels_written(returns),
+            (name, []) => levels(&self.resolved(&Type::Param(name.to_owned()))),
+            _ => 0,
+        };
+        within + usize::from(written.optional)
+    }
+
+    /// `value`, returned as what's written at `span`, as the running call gives it back: a
+    /// `None` returned as a `T?` where the call gives a `T??` is held in a `Some`.
+    pub(crate) fn returned(&self, value: Value, span: Span) -> Value {
+        let Some(returns) = self.frames.get(self.cur).map(|frame| frame.returns) else { return value };
+        if returns < 2 || value.levels().is_none() {
+            return value;
+        }
+        let given = match self.static_type(span) {
+            Some(ty @ Type::Optional(_)) => levels(&ty),
+            _ => return value,
+        };
+        (given..returns).fold(value, |value, _| Value::Some(Box::new(value)))
+    }
+
+    /// `value`, read by name at `span`, as the type it has there: a `T??` that's been narrowed to
+    /// a `T?`, by `is not None`, is what it holds.
+    pub(crate) fn as_read(&self, value: Value, span: Span) -> Value {
+        if !matches!(value, Value::Some(_)) {
+            return value;
+        }
+        let Some(ty @ Type::Optional(_)) = self.static_type(span) else { return value };
+        let wanted = levels(&ty);
+        let mut value = value;
+        while value.levels().is_some_and(|levels| levels >= wanted && levels > 0) {
+            value = value.unwrapped();
+        }
+        value
     }
 
     /// What the type parameters of `def`, and of the type or `extend` it's in, stand for at a call
@@ -151,6 +193,14 @@ fn unify(written: &TypeExpr, ty: &Type, generics: &[&str], bound: &mut Bound) {
             }
         }
         _ => {}
+    }
+}
+
+/// How many levels of optional a type is: 0 for `int`, 1 for `int?`, 2 for `int??`.
+pub(crate) fn levels(ty: &Type) -> usize {
+    match ty {
+        Type::Optional(inner) => 1 + levels(inner),
+        _ => 0,
     }
 }
 

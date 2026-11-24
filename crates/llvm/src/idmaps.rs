@@ -24,9 +24,6 @@ use crate::lists::{FIELDS_OFFSET, list_item};
 const MISSING: &str =
     "this Id finds nothing in this Table: its item was taken out, or it's from another Table";
 
-/// This thread's run of tags for `add`: the next to hand out, then where the run ends.
-const TAGS: &str = "@fen_table_tags";
-
 /// How many tags a thread takes from the runtime's count at once.
 const TAGS_A_TIME: u32 = 65_536;
 
@@ -268,7 +265,7 @@ impl Emit<'_, '_, '_> {
         let (_, items) = self.part(&block, parts.items, true);
         let length = self.list_length(&generations);
         let (at, end) = self.loop_begin(&length);
-        let generation_at = self.slot_at(&generations, &parts, &at);
+        let generation_at = self.slot_at(&generations, parts, &at);
         let (generation, is_live) = (self.temp(), self.temp());
         self.line(&format!("{generation} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
         self.line(&format!("{is_live} = icmp sge i64 {generation}, 0"));
@@ -778,15 +775,15 @@ impl Emit<'_, '_, '_> {
     /// A tag no `Id` has had, for an `add`: the next of this thread's own run of them, with no
     /// atomic. A thread takes a run of `TAGS_A_TIME` from the runtime's one count when it has none
     /// left, so every thread's tags, and those `fennec_new_tag` gives, are apart, and threads adding
-    /// at once never share the count's cache line for each one.
+    /// at once never share the count's cache line for each one. Where the run is never changes
+    /// while the thread runs, so it's read once.
     fn tag_for_add(&mut self) -> String {
-        self.declare(&format!(
-            "{TAGS} = linkonce_odr hidden thread_local(initialexec) global [2 x i64] zeroinitializer, align 8"
-        ));
+        self.declare(crate::parallel::tags_global(self.module.threads));
         self.declare("declare i64 @fennec_tag_count() nounwind");
-        let (next, end, have) = (self.temp(), self.temp(), self.temp());
-        let end_at = format!("getelementptr inbounds (i8, ptr {TAGS}, i64 8)");
-        self.line(&format!("{next} = load i64, ptr {TAGS}"));
+        let (run, next, end, have) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{run} = load ptr, ptr @fennec_tags, !invariant.load !1"));
+        let end_at = self.offset(&run, 8);
+        self.line(&format!("{next} = load i64, ptr {run}"));
         self.line(&format!("{end} = load i64, ptr {end_at}"));
         self.line(&format!("{have} = icmp ult i64 {next}, {end}"));
         let before = self.current.clone();
@@ -804,7 +801,7 @@ impl Emit<'_, '_, '_> {
         let (tag, after) = (self.temp(), self.temp());
         self.line(&format!("{tag} = phi i64 [ {next}, %{before} ], [ {first}, %{more} ]"));
         self.line(&format!("{after} = add i64 {tag}, 1"));
-        self.line(&format!("store i64 {after}, ptr {TAGS}"));
+        self.line(&format!("store i64 {after}, ptr {run}"));
         tag
     }
 
@@ -967,7 +964,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{more} = icmp slt i64 {at}, {length}"));
         self.line(&format!("br i1 {more}, label %{body}, label %{done}"));
         self.start_block(&body);
-        let generation_at = self.slot_at(&generations, &parts, &at);
+        let generation_at = self.slot_at(&generations, parts, &at);
         let (generation, alive) = (self.temp(), self.temp());
         self.line(&format!("{generation} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
         self.line(&format!("{alive} = icmp sge i64 {generation}, 0"));

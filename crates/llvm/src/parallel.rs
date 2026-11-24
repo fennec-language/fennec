@@ -162,6 +162,17 @@ pub(crate) fn words_global(threads: bool) -> &'static str {
     }
 }
 
+/// How a module declares where this thread's run of tags is for a `Table`'s `add`: the next to
+/// hand out, then where the run ends. `fennec_entry` sets it for the program's thread, and a
+/// worker's first shim for its own.
+pub(crate) fn tags_global(threads: bool) -> &'static str {
+    if threads {
+        "@fennec_tags = external dso_local thread_local(initialexec) global ptr"
+    } else {
+        "@fennec_tags = external dso_local global ptr"
+    }
+}
+
 /// How a module declares this thread's number, which is what a block's owner bits hold when
 /// this thread made it. It's 0 on the program's thread, and a worker's first shim sets it.
 const THREAD_GLOBAL: &str = "@fennec_thread = external dso_local thread_local(initialexec) global i64";
@@ -243,7 +254,8 @@ const READY: &str = "entry:\n  %known = load ptr, ptr @fennec_failed\n  %fresh =
     br i1 %fresh, label %ready, label %set_limit\nready:\n  \
     %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  \
     store ptr %flag_at, ptr @fennec_failed\n  %words_at = call ptr @fennec_dict_value_words()\n  \
-    store ptr %words_at, ptr @fennec_words\n  store i64 %thread, ptr @fennec_thread\n  br label %set_limit\nset_limit:\n  \
+    store ptr %words_at, ptr @fennec_words\n  %tags = call i64 @fennec_tag_run()\n  %tags_at = inttoptr i64 %tags to ptr\n  \
+    store ptr %tags_at, ptr @fennec_tags\n  store i64 %thread, ptr @fennec_thread\n  br label %set_limit\nset_limit:\n  \
     %stack_limit = call i64 @fennec_aot_stack_limit()\n  store i64 %stack_limit, ptr @fennec_stack_limit\n  br label %run\nrun:\n";
 
 /// What a range's closure gives back, which says which shim runs it.
@@ -628,7 +640,9 @@ impl Emit<'_, '_, '_> {
         self.declare(stack_limit_global(threads));
         self.declare(failed_global(threads));
         self.declare(words_global(threads));
+        self.declare(tags_global(threads));
         self.declare(THREAD_GLOBAL);
+        self.declare("declare i64 @fennec_tag_run() nounwind");
         self.declare("declare i64 @fennec_aot_failed_flag()");
         self.declare("declare ptr @fennec_dict_value_words() nounwind");
         self.declare("declare i64 @fennec_aot_stack_limit()");

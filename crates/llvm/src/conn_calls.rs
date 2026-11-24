@@ -5,7 +5,7 @@
 //!
 //! They're made in every build, a test's included: the exports answer a test's fake network
 //! themselves, so what a test runs is what a server runs. `FENNEC_NAMED_CONN_CALLS=1` has a build
-//! call them by name instead, as before, for a test that compares the two.
+//! call them by name instead, as before, for a test that compares the two: a dev compiler only.
 //!
 //! - **A failure** comes back as `-1 - n`, the temporary `n` holding the call's `Err`, which is
 //!   taken from there as a named call's is.
@@ -28,11 +28,11 @@ const NO_TIMEOUT: i64 = i64::MIN;
 const HEAD_CASES: [&str; 5] = ["Lines", "Ended", "Unended", "LongFirst", "TooBig"];
 
 /// Whether a build calls a connection's per-request methods by name, as `FENNEC_NAMED_CONN_CALLS=1`
-/// asks, rather than through their typed exports. It changes what a build makes, so a build's
-/// cache key says it.
+/// asks, rather than through their typed exports: only in a dev compiler, for the test that compares
+/// the two. It changes what a build makes, so a build's cache key says it.
 #[must_use]
 pub(crate) fn named_conn_calls() -> bool {
-    std::env::var("FENNEC_NAMED_CONN_CALLS").as_deref() == Ok("1")
+    cfg!(debug_assertions) && std::env::var("FENNEC_NAMED_CONN_CALLS").as_deref() == Ok("1")
 }
 
 impl Emit<'_, '_, '_> {

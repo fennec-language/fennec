@@ -1205,8 +1205,8 @@ mod tests {
 
     /// Every way of a `Ruled` step that keeps to its rules, three times over with shifting values,
     /// checks, and the evaluator prints what the oracle prints. Then each way that can break one
-    /// does, on its own, and stops the program where the evaluator says, but making a value, which
-    /// is refused and goes on: a field lent alone by `ref` stops it as it comes back (#2270).
+    /// does, on its own, and stops the program where the evaluator says, making a value too
+    /// (#2434): a field lent alone by `ref` stops it as it comes back (#2270).
     #[test]
     fn the_where_rule_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
         use super::ast::{Program, RULE_WAYS, RuleStep, RuleWay, Ruling, Stmt};
@@ -1242,7 +1242,7 @@ mod tests {
             let (source, (printed, ended, said)) = run(vec![first, RuleStep { way, value: 4, breaks: true }]);
             let oracle = fennec_oracle::run_source(&source, "programs.fen");
             assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
-            if matches!(way, RuleWay::Raised | RuleWay::Dipped | RuleWay::Made) {
+            if matches!(way, RuleWay::Raised | RuleWay::Dipped) {
                 assert!(ended, "{way:?}: {printed}");
                 assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
             } else {

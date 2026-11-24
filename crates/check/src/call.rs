@@ -1442,9 +1442,10 @@ impl FnCx<'_> {
         self.check_bounds(chosen, span);
         crate::stdlib::construct(self, type_name, args);
         // A value that breaks a `where` rule stops the program, as a bug. One from outside comes in
-        // through a load, which fails cleanly: built in a `deserialize` the compiler or std wrote,
-        // breaking a rule is a failure the load passes on.
-        if self.loading() && fields.iter().any(|field| field.rule.is_some()) {
+        // through a load, which fails cleanly: built in its own `deserialize` the compiler or std
+        // wrote, breaking a rule is a failure the load passes on. A default for one of its fields,
+        // as `gauge = Gauge(level=0)`, is built as anywhere else.
+        if self.loading(type_name) && fields.iter().any(|field| field.rule.is_some()) {
             return Type::result(built, Type::named("InvalidValue"));
         }
         built
@@ -1721,10 +1722,11 @@ impl FnCx<'_> {
         Diagnostic::new(message, span).with_help(help)
     }
 
-    /// Whether this is a `deserialize` the compiler or the standard library wrote: a load, where a
-    /// value that breaks a `where` rule fails the load rather than stopping the program.
-    fn loading(&self) -> bool {
-        self.key.rsplit('.').next() == Some("deserialize")
+    /// Whether this is the `deserialize` of `type_name` that the compiler or the standard library
+    /// wrote: a load, where a value that breaks a `where` rule fails the load rather than stopping
+    /// the program.
+    fn loading(&self, type_name: &str) -> bool {
+        self.key.strip_suffix(".deserialize") == Some(type_name)
             && self.checker.program.functions.get(&self.key).is_some_and(|entry| entry.def.span.in_prelude())
     }
 

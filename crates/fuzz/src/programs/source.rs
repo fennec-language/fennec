@@ -2688,9 +2688,7 @@ def flooded{N}(ref tags: list[str], stdout: Stdout):
     stdout.print(\"flooded\", len(tags))
 
 def made{N}(n: int, stdout: Stdout):
-    got = Gauge{N}(level=picked{N}(n)) except why:
-        stdout.print(\"refused\", why)
-        return
+    got = Gauge{N}(level=picked{N}(n))
     stdout.print(\"made\", got)
 
 ";

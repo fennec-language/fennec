@@ -3395,7 +3395,7 @@ impl Machine {
 
     /// What `ruled{id}` prints: each step's write, which stops the program where it breaks a
     /// `where` rule, as the field comes back for a field lent alone by `ref`, so a dip put right
-    /// before then is fine; a value made from a number worked out as it runs is refused instead.
+    /// before then is fine, and a value made below 0 stops it where it's built (#2434).
     fn ruled(&mut self, ruling: &Ruling) -> Ran<()> {
         #[derive(Clone)]
         struct Gauge {
@@ -3473,12 +3473,9 @@ impl Machine {
                         let _ = writeln!(self.out, "{}", shown(&Gauge { level: v, ..gauge.clone() }));
                     }
                 }
+                RuleWay::Made if breaks => stopped = Some(broken("level")),
                 RuleWay::Made => {
-                    if breaks {
-                        let _ = writeln!(self.out, "refused Gauge{id}.level breaks its `where` rule");
-                    } else {
-                        let _ = writeln!(self.out, "made {}", shown(&made(v)));
-                    }
+                    let _ = writeln!(self.out, "made {}", shown(&made(v)));
                 }
                 RuleWay::InDict => by_name.level -= amount(by_name.level),
             }

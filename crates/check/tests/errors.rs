@@ -458,6 +458,28 @@ fn building_a_value_with_where_rules_cant_fail() {
     );
 }
 
+/// A load builds what it reads in the `deserialize` the compiler writes, where a broken rule fails
+/// the load. A default for one of its fields, built there too, is built as anywhere else, so it
+/// isn't a result where its plain value goes.
+#[test]
+fn a_rule_bearing_field_default_builds_plainly_in_a_load() {
+    let program = "
+        from std import json
+
+        struct Gauge:
+            level: int where level >= 0
+
+        struct Kept:
+            mark: int
+            gauge = Gauge(level=0)
+
+        def main(stdout: Stdout) fails ParseError:
+            stdout.print(json.loads[Kept](\"{\\\"mark\\\": 1}\")?.gauge.level)
+            stdout.print(json.loads[Gauge](\"{\\\"level\\\": 2}\")?.level)
+    ";
+    assert_eq!(problems(program), Vec::<String>::new());
+}
+
 #[test]
 fn files_can_fail_to_read() {
     let program = "

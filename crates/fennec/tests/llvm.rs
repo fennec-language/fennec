@@ -3357,7 +3357,7 @@ def show(stdout: Stdout, units: list[Unit]):
         stdout.print(one.hp, one.tags, one.inner.tags, one.name)
 
 def ruled_at(size: int) -> Ruled:
-    return Ruled(size, []).expect("a size that's allowed")
+    return Ruled(size, [])
 
 def swap_ends(ref a: list[int], ref b: list[int]):
     a.append(len(b))
@@ -5289,7 +5289,7 @@ def main(stdout: Stdout):
     mut outer = Outer(crowd)
     outer.crowd.numbers = [number + 1 for number in outer.crowd.numbers]
     stdout.print(outer.crowd.numbers, crowd.numbers)
-    mut ruled = Ruled([3, 1, 2]).expect("a list with something in it")
+    mut ruled = Ruled([3, 1, 2])
     ruled.numbers = [number + 10 for number in ruled.numbers]
     stdout.print(ruled.numbers)
 

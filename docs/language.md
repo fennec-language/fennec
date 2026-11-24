@@ -211,7 +211,7 @@ units[unit_id].health -= 1                         # sure: stops loudly if wrong
 
 `units.update(unit_id, value)` puts a new value at a live `Id` and gives `True`, or gives `False` if it's gone.
 
-Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
+Tables are for large, flat data. An `Id` is an index and the tag its `add` took, so it finds the right thing or nothing.
 
 An `Id` made before a copy of a `Table` works in both copies, and one made after works only in the copy it was made in. Each `add` gives its `Id` a tag no other `Id` has, which the item's slot keeps, so an `Id` finds its item or nothing however the `Table` was copied: changed after a copy, sent to a task, read out of a lock, or put back by a failed `lock ... as ref`. A program never sees a tag: an `Id` doesn't print it, and two can't be ordered. Built.
 

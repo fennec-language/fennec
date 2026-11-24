@@ -1253,8 +1253,8 @@ export struct Graph[N, E]:
         )
 
     ## Where a node is in the graph's own lists: its slot in the `Table`, since nothing's ever
-    ## taken out of it. An ID from another graph stops the program: one from a copy of this graph
-    ## made before the node was added has another tag, and so does one the copy added.
+    ## taken out of it. An ID from another graph stops the program, and so does one a copy of this
+    ## graph added after the copy was made.
     def _place(self, id: Id[N]) -> int:
         assert id in self._nodes
         return id_key(id) >> 32

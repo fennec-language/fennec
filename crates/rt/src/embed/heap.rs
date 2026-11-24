@@ -2547,8 +2547,8 @@ fn same_here(state: &State, a: u64, b: u64, later: &mut Vec<(u64, u64)>) -> bool
     same_words_here(state, &shape, left, right, later)
 }
 
-/// Whether two `Table`s are equal: the same items in the same slots, with the same generations.
-/// Which `Table` each is, its tag, and where a search for a free slot starts don't count.
+/// Whether two `Table`s are equal: the same items in the same slots. The tags their slots keep,
+/// and where a search for a free slot starts, don't count.
 fn same_tables(
     fields: &[(Rc<str>, Element)],
     left: &[u64],
@@ -2557,7 +2557,7 @@ fn same_tables(
 ) -> bool {
     let mut at = 0;
     for (field, element) in fields {
-        if matches!(field.as_ref(), "items" | "generations") {
+        if field.as_ref() == "items" {
             let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
             compare_later(later, *x, *y);
         }

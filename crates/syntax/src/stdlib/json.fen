@@ -759,10 +759,9 @@ struct TableFinder:
             # Saved slot for slot, an `Id` is saved only where it finds its item: a load gives the
             # `Table` and every `Id` one tag, so one whose item had gone would find what's there.
             positions = self._positions.get(kind) else dict[(int, int), int]()
-            found = saved_exactly(self._slot_tags, (kind, key, tag)) if self._exact else (
-                key,
-                tag,
-            ) in positions
+            mut found = (key, tag) in positions
+            if self._exact:
+                found = saved_exactly(self._slot_tags, (kind, key, tag))
             if not found:
                 return f"{at} is an Id that finds nothing in {where}: its item was taken out, or it's from another `Table[{kind}]`"
         return ""

@@ -210,9 +210,9 @@ export def table_slots[T](table: Table[T]) -> list[int]
 @intrinsic
 export def table_slot_tags[T](table: Table[T]) -> list[int]
 
-## A `Table` with these slots, as `table_slots` gives them, each slot's tag `tag`, holding
-## `items` in its slots in use, in order. There have to be as many items as slots in use, each generation has to fit
-## in 32 bits, and a load checks both first.
+## A `Table` with these slots, as `table_slots` gives them, each slot in use given the tag `tag`,
+## holding `items` in its slots in use, in order. There have to be as many items as slots in use,
+## each generation has to fit in 32 bits, and a load checks both first.
 @intrinsic
 export def table_of_slots[T](tag: int, slots: list[int], items: list[T]) -> Table[T]
 

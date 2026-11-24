@@ -27,7 +27,7 @@ impl Interp {
         match (name, args.as_slice()) {
             ("get", [Value::Id(id)]) => self.read_table(&receiver, span, |table| {
                 let found = table.find(*id).and_then(|at| table.slots.get(at));
-                found.and_then(|slot| slot.item.clone()).unwrap_or(Value::None)
+                Value::found_or_none(found.and_then(|slot| slot.item.clone()))
             }),
             ("values", []) => self.read_table(&receiver, span, |table| {
                 Value::List(table.live().map(|(_, item)| item.clone()).collect())
@@ -64,7 +64,7 @@ impl Interp {
             let Value::Table(table) = held else { return unsupported("a Table that isn't one") };
             match (name, first, second, more) {
                 ("add", Some(item), None, None) => Ok(Value::Id(table.add(item))),
-                ("remove", Some(Value::Id(id)), None, None) => Ok(table.remove(id).unwrap_or(Value::None)),
+                ("remove", Some(Value::Id(id)), None, None) => Ok(Value::found_or_none(table.remove(id))),
                 ("clear", None, None, None) => {
                     for slot in &mut table.slots {
                         slot.item = None;

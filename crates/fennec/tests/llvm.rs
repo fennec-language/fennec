@@ -7527,6 +7527,57 @@ fn optionals_that_are_none_reach_another_task_as_none_every_way() -> std::io::Re
     Ok(())
 }
 
+/// An optional of an optional keeps a `None` inside apart from `None` (#2413): a `None` popped
+/// out of a `list[int?]` isn't the list being empty, a generic `T?` of a `Point?` that holds
+/// `None` isn't nothing found, and an `Inbox[int?]` hears a `None` that was sent, and goes on to
+/// the messages after it, where it once read the message's block as its number and kept it.
+#[test]
+fn an_optional_of_an_optional_keeps_a_none_inside_apart() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("nested_optionals", NESTED_OPTIONALS, NESTED_OPTIONALS_PRINTS)?;
+    assert!(counts_of("nested_optionals_counts", NESTED_OPTIONALS)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NESTED_OPTIONALS: &str = r#"from std.concurrent import Closed, Crashed, Inbox
+
+struct Point:
+    x: int
+
+def first_of[T](items: list[T]) -> T?:
+    if len(items) == 0:
+        return None
+    return items[0]
+
+def gather(inbox: Inbox[int?], stdout: Stdout):
+    for got in inbox:
+        stdout.print("got", got, got is None)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    none_int: int? = None
+    mut numbers: list[int?] = [7, none_int]
+    first_pop = numbers.pop() else 99
+    second_pop = numbers.pop() else 99
+    third_pop = numbers.pop() else 99
+    stdout.print(first_pop, second_pop, third_pop)
+    none_point: Point? = None
+    points: list[Point?] = [none_point]
+    found = first_of(points)
+    stdout.print(found is None, (found else Point(x=1)) is None)
+    nothing: list[Point?] = []
+    stdout.print(first_of(nothing) is None)
+    with launch((inbox) => gather(inbox, stdout))? as sends:
+        sends.send(12)?
+        sends.send(none_int)?
+        sends.send(3)?
+    return
+"#;
+
+const NESTED_OPTIONALS_PRINTS: &str =
+    "None 7 99\nFalse True\nTrue\ngot 12 False\ngot None True\ngot 3 False\n";
+
 const NONE_EVERY_WAY: &str = r#"# Optionals that are `None` going every way a value goes to another task: a channel, a task's
 # captures, `parallel`'s items and what it gives back, and a lock, for `str?`, `list[int]?` and
 # `dict[str, int]?`, each inside a tuple, and where one can be, alone.
@@ -34508,7 +34559,7 @@ def main(stdout: Stdout):
     rows.append([1, 2])
     rows.append(None)
     rows.append([3])
-    stdout.print(len(rows.pop() else [9, 9, 9]), len(rows.pop() else [9, 9, 9]), len(rows.pop(0) else [9]), len(rows))
+    stdout.print(len((rows.pop() else None) else [9, 9, 9]), len((rows.pop() else None) else [9, 9, 9]), len(rows.pop(0) else [9]), len(rows))
     rows.append([4, 5])
     _ = rows.pop(0)
     stdout.print(len(rows))
@@ -34516,13 +34567,13 @@ def main(stdout: Stdout):
     points.append(Point(x=5))
     points.append(None)
     points.append(Point(x=7))
-    stdout.print((points.pop() else Point(x=0)).x, (points.pop() else Point(x=-1)).x, (points.pop(0) else Point(x=0)).x, len(points))
+    stdout.print(((points.pop() else None) else Point(x=0)).x, ((points.pop() else None) else Point(x=-1)).x, (points.pop(0) else Point(x=0)).x, len(points))
     points.append(Point(x=8))
     _ = points.pop()
     stdout.print(len(points))
     return
 "#,
-        "fox a word long enough to be held in a block of its own none 1\nkit 0 empty\nkit 0\n1 3 2 0\n0\n7 -1 5 0\n0\n",
+        "fox a word long enough to be held in a block of its own None 1\nkit 0 empty\nkit 0\n1 3 2 0\n0\n7 -1 5 0\n0\n",
     )
 }
 
@@ -35777,10 +35828,12 @@ def main(stdout: Stdout):
     )
 }
 
-/// A generic's `T?` with `T` an optional is that optional, as the checker has it: `first` of a
-/// `list[str?]` gives back a `str?`, and a `SortedMap[int, str?]`'s `get` and `remove` do too.
+/// A generic's `T?` with `T` an optional is an optional of it, which keeps a `None` inside apart
+/// (#2413): `first` of a `list[str?]` holding `None` found something, and so did a
+/// `SortedMap[int, str?]`'s `get` and `remove` of a key whose value is `None`. Pinned when the two
+/// were the same, it now pins what decisions.md has: `T??` never collapses into `T?`.
 #[test]
-fn an_optional_of_an_optional_is_the_optional_as_pinned() -> std::io::Result<()> {
+fn an_optional_of_an_optional_keeps_its_none_apart_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }

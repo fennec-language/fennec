@@ -5777,6 +5777,55 @@ fn two_shared_values_are_equal_when_they_hold_equal_values() {
     );
 }
 
+/// An optional of an optional keeps a `None` inside apart from `None`, nothing found (#2413): a
+/// `None` popped, got or removed from a `list[int?]` or a `SortedMap[int, str?]`, and a generic
+/// `T?` or an `int??` returned that holds an `int?` that's `None`. `else` takes off one level, as
+/// narrowing with `is not None` does, and it prints as what it holds. Held to native code, debug
+/// and release.
+#[test]
+fn an_optional_of_an_optional_keeps_a_none_inside_apart() {
+    prints(
+        r#"
+        from std.collections import SortedMap
+
+        def first_of[T](items: list[T]) -> T?:
+            if len(items) == 0:
+                return None
+            return items[0]
+
+        def held_as_found(given: int?) -> int??:
+            return given
+
+        def described(found: int??) -> str:
+            match found:
+                case None:
+                    return "nothing"
+                case inner:
+                    return f"found {inner}"
+
+        def main(stdout: Stdout):
+            none_int: int? = None
+            mut numbers: list[int?] = [none_int, 5]
+            stdout.print(numbers.get(0) is None, numbers.get(9) is None, numbers.get(0) else 8, numbers.get(9) else 8)
+            stdout.print(numbers.remove(none_int) is None, numbers.remove(none_int) is None, len(numbers))
+            mut map = SortedMap[int, str?]()
+            none_str: str? = None
+            map[1] = none_str
+            stdout.print(map.get(1) is None, map.get(2) is None, map.get(1) else "missing", map.get(2) else "missing")
+            stdout.print(map.remove(1) is None, map.remove(1) is None)
+            held: list[int?] = [none_int]
+            found = first_of(held)
+            if found is not None:
+                stdout.print("narrowed", found is None, found)
+            stdout.print(f"shown {found}", described(found), described(held_as_found(none_int)), described(held_as_found(3)))
+            nothing: list[int?] = []
+            stdout.print(described(first_of(nothing)), held_as_found(none_int) is None)
+            return
+        "#,
+        "False True None 8\nFalse True 1\nFalse True None missing\nFalse True\nnarrowed True None\nshown None found None found None found 3\nnothing False\n",
+    );
+}
+
 /// An optional `shared` value that's there is equal to the cell it holds and never to one that's
 /// missing, either way round.
 #[test]

@@ -120,7 +120,9 @@ impl Interp {
                 Value::Int(0) => Ok(Value::Unit),
                 _ => Err(Flow::Fail(Value::instance("Closed", None, Vec::new()), Span::default())),
             },
-            (false, "receive", []) => self.channel_receive(number, -1).map(|(message, _)| message),
+            (false, "receive", []) => self
+                .channel_receive(number, -1)
+                .map(|(message, why)| if why == 0 { Value::found(message) } else { message }),
             _ => unsupported(format!("the channel method `{name}`")),
         }
     }

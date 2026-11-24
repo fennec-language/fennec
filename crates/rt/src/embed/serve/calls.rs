@@ -465,3 +465,51 @@ pub(in crate::embed) fn served_call(
     };
     Some(Ok(done_or_failed(done)))
 }
+
+/// `conn.write(data)` on the connection served with `handle`, or `None` when none is: the typed
+/// calls' (`embed::conn_calls`) way to what [`served_call`] does by value.
+pub(in crate::embed) fn served_write(
+    handle: i64,
+    data: &[u8],
+    timeout: Option<Duration>,
+) -> Option<Result<(), NetFailure>> {
+    conn_of(handle).map(|conn| on(&conn, |conn| conn.write_within(data, timeout)))
+}
+
+/// `conn._reads_within(after)` on the connection served with `handle`, as [`served_write`].
+pub(in crate::embed) fn served_reads_within(handle: i64, after: Duration) -> Option<()> {
+    conn_of(handle).map(|conn| conn.reads_within(after))
+}
+
+/// `conn.draining()` on the connection served with `handle`, as [`served_write`].
+pub(in crate::embed) fn served_draining(handle: i64) -> Option<bool> {
+    conn_of(handle).map(|conn| conn.draining())
+}
+
+/// `conn._room_for_body(size)` on the connection served with `handle`, as [`served_write`].
+pub(in crate::embed) fn served_room_for_body(handle: i64, size: usize) -> Option<bool> {
+    conn_of(handle).map(|conn| conn.body_held.take(size, crate::stdlib::net::MOST_BODIES_HELD))
+}
+
+/// `conn._body(size)` on the connection served with `handle`, as [`served_write`].
+pub(in crate::embed) fn served_body(
+    handle: i64,
+    size: usize,
+    timeout: Option<Duration>,
+) -> Option<Result<Vec<u8>, NetFailure>> {
+    conn_of(handle).map(|conn| on(&conn, |conn| conn.body(size, timeout)))
+}
+
+/// `conn._read_head(...)` on the connection served with `handle`, as [`served_write`]. A served
+/// connection's line has its ending taken off already.
+pub(in crate::embed) fn served_head(
+    handle: i64,
+    limits: crate::stdlib::net::head::Limits,
+    timeout: Option<Duration>,
+) -> Option<Result<crate::stdlib::net::head::Head, NetFailure>> {
+    let conn = conn_of(handle)?;
+    Some(crate::stdlib::net::head::read_head(limits, || {
+        let line = on(&conn, |conn| conn.read_line_crlf(timeout, true))?;
+        Ok(line.map(|line| String::from_utf8_lossy(&line).into_owned()))
+    }))
+}

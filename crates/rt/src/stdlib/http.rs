@@ -376,8 +376,8 @@ type WithTls = fn(TcpStream, &str, Instant, Duration, Option<Waits<'_>>) -> Resu
 
 static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
 
-/// Says TLS is wanted: compiled code that makes a request calls this first, and so does the
-/// `fennec` command.
+/// Says TLS is wanted: compiled code that makes a request calls this first. The `fennec` command
+/// never does, so it links nothing of TLS, or of the system frameworks that check certificates.
 pub fn use_tls() {
     WITH_TLS.get_or_init(|| tls::wrap);
     RAW_TLS.get_or_init(|| tls::raw);

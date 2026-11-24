@@ -108,6 +108,7 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
     }
     let texts = fennec_kit::all_texts(std::path::Path::new(path))?;
     if !texts.iter().any(|(_, text)| text.contains("test \"")) {
+        note_no_tests(path, &texts);
         return None;
     }
     let passed = crate::run::fingerprint(
@@ -129,6 +130,20 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
         fennec_build::kept("keep which tests passed", cache.write("tested", &name, passed.as_bytes()));
     }
     None
+}
+
+/// Notes that a kit with no tests passes them all, as `fennec test` notes a kit whose tests passed,
+/// so the next run with no file changed reads nothing to find there's nothing to run. A kit that
+/// reads files through `embed` isn't noted: which files it reads is only known by loading it, which
+/// `fennec test` does when it notes one. Nothing is noted for a single file, which isn't a kit.
+fn note_no_tests(path: &str, texts: &[(String, String)]) {
+    let embeds = texts.iter().any(|(_, text)| text.contains("embed_file(") || text.contains("embed_folder("));
+    let Some(cache) = crate::run::cache().filter(|_| !embeds) else { return };
+    if let Some(files) = crate::verdict::kit_files(path, None) {
+        // A cache that can't be written only means reading the kit again next time.
+        let noted = crate::verdict::note_no_tests((&cache, &crate::run::absolute(path)), &files);
+        fennec_build::kept("keep that the kit has no tests", noted);
+    }
 }
 
 /// `fennec test`: run by the build daemon when there's one to be had, as `fennec build` is, or
@@ -254,6 +269,11 @@ fn run_plan(
     let place = |name: &str| graph.tests().position(|test| test == name);
     outcomes.sort_by_key(|outcome| place(&outcome.name));
     if outcomes.is_empty() && unchanged.is_empty() {
+        // With no tests, all of them pass, and that's kept as when they do: otherwise each run
+        // before this kit changes would load all of it again, to find nothing to run.
+        if options.run != Run::Real {
+            remember_passed(results, files, (&program, &rows), &facts);
+        }
         if !options.before_a_run {
             println!("no tests in {path}");
         }
@@ -292,9 +312,7 @@ fn run_plan(
         results.store(&passing);
         if let (Some((cache, name)), Some(files)) = (&results.cache, files) {
             if failed == 0 {
-                // A cache that can't be written only means looking at all of it next time.
-                let remembered = crate::verdict::remember((cache, name), (files, &program, &rows), &facts);
-                fennec_build::kept("keep what the tests depend on", remembered);
+                remember_passed(results, Some(files), (&program, &rows), &facts);
             } else {
                 crate::verdict::forget((cache, name));
             }
@@ -303,6 +321,20 @@ fn run_plan(
     let passed = outcomes.len() + unchanged.len() - failed;
     say_totals(options, (passed, failed), (outcomes.len(), unchanged.len()));
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// Remembers that all of a kit's tests passed, with what they depend on, if it's a kit and there's
+/// a cache. A cache that can't be written only means looking at all of it next time.
+fn remember_passed(
+    results: &Results,
+    files: Option<&[fennec_build::KitFile]>,
+    (program, rows): (&fennec_kit::Program, &HashMap<String, Vec<fennec_build::Row>>),
+    facts: &crate::verdict::KitFacts,
+) {
+    if let (Some((cache, name)), Some(files)) = (&results.cache, files) {
+        let remembered = crate::verdict::remember((cache, name), (files, program, rows), facts);
+        fennec_build::kept("keep what the tests depend on", remembered);
+    }
 }
 
 /// The line of totals, or when a program runs next, nothing unless a test failed.

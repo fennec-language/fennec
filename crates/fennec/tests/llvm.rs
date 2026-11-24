@@ -29105,6 +29105,22 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// Copies of a `Table` never hand out an `Id` that finds the other copy's item (#2424): each `add`
+/// takes a tag no `Id` has had, which its slot keeps. Two copies each adding, an `Id` from before
+/// the copy found in both, both copies taking an item out and adding again into its slot, a copy of
+/// a copy, and the `Id`s `ids()` and `items()` give, each the one `add` gave. In dev and release.
+#[test]
+fn copies_of_a_table_never_hand_out_one_id() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_copies_keep_ids_apart",
+        include_str!("fixtures/table_copies_keep_ids_apart.fen"),
+        include_str!("fixtures/table_copies_keep_ids_apart.out"),
+    )
+}
+
 /// An item taken out of a `Table` to change in place never changes a copy of the `Table`: it's
 /// made alone before the item is taken. A copy kept as a local, as a field of a copied struct,
 /// by a caller passing it as `ref`, and by another task, of items holding a dict and of plain
@@ -29291,13 +29307,18 @@ fn an_item_taken_by_id_goes_back_where_it_was_read_unless_something_reaches_the_
     let ran = Command::new(&executable).output_within()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
     std::fs::remove_dir_all(&dir)?;
-    // A removed item's `Id`, and another `Table`'s, each stop the program at the read, on line 7.
+    // A removed item's `Id`, and another `Table`'s, each stop the program at the read, on line 7,
+    // saying the same: a `Table` can't tell them apart.
     for (name, made, why) in [
-        ("removed", "_ = units.remove(id)", "this Id refers to something that's been removed"),
+        (
+            "removed",
+            "_ = units.remove(id)",
+            "this Id finds nothing in this Table: its item was taken out, or it's from another Table",
+        ),
         (
             "another",
             "mut other = Table[Unit]()\n    id = other.add(Unit(health=1))",
-            "this Id is from another Table",
+            "this Id finds nothing in this Table: its item was taken out, or it's from another Table",
         ),
     ] {
         let program = format!(
@@ -29359,7 +29380,7 @@ fn an_item_put_back_twice_from_one_read_looks_it_up_each_time() -> std::io::Resu
         let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
         std::fs::remove_dir_all(&dir)?;
         assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
-        let why = "this Id refers to something that's been removed";
+        let why = "this Id finds nothing in this Table: its item was taken out, or it's from another Table";
         assert!(said.contains(why) && said.contains("twice.fen:11:"), "{how:?}: {said}");
     }
     Ok(())

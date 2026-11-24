@@ -117,7 +117,8 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
                 field("generations", &Type::List(Box::new(Type::Int))),
                 field("live", &Type::Int),
                 field("free_from", &Type::Int),
-                field("tag", &Type::Int),
+                // The tag of the `Id` each slot last handed out: a new one at each `add`.
+                field("slot_tags", &Type::List(Box::new(Type::Int))),
             ];
             out.insert(format!("Table[{item}]"), Written::Struct(fields));
         }

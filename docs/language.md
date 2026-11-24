@@ -213,7 +213,7 @@ units[unit_id].health -= 1                         # sure: stops loudly if wrong
 
 Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
 
-A copy of a `Table` keeps its tag, so an `Id` from before the copy works in both, and generations are unique across copies, so an item added to one copy can't be found through the other. Not built yet: today an item added to each copy can get the same `Id`.
+An `Id` made before a copy of a `Table` works in both copies, and one made after works only in the copy it was made in. Each `add` gives its `Id` a tag no other `Id` has, which the item's slot keeps, so an `Id` finds its item or nothing however the `Table` was copied: changed after a copy, sent to a task, read out of a lock, or put back by a failed `lock ... as ref`. A program never sees a tag: an `Id` doesn't print it, and two can't be ordered. Built.
 
 An `Id` is local to its process's `Table`. To name something across servers, send a key of your own, like a player's name, and let each server find its own `Id` from it. An `Id` from another `Table` finds nothing.
 

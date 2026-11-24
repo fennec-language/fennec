@@ -2017,6 +2017,14 @@ pub extern "C" fn new_tag() -> i64 {
     crate::value::new_tag().cast_signed()
 }
 
+/// `fennec_tag_run()`: where this thread's run of tags is, two `u64`s, the next tag and where the run
+/// ends, both 0 at first, at one place for the thread's life. Native code hands out `next` with a
+/// plain add, and takes a new run from `fennec_tag_count`'s count with one atomic add when `next`
+/// reaches `end`. The runtime never touches them.
+pub extern "C" fn tag_run() -> i64 {
+    i64::try_from(crate::value::tag_run()).unwrap_or(0)
+}
+
 /// `fennec_tag_count()`: where the count `fennec_new_tag` takes from is, a `u64` every thread adds
 /// to, for native code to take a tag with `atomicrmw add ... 1 monotonic` and no call. The old value
 /// is the tag. It never moves while the run goes on.

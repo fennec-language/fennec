@@ -35,7 +35,12 @@ const ITS_OWN: [&str; 6] = ["toolchain", "default", "new", "update", "self", "--
 /// The toolchain's `fennec` to hand the command to, when it's there to run now: found as
 /// `fennec-setup` would, with every check, but never fetched, installed or pinned.
 fn ready(asked: &Asked) -> Option<PathBuf> {
-    if asked.pick.is_none() && asked.command.first().is_some_and(|first| ITS_OWN.contains(&first.as_str())) {
+    // `new` goes there with a version named too, which tells a linked build the name it's run as.
+    if asked
+        .command
+        .first()
+        .is_some_and(|first| ITS_OWN.contains(&first.as_str()) && (asked.pick.is_none() || first == "new"))
+    {
         return None;
     }
     let home = match std::env::var_os("FENNEC_HOME") {

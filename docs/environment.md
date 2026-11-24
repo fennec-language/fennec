@@ -14,6 +14,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_LAUNCHER_DIST`: the mirror `fennec self update` fetches launcher releases from.
 - `FENNEC_VERSION`: which release `install.sh` installs.
 - `FENNEC_DOWNLOAD`: where `install.sh` downloads from.
+- `FENNEC_LINKED_AS`: the name the launcher runs a linked build as, which it tells that build when it hands it `fennec new`. Set to `dev`, the new kit asks for `dev` rather than the build's version, of which there's no release to run.
 - `FENNEC_STATIC`: `0` links a built program against the system's libc in place of musl.
 - `FENNEC_THREADS`: how many workers a program's pool has; the number of cores by default. At most 256: asking for more makes 256 and says so on standard error, once. A pool the system won't give the program, as when it has run out of open files, is said once too, and `parallel` then runs its ranges one after another. A worker past the first that the system won't start stops the program, saying how many started and to ask for no more than that.
 - `FENNEC_THREADS_RUNTIME`: `0` or `1` picks the plain runtime or the one with threads, in place of what the program needs.

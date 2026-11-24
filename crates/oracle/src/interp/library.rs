@@ -120,6 +120,16 @@ pub(crate) fn call(path: &str, args: &[Value], span: Span) -> Run<Value> {
         // As `docs/language.md` says, `libm` computes these, the same bits on every platform.
         // Past -1 or 1 `acos` is NaN, and so is `log` below 0: neither stops the program.
         ("std.math.sin", [Value::Float(x)]) => Ok(Value::Float(libm::sin(*x))),
+        // An `f32` is computed in `f32`, by `libm`'s own, as native code does.
+        ("std.math.sqrt", [Value::F32(x)]) => {
+            if *x < 0.0 {
+                return crash("can't take the square root of a negative number", span);
+            }
+            Ok(Value::F32(libm::sqrtf(*x)))
+        }
+        ("std.math.sin", [Value::F32(x)]) => Ok(Value::F32(libm::sinf(*x))),
+        ("std.math.cos", [Value::F32(x)]) => Ok(Value::F32(libm::cosf(*x))),
+        ("std.math.acos", [Value::F32(x)]) => Ok(Value::F32(libm::acosf(*x))),
         ("std.math.cos", [Value::Float(x)]) => Ok(Value::Float(libm::cos(*x))),
         ("std.math.tan", [Value::Float(x)]) => Ok(Value::Float(libm::tan(*x))),
         ("std.math.acos", [Value::Float(x)]) => Ok(Value::Float(libm::acos(*x))),

@@ -223,7 +223,7 @@ impl Interp {
         })
     }
 
-    /// `int.parse(text)`, `float.parse(text)` and `str.from_code(n)`.
+    /// `int.parse(text)`, `float.parse(text)`, `f32.parse(text)` and `str.from_code(n)`.
     pub(crate) fn static_call(&mut self, ty: &str, name: &str, given: Vec<ArgVal>, span: Span) -> Run<Value> {
         let mut args = Vec::new();
         for arg in given {
@@ -239,6 +239,11 @@ impl Interp {
             },
             ("float", "parse", [Value::Str(text)]) => match text.trim().parse::<f64>() {
                 Ok(x) => Ok(Value::Float(x)),
+                Err(_) => Err(not_a_number(text, "a float", span)),
+            },
+            // Read straight to the nearest `f32`, rounded once; text that isn't one fails as `float`'s does.
+            ("f32", "parse", [Value::Str(text)]) => match text.trim().parse::<f32>() {
+                Ok(x) => Ok(Value::F32(x)),
                 Err(_) => Err(not_a_number(text, "a float", span)),
             },
             ("bytes", "fromhex", [Value::Str(text)]) => match from_hex(text) {

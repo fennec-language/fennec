@@ -277,6 +277,7 @@ dependencies = [
  "fennec-build",
  "fennec-check",
  "fennec-count",
+ "fennec-daemon",
  "fennec-deps",
  "fennec-dist",
  "fennec-fmt",
@@ -333,6 +334,14 @@ dependencies = [
 name = "fennec-count"
 version = "0.0.1"
 dependencies = [
+ "fennec-temp",
+]
+
+[[package]]
+name = "fennec-daemon"
+version = "0.0.1"
+dependencies = [
+ "fennec-blake3",
  "fennec-temp",
 ]
 

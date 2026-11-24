@@ -121,6 +121,7 @@ projects/arena
 projects/cases
 projects/constants
 projects/embedded
+projects/embedded_folder
 projects/notes_api
 projects/packages
 projects/shadowing

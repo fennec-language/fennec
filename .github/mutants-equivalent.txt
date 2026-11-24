@@ -95,3 +95,13 @@ crates/llvm/src/lists.rs
 replace > with >= in Emit<'_, '_, '_>::see_to
 Kind::List(_) if step > 0 => {
 Also makes a root list alone first, which the change through it would do anyway: a shared list is still copied exactly once, so values and copy counts are the same.
+
+crates/llvm/src/share.rs
+replace < with <= in moves
+at != 0 && at < Span::PRELUDE
+Also counts a place at exactly `Span::PRELUDE` as moving, and none is there: that's byte 0 of the first library file, `errors.fen`, which opens with a doc comment the lexer skips, so no token, and no instruction, starts at it.
+
+crates/llvm/src/share.rs
+replace Share::keeping -> bool with true
+self.added.is_some()
+Only has a build that keeps no units call `add` anyway: with nothing kept, `add` keeps nothing and `add_places` finds no table, and the layouts note no reads, so nothing a build writes changes.

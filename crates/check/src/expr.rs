@@ -1,5 +1,5 @@
 //! Checking expressions and working out their types: names, operators, fields, indexing,
-//! comprehensions, arrow functions, and `?`, `?.` and `else`.
+//! comprehensions, arrow functions, `?` and `else`.
 
 use fennec_syntax::{BinOp, CompKind, Diagnostic, Expr, ExprKind, FStrPart, Span, StmtKind, UnaryOp};
 

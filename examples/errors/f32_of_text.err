@@ -4,4 +4,4 @@ error: `f32(...)` converts a number, not a str
 2 |     speed = f32("1.5")
   |                 ^^^^^
   |
-  = help: read the text as a number with `float.parse`, as `x = f32(float.parse(text)?)`
+  = help: read the text with `f32.parse`, as `f32.parse(text)?`

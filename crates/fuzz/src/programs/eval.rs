@@ -2089,6 +2089,11 @@ impl Machine {
                     let _ = writeln!(self.out, "{line}");
                 }
             }
+            Stmt::Messaged(messaging) => {
+                for line in super::messaging::printed(messaging) {
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
             Stmt::Opened(opening) => {
                 let (lines, stops) = super::opening::printed(opening);
                 for line in lines {

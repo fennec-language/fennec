@@ -174,7 +174,7 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
     if sized && name == "len" {
         return Some(reads(&[], Type::Int));
     }
-    if matches!(ty, Type::Int | Type::Float) && name == "abs" {
+    if matches!(ty, Type::Int | Type::Float | Type::Sized(crate::types::Num::F32)) && name == "abs" {
         return Some(reads(&[], ty.clone()));
     }
     if matches!(ty, Type::Float) && name == "is_nan" {
@@ -854,12 +854,15 @@ impl FnCx<'_> {
     fn sized_conversion(&mut self, num: crate::types::Num, first: &Type, at: Span) -> Type {
         let name = num.name();
         if num.is_float() {
+            // std's `f32.parse` reads text straight to the nearest `f32`, so it's rounded once:
+            // written over this, as `int.parse` is over `int(text)`. A program writes `.parse`.
+            if *first == Type::Str && at.in_prelude() {
+                return Type::result(Type::Sized(num), Type::named("InvalidValue"));
+            }
             if !matches!(first, Type::Int | Type::Float | Type::Sized(_) | Type::Unknown) {
                 let message = format!("`{name}(...)` converts a number, not {}", a(first));
                 let help = if *first == Type::Str {
-                    format!(
-                        "read the text as a number with `float.parse`, as `x = {name}(float.parse(text)?)`"
-                    )
+                    format!("read the text with `{name}.parse`, as `{name}.parse(text)?`")
                 } else {
                     format!("pass a number, as `{name}(1.5)`")
                 };
@@ -872,9 +875,7 @@ impl FnCx<'_> {
         if !integer {
             let message = format!("`{name}(...)` converts an integer, not {}", a(first));
             let help = match self.checker.settled(first) {
-                Type::Str => format!(
-                    "read the text as a number with `{name}.parse(text)`, as `x = {name}.parse(text)?`"
-                ),
+                Type::Str => format!("read the text with `{name}.parse`, as `{name}.parse(text)?`"),
                 Type::Float => {
                     format!("make it a whole number first: `{name}(round(x))` or `{name}(int(x))`")
                 }
@@ -885,15 +886,21 @@ impl FnCx<'_> {
         Type::Sized(num)
     }
 
-    /// `round` and `std.math`'s functions, which take numbers.
+    /// `round` and `std.math`'s functions, which take numbers. `sqrt`, `sin`, `cos` and `acos` take
+    /// an `f32` too, and give one, computed in `f32`.
     pub(crate) fn math(&mut self, name: &str, types: &[Type], span: Span) -> Type {
         let first = types.first().cloned().unwrap_or(Type::Unknown);
+        let f32_math = matches!(name, "math.sqrt" | "math.sin" | "math.cos" | "math.acos");
+        if f32_math && self.checker.settled(&first) == Type::Sized(crate::types::Num::F32) && types.len() == 1
+        {
+            return first;
+        }
         let number = matches!(first, Type::Int | Type::Float | Type::Unknown);
         let digits = types.get(1).is_none_or(|digits| self.checker.fits(&Type::Int, digits));
         if !number || !digits {
             let message = format!("`{name}` takes a number, but this is {}", a(&first));
             let help = if first == Type::Str {
-                format!("read the text as a number first, as `{name}(float(text)?)`")
+                format!("read the text as a number with `float.parse`, as `{name}(float.parse(text)?)`")
             } else {
                 format!("pass a number, as `{name}(2.5)`")
             };

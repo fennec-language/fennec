@@ -116,7 +116,7 @@ fn sized_integers_convert_when_written_out() {
     assert_eq!(
         helps,
         [
-            "read the text as a number with `u8.parse(text)`, as `x = u8.parse(text)?`",
+            "read the text with `u8.parse`, as `u8.parse(text)?`",
             "make it a whole number first: `u8(round(x))` or `u8(int(x))`"
         ]
     );

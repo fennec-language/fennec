@@ -7,16 +7,14 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+// The most a fetch takes in when nothing says how big what it fetches is.
+use fennec_launcher::MOST_BYTES;
+
 /// How long a connection may wait on the other side before it's given up on.
 const WAIT: Duration = Duration::from_secs(30);
 
 /// How many redirects a fetch follows: a release page sends its files elsewhere, once.
 const MOST_REDIRECTS: usize = 5;
-
-/// The most a fetch takes in when nothing says how big what it fetches is: a release's manifest,
-/// its signatures and its `latest`, each a few lines. An archive's size comes from its signed
-/// manifest, and is all its fetch takes in.
-const MOST_BYTES: u64 = 1 << 20;
 
 /// The longest a line of the answer's head may be. A mirror that sends one without end would
 /// otherwise have it read into memory until there's none left.
@@ -31,15 +29,6 @@ const WHOLE_FETCH: Duration = Duration::from_mins(15);
 struct Limits {
     most: u64,
     until: Instant,
-}
-
-/// The bytes at `url`.
-///
-/// # Errors
-///
-/// When they can't be fetched, saying why.
-pub(crate) fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    fetch_at_most(url, MOST_BYTES)
 }
 
 /// The bytes at `url`, of which there are at most `most`, as a release's signed manifest says

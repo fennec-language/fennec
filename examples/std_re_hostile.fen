@@ -8,7 +8,7 @@ from std.re import Regex, is_regex
 
 ## Why `pattern` can't be a `Regex`, or "built".
 def refused(pattern: str) -> str:
-    _ = Regex(pattern=pattern) except why:
+    _ = Regex.parse(pattern) except why:
         return why.message
     return "built"
 
@@ -40,7 +40,7 @@ test "a repeat over 1000, or groups nested over 250 deep, are refused"():
 test "patterns that blow a backtracker up take time that grows with the text alone"():
     text = "a" * 20_000 + "!"
     for pattern in ["(a+)+$", "(a*)*b", "(a|a)*b", "(a|aa)*c", "(?:a?){30}a{30}$"]:
-        assert Regex(pattern=pattern)?.search(text) is None
+        assert Regex.parse(pattern)?.search(text) is None
     assert Regex(pattern="(a+)+!").search(text) is not None
 
 test "the costliest pattern allowed runs through a long text and finishes"():

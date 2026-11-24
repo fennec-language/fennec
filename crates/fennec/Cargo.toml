@@ -31,6 +31,7 @@ required-features = ["std-private"]
 mimalloc.workspace = true
 fennec-blake3.workspace = true
 fennec-build.workspace = true
+fennec-daemon.workspace = true
 fennec-check.workspace = true
 fennec-deps.workspace = true
 fennec-dist.workspace = true

@@ -253,3 +253,15 @@ fn a_table_s_slots_keep_their_own_tags_crossing_to_a_block_and_back() {
     assert_eq!(ids, vec![tags[0], tags[2]]);
     finish();
 }
+
+/// `fennec_tag_count` gives the place of the count `fennec_new_tag` takes from, which never moves,
+/// so native code taking tags from it and the runtime never give the same one.
+#[test]
+fn the_tag_count_is_where_new_tag_takes_from_and_stays_there() {
+    let at = heap::tag_count();
+    assert_ne!(at, 0);
+    let first = heap::new_tag();
+    let second = heap::new_tag();
+    assert!(second > first);
+    assert_eq!(heap::tag_count(), at);
+}

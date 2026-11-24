@@ -120,6 +120,12 @@ pub(crate) struct Table {
 /// can't run out.
 static NEXT_TAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// Where the count of tags is, for native code to take one with an atomic add of its own, the old
+/// value being the tag, as `new_tag` takes one: no call an item added to a `Table`.
+pub(crate) fn tag_count() -> usize {
+    std::ptr::from_ref(&NEXT_TAG).addr()
+}
+
 /// A tag no item has had.
 pub(crate) fn new_tag() -> u64 {
     NEXT_TAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

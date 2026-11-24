@@ -2017,6 +2017,13 @@ pub extern "C" fn new_tag() -> i64 {
     crate::value::new_tag().cast_signed()
 }
 
+/// `fennec_tag_count()`: where the count `fennec_new_tag` takes from is, a `u64` every thread adds
+/// to, for native code to take a tag with `atomicrmw add ... 1 monotonic` and no call. The old value
+/// is the tag. It never moves while the run goes on.
+pub extern "C" fn tag_count() -> i64 {
+    i64::try_from(crate::value::tag_count()).unwrap_or(0)
+}
+
 /// A new block of a shape, owned once, its fields zero.
 pub extern "C" fn alloc(shape: i64) -> i64 {
     super::made_with("fennec_alloc", |state| {

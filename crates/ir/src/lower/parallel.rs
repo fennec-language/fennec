@@ -862,8 +862,10 @@ impl Lowering<'_> {
                 // range is never empty, so the partial is always set.
                 let total = self.temporary(ty.clone());
                 self.counting(each(Operand::Local(from)), span, |lowering| {
-                    let value = lowering.expr(elem)?;
+                    // The range's own count, taken before the item, which may count loops of its
+                    // own, like an inner `sum` (#2499).
                     let at = lowering.at()?;
+                    let value = lowering.expr(elem)?;
                     let first = lowering.temporary(Type::Bool);
                     let (lhs, rhs) = (Operand::Local(at), Operand::Local(from));
                     lowering.emit(InstKind::Binary { dest: first, op: BinOp::Eq, lhs, rhs }, span);

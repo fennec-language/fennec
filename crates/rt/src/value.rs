@@ -120,6 +120,18 @@ pub(crate) struct Table {
 /// can't run out.
 static NEXT_TAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+thread_local! {
+    /// This thread's run of tags, for native code: the next to hand out and where the run ends, both
+    /// 0 until native code takes its first run from `NEXT_TAG`. Nothing here reads or writes it.
+    static TAG_RUN: [std::cell::Cell<u64>; 2] = const { [std::cell::Cell::new(0), std::cell::Cell::new(0)] };
+}
+
+/// Where this thread's run of tags is: two words, the next tag and where the run ends, which stay
+/// where they are while the thread runs.
+pub(crate) fn tag_run() -> usize {
+    TAG_RUN.with(|run| std::ptr::from_ref(run).addr())
+}
+
 /// Where the count of tags is, for native code to take one with an atomic add of its own, the old
 /// value being the tag, as `new_tag` takes one: no call an item added to a `Table`.
 pub(crate) fn tag_count() -> usize {

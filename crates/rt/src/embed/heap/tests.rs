@@ -269,3 +269,14 @@ fn the_tag_count_is_where_new_tag_takes_from_and_stays_there() {
     assert!(second > first);
     assert_eq!(heap::tag_count(), at);
 }
+
+/// `fennec_tag_run` gives each thread a place of its own for its run of tags, which stays put.
+#[test]
+fn each_thread_s_run_of_tags_has_a_place_of_its_own_that_stays_put() {
+    let here = heap::tag_run();
+    assert_ne!(here, 0);
+    assert_eq!(heap::tag_run(), here);
+    let there = std::thread::spawn(|| heap::tag_run()).join().unwrap_or(0);
+    assert_ne!(there, 0);
+    assert_ne!(there, here);
+}

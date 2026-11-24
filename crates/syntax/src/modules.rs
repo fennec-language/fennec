@@ -135,8 +135,11 @@ pub fn module_as_value(alias: &str, module: &str, span: Span) -> Diagnostic {
 pub fn written_type(ty: &crate::TypeExpr) -> String {
     let args: Vec<String> = ty.args.iter().map(written_type).collect();
     match ty.name.as_str() {
+        "|" if ty.optional => return format!("({})?", args.join(" | ")),
         "|" => return args.join(" | "),
         "fails" => return args.join(" fails "),
+        // The union inside is in brackets already, as `(A | B)??`.
+        crate::OPTIONAL => return format!("{}?", args.join("")),
         _ => {}
     }
     if ty.name == "->" {

@@ -582,6 +582,18 @@ fn a_list_written_where_a_list_of_optionals_goes_is_one() {
     assert!(problems(program)[0].contains("numbers[0]"), "{:?}", problems(program));
 }
 
+/// An optional of an optional, `int??`, is written as two `?` and stays apart from `int?` (#2413):
+/// `else` takes off one of them, and an `int?` given where one goes is the one inside.
+#[test]
+fn an_optional_of_an_optional_stays_apart_from_the_optional() {
+    let program = "def peeled(held: int??) -> int?:\n    return held else 5\n\n\
+                   def wrapped(held: int?) -> int??:\n    return held\n\n\
+                   def main(stdout: Stdout):\n    inner: int? = None\n    stdout.print(peeled(wrapped(inner)))\n";
+    assert_eq!(problems(program), Vec::<String>::new());
+    let flat = "def flat(held: int??) -> int:\n    return held else 5\n";
+    assert_eq!(problems(flat), ["this might be None @ held else 5"]);
+}
+
 #[test]
 fn what_a_mut_parameter_can_make_none_is_checked_again() {
     let program = "

@@ -49,6 +49,9 @@ fn tables() -> Tables {
 static AS_WORDS: AtomicBool = AtomicBool::new(false);
 static INBOX: AtomicI64 = AtomicI64::new(0);
 static READY: AtomicI64 = AtomicI64::new(0);
+/// What `main` sends on once its sends that give up at once are done, so the task reads none of
+/// them before then, and they find the channel full however the threads are scheduled.
+static GO: AtomicI64 = AtomicI64::new(0);
 /// What the launched task saw, in its order.
 static TASK_SAW: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -99,14 +102,17 @@ fn receive(inbox: i64, timeout_ns: i64) -> (i64, i64) {
     (code, words.first().copied().unwrap_or(0).cast_signed())
 }
 
-/// The launched task: a receive with nothing sent yet, which runs out of time, then every message
-/// until the inbox closes, as `main` closes it, mostly while this waits for the next.
+/// The launched task: a receive with nothing sent yet, which runs out of time, then, once `main`
+/// says go, every message until the inbox closes, as `main` closes it, mostly while this waits
+/// for the next.
 extern "C" fn reads(_env: i64, _thread: i64) -> i64 {
     let inbox = INBOX.load(Ordering::SeqCst);
     let mut saw = Vec::new();
     let (code, _) = receive(inbox, MILLISECOND);
     saw.push(format!("waited {code}"));
     channel_send(READY.load(Ordering::SeqCst), 1, 0, FOREVER);
+    let mut go = 0;
+    saw.push(format!("told to go {}", channel_receive(GO.load(Ordering::SeqCst), FOREVER, &mut go)));
     loop {
         let (code, user) = receive(inbox, PATIENCE);
         saw.push(format!("got {code} from {user}"));
@@ -119,13 +125,16 @@ extern "C" fn reads(_env: i64, _thread: i64) -> i64 {
 }
 
 /// One run: `main` waits for the task to time out, sends six messages into a channel with room
-/// for one, each giving up at once if it's full, then three that wait for room, then closes it.
+/// for one, each giving up at once if it's full, then tells the task to read, then sends three
+/// that wait for room, then closes it. The task reads nothing until it's told, so the first send
+/// fills the channel and the other five find it full.
 /// What `main` saw, then what the task did.
 fn run(workers: usize) -> (Vec<String>, Vec<String>) {
     start(tables(), crate::Inputs::default());
-    let (inbox, ready) = (channel_new(1), channel_new(1));
+    let (inbox, ready, go) = (channel_new(1), channel_new(1), channel_new(1));
     INBOX.store(inbox, Ordering::SeqCst);
     READY.store(ready, Ordering::SeqCst);
+    GO.store(go, Ordering::SeqCst);
     let task = launch_on(pool(workers), reads, 0);
     let mut saw = Vec::new();
     let mut got = 0;
@@ -135,6 +144,7 @@ fn run(workers: usize) -> (Vec<String>, Vec<String>) {
     for user in 1..=6 {
         saw.push(format!("sent {user}: {}", send(inbox, user, text, 0)));
     }
+    saw.push(format!("said go {}", channel_send(go, 1, 0, FOREVER)));
     for user in 7..=9 {
         saw.push(format!("sent {user}: {}", send(inbox, user, text, FOREVER)));
     }
@@ -143,6 +153,7 @@ fn run(workers: usize) -> (Vec<String>, Vec<String>) {
     saw.push(format!("ended {}", launch_end(task, FOREVER, 0, &mut failure)));
     channel_free(inbox);
     channel_free(ready);
+    channel_free(go);
     finish();
     let task_saw = std::mem::take(&mut *TASK_SAW.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
     (saw, task_saw)
@@ -244,7 +255,12 @@ fn messages_sent_as_words_replay_as_recorded_and_as_todays_do() {
         let log = folder.join(format!("run{at}.log"));
         let recorded = ran("record", &log, recorded_on, recorded_way);
         assert!(recorded.contains("waited 2"), "the first receive runs out of time:\n{recorded}");
-        assert!(recorded.contains(&format!(": {TIMED_OUT}")), "a send finds the channel full:\n{recorded}");
+        for user in 2..=6 {
+            assert!(
+                recorded.contains(&format!("sent {user}: {TIMED_OUT}")),
+                "send {user} finds the channel full:\n{recorded}"
+            );
+        }
         assert!(recorded.contains("got 1 from 0"), "the last receive finds the channel closed:\n{recorded}");
         let replayed = ran("replay", &log, replayed_on, replayed_way);
         assert_eq!(

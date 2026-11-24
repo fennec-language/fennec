@@ -207,10 +207,21 @@ impl Type {
         }
     }
 
+    /// `T?`, an optional of `inner`. An optional of an optional stays one, `T??`, so a generic's
+    /// `T?` of an optional `T` still tells "nothing there" from "a `None` there".
     pub(crate) fn optional(inner: Type) -> Type {
         match inner {
-            Type::Optional(_) | Type::None | Type::Unknown => inner,
+            Type::None | Type::Unknown => inner,
             other => Type::Optional(Box::new(other)),
+        }
+    }
+
+    /// `inner` or `None`: `inner` itself when it can already be `None`, else `inner?`. A chain that
+    /// stops at the first missing step, and a value joined with `None`, are missing one way only.
+    pub(crate) fn or_none(inner: Type) -> Type {
+        match inner {
+            Type::Optional(_) => inner,
+            other => Type::optional(other),
         }
     }
 
@@ -508,7 +519,16 @@ impl Type {
             Type::Iterator(item, None) => plain("Iterator", vec![item.written(span)?]),
             Type::Dict(key, value) => plain("dict", vec![key.written(span)?, value.written(span)?]),
             Type::Tuple(items) => plain("tuple", all(items)?),
-            Type::Optional(inner) => TypeExpr { optional: true, ..inner.written(span)? },
+            Type::Optional(inner) => match inner.written(span)? {
+                // An optional of an optional is written around it: `int??`.
+                held if held.optional || held.name == fennec_syntax::OPTIONAL => TypeExpr {
+                    name: fennec_syntax::OPTIONAL.to_owned(),
+                    args: vec![held],
+                    optional: false,
+                    span,
+                },
+                held => TypeExpr { optional: true, ..held },
+            },
             Type::Union(members) => plain("|", all(members)?),
             Type::Errors(errors) => match errors.as_slice() {
                 [one] => plain(one, Vec::new()),

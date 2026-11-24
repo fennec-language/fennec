@@ -352,6 +352,10 @@ pub enum StmtKind {
 /// The type `ref name = place` is written in with: `name: ref = place`.
 pub const REF: &str = "ref";
 
+/// The type an optional of an optional is written as, around the optional it holds: `int??` is
+/// this around `int?`.
+pub const OPTIONAL: &str = "?";
+
 impl StmtKind {
     /// `ref name = place`: the name, and the place it stands for.
     pub fn local_ref(&self) -> Option<(&str, &Expr)> {
@@ -493,6 +497,10 @@ impl TypeExpr {
             |items: &[TypeExpr]| items.iter().map(|item| item.as_expr(span)).collect::<Option<Vec<_>>>();
         Some(match self.name.as_str() {
             "->" | "fails" | "shared" | "with" => return None,
+            OPTIONAL => {
+                let inner = self.args.first()?.as_expr(span)?;
+                at(ExprKind::Try { value: Box::new(inner), context: None })
+            }
             "|" => {
                 let mut members = all(&self.args)?.into_iter();
                 let first = members.next()?;
@@ -618,7 +626,20 @@ impl Expr {
             ExprKind::Tuple(items) => {
                 Some(plain("tuple", items.iter().map(Expr::as_type).collect::<Option<_>>()?))
             }
-            ExprKind::Try { value, context: None } => Some(TypeExpr { optional: true, ..value.as_type()? }),
+            ExprKind::Try { value, context: None } => {
+                let held = value.as_type()?;
+                if held.optional || held.name == OPTIONAL {
+                    // `int??`: an optional of the optional, kept apart from it.
+                    let span = held.span;
+                    return Some(TypeExpr {
+                        name: OPTIONAL.to_owned(),
+                        args: vec![held],
+                        optional: false,
+                        span,
+                    });
+                }
+                Some(TypeExpr { optional: true, ..held })
+            }
             // `launch_end[Closed | Timeout]`: one written type named `|`, as in a signature.
             ExprKind::Binary { op: BinOp::BitOr, lhs, rhs } => {
                 let mut members = match lhs.as_type()? {
@@ -902,6 +923,8 @@ mod tests {
             "array[float, 16]",
             "Lost | Late",
             "Order?",
+            "Order??",
+            "list[int???]",
             "list[(int,)]",
             "Sender[dict[str, set[Delivery]]]",
             "None",
@@ -910,5 +933,20 @@ mod tests {
             let back = written.as_expr(Span { start: 0, end: 0 }).unwrap().as_type().unwrap();
             assert_eq!(shape(&back), shape(&written), "{text}");
         }
+    }
+
+    /// An optional of an optional is written as two `?`, each after the first an optional of what's
+    /// before it, and written back as it was.
+    #[test]
+    fn an_optional_of_an_optional_is_read_and_written_back() {
+        let module = crate::parse("def f(x: int??, y: (A | B)??) -> list[str???]:\n    pass\n").unwrap();
+        let Some(Item::Function(def)) = module.items.first() else { panic!("{module:?}") };
+        let written: Vec<String> =
+            def.params.iter().filter_map(|param| param.ty.as_ref()).map(crate::written_type).collect();
+        assert_eq!(written, ["int??", "(A | B)??"]);
+        let returns = def.ret.as_ref().map(crate::written_type);
+        assert_eq!(returns.as_deref(), Some("list[str???]"));
+        let first = def.params.first().and_then(|param| param.ty.as_ref()).map(shape);
+        assert_eq!(first.as_deref(), Some("?[int[]?]"));
     }
 }

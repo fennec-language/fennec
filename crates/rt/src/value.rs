@@ -108,9 +108,9 @@ impl Instance {
     }
 }
 
-/// Slots that hand out generational IDs, so a stale ID never finds the wrong thing: each slot
-/// keeps the tag of the `Id` it handed out, a new one for every item added, so no two items in
-/// any copy of any `Table` ever have the same `Id` (#2424).
+/// Slots that hand out IDs, so a stale ID never finds the wrong thing: each slot keeps the tag of
+/// the `Id` it handed out, a new one for every item added, or 0 once it's taken out, so no two
+/// items in any copy of any `Table` ever have the same `Id` (#2424).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Table {
     pub(crate) slots: Vec<Slot>,
@@ -152,8 +152,7 @@ impl PartialEq for Table {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Slot {
-    pub(crate) generation: u32,
-    /// The tag of the `Id` handed out for its item, or for the last it held.
+    /// The tag of the `Id` handed out for its item, or 0 once it's taken out.
     pub(crate) tag: u64,
     pub(crate) value: Option<Value>,
 }
@@ -198,19 +197,20 @@ impl Table {
         Table { slots }
     }
 
-    /// The item `id` names: its slot holds the generation and the tag it was handed out with.
+    /// The item `id` names: its slot holds the tag it was handed out with.
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
         self.slots
             .get(id.at())
-            .filter(|slot| slot.generation == id.generation && slot.tag == id.tag)
+            .filter(|slot| id.tag != 0 && slot.tag == id.tag)
             .and_then(|slot| slot.value.as_ref())
     }
 
     /// Live entries, in slot order.
     pub(crate) fn entries(&self) -> impl Iterator<Item = (Id, &Value)> {
-        self.slots.iter().enumerate().filter_map(|(at, slot)| {
-            slot.value.as_ref().map(|value| (Id::new(at, slot.generation, slot.tag), value))
-        })
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(at, slot)| slot.value.as_ref().map(|value| (Id::new(at, 0, slot.tag), value)))
     }
 }
 

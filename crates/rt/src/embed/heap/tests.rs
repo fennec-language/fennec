@@ -38,13 +38,7 @@ fn an_id_map_of_optional_ids_crosses_and_comes_back_the_same() {
     let generations = Element::List(Rc::new(Element::Int));
     let map = named(
         "Table[Unit]",
-        vec![
-            ("items", items),
-            ("generations", generations),
-            ("live", Element::Int),
-            ("free_from", Element::Int),
-            ("tag", Element::Int),
-        ],
+        vec![("items", items), ("slots", generations), ("live", Element::Int), ("free_from", Element::Int)],
     );
     let tables =
         Tables { shapes: vec![Rc::new(map), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
@@ -62,9 +56,12 @@ fn an_id_map_of_optional_ids_crosses_and_comes_back_the_same() {
     };
     let tag = crate::value::new_tag();
     let slots = vec![
-        Slot { generation: 0, tag, value: Some(unit("a", Value::None)) },
-        Slot { generation: 3, tag, value: None },
-        Slot { generation: 1, tag, value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0, tag }))) },
+        Slot { tag, value: Some(unit("a", Value::None)) },
+        Slot { tag: 0, value: None },
+        Slot {
+            tag: crate::value::new_tag(),
+            value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0, tag }))),
+        },
     ];
     let original = Value::Table(Rc::new(Table::new(slots)));
     let value = with(|state| Some(state.push(original.clone()))).unwrap();
@@ -214,36 +211,30 @@ fn a_task_never_takes_the_mark_of_one_still_alive_on_its_thread() {
     assert_eq!(number_to_mark(round + 20, alive), round + 20);
 }
 
-/// A `Table` laid out with each slot's word and tag side by side (#2424) crosses to its block and back with each slot's
-/// own: a slot taken out keeps the tag of the `Id` it last handed out, and an `Id` finds its item
-/// only under its slot's tag.
+/// A `Table` laid out with each slot's tag (#2424) crosses to its block and back with each slot's
+/// own, 0 for one taken out, and an `Id` finds its item only under its slot's tag.
 #[test]
 fn a_table_s_slots_keep_their_own_tags_crossing_to_a_block_and_back() {
     use crate::value::{Id, Slot, Table};
-    // Each slot's word and tag, side by side, as LLVM lays a `Table` out since #2424.
-    let pair = Rc::new(Element::Struct {
-        name: Rc::from("(int, int)"),
-        fields: vec![(Rc::from("_0"), Element::Int), (Rc::from("_1"), Element::Int)],
-    });
     let fields = vec![
         (Rc::from("items"), Element::List(Rc::new(Element::Int))),
-        (Rc::from("slots"), Element::List(Rc::clone(&pair))),
+        (Rc::from("slots"), Element::List(Rc::new(Element::Int))),
         (Rc::from("live"), Element::Int),
         (Rc::from("free_from"), Element::Int),
     ];
     let layout = Element::Struct { name: Rc::from("Table[int]"), fields };
     let tables = Tables {
         shapes: vec![Rc::new(layout), Rc::new(Element::Str)],
-        elements: vec![Rc::new(Element::Int), pair],
+        elements: vec![Rc::new(Element::Int)],
         str_shape: 1,
         ..Tables::default()
     };
     start(tables, crate::Inputs::default());
-    let tags = [crate::value::new_tag(), crate::value::new_tag(), crate::value::new_tag()];
+    let tags = [crate::value::new_tag(), crate::value::new_tag()];
     let slots = vec![
-        Slot { generation: 0, tag: tags[0], value: Some(Value::Int(10)) },
-        Slot { generation: 2, tag: tags[1], value: None },
-        Slot { generation: 1, tag: tags[2], value: Some(Value::Int(30)) },
+        Slot { tag: tags[0], value: Some(Value::Int(10)) },
+        Slot { tag: 0, value: None },
+        Slot { tag: tags[1], value: Some(Value::Int(30)) },
     ];
     let original = Table::new(slots);
     let value = with(|state| Some(state.push(Value::Table(Rc::new(original.clone()))))).unwrap();
@@ -251,10 +242,11 @@ fn a_table_s_slots_keep_their_own_tags_crossing_to_a_block_and_back() {
     assert_ne!(block, 0);
     let Value::Table(back) = temp(heap::to_value(block)) else { panic!("not a Table") };
     assert_eq!(*back, original);
-    assert_eq!(back.get(Id::new(2, 1, tags[2])), Some(&Value::Int(30)));
-    assert_eq!(back.get(Id::new(2, 1, tags[0])), None, "the same slot and generation under another tag");
+    assert_eq!(back.get(Id::new(2, 0, tags[1])), Some(&Value::Int(30)));
+    assert_eq!(back.get(Id::new(2, 0, tags[0])), None, "the same slot under another tag");
+    assert_eq!(back.get(Id::new(1, 0, 0)), None, "a slot taken out finds nothing");
     let ids: Vec<u64> = back.entries().map(|(id, _)| id.tag).collect();
-    assert_eq!(ids, vec![tags[0], tags[2]]);
+    assert_eq!(ids, vec![tags[0], tags[1]]);
     finish();
 }
 

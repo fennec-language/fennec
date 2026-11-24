@@ -70,6 +70,7 @@ impl Interp {
                 ("clear", None, None, None) => {
                     for slot in &mut table.slots {
                         slot.item = None;
+                        slot.tag = 0;
                     }
                     Ok(Value::Unit)
                 }

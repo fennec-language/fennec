@@ -485,3 +485,66 @@ fn a_copy_of_many_blocks_remembers_each_and_goes_through_them_last_first() {
         "what's been gone through is still remembered"
     );
 }
+
+/// Under a write lock, `fennec_thread` is the lock's owner, so native code counts one of this
+/// thread's own blocks, now in the table behind the lock, through `retain_shared` and
+/// `release_shared`. Those change the block's own count (#2456). A release once found nothing in
+/// the shared table and lost its count, leaving the block at the end, and a retain made an entry
+/// that kept it from ever being freed.
+#[test]
+fn counts_under_a_write_lock_on_this_thread_s_own_blocks_are_its_own() {
+    begin();
+    let log = log_of(&[]);
+    shared_new(log);
+    let before = with(|state| state.heap.live());
+    let mine = with(|state| lists::list_of_strings(state, LINES, &["before"]));
+    shared_enter(log, 1);
+    // A copy kept, then let go, as a read beside a change does.
+    threads::retain_shared(mine, 0);
+    assert_eq!(word(mine, 0), 2, "the block's own count");
+    threads::release_shared(mine, 0);
+    assert!(!threads::held_elsewhere(mine.cast_unsigned()), "nothing in the shared table holds it");
+    // The local's last count, let go as the lock changes it.
+    threads::release_shared(mine, 0);
+    shared_leave(log, 1);
+    assert_eq!(with(|state| state.heap.live()), before, "it's freed");
+    // Under two locks, a block behind both is counted the same way.
+    let (outer, inner) = (log_of(&[]), log_of(&[]));
+    shared_new(outer);
+    shared_new(inner);
+    let before = with(|state| state.heap.live());
+    let mine = with(|state| lists::list_of_strings(state, LINES, &["before"]));
+    shared_enter(outer, 1);
+    shared_enter(inner, 1);
+    threads::retain_shared(mine, 0);
+    threads::release_shared(mine, 0);
+    threads::release_shared(mine, 0);
+    shared_leave(inner, 1);
+    shared_leave(outer, 1);
+    assert_eq!(with(|state| state.heap.live()), before, "it's freed");
+    finish();
+}
+
+/// A block of this thread's that another thread also counts, let go of by this thread under a
+/// write lock, waits for the other thread to let go too, then it's freed: the other thread's count
+/// is still the shared table's.
+#[test]
+fn a_block_another_thread_counts_waits_for_it_when_let_go_under_a_lock() {
+    begin();
+    let log = log_of(&[]);
+    shared_new(log);
+    let before = with(|state| state.heap.live());
+    let mine = with(|state| lists::list_of_strings(state, LINES, &["before"]));
+    // Another thread's count, as from outside any lock.
+    threads::retain_shared(mine, 0);
+    shared_enter(log, 1);
+    threads::release_shared(mine, 0);
+    shared_leave(log, 1);
+    assert_eq!(lines(mine), ["before"], "it waits for the other thread");
+    // The other thread lets go, and the next free here frees it.
+    threads::release_shared(mine, 0);
+    let spare = with(|state| lists::list_of_strings(state, LINES, &[]));
+    heap::free(spare);
+    assert_eq!(with(|state| state.heap.live()), before, "it's freed once both let go");
+    finish();
+}

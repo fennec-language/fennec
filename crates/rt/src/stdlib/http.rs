@@ -1841,6 +1841,28 @@ mod tests {
         assert!(asked.first().unwrap().contains("User-Agent: kept"), "{asked:?}");
     }
 
+    /// A server listening only on `127.0.0.1`, asked as `localhost` with a short timeout, answers
+    /// on every system. Windows looks `localhost` up as `::1` first, and refuses a connect there
+    /// only after about 2 seconds, which used to take all of a 1 second timeout before `127.0.0.1`
+    /// was tried.
+    #[test]
+    fn localhost_reaches_a_server_on_127_0_0_1_alone_within_a_short_timeout() {
+        let (port, done) = serving(vec!["HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_owned()]);
+        let answer = send(&Request {
+            method: "GET".to_owned(),
+            url: format!("http://localhost:{port}/"),
+            params: Vec::new(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            timeout: Duration::from_secs(1),
+            most_body: super::MOST_BODY,
+            hosts: None,
+        });
+        let got = answer.ok().unwrap();
+        assert_eq!((got.status, got.body.as_slice()), (200, &b"hello"[..]));
+        done.join().unwrap();
+    }
+
     /// Another port on the same host is another site, as far as who's asking goes.
     #[test]
     fn a_redirect_to_another_port_leaves_behind_every_header_but_the_harmless() {

@@ -188,7 +188,13 @@ struct JsonKey:
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](
+        ref self,
+        kind: str,
+        tags: list[int],
+        slots: list[int],
+        items: list[T],
+    ):
         # Never asked for: `exact` says no.
         pass
 
@@ -298,7 +304,13 @@ struct JsonWriter:
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](
+        ref self,
+        kind: str,
+        tags: list[int],
+        slots: list[int],
+        items: list[T],
+    ):
         # Never asked for: `exact` says no.
         pass
 
@@ -708,7 +720,13 @@ struct TableFinder:
             self._positions[kind] = positions
         self.sequence(items)
 
-    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](
+        ref self,
+        kind: str,
+        tags: list[int],
+        slots: list[int],
+        items: list[T],
+    ):
         here = place_text(self._path)
         if kind in self._where:
             if self._problem == "":
@@ -753,16 +771,18 @@ struct TableFinder:
 ## and `table_slots` give them. A load gives every slot one tag, and every `Id` saved with them, so
 ## one is saved only where it can't find another item after: its slot holds its item, its tag the
 ## slot's, or its slot has used its generation up, so nothing there will have it again.
-def saved_exactly(slot_tags: dict[str, list[int]], slot_words: dict[str, list[int]], id: (str, int, int)) -> bool:
+def saved_exactly(
+    slot_tags: dict[str, list[int]],
+    slot_words: dict[str, list[int]],
+    id: (str, int, int),
+) -> bool:
     (kind, key, tag) = id
     (slot, generation) = (key >> 32, key & 4294967295)
     tags = slot_tags.get(kind) else list[int]()
     words = slot_words.get(kind) else list[int]()
-    if slot >= len(tags) or slot >= len(words):
-        return False
+    if slot >= len(tags) or slot >= len(words): return False
     word = words[slot]
-    if word >= 0 and word == generation:
-        return tags[slot] == tag
+    if word >= 0 and word == generation: return tags[slot] == tag
     # Taken out at a generation, the next `add` there has one past it.
     reached = word if word >= 0 else -1 - word
     return reached >= generation

@@ -56,7 +56,13 @@ export def dumps[T: Serializable](value: T, exact = False) -> bytes:
     if not out._wants_tables: return out._done()
     # It holds `Id`s, so where each one's item is comes first, and every one's checked.
     found = found_tables(value, exact)
-    mut again = PackWriter(_exact=exact, _tables=found.positions(), _slot_tags=found.slot_tags(), _slot_words=found.slot_words(), _found=True)
+    mut again = PackWriter(
+        _exact=exact,
+        _tables=found.positions(),
+        _slot_tags=found.slot_tags(),
+        _slot_words=found.slot_words(),
+        _found=True,
+    )
     again._header(shape_hash[T](), layout_unless_locked[T]())
     value.serialize(ref again)
     return again._done()
@@ -311,7 +317,13 @@ def packed[T: Serializable](value: T, exact: bool) -> bytes:
     if not out._wants_tables: return out._done()
     # It holds `Id`s, so where each one's item is comes first, and every one's checked.
     found = found_tables(value, exact)
-    mut again = PackWriter(_exact=exact, _tables=found.positions(), _slot_tags=found.slot_tags(), _slot_words=found.slot_words(), _found=True)
+    mut again = PackWriter(
+        _exact=exact,
+        _tables=found.positions(),
+        _slot_tags=found.slot_tags(),
+        _slot_words=found.slot_words(),
+        _found=True,
+    )
     value.serialize(ref again)
     return again._done()
 
@@ -515,7 +527,13 @@ struct PackWriter:
     def exact(self) -> bool:
         return self._exact
 
-    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](
+        ref self,
+        kind: str,
+        tags: list[int],
+        slots: list[int],
+        items: list[T],
+    ):
         self.sequence(slots)
         self.sequence(items)
 

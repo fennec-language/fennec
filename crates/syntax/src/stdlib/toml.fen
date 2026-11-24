@@ -1266,7 +1266,13 @@ struct TomlWriter:
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
+    def slots[T: Serializable](
+        ref self,
+        kind: str,
+        tags: list[int],
+        slots: list[int],
+        items: list[T],
+    ):
         # Never asked for: `exact` says no.
         pass
 

@@ -2160,6 +2160,11 @@ pub(super) fn in_place_kind(layout: Layout) -> Option<usize> {
     usize::try_from(number).ok()
 }
 
+/// Whether a dict's keys are held in blocks: a string's, or a one-word key that's a block's.
+pub(super) fn keys_held_in_blocks(layout: Layout) -> bool {
+    layout.key.owned() || layout.key == Word::Text
+}
+
 /// Gives `each` every live entry of a dict whose values are held in place, as it's read: the
 /// block its key is held in, if it's held in one, and its value's words. What [`children`] adds to
 /// its list, with no list made and no walk of the values' kind.

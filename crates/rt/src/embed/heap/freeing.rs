@@ -516,18 +516,26 @@ fn release_in_place_entries(
     taken: &mut Vec<Box<[u64]>>,
 ) -> bool {
     let Some(number) = crate::embed::dicts::in_place_kind(layout) else { return false };
-    if state.heap.item_plans.get(number).is_none_or(|planned| matches!(planned.plan, Plan::Walk)) {
+    let Some(planned) = state.heap.item_plans.get(number) else { return false };
+    if matches!(planned.plan, Plan::Walk) {
         return false;
+    }
+    let holds_nothing = planned.plan.holds_nothing();
+    // Numbers as keys, and values that hold no blocks, as structs of numbers are, leave nothing to
+    // look through: a path search's dict of visits is freed whole.
+    if holds_nothing && !crate::embed::dicts::keys_held_in_blocks(layout) {
+        return true;
     }
     // Letting go of a child changes the table, never the plans, so they're set aside meanwhile.
     let plans = std::mem::take(&mut state.heap.item_plans);
     if let Some(planned) = plans.get(number) {
         let mut letting_go =
             LettingGo { state: &mut *state, direct, pending: &mut *pending, taken: &mut *taken };
-        let holds_nothing = planned.plan.holds_nothing();
         crate::embed::dicts::each_in_place(layout, block, |key, value| {
             letting_go.extend(key);
-            if !holds_nothing && crate::embed::plans::addresses(&planned.plan, value, &mut letting_go).is_none() {
+            if !holds_nothing
+                && crate::embed::plans::addresses(&planned.plan, value, &mut letting_go).is_none()
+            {
                 walk_item(&mut letting_go, number, value);
             }
         });

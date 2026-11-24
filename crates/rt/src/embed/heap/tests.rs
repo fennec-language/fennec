@@ -214,23 +214,27 @@ fn a_task_never_takes_the_mark_of_one_still_alive_on_its_thread() {
     assert_eq!(number_to_mark(round + 20, alive), round + 20);
 }
 
-/// A `Table` laid out with each slot's tag (#2424) crosses to its block and back with each slot's
+/// A `Table` laid out with each slot's word and tag side by side (#2424) crosses to its block and back with each slot's
 /// own: a slot taken out keeps the tag of the `Id` it last handed out, and an `Id` finds its item
 /// only under its slot's tag.
 #[test]
 fn a_table_s_slots_keep_their_own_tags_crossing_to_a_block_and_back() {
     use crate::value::{Id, Slot, Table};
+    // Each slot's word and tag, side by side, as LLVM lays a `Table` out since #2424.
+    let pair = Rc::new(Element::Struct {
+        name: Rc::from("(int, int)"),
+        fields: vec![(Rc::from("_0"), Element::Int), (Rc::from("_1"), Element::Int)],
+    });
     let fields = vec![
         (Rc::from("items"), Element::List(Rc::new(Element::Int))),
-        (Rc::from("generations"), Element::List(Rc::new(Element::Int))),
+        (Rc::from("slots"), Element::List(Rc::clone(&pair))),
         (Rc::from("live"), Element::Int),
         (Rc::from("free_from"), Element::Int),
-        (Rc::from("slot_tags"), Element::List(Rc::new(Element::Int))),
     ];
     let layout = Element::Struct { name: Rc::from("Table[int]"), fields };
     let tables = Tables {
         shapes: vec![Rc::new(layout), Rc::new(Element::Str)],
-        elements: vec![Rc::new(Element::Int)],
+        elements: vec![Rc::new(Element::Int), pair],
         str_shape: 1,
         ..Tables::default()
     };

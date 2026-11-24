@@ -113,26 +113,30 @@ fn id_map(instance: &Instance) -> Option<Table> {
         Value::List(items) => Some(items),
         _ => None,
     };
-    let (items, generations) = (list("items")?, list("generations")?);
-    // Each slot's tag, as a layout since #2424 keeps them, or the one tag of a `Table` laid out
-    // before, which every slot had.
-    let tags: Vec<u64> = match (instance.field("slot_tags"), instance.field("tag")) {
-        (Some(_), _) => list("slot_tags")?
+    let int = |value: &Value| match value {
+        Value::Int(number) => Some(*number),
+        _ => None,
+    };
+    let items = list("items")?;
+    // Each slot's word and tag: side by side in `slots` since #2424, or as before it, a list of
+    // words and one tag, which every slot had.
+    let words_and_tags: Vec<(i64, u64)> = if instance.field("slots").is_some() {
+        list("slots")?
             .iter()
-            .map(|tag| match tag {
-                Value::Int(tag) => u64::try_from(*tag).ok(),
+            .map(|pair| match pair {
+                Value::Tuple(pair) => Some((int(pair.first()?)?, u64::try_from(int(pair.get(1)?)?).ok()?)),
                 _ => None,
             })
-            .collect::<Option<_>>()?,
-        (None, Some(Value::Int(tag))) => vec![u64::try_from(*tag).ok()?; generations.len()],
-        _ => return None,
+            .collect::<Option<_>>()?
+    } else {
+        let tag = u64::try_from(int(instance.field("tag")?)?).ok()?;
+        list("generations")?.iter().map(|word| Some((int(word)?, tag))).collect::<Option<_>>()?
     };
-    let slots = items.iter().zip(generations.iter()).zip(tags).map(|((item, generation), tag)| {
-        let Value::Int(generation) = generation else { return None };
-        Some(if *generation < 0 {
-            Slot { generation: u32::try_from(-1 - generation).ok()?, tag, value: None }
+    let slots = items.iter().zip(words_and_tags).map(|(item, (word, tag))| {
+        Some(if word < 0 {
+            Slot { generation: u32::try_from(-1 - word).ok()?, tag, value: None }
         } else {
-            Slot { generation: u32::try_from(*generation).ok()?, tag, value: Some(item.clone()) }
+            Slot { generation: u32::try_from(word).ok()?, tag, value: Some(item.clone()) }
         })
     });
     Some(Table::new(slots.collect::<Option<_>>()?))
@@ -212,40 +216,47 @@ fn write_id_map(
     map: &Table,
     words: &mut Vec<u64>,
 ) -> Option<()> {
-    let item = match fields.first() {
-        Some((_, Element::List(item))) => Rc::clone(item),
-        Some((_, Element::ListOf(number))) => Rc::clone(state.tables.element(*number)?),
-        _ => return None,
+    let listed = |state: &State, element: &Element| match element {
+        Element::List(item) => Some(Rc::clone(item)),
+        Element::ListOf(number) => Some(Rc::clone(state.tables.element(*number)?)),
+        _ => None,
     };
+    let (_, items_kind) = fields.iter().find(|(field, _)| field.as_ref() == "items")?;
+    let item = listed(state, items_kind)?;
     let mut items = Vec::new();
-    let mut generations = Vec::new();
+    // Each slot's word: its generation in use, or `-1` less it taken out.
+    let mut slot_words = Vec::new();
     for slot in &map.slots {
         let generation = i64::from(slot.generation);
         if let Some(value) = &slot.value {
             write(state, &item, value, &mut items)?;
-            generations.push(generation.cast_unsigned());
+            slot_words.push(generation.cast_unsigned());
         } else {
             items.resize(items.len() + item.words(), 0);
-            generations.push((-1 - generation).cast_unsigned());
+            slot_words.push((-1 - generation).cast_unsigned());
         }
     }
     let live = map.slots.iter().filter(|slot| slot.value.is_some()).count();
-    words.push(u64::try_from(super::super::lists::list_of_items(state, &item, &items)).ok()?);
     let ints = Rc::new(Element::Int);
-    words.push(u64::try_from(super::super::lists::list_of_items(state, &ints, &generations)).ok()?);
-    words.push(u64::try_from(live).ok()?);
-    // Where to start looking for a free slot: from the first is always right.
-    words.push(0);
-    let tags: Vec<u64> = map.slots.iter().map(|slot| slot.tag).collect();
-    for (field, _) in fields.iter().skip(4) {
-        match field.as_ref() {
-            "slot_tags" => {
-                words.push(u64::try_from(super::super::lists::list_of_items(state, &ints, &tags)).ok()?);
+    for (field, element) in fields {
+        let word = match field.as_ref() {
+            "items" => super::super::lists::list_of_items(state, &item, &items),
+            // Each slot's word and tag side by side, as a layout since #2424 holds them.
+            "slots" => {
+                let pair = listed(state, element)?;
+                let pairs: Vec<u64> =
+                    slot_words.iter().zip(&map.slots).flat_map(|(word, slot)| [*word, slot.tag]).collect();
+                super::super::lists::list_of_items(state, &pair, &pairs)
             }
-            // A `Table` laid out before #2424 holds one tag, which every slot of one it made has.
-            "tag" => words.push(tags.first().copied().unwrap_or_else(crate::value::new_tag)),
+            "live" => i64::try_from(live).ok()?,
+            // Where to start looking for a free slot: from the first is always right.
+            "free_from" => 0,
+            // A `Table` laid out before #2424: its words, and one tag, which every slot it made has.
+            "generations" => super::super::lists::list_of_items(state, &ints, &slot_words),
+            "tag" => map.slots.first().map_or_else(crate::value::new_tag, |slot| slot.tag).cast_signed(),
             _ => return None,
-        }
+        };
+        words.push(word.cast_unsigned());
     }
     Some(())
 }

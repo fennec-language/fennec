@@ -755,9 +755,17 @@ jobs:
   # programs built both ways. Leaks aren't checked: the runtime leaves freeing at exit
   # to the system.
   asan:
-    name: AddressSanitizer on LLVM-built programs
+    name: AddressSanitizer on LLVM-built programs (${{ matrix.half }} of 2)
     needs: changes
     if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    # In two halves, each with half the examples and one of the two fuzzers. In one job it took 29
+    # minutes median and 37 at most of its 40, because ubuntu-latest's machines differ: the same
+    # LLVM tests take 10.5 minutes on an EPYC 9V45 and 15 on an EPYC 7763, and on 2026-11-24 the
+    # examples took 17 minutes where they mostly take 9. Each half has room for the slowest.
+    strategy:
+      fail-fast: false
+      matrix:
+        half: [1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -772,6 +780,9 @@ jobs:
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Which machine it got, since a half's time means something only beside it.
+      - name: Say the machine
+        run: .github/scripts/machine.sh
       - name: Build fennec, and its runtime library with AddressSanitizer
         run: |
           cargo build --release --locked -p fennec -p fennec-fuzz
@@ -785,11 +796,18 @@ jobs:
             --features threads,sanitize -Zbuild-std --target x86_64-unknown-linux-gnu --target-dir target/threads
           cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a \
             target/release/libfennec_runtime_threads.a
-      - name: Run every example LLVM takes
+      # The half's examples: every other one, in order of their names, from the first or the
+      # second.
+      - name: Run every example LLVM takes in this half
+        env:
+          HALF: ${{ matrix.half }}
         run: |
           built=0
           failed=0
+          at=0
           for program in examples/*.fen; do
+            at=$((at + 1))
+            [ $((at % 2)) = $((HALF % 2)) ] || continue
             for how in dev release; do
               release=()
               [ "$how" = release ] && release=(--release)
@@ -814,13 +832,15 @@ jobs:
             done
           done
           echo "$built builds ran under AddressSanitizer"
-          [ "$built" -ge 40 ] || { echo "::error::only $built builds ran"; failed=1; }
+          [ "$built" -ge 20 ] || { echo "::error::only $built builds ran"; failed=1; }
           exit "$failed"
       - name: Fuzz programs built through LLVM
+        if: matrix.half == 1
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed 1 --inputs 150 --seconds 300 --found found
       # Random programs, trees of enums holding strings and lists among them, built checking
       # proofs, each compared with the reference evaluator.
       - name: Fuzz random programs
+        if: matrix.half == 2
         env:
           FENNEC_CHECK_PROOFS: 1
           # As the workers' job has it, since a task's stack isn't the thread's.
@@ -832,7 +852,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: asan-fuzz-found
+          name: asan-fuzz-found-${{ matrix.half }}
           path: found
           if-no-files-found: ignore
 

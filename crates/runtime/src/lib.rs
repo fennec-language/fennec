@@ -13,8 +13,8 @@
 
 use fennec_rt::embed::guarded::rollback;
 use fennec_rt::embed::{
-    aot, bytes, capabilities, channels, checks, cleanup, dicts, eval, guarded, heap, io, lists, notes,
-    numbers, parallel, regex, serve, strings, temps, text, threads,
+    aot, bytes, capabilities, channels, checks, cleanup, conn_calls, dicts, eval, guarded, heap, io, lists,
+    notes, numbers, parallel, regex, serve, strings, temps, text, threads,
 };
 
 /// The build of Fennec this library is from, after a marker, which `fennec` reads out of the
@@ -586,6 +586,12 @@ export! {
     fennec_database_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::database_call(a0, a1, a2, a3, a4);
     fennec_file_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::file_call(a0, a1, a2, a3, a4);
     fennec_socket_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::socket_call(a0, a1, a2, a3, a4);
+    fennec_conn_write(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => conn_calls::conn_write(a0, a1, a2, a3, a4);
+    fennec_conn_reads_within(a0: i64, a1: i64) -> i64 => conn_calls::conn_reads_within(a0, a1);
+    fennec_conn_draining(a0: i64) -> i64 => conn_calls::conn_draining(a0);
+    fennec_conn_room_for_body(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => conn_calls::conn_room_for_body(a0, a1, a2, a3);
+    fennec_conn_body(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => conn_calls::conn_body(a0, a1, a2, a3, a4);
+    fennec_conn_read_head(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: &mut i64, a7: i64, a8: i64) -> i64 => conn_calls::conn_read_head(a0, a1, a2, a3, a4, a5, a6, a7, a8);
     fennec_compress_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::compress_call(a0, a1, a2, a3);
     fennec_unicode_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::unicode_call(a0, a1, a2, a3);
     fennec_crypto_alone_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::crypto_alone_call(a0, a1, a2, a3);

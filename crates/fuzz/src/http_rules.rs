@@ -124,8 +124,20 @@ enum Stop {
     Unpromised,
 }
 
+std::thread_local! {
+    /// Whether the model is saying what the server answers before the input's end, as it waits for
+    /// more: what's left at the end then ends no line and cuts no body short (`answers_before_end`).
+    static WAITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the model is saying what comes before the input's end.
+fn waits() -> bool {
+    WAITS.get()
+}
+
 /// A line of `input` from `at`, without its ending, and where the next starts, as the server's
 /// connection reads lines: up to a `\n`, or what's left at the end, with a `\r` at its end taken off.
+/// Before the end, what's left isn't a line yet.
 fn line(input: &[u8], at: usize) -> Option<(&[u8], usize)> {
     let rest = input.get(at..)?;
     if rest.is_empty() {
@@ -136,6 +148,7 @@ fn line(input: &[u8], at: usize) -> Option<(&[u8], usize)> {
             let line = rest.get(..end)?;
             Some((line.strip_suffix(b"\r").unwrap_or(line), at + end + 1))
         }
+        None if waits() => None,
         None => Some((rest.strip_suffix(b"\r").unwrap_or(rest), input.len())),
     }
 }
@@ -282,7 +295,7 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
         if length > MOST_BODY {
             return refused(413);
         }
-        let Some(taken) = input.get(*at..*at + length) else { return refused(400) };
+        let Some(taken) = input.get(*at..*at + length) else { return cut_body() };
         body = taken.to_vec();
         *at += length;
     }
@@ -343,13 +356,25 @@ fn head_refusal(input: &[u8], at: usize, first: &[u8]) -> Option<Result<(Wanted,
     }
 }
 
+/// What a request whose body the input cuts short gets: a 400, and before the end, the server
+/// waiting for the rest of it.
+fn cut_body() -> Result<(Wanted, bool), Stop> {
+    if waits() { Err(Stop::End) } else { Ok((Wanted::Refused(400), false)) }
+}
+
+/// What a head with no line from `at` gets: a 400 for one ended by a bare `\n`, or cut short by the
+/// end, and before the end, the server waiting for the rest of it.
+fn cut_head(input: &[u8], at: usize) -> Early {
+    if waits() && request_line(input, at).is_none() { Early::Stop(Stop::End) } else { Early::Refused(400) }
+}
+
 /// Whether the header lines from `at` end, with an empty line, within the head's limits, `size`
 /// bytes counted from its first line, as the server reads a head in one go before taking any of it
 /// apart: a line ended by a bare `\n`, or none ending them, is a 400, and over a limit a 431.
 fn head_fits(input: &[u8], mut at: usize, size: usize) -> Result<(), Early> {
     let (mut size, mut lines) = (size, 0);
     loop {
-        let Some(Ok((line, next))) = request_line(input, at) else { return Err(Early::Refused(400)) };
+        let Some(Ok((line, next))) = request_line(input, at) else { return Err(cut_head(input, at)) };
         at = next;
         if line.is_empty() {
             return Ok(());
@@ -376,7 +401,7 @@ fn headers(input: &[u8], at: &mut usize, size: usize) -> Result<Vec<(String, Str
     let mut headers: Vec<(String, String)> = Vec::new();
     let (mut size, mut lines) = (size, 0);
     loop {
-        let Some(Ok((line, next))) = request_line(input, *at) else { return Err(Early::Refused(400)) };
+        let Some(Ok((line, next))) = request_line(input, *at) else { return Err(cut_head(input, *at)) };
         *at = next;
         if line.is_empty() {
             break;
@@ -459,6 +484,29 @@ fn heard(said: &[u8], heads: &[bool], most: usize) -> Result<Vec<Heard>, String>
         responses.push(Heard { status, body });
     }
     Ok(responses)
+}
+
+/// Which of the answers the server gives `input` before its end are to a `HEAD`, one for each, for
+/// a client to tell when it's heard them all without closing its side first.
+pub(crate) fn answers_before_end(input: &[u8]) -> Vec<bool> {
+    WAITS.set(true);
+    let (wanted, _) = wanted(input);
+    WAITS.set(false);
+    wanted.iter().map(|wanted| matches!(wanted, Wanted::Head)).collect()
+}
+
+/// `judged`, for a client that heard only what comes before the input's end, as one that resets
+/// its connection does: the answers the server gives while it waits for more.
+pub(crate) fn judged_before_end(input: &[u8], said: &[u8]) -> Result<(), String> {
+    WAITS.set(true);
+    let judged = judged(input, said, false);
+    WAITS.set(false);
+    judged
+}
+
+/// Whether `said` holds every answer `heads` says is coming, each whole.
+pub(crate) fn heard_whole(said: &[u8], heads: &[bool]) -> bool {
+    heard(said, heads, heads.len()).is_ok_and(|heard| heard.len() == heads.len())
 }
 
 /// Whether an echo the server gave is what was wanted.
@@ -585,7 +633,37 @@ pub(crate) fn judged(input: &[u8], said: &[u8], cut: bool) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
-    use super::{Answer, MOST_HEADER_BYTES, MOST_LINE_BYTES, Stop, Wanted, answer, wanted};
+    use super::{
+        Answer, MOST_HEADER_BYTES, MOST_LINE_BYTES, Stop, Wanted, answer, answers_before_end, wanted,
+    };
+
+    /// Before the input's end, the server answers only what's whole: a request cut short anywhere
+    /// is waited on, not refused, and a bare `\n` is refused at once, as it is with the end.
+    #[test]
+    fn what_comes_before_the_end_is_what_is_whole() {
+        let ok = b"GET / HTTP/1.1\r\nHost: h\r\n\r\n";
+        assert_eq!(answers_before_end(ok), [false]);
+        assert_eq!(answers_before_end(b"GET"), Vec::<bool>::new());
+        assert_eq!(wanted(b"GET").0.len(), 1);
+        assert_eq!(answers_before_end(b"GET / HTTP/1.1\r\nHost: h"), Vec::<bool>::new());
+        assert_eq!(answers_before_end(b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nab"), Vec::<bool>::new());
+        assert_eq!(
+            answers_before_end(&[ok.as_slice(), b"HEAD / HTTP/1.1\r\n\r\nGET / HT"].concat()),
+            [false, true]
+        );
+        assert_eq!(answers_before_end(b"GET / HTTP/1.1\nHost: h\r\n\r\n"), [false]);
+        // What's before the end is the start of what the end brings.
+        for input in [
+            ok.as_slice(),
+            b"GET",
+            b"GET / HTTP/1.1\r\nHost: h",
+            b"GET / HTTP/1.1\r\n\r\nPOST / HTTP/1.1\r\n",
+        ] {
+            let all: Vec<bool> =
+                wanted(input).0.iter().map(|wanted| matches!(wanted, Wanted::Head)).collect();
+            assert!(all.starts_with(&answers_before_end(input)), "{input:?}");
+        }
+    }
 
     #[test]
     fn a_status_is_read_only_from_a_status_line() {

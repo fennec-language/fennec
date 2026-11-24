@@ -17,7 +17,9 @@
 //! `<name>.sum`, that names that hash. Keeping a new program puts its file in place first and then
 //! renames the entry's file over the old one, in one step, so a reader finds the old program or the
 //! new one, each whole, never one program beside the other's hash: that mix, read under load, was a
-//! miss said on standard error, which a recorded run printed and its replay didn't. The hash guards against
+//! miss said on standard error, which a recorded run printed and its replay didn't. Putting one out
+//! for a run checks its hash once, notes how its file looked then in `<name>.<hash>.seen`, and
+//! checks it whole again only once that's changed or an hour has gone by. The hash guards against
 //! accidents; against people, Fennec's folder is its user's alone, and a cache folder another
 //! user owns or can write to isn't used at all (see `private.rs`). Reading an entry sets its modified time,
 //! which is how cleanup knows what was used least recently; access times are unreliable.
@@ -38,6 +40,8 @@ use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+
+use fennec_blake3::Hash;
 
 /// This Fennec's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -116,6 +120,8 @@ struct Entry {
     links: u64,
     /// For a kept program, the entry's file that names it, which goes with it.
     sum: Option<PathBuf>,
+    /// For a kept program, its note of its last whole check, which goes with it.
+    seen: Option<PathBuf>,
     /// For an object a program holds, the newest list naming it (see [`Cache::hold`]), and when
     /// that was last used as the walk saw it: the object is used as recently as that.
     holder: Option<(PathBuf, SystemTime)>,
@@ -158,6 +164,19 @@ impl Cache {
     /// miss, said once a command: it was torn or changed since it was written. So is one that's
     /// there but can't be read: only one that isn't there is a miss without a word.
     pub fn read(&self, kind: &str, name: &str) -> Option<Vec<u8>> {
+        self.read_checked(kind, name).map(|(bytes, _)| bytes)
+    }
+
+    /// [`Self::read`], with the hash its bytes were checked against: for an entry written with
+    /// [`Self::write`], their BLAKE3 hash, so whoever wants one needn't hash them again. None for a
+    /// kept program, which is checked another way.
+    pub fn read_hashed(&self, kind: &str, name: &str) -> Option<(Vec<u8>, Hash)> {
+        let (bytes, hash) = self.read_checked(kind, name)?;
+        Some((bytes, hash?))
+    }
+
+    /// [`Self::read`], with the hash of the bytes when it's the one their entry is checked against.
+    fn read_checked(&self, kind: &str, name: &str) -> Option<(Vec<u8>, Option<Hash>)> {
         if !self.usable() {
             return None;
         }
@@ -172,11 +191,14 @@ impl Cache {
                 return None;
             }
         };
+        let mut checked = None;
         let whole = match &sum {
             Some(sum) => sum_of(&bytes) == *sum,
             None => match bytes.len().checked_sub(HASH_LEN).and_then(|end| bytes.split_at_checked(end)) {
                 Some((text, hash)) => {
-                    let whole = hash == fennec_blake3::hash(text).as_bytes();
+                    let found = fennec_blake3::hash(text);
+                    let whole = hash == found.as_bytes();
+                    checked = Some(found);
                     let end = text.len();
                     bytes.truncate(end);
                     whole
@@ -193,7 +215,7 @@ impl Cache {
         if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY) {
             mark_used(&path);
         }
-        Some(bytes)
+        Some((bytes, checked))
     }
 
     /// Where the object kept under `name` is, if it's there: the file itself, for the linker to
@@ -358,14 +380,9 @@ impl Cache {
             return Ok(true);
         };
         let path = kept_at(&named, &sum);
-        let Ok(bytes) = std::fs::read(&path) else { return Ok(false) };
-        if sum_of(&bytes) != sum {
-            crate::unsaved::doubted(&path);
+        if !checked_for_a_run(&path, &sum) {
             return Ok(false);
         }
-        // Marked before it's put out: a linked file is the entry, with its time, and a sweep of
-        // what earlier runs built goes by that time, so it has to be the time of this run.
-        mark_used(&path);
         let _ = std::fs::remove_file(to);
         if std::fs::hard_link(&path, to).is_err() {
             std::fs::copy(&path, to)?;
@@ -403,7 +420,23 @@ impl Cache {
                 program.sum = Some(path);
             }
         }
-        let folded: BTreeSet<usize> = sums.iter().map(|&(sum, _)| sum).collect();
+        // A program's note of its last whole check goes with it too.
+        let mut seen = Vec::new();
+        for (index, entry) in found.iter().enumerate() {
+            let program =
+                entry.path.as_os_str().to_str().and_then(|path| path.strip_suffix(&format!(".{SEEN}")));
+            if let Some(&program) = program.and_then(|program| at.get(Path::new(program))) {
+                seen.push((index, program));
+            }
+        }
+        for &(note, program) in &seen {
+            let (size, path) = found.get(note).map(|note| (note.size, note.path.clone())).unwrap_or_default();
+            if let Some(program) = found.get_mut(program) {
+                program.size += size;
+                program.seen = Some(path);
+            }
+        }
+        let folded: BTreeSet<usize> = sums.iter().chain(&seen).map(|&(beside, _)| beside).collect();
         found
             .into_iter()
             .enumerate()
@@ -542,6 +575,9 @@ impl Cache {
                     let _ = std::fs::remove_file(sum);
                 }
                 std::fs::remove_file(&entry.path)?;
+                if let Some(seen) = &entry.seen {
+                    let _ = std::fs::remove_file(seen);
+                }
                 size -= entry.size;
                 cleanup.removed += 1;
                 cleanup.freed += entry.size;
@@ -591,6 +627,148 @@ impl Entry {
         let recent = self.used.elapsed().map_or(true, |age| age < KEPT_RECENT);
         recent || self.links > 1
     }
+}
+
+/// How long a kept program's last whole check stands while its file looks as it did then.
+const CHECK_STANDS: Duration = Duration::from_hours(1);
+
+/// How old a kept program's time may be when a run puts it out without marking it again. A later
+/// run sweeps what a run put out once its time is 10 minutes old, and this is well inside that.
+const RUN_MARKED: Duration = Duration::from_mins(1);
+
+/// The ending of the file beside a kept program noting its last whole check.
+const SEEN: &str = "seen";
+
+/// Whether a kept program's bytes are the ones its entry names, marking it as used for a run whose
+/// program it's about to be. A whole check hashes every byte, which was most of a no-change run: 17M
+/// instructions for a hello program and 38M for a 5,000-line kit. So a whole check is noted beside
+/// the program, in `<program>.seen` (see [`Seen`]), with how the file looked: while it looks the
+/// same and the check is under [`CHECK_STANDS`] old, the check stands and nothing is read.
+///
+/// A file is read-only once kept, and a write into it moves its modified time. Its changed time
+/// isn't looked at: putting it out links it, and a sweep unlinks it, and either moves that time, so
+/// every run would check it whole. What no time shows, as a disk going bad under it, macOS finds as
+/// it pages the program in, by its code signature, and kills it; the hour is how long that can go
+/// on before a whole check finds it and the program is built again.
+///
+/// Marked before it's put out: a linked file is the entry, with its time, and a sweep of what
+/// earlier runs built goes by that time, so it has to be at most [`RUN_MARKED`] old.
+fn checked_for_a_run(path: &Path, sum: &str) -> bool {
+    let seen = seen_path(path);
+    let Ok(before) = std::fs::metadata(path) else { return false };
+    let noted = std::fs::read_to_string(&seen).ok().and_then(|text| Seen::read(&text));
+    let stands = noted.filter(|noted| noted.stands(&before)).map(|noted| noted.checked);
+    let marked =
+        before.modified().ok().and_then(|time| time.elapsed().ok()).is_none_or(|age| age > RUN_MARKED);
+    if marked {
+        mark_used(path);
+    }
+    // Looked at after the mark, which moves its modified time, and before any read: a write after
+    // this look is a change the next run finds, whether or not this run's read saw it.
+    let Ok(after) = std::fs::metadata(path) else { return false };
+    let checked = if let Some(checked) = stands {
+        checked
+    } else {
+        let Ok(bytes) = std::fs::read(path) else { return false };
+        if sum_of(&bytes) != sum {
+            crate::unsaved::doubted(path);
+            return false;
+        }
+        SystemTime::now()
+    };
+    if marked || stands.is_none() {
+        // A note that isn't written, or is lost to a power cut, only means a whole check next time.
+        let _ = note(&seen, &Seen::of(&after, checked).written());
+    }
+    true
+}
+
+/// How a kept program's file looked after its last whole check, and when that was. The system's
+/// own numbers for the file: its device and inode, its size, and its modified time to the
+/// nanosecond.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    file: [i64; 5],
+    checked: SystemTime,
+}
+
+impl Seen {
+    #[cfg(unix)]
+    fn file(metadata: &std::fs::Metadata) -> [i64; 5] {
+        use std::os::unix::fs::MetadataExt as _;
+        let unsigned = |number: u64| number.cast_signed();
+        [
+            unsigned(metadata.dev()),
+            unsigned(metadata.ino()),
+            unsigned(metadata.size()),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+        ]
+    }
+
+    /// Nothing that can't be told apart: every file looks new, so every check is a whole one.
+    #[cfg(not(unix))]
+    fn file(_: &std::fs::Metadata) -> [i64; 5] {
+        [-1; 5]
+    }
+
+    fn of(metadata: &std::fs::Metadata, checked: SystemTime) -> Self {
+        Self { file: Self::file(metadata), checked }
+    }
+
+    /// Whether this check stands for the file as it looks now.
+    fn stands(&self, now: &std::fs::Metadata) -> bool {
+        self.file != [-1; 5]
+            && self.file == Self::file(now)
+            && self.checked.elapsed().is_ok_and(|age| age < CHECK_STANDS)
+    }
+
+    /// The note's text: the file's numbers, then the check's time in nanoseconds since 1970, on one line.
+    fn written(&self) -> String {
+        let checked = self.checked.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_nanos());
+        let file: Vec<String> = self.file.iter().map(i64::to_string).collect();
+        format!("{} {checked}\n", file.join(" "))
+    }
+
+    /// A note's text read back: none unless it's whole, six numbers and the line's end.
+    fn read(text: &str) -> Option<Self> {
+        let line = text.strip_suffix('\n')?;
+        let mut numbers = line.split(' ');
+        let mut file = [0; 5];
+        for number in &mut file {
+            *number = numbers.next()?.parse().ok()?;
+        }
+        let checked: u64 = numbers.next()?.parse().ok()?;
+        if numbers.next().is_some() {
+            return None;
+        }
+        let checked = SystemTime::UNIX_EPOCH.checked_add(Duration::from_nanos(checked))?;
+        Some(Self { file, checked })
+    }
+}
+
+/// Where a kept program's [`Seen`] note is: the program's name with `.seen` after it.
+fn seen_path(program: &Path) -> PathBuf {
+    let mut name = program.as_os_str().to_owned();
+    name.push(".");
+    name.push(SEEN);
+    PathBuf::from(name)
+}
+
+/// Writes a note whole, put in place by a rename, but not synced: one lost costs a whole check.
+fn note(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let temporary = temporary_beside(path);
+    let written = File::options()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(text.as_bytes()))
+        .and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// A kept program's entry: the file naming its hash, the entry's whole name with `.sum` after it,
@@ -802,6 +980,7 @@ fn files(dir: &Path, build: &Path, found: &mut Vec<Entry>) {
                 build: build.to_path_buf(),
                 links,
                 sum: None,
+                seen: None,
                 holder: None,
             });
         }
@@ -1115,6 +1294,68 @@ mod tests {
             std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&written).unwrap().permissions());
         assert_eq!(mode & 0o777, 0o555);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A program checked whole as it's put out for a run isn't read again while its file looks as
+    /// it did, and the note of that check goes with it at cleanup. It's checked whole again once
+    /// the check is an hour old, or once the file has changed.
+    #[test]
+    #[cfg(unix)]
+    fn a_whole_check_stands_while_the_program_looks_the_same() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-check-stands-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let launched = dir.join("launched");
+        std::fs::write(&launched, b"a program").unwrap();
+        cache.keep_file("programs", "root", &launched).unwrap();
+        std::fs::remove_file(&launched).unwrap();
+        let kept = cache.kept_program("programs", "root").unwrap();
+        let seen = super::seen_path(&kept);
+        let next = dir.join("next");
+        assert!(cache.link_out("programs", "root", &next).unwrap());
+        let noted = super::Seen::read(&std::fs::read_to_string(&seen).unwrap()).unwrap();
+        assert!(noted.stands(&std::fs::metadata(&kept).unwrap()));
+        // The note goes with its program: one entry, its size both of theirs.
+        let entries = cache.entries();
+        assert!(entries.iter().all(|entry| entry.path != seen), "the note is an entry of its own");
+        let entry = entries.iter().find(|entry| entry.path == kept).unwrap();
+        assert_eq!(entry.seen.as_deref(), Some(seen.as_path()));
+        // Made unreadable: a run that read it would fail, and one that puts it out didn't read it.
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&kept).is_ok() {
+            // Run as root, which reads it anyway: nothing here can tell a read from none.
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        assert!(cache.link_out("programs", "root", &next).unwrap(), "a check that stands read the program");
+        // An hour old, the check is made whole again, and fails on what can't be read.
+        let looks = std::fs::metadata(&kept).unwrap();
+        let long_ago = std::time::SystemTime::now() - super::CHECK_STANDS - Duration::from_secs(1);
+        super::note(&seen, &super::Seen::of(&looks, long_ago).written()).unwrap();
+        assert!(!cache.link_out("programs", "root", &next).unwrap(), "an hour-old check stood");
+        // Noted as just checked, then written into: its modified time has moved, so it's checked whole.
+        super::note(&seen, &super::Seen::of(&looks, std::time::SystemTime::now()).written()).unwrap();
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(&kept, b"a pregram").unwrap();
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(!cache.link_out("programs", "root", &next).unwrap(), "a changed program was put out");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A note of a check is whole or nothing: cut short or with more after it, it's none.
+    #[test]
+    fn a_note_of_a_check_reads_back_only_whole() {
+        let checked = std::time::SystemTime::UNIX_EPOCH + Duration::from_nanos(1_790_000_000_123_456_789);
+        let seen = super::Seen { file: [1, 2, 3, 4, -5], checked };
+        let text = seen.written();
+        assert_eq!(super::Seen::read(&text), Some(seen));
+        assert_eq!(super::Seen::read(text.trim_end()), None);
+        assert_eq!(super::Seen::read(text.get(..text.len() / 2).unwrap()), None);
+        assert_eq!(super::Seen::read(&format!("{} 6\n", text.trim_end())), None);
     }
 
     /// A program kept under a name another was kept under replaces it with a file of its own: a

@@ -663,8 +663,11 @@ pub(crate) fn run(
         return result;
     }
     let names: Vec<String> = (0..taken.len()).map(function_name).collect();
-    let work = crate::own_temp("tests").with_extension(std::env::consts::EXE_EXTENSION);
-    let flags = match tests_built(module, &taken, written, &names, &work) {
+    // The tests' executable goes however this ends: a build stopped with its command, as on
+    // Ctrl-C, can have written some of it.
+    let made = Removed(crate::own_temp("tests").with_extension(std::env::consts::EXE_EXTENSION));
+    let work = made.0.as_path();
+    let flags = match tests_built(module, &taken, written, &names, work) {
         None => {
             result.left.extend(taken.iter().map(|test| test.name.clone()));
             return result;
@@ -678,7 +681,7 @@ pub(crate) fn run(
     };
     let fused = fusible(module);
     let prelude = prelude_functions();
-    let ran = if real { vec![run_for_real(&work, taken.len())] } else { run_workers(&work, taken.len()) };
+    let ran = if real { vec![run_for_real(work, taken.len())] } else { run_workers(work, taken.len()) };
     let mut seen = vec![false; taken.len()];
     for (number, failure, set) in ran.iter().flat_map(|output| output.lines()).filter_map(read_line) {
         let (Some(test), Some(done)) = (taken.get(number), seen.get_mut(number)) else { continue };
@@ -708,9 +711,17 @@ pub(crate) fn run(
             }
         }
     }
-    rerun_crashed(&work, &taken, &seen, &mut result);
-    let _ = std::fs::remove_file(&work);
+    rerun_crashed(work, &taken, &seen, &mut result);
     result
+}
+
+/// A file removed when this goes.
+struct Removed(std::path::PathBuf);
+
+impl Drop for Removed {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// A worker that crashed leaves the tests it hadn't finished, and each of those runs again alone,

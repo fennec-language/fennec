@@ -1,4 +1,4 @@
-## Dicts of many keys that native code holds as objects, found through a hash table.
+## Dicts of many keys, found through a hash table.
 
 struct Cell:
     x: int

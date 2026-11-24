@@ -48,8 +48,17 @@ fn bodies(module: &Module) -> Vec<(String, Vec<Stmt>, Vec<Expr>)> {
         match item {
             Item::Function(def) => nested(&def.name, &def.body, &mut found),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                // Keyed as the checker keys them: a second operator taking another type on its
+                // right has a key of its own.
+                let mut first: Vec<(String, &FnDef)> = Vec::new();
                 for method in &def.methods {
-                    nested(&format!("{}.{}", def.name, method.name), &method.body, &mut found);
+                    let plain = format!("{}.{}", def.name, method.name);
+                    let earlier = first.iter().find(|(key, _)| *key == plain).map(|(_, method)| *method);
+                    let key = fennec_check::method_key(&def.name, method, earlier);
+                    if earlier.is_none() {
+                        first.push((plain, method));
+                    }
+                    nested(&key, &method.body, &mut found);
                 }
                 let fields = def.fields.iter().flat_map(|field| field.default.iter().chain(&field.rule));
                 found.push((format!("fields of {}", def.name), Vec::new(), fields.cloned().collect()));
@@ -178,7 +187,10 @@ fn values(expr: &Expr, found: &mut Found) {
                 ExprKind::Lambda { .. } => inner.push(callee),
                 _ => {}
             }
-            inner.extend(args.iter().map(|arg| &arg.value));
+            // `T` in `fields(T)` is a type, not a value.
+            if !matches!(&callee.kind, ExprKind::Name(called) if called == "fields") {
+                inner.extend(args.iter().map(|arg| &arg.value));
+            }
         }
         ExprKind::Attr { object, .. } if !is_type_name(object, &found.modules) => inner.push(object),
         ExprKind::Match { subject, arms } => {

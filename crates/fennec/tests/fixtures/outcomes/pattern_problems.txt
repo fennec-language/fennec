@@ -1,0 +1,7 @@
+source df8b899475bdc31dc1802c540e384e86db94b93ed6a0e677d163d9240df58729
+code 0
+stdout 242
+False this pattern isn't valid: this `[` is never closed (at character 0)
+False this pattern isn't valid: in `{m,n}`, m can't be bigger than n (at character 1)
+False this pattern isn't valid: groups nest more than 250 deep (at character 250)
+stderr 0

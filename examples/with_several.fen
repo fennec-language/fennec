@@ -1,0 +1,31 @@
+# Several handles in one `with` open left to right and finish innermost first, and a source can lend
+# a tuple, split by several names.
+
+def door(stdout: Stdout, name: str) -> with str:
+    stdout.print(f"open {name}")
+    lend name.upper() except:
+        stdout.print(f"undo {name}")
+    stdout.print(f"close {name}")
+
+def ends(stdout: Stdout) -> with (str, str):
+    stdout.print("split")
+    lend("reader", "writer")
+    stdout.print("joined")
+
+struct Tally:
+    count = 0
+
+def main(stdout: Stdout):
+    with door(stdout, "a") as first, door(stdout, "b") as second:
+        stdout.print(f"inside {first} and {second}")
+
+    with ends(stdout) as reader, writer:
+        stdout.print(f"{reader} and {writer}")
+
+    # a block after `x =` ends with its value, a `lock` block too
+    shared tally = Tally()
+    lock tally as ref current:
+        current.count += 2
+    seen = lock tally as current:
+        current.count
+    stdout.print(seen)

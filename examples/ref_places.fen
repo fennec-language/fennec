@@ -1,0 +1,47 @@
+# `ref` changes a value where it is: a local name, a loop's item, a dict's value or a case's field.
+
+from std.collections import Table
+
+struct Unit:
+    name: str
+    health: int
+
+enum Widget:
+    Button(clicks: int)
+    Label(text: str)
+
+def main(stdout: Stdout):
+    mut units = [Unit(name="Ana", health=50), Unit(name="Bo", health=70)]
+
+    # a local `ref` names a place for several changes in a row
+    ref target = units[1]
+    target.health -= 5
+    target.name = "Bo the brave"
+    stdout.print(units[1])
+
+    # `enumerate` with `ref` changes each item, with its position
+    for at, ref unit in enumerate(units):
+        unit.health += at
+    stdout.print(units)
+
+    # `items()` with `ref` changes each value of a dict or a Table, with its key or Id
+    mut scores = {"ana": 1, "bo": 2}
+    for name, ref score in scores.items():
+        score *= 10
+    stdout.print(scores)
+
+    mut table = Table[Unit]()
+    fox = table.add(Unit(name="fox", health=3))
+    for unit_id, ref unit in table.items():
+        unit.health += 1
+    stdout.print(table[fox].health)
+
+    # `case .Button(ref clicks):` changes a field inside the enum a match is over
+    mut widgets = [Widget.Button(clicks=0), Widget.Label(text="hi")]
+    for _ in range(3):
+        match widgets[0]:
+            case .Button(ref clicks):
+                clicks += 1
+            case _:
+                pass
+    stdout.print(widgets)

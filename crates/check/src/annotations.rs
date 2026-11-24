@@ -120,7 +120,7 @@ fn function_problem(def: &FnDef, annotation: &Annotation, prelude: bool) -> Opti
         ),
         "intrinsic" if !def.body.is_empty() => Some(
             Diagnostic::new(format!("`{}` is `@intrinsic`, so it has no body", def.name), span)
-                .with_help("end the signature without `:`, since the engines provide what it does"),
+                .with_help("end the signature without `:`, since the compiler provides what it does"),
         ),
         "hot" if !annotation.args.is_empty() => Some(
             Diagnostic::new("`@hot` takes nothing", span)

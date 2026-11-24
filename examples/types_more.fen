@@ -86,7 +86,7 @@ def main(stdout: Stdout):
     # Collections can end with a comma.
     stdout.print({"a": 1}, {1, 2}, [1], (1,))
 
-    # A function can return a result it made itself.
+    # An `except` block can call something that fails, and handle it on its own line.
     _ = parse("twelve") except why:
         parse_value = parse("12") except NotANumber(): -1
         stdout.print(parse_value, why)

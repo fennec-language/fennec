@@ -224,13 +224,7 @@ impl FnCx<'_> {
     /// What the task's inbox takes, from the type its parameter settled to.
     fn inbox_message(&mut self, inbox: Option<&Type>, span: Span) -> Option<Type> {
         match inbox.map(|ty| self.checker.settled(ty)) {
-            Some(Type::Generic(name, held)) if name == "Inbox" && held.len() == 1 => {
-                let message = held.into_iter().next();
-                if let Some(message) = &message {
-                    self.note_channel_message(message.clone(), span);
-                }
-                message
-            }
+            Some(Type::Generic(name, held)) if name == "Inbox" && held.len() == 1 => held.into_iter().next(),
             Some(other) if other.is_known() => {
                 let message =
                     format!("a task's parameter is its inbox, an `Inbox[T]`, but this is {}", a(&other));

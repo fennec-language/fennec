@@ -1,0 +1,21 @@
+# A generic function walks a struct's fields with `for field in fields(T):`, each with its `name`
+# and its value through `get`.
+
+struct Point:
+    x: int
+    y: int
+
+struct Player:
+    name: str
+    at: Point
+
+def show[V](name: str, value: V, stdout: Stdout):
+    stdout.print(f"{name} = {value}")
+
+def describe[T](value: T, stdout: Stdout):
+    for field in fields(T):
+        show(field.name, value=field.get(value), stdout=stdout)
+
+def main(stdout: Stdout):
+    describe(Player(name="Ana", at=Point(x=3, y=4)), stdout)
+    describe(Point(x=1, y=2), stdout)

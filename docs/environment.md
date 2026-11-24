@@ -11,6 +11,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_OFFLINE`: never fetch anything. The launcher passes it on to the toolchain.
 - `FENNEC_TRUST`: folders, listed as `PATH` lists them, whose kits are trusted whoever owns them, as a project mounted into a container is the host user's. A folder anyone can write to still isn't. Without it, a kit is taken only through folders this user or the system owns.
 - `FENNEC_DIST`: the mirror the launcher fetches releases from.
+- `FENNEC_LAUNCHER_DIST`: the mirror `fennec self update` fetches launcher releases from.
 - `FENNEC_VERSION`: which release `install.sh` installs.
 - `FENNEC_DOWNLOAD`: where `install.sh` downloads from.
 - `FENNEC_STATIC`: `0` links a built program against the system's libc in place of musl.
@@ -47,10 +48,11 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_PARALLEL_STRESS`: every parallel loop runs on the pool, split one item a range.
 - `FENNEC_STREAM_RUN_AHEAD`: set, a parallel stream's reader waits for the workers to run every chunk in its window before it takes one, so chunks always run ahead of it, as a test of what runs past a `break` needs. Off on a worker and in a replay.
 - `FENNEC_TEST_SLOW_WAKE_MS`: a debug build's runtime holds a woken idle worker this many milliseconds before its slot says it's awake, so a test finds every worker asleep while a `parallel` call's first job is queued: the moment the deadlock check's look at the pools' queues is for. A release build never reads it.
-- `FENNEC_TEST_BUILD_CHILD`: in a dev compiler, what a build's own process (`FENNEC_BUILD_CHILD`) does wrong, for the tests of its fallback and of what ends it: `crash` kills itself at once, `hang` never says it started, and `hang-building:<file>` writes its process id to the file and never ends, unless the file is there already. A release compiler never reads it.
+- `FENNEC_TEST_BUILD_CHILD`: in a dev compiler, what a build's own process (`FENNEC_BUILD_CHILD`) does wrong, for the tests of its fallback and of what ends it: `crash` kills itself at once, `hang` never says it started, and `hang-building:<file>` starts what it builds, as a link stopped partway leaves it, writes its process id to the file and never ends, unless the file is there already. A release compiler never reads it.
 - `FENNEC_UNDER_MUTANTS`: slow tests sample fewer inputs under cargo-mutants.
 - `FENNEC_TEST_POSTGRES`: the URL of a real Postgres for `std.postgres`'s tests.
 - `FENNEC_TEST_WORDS_ROLE`, `FENNEC_TEST_WORDS_LOG`, `FENNEC_TEST_WORDS_WORKERS`, `FENNEC_TEST_WORDS_WAY` and `FENNEC_TEST_WORDS_SAW`: what the runtime's test of messages sent as words gives a run of itself, recorded or replayed in a process of its own. They say: record or replay, the log, how many workers, words or today's calls, and the file to say what it saw in. Nothing else reads them.
+- `FENNEC_TEST_CONN_ROLE`, `FENNEC_TEST_CONN_LOG`, `FENNEC_TEST_CONN_WAY` and `FENNEC_TEST_CONN_SAW`: what the runtime's test of a served connection's typed calls gives a run of itself, recorded or replayed in a process of its own. They say: record or replay, the log, the named calls or the typed ones, and the file to say what it saw in. Nothing else reads them.
 - `FENNEC_PIN_OUTPUTS`: rewrites `crates/fennec/tests/fixtures/pinned` from this build's results.
 - `FENNEC_UPDATE_UNCHECKED`: `1` rewrites `crates/llvm/unchecked_runtime_calls.txt`, the ratchet of runtime calls emitted code doesn't check yet, from what the lint finds now.
 - `FENNEC_RUN_WAITS`: `fennec run` waits for the program rather than becoming it, so its time can be measured.

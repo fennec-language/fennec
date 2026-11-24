@@ -90,9 +90,10 @@ impl Element {
     }
 
     /// Whether a message of this kind is flat, to go between threads as its words with a copy of
-    /// each block they name: numbers, bools, strings, bytes, optional strings, and structs of
-    /// those. Each block such a value names holds only bytes. This is the one place it's decided,
-    /// for the runtime's channels and for the compiler that hands them messages.
+    /// each block they name: numbers, bools, strings, bytes, optional strings, and structs and
+    /// enums of those, an enum when every case's fields are. Each block such a value names holds
+    /// only bytes. This is the one place it's decided, for the runtime's channels and for the
+    /// compiler that hands them messages.
     pub fn is_flat_message(&self) -> bool {
         match self {
             Element::Int
@@ -105,6 +106,9 @@ impl Element {
             Element::Boxed(shape) => u64::try_from(*shape) == Ok(crate::embed::heap::BYTES_SHAPE),
             Element::Maybe(inner) => matches!(**inner, Element::Text | Element::Str),
             Element::Struct { fields, .. } => fields.iter().all(|(_, field)| field.is_flat_message()),
+            Element::Enum { cases, .. } => {
+                cases.iter().all(|(_, fields)| fields.iter().all(|(_, field)| field.is_flat_message()))
+            }
             _ => false,
         }
     }

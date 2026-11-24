@@ -87,8 +87,10 @@ fn a_short_run_of_every_target_finds_nothing() {
         "toml",
         "toml-rules",
         "http-client",
+        "http-client-scripts",
         "http-server",
         "http-sessions",
+        "http-splits",
         "router",
         "html",
         "postgres",
@@ -106,8 +108,10 @@ fn a_short_run_of_every_target_finds_nothing() {
         "csv",
         "html",
         "http-client",
+        "http-client-scripts",
         "http-server",
         "http-sessions",
+        "http-splits",
         "json",
         "json-rules",
         "numbers",
@@ -121,8 +125,8 @@ fn a_short_run_of_every_target_finds_nothing() {
         "utf8",
     ];
     let left_out = printed.contains(
-        "base64, csv, html, http-client, http-server, http-sessions, json, json-rules, numbers, pack, postgres, \
-         router, time, toml, toml-rules, url, utf8: left out",
+        "base64, csv, html, http-client, http-client-scripts, http-server, http-sessions, http-splits, json, json-rules, \
+         numbers, pack, postgres, router, time, toml, toml-rules, url, utf8: left out",
     );
     for target in targets {
         if left_out && native.contains(&target) {
@@ -156,6 +160,43 @@ fn large_hostile_inputs_run_clean() {
         assert!(
             output.status.success(),
             "{target}, {what}: {}\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every request the `http-server` target starts from or has kept, and each large hostile one, is
+/// answered the same split at every byte (`http-splits`): a head cut across two reads, or two in
+/// one, gets what the whole of it gets.
+#[test]
+fn every_http_seed_and_kept_input_is_heard_the_same_split_anywhere() {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for folder in [here.join("seeds/http"), here.join("found/http-server")] {
+        for input in std::fs::read_dir(&folder).unwrap() {
+            let input = input.unwrap().path();
+            if !pinned_output(&input) {
+                files.push((input.display().to_string(), input));
+            }
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-fuzz-splits-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (at, (target, what, input)) in large_messages().into_iter().enumerate() {
+        if target == "http-server" {
+            let file = dir.join(format!("{at}"));
+            std::fs::write(&file, input).unwrap();
+            files.push((what.to_owned(), file));
+        }
+    }
+    for (what, file) in &files {
+        let output = fuzz().args(["one", "http-splits"]).arg(file).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{what}: {}\n{}{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),

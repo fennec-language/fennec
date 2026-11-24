@@ -348,8 +348,11 @@ impl Note {
             ((rank, number, (0, 0, String::new()), 0), who)
         };
         let what = match &self.on {
-            On::Channel(_) => match self.kind {
+            On::Channel(channel) => match self.kind {
                 Kind::Send => "to send on a channel that's full".to_owned(),
+                Kind::Receive if super::channels::is_listener(*channel) => {
+                    "to receive as a listener of a channel to `.Every`, with nothing new for it".to_owned()
+                }
                 Kind::Receive | Kind::BlockEnd | Kind::Join | Kind::Turn => {
                     "to receive on a channel that's empty".to_owned()
                 }

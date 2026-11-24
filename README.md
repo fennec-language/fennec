@@ -14,15 +14,13 @@
 
 Fennec is a safe, compiled language for games and tools, designed so that the easy way to write something is also the readable way and the fast way, for people and for the AI they work with.
 
-> **Status: early.** `fennec run` type-checks a program and compiles it to machine code through LLVM, and `fennec build` makes a native program you can ship. Most of the language on the website is built, and the syntax will still change.
+> **Status: early.** `fennec run` type-checks a program and compiles it to machine code through LLVM, and `fennec build` makes a native program you can ship. Nearly all of the language is built, and the syntax will still change.
 
-**Read more at [fennec-lang.dev](https://fennec-lang.dev/):**
+**Read more:**
 
-- [Why Fennec](https://fennec-lang.dev/why/): what it's for and the principles behind it
-- [A tour](https://fennec-lang.dev/tour/): the syntax and semantics, and what's still planned
-- [Built for AI to write](https://fennec-lang.dev/ai/)
-- [Two speeds](https://fennec-lang.dev/speed/): instant development builds, full-speed release builds
-- [Roadmap](https://fennec-lang.dev/roadmap/)
+- [The language on one page](docs/language.md): every feature, and the source of truth when anything else disagrees
+- [Building a program in Fennec](docs/guide.md): a guide to writing a real kit, from `fennec new` to tests
+- [fennec-lang.dev](https://fennec-lang.dev/): why Fennec, a tour, and the roadmap
 
 ## A taste
 
@@ -86,7 +84,7 @@ Or work in the checkout. Build `fennec` and the runtime library it links program
 cargo build -p fennec -p fennec-runtime
 ```
 
-Fennec runs most of the language on the website: structs, enums, unions, `match`, errors with `fail` and `?`, optional values, tables and Ids, comprehensions, generators, `parallel` loops, tests and property tests, and a standard library with JSON, HTTP and more. `fennec run` and `fennec test` type-check a program first and report every mistake they find. `fennec run` builds a program through LLVM a function at a time, and where LLVM can't build something yet, it says why.
+`fennec run` and `fennec test` type-check a program first and report every mistake they find, then build it through LLVM a function at a time, cached, so an edit rebuilds only what changed.
 
 ```bash
 target/debug/fennec run examples/game.fen
@@ -117,12 +115,16 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 - `crates/rt`: the runtime's code, which `crates/runtime` builds into a library.
 - `crates/runtime` and `crates/layout`: the runtime library compiled programs link against, and how values are laid out in memory.
 - `crates/build`: content hashes, so a run rebuilds and retests only what changed.
-- `crates/kit`: kits: `kit.toml`, and loading a kit's files as one program.
+- `crates/kit` and `crates/deps`: kits, `kit.toml` and loading a kit's files as one program, and fetching and pinning its dependencies.
+- `crates/launcher` and `crates/dist`: the `fennec` people install, which runs the toolchain each kit asks for, and the signed release manifests it checks.
+- `crates/loader`: checks a program's compiled objects and links them into memory images.
 - `crates/fmt`, `crates/lint` and `crates/lsp`: the formatter, the linter and the language server.
 - `crates/fennec`: the `fennec` command.
 - `crates/bench` and `crates/count`: the benchmark suite, and counting the instructions a program runs.
 - `crates/blake3`, `crates/re` and `crates/parked`: hashing, regular expressions and parked network tasks for the standard library.
 - `crates/reference` and `crates/fuzz`: the language reference, written from the examples, and fuzzing.
+- `crates/oracle`: a test oracle that runs a program a second, independent way, so a difference from the compiled program shows a bug. Fennec itself has no interpreter.
+- `crates/temp`: temporary files and folders for tests, removed however a test ends.
 - `examples/`: example programs, which double as the test suite.
 - `site/`: the website, built with [Astro](https://astro.build) and deployed to Cloudflare on every push to `main`.
 

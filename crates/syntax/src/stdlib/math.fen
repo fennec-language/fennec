@@ -3,7 +3,8 @@
 ## Matrices are column-major and multiply column vectors, as in GLSL, WGSL and glTF, so a matrix
 ## goes to a GPU as it is: `Mat4`'s fields are its four columns. Rotations are right-handed, and
 ## `Mat4.perspective` maps depth to 0 through 1, as Vulkan, Metal, D3D and WebGPU take it. Each
-## formula is the one glam uses, so the two give the same numbers.
+## formula is the one glam uses, so the two give the same numbers. Each type has a twin whose
+## parts are `float`s, as glam has: `DVec3` is the `Vec3` of doubles, and `DMat4` the `Mat4`.
 from std import math
 
 ## Infinity, bigger than every other float: `-INFINITY` is smaller than all of them.
@@ -14,95 +15,234 @@ export INFINITY = 1e309
 export NAN = INFINITY - INFINITY
 
 ## A 2D vector, or a point in 2D.
+##
+## ```fennec
+## from std.math import Vec2
+## point = Vec2(x=1.0, y=2.0)
+## assert point.y == 2.0
+## ```
 export struct Vec2:
     x = 0.0
     y = 0.0
 
+    ## The vector with every part 0.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2.zero() == Vec2()
+    ## ```
     def zero() -> Vec2:
         return Vec2()
 
+    ## Each part plus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0, y=2.0) + Vec2(x=1.0, y=1.0) == Vec2(x=2.0, y=3.0)
+    ## ```
     def +(self, other: Vec2) -> Vec2:
         return Vec2(x=self.x + other.x, y=self.y + other.y)
 
+    ## Each part minus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0, y=2.0) - Vec2(x=1.0, y=1.0) == Vec2(x=0.0, y=1.0)
+    ## ```
     def -(self, other: Vec2) -> Vec2:
         return Vec2(x=self.x - other.x, y=self.y - other.y)
 
     ## Every part times `scale`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0, y=2.0) * 2.0 == Vec2(x=2.0, y=4.0)
+    ## ```
     def *(self, scale: float) -> Vec2:
         return Vec2(x=self.x * scale, y=self.y * scale)
 
     ## Each part times the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0, y=2.0).mul(Vec2(x=2.0, y=2.0)) == Vec2(x=2.0, y=4.0)
+    ## ```
     def mul(self, other: Vec2) -> Vec2:
         return Vec2(x=self.x * other.x, y=self.y * other.y)
 
     ## The vector pointing the other way.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0, y=2.0).negated() == Vec2(x=-1.0, y=-2.0)
+    ## ```
     def negated(self) -> Vec2:
         return Vec2(x=-self.x, y=-self.y)
 
+    ## Each part times the same part of `other`, added up.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0, y=2.0).dot(Vec2(x=1.0, y=1.0)) == 3.0
+    ## ```
     def dot(self, other: Vec2) -> float:
         return self.x * other.x + self.y * other.y
 
+    ## The length times itself, which needs no square root: quicker, for comparing lengths.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=3.0, y=4.0).length_squared() == 25.0
+    ## ```
     def length_squared(self) -> float:
         return self.dot(self)
 
+    ## How long the vector is.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=3.0, y=4.0).length() == 5.0
+    ## ```
     def length(self) -> float:
         return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=2.0).normalize() == Vec2(x=1.0)
+    ## ```
     def normalize(self) -> Vec2:
         length = self.length()
         if length == 0.0: return Vec2()
         return self * (1.0 / length)
 
+    ## How far this point is from `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0).distance(Vec2(x=4.0)) == 3.0
+    ## ```
     def distance(self, other: Vec2) -> float:
         return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2().lerp(Vec2(x=2.0), amount=0.5) == Vec2(x=1.0)
+    ## ```
     def lerp(self, other: Vec2, amount: float) -> Vec2:
         return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0, y=5.0).min(Vec2(x=3.0, y=2.0)) == Vec2(x=1.0, y=2.0)
+    ## ```
     def min(self, other: Vec2) -> Vec2:
         return Vec2(x=min(self.x, other.x), y=min(self.y, other.y))
 
     ## The larger of each part.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert Vec2(x=1.0, y=5.0).max(Vec2(x=3.0, y=2.0)) == Vec2(x=3.0, y=5.0)
+    ## ```
     def max(self, other: Vec2) -> Vec2:
         return Vec2(x=max(self.x, other.x), y=max(self.y, other.y))
 
+    ## Each part without its sign.
+    ##
+    ## ```fennec
+    ## from std.math import Vec2
+    ## assert abs(Vec2(x=-1.0, y=2.0)) == Vec2(x=1.0, y=2.0)
+    ## ```
     def abs(self) -> Vec2:
         return Vec2(x=abs(self.x), y=abs(self.y))
 
 ## A 3D vector, or a point in 3D.
+##
+## ```fennec
+## from std.math import Vec3
+## point = Vec3(x=1.0, y=2.0, z=3.0)
+## assert point.y == 2.0
+## ```
 export struct Vec3:
     x = 0.0
     y = 0.0
     z = 0.0
 
+    ## The vector with every part 0.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3.zero() == Vec3()
+    ## ```
     def zero() -> Vec3:
         return Vec3()
 
+    ## Each part plus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0, y=2.0, z=3.0) + Vec3(x=1.0, y=1.0, z=1.0) == Vec3(x=2.0, y=3.0, z=4.0)
+    ## ```
     def +(self, other: Vec3) -> Vec3:
         return Vec3(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z)
 
+    ## Each part minus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0, y=2.0, z=3.0) - Vec3(x=1.0, y=1.0, z=1.0) == Vec3(x=0.0, y=1.0, z=2.0)
+    ## ```
     def -(self, other: Vec3) -> Vec3:
         return Vec3(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z)
 
     ## Every part times `scale`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0, y=2.0, z=3.0) * 2.0 == Vec3(x=2.0, y=4.0, z=6.0)
+    ## ```
     def *(self, scale: float) -> Vec3:
         return Vec3(x=self.x * scale, y=self.y * scale, z=self.z * scale)
 
     ## Each part times the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0, y=2.0, z=3.0).mul(Vec3(x=2.0, y=2.0, z=2.0)) == Vec3(x=2.0, y=4.0, z=6.0)
+    ## ```
     def mul(self, other: Vec3) -> Vec3:
         return Vec3(x=self.x * other.x, y=self.y * other.y, z=self.z * other.z)
 
     ## The vector pointing the other way.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0, y=2.0, z=3.0).negated() == Vec3(x=-1.0, y=-2.0, z=-3.0)
+    ## ```
     def negated(self) -> Vec3:
         return Vec3(x=-self.x, y=-self.y, z=-self.z)
 
+    ## Each part times the same part of `other`, added up.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0, y=2.0, z=3.0).dot(Vec3(x=1.0, y=1.0, z=1.0)) == 6.0
+    ## ```
     def dot(self, other: Vec3) -> float:
         return self.x * other.x + self.y * other.y + self.z * other.z
 
     ## The vector at right angles to both, by the right-hand rule.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0).cross(Vec3(y=1.0)) == Vec3(z=1.0)
+    ## ```
     def cross(self, other: Vec3) -> Vec3:
         return Vec3(
             x=self.y * other.z - other.y * self.z,
@@ -110,91 +250,218 @@ export struct Vec3:
             z=self.x * other.y - other.x * self.y,
         )
 
+    ## The length times itself, which needs no square root: quicker, for comparing lengths.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=3.0, y=4.0).length_squared() == 25.0
+    ## ```
     def length_squared(self) -> float:
         return self.dot(self)
 
+    ## How long the vector is.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=3.0, y=4.0).length() == 5.0
+    ## ```
     def length(self) -> float:
         return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=2.0).normalize() == Vec3(x=1.0)
+    ## ```
     def normalize(self) -> Vec3:
         length = self.length()
         if length == 0.0: return Vec3()
         return self * (1.0 / length)
 
+    ## How far this point is from `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0).distance(Vec3(x=4.0)) == 3.0
+    ## ```
     def distance(self, other: Vec3) -> float:
         return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3().lerp(Vec3(x=2.0), amount=0.5) == Vec3(x=1.0)
+    ## ```
     def lerp(self, other: Vec3, amount: float) -> Vec3:
         return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0, y=5.0).min(Vec3(x=3.0, y=2.0)) == Vec3(x=1.0, y=2.0)
+    ## ```
     def min(self, other: Vec3) -> Vec3:
         return Vec3(x=min(self.x, other.x), y=min(self.y, other.y), z=min(self.z, other.z))
 
     ## The larger of each part.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert Vec3(x=1.0, y=5.0).max(Vec3(x=3.0, y=2.0)) == Vec3(x=3.0, y=5.0)
+    ## ```
     def max(self, other: Vec3) -> Vec3:
         return Vec3(x=max(self.x, other.x), y=max(self.y, other.y), z=max(self.z, other.z))
 
+    ## Each part without its sign.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3
+    ## assert abs(Vec3(x=-1.0, y=2.0)) == Vec3(x=1.0, y=2.0)
+    ## ```
     def abs(self) -> Vec3:
         return Vec3(x=abs(self.x), y=abs(self.y), z=abs(self.z))
 
     ## This vector with a fourth part, `w`: 1 for a point and 0 for a direction.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3, Vec4
+    ## assert Vec3(x=1.0, y=2.0, z=3.0).extend(1.0) == Vec4(x=1.0, y=2.0, z=3.0, w=1.0)
+    ## ```
     def extend(self, w: float) -> Vec4:
         return Vec4(x=self.x, y=self.y, z=self.z, w=w)
 
 ## A 4D vector: a point or direction in 3D with its `w`, or a column of a `Mat4`.
+##
+## ```fennec
+## from std.math import Vec4
+## point = Vec4(x=1.0, y=2.0, z=3.0, w=4.0)
+## assert point.y == 2.0
+## ```
 export struct Vec4:
     x = 0.0
     y = 0.0
     z = 0.0
     w = 0.0
 
+    ## The vector with every part 0.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4.zero() == Vec4()
+    ## ```
     def zero() -> Vec4:
         return Vec4()
 
+    ## Each part plus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0) + Vec4(x=1.0, y=1.0, z=1.0, w=1.0) == Vec4(x=2.0, y=3.0, z=4.0, w=5.0)
+    ## ```
     def +(self, other: Vec4) -> Vec4:
         return Vec4(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z, w=self.w + other.w)
 
+    ## Each part minus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0) - Vec4(x=1.0, y=1.0, z=1.0, w=1.0) == Vec4(x=0.0, y=1.0, z=2.0, w=3.0)
+    ## ```
     def -(self, other: Vec4) -> Vec4:
         return Vec4(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z, w=self.w - other.w)
 
     ## Every part times `scale`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0) * 2.0 == Vec4(x=2.0, y=4.0, z=6.0, w=8.0)
+    ## ```
     def *(self, scale: float) -> Vec4:
         return Vec4(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
 
     ## Each part times the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0).mul(Vec4(x=2.0, y=2.0, z=2.0, w=2.0)) == Vec4(x=2.0, y=4.0, z=6.0, w=8.0)
+    ## ```
     def mul(self, other: Vec4) -> Vec4:
         return Vec4(x=self.x * other.x, y=self.y * other.y, z=self.z * other.z, w=self.w * other.w)
 
     ## The vector pointing the other way.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0).negated() == Vec4(x=-1.0, y=-2.0, z=-3.0, w=-4.0)
+    ## ```
     def negated(self) -> Vec4:
         return Vec4(x=-self.x, y=-self.y, z=-self.z, w=-self.w)
 
+    ## Each part times the same part of `other`, added up.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0).dot(Vec4(x=1.0, y=1.0, z=1.0, w=1.0)) == 10.0
+    ## ```
     def dot(self, other: Vec4) -> float:
         return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
 
+    ## The length times itself, which needs no square root: quicker, for comparing lengths.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=3.0, y=4.0).length_squared() == 25.0
+    ## ```
     def length_squared(self) -> float:
         return self.dot(self)
 
+    ## How long the vector is.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=3.0, y=4.0).length() == 5.0
+    ## ```
     def length(self) -> float:
         return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=2.0).normalize() == Vec4(x=1.0)
+    ## ```
     def normalize(self) -> Vec4:
         length = self.length()
         if length == 0.0: return Vec4()
         return self * (1.0 / length)
 
+    ## How far this point is from `other`.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0).distance(Vec4(x=4.0)) == 3.0
+    ## ```
     def distance(self, other: Vec4) -> float:
         return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4().lerp(Vec4(x=2.0), amount=0.5) == Vec4(x=1.0)
+    ## ```
     def lerp(self, other: Vec4, amount: float) -> Vec4:
         return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0, y=5.0).min(Vec4(x=3.0, y=2.0)) == Vec4(x=1.0, y=2.0)
+    ## ```
     def min(self, other: Vec4) -> Vec4:
         return Vec4(
             x=min(self.x, other.x),
@@ -204,6 +471,11 @@ export struct Vec4:
         )
 
     ## The larger of each part.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert Vec4(x=1.0, y=5.0).max(Vec4(x=3.0, y=2.0)) == Vec4(x=3.0, y=5.0)
+    ## ```
     def max(self, other: Vec4) -> Vec4:
         return Vec4(
             x=max(self.x, other.x),
@@ -212,48 +484,109 @@ export struct Vec4:
             w=max(self.w, other.w),
         )
 
+    ## Each part without its sign.
+    ##
+    ## ```fennec
+    ## from std.math import Vec4
+    ## assert abs(Vec4(x=-1.0, y=2.0)) == Vec4(x=1.0, y=2.0)
+    ## ```
     def abs(self) -> Vec4:
         return Vec4(x=abs(self.x), y=abs(self.y), z=abs(self.z), w=abs(self.w))
 
     ## The first three parts.
+    ##
+    ## ```fennec
+    ## from std.math import Vec3, Vec4
+    ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0).xyz() == Vec3(x=1.0, y=2.0, z=3.0)
+    ## ```
     def xyz(self) -> Vec3:
         return Vec3(x=self.x, y=self.y, z=self.z)
 
 ## A rotation in 3D, as a unit quaternion. `Quat()` turns nothing.
+##
+## ```fennec
+## from std.math import Quat
+## turn = Quat()
+## assert turn.w == 1.0
+## ```
 export struct Quat:
     x = 0.0
     y = 0.0
     z = 0.0
     w = 1.0
 
+    ## The rotation that turns nothing, as `Quat()` is.
+    ##
+    ## ```fennec
+    ## from std.math import Quat
+    ## assert Quat.identity() == Quat()
+    ## ```
     def identity() -> Quat:
         return Quat()
 
     ## A turn of `angle` radians about `axis`, which has length 1: counterclockwise, looking from
     ## the axis's tip back toward where it starts.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat, Vec3
+    ## turn = Quat.from_axis_angle(Vec3(z=1.0), PI / 2.0)
+    ## assert turn.rotate(Vec3(x=1.0)).distance(Vec3(y=1.0)) < 0.000001
+    ## ```
     def from_axis_angle(axis: Vec3, angle: float) -> Quat:
         half = angle * 0.5
         turned = axis * math.sin(half)
         return Quat(x=turned.x, y=turned.y, z=turned.z, w=math.cos(half))
 
+    ## A turn of `angle` radians about the X axis.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat, Vec3
+    ## turn = Quat.from_rotation_x(PI / 2.0)
+    ## assert turn.rotate(Vec3(y=1.0)).distance(Vec3(z=1.0)) < 0.000001
+    ## ```
     def from_rotation_x(angle: float) -> Quat:
         half = angle * 0.5
         return Quat(x=math.sin(half), w=math.cos(half))
 
+    ## A turn of `angle` radians about the Y axis.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat, Vec3
+    ## turn = Quat.from_rotation_y(PI / 2.0)
+    ## assert turn.rotate(Vec3(z=1.0)).distance(Vec3(x=1.0)) < 0.000001
+    ## ```
     def from_rotation_y(angle: float) -> Quat:
         half = angle * 0.5
         return Quat(y=math.sin(half), w=math.cos(half))
 
+    ## A turn of `angle` radians about the Z axis.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat, Vec3
+    ## turn = Quat.from_rotation_z(PI / 2.0)
+    ## assert turn.rotate(Vec3(x=1.0)).distance(Vec3(y=1.0)) < 0.000001
+    ## ```
     def from_rotation_z(angle: float) -> Quat:
         half = angle * 0.5
         return Quat(z=math.sin(half), w=math.cos(half))
 
     ## Turning by `roll` about Z, then `pitch` about X, then `yaw` about Y, as a camera or a
     ## character turns.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat
+    ## assert Quat.from_euler(yaw=PI / 2.0, pitch=0.0, roll=0.0) == Quat.from_rotation_y(PI / 2.0)
+    ## ```
     def from_euler(yaw: float, pitch: float, roll: float) -> Quat:
         return Quat.from_rotation_y(yaw) * Quat.from_rotation_x(pitch) * Quat.from_rotation_z(roll)
 
     ## Turning by `other`, then by this.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat, Vec3
+    ## quarter = Quat.from_rotation_z(PI / 2.0)
+    ## assert (quarter * quarter).rotate(Vec3(x=1.0)).distance(Vec3(x=-1.0)) < 0.000001
+    ## ```
     def *(self, other: Quat) -> Quat:
         return Quat(
             x=self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
@@ -263,39 +596,84 @@ export struct Quat:
         )
 
     ## `point` turned by this rotation.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat, Vec3
+    ## assert Quat.from_rotation_z(PI / 2.0).rotate(Vec3(x=2.0)).distance(Vec3(y=2.0)) < 0.000001
+    ## ```
     def rotate(self, point: Vec3) -> Vec3:
         axis = Vec3(x=self.x, y=self.y, z=self.z)
         squared = axis.dot(axis)
         stretched = point * (self.w * self.w - squared) + axis * (point.dot(axis) * 2.0)
         return stretched + axis.cross(point) * (self.w * 2.0)
 
+    ## Each part times the same part of `other`, added up: near 1 or -1 for two rotations close to each other.
+    ##
+    ## ```fennec
+    ## from std.math import Quat
+    ## assert Quat().dot(Quat()) == 1.0
+    ## ```
     def dot(self, other: Quat) -> float:
         return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
 
+    ## The quaternion's length, which is 1 for a rotation.
+    ##
+    ## ```fennec
+    ## from std.math import Quat
+    ## assert Quat(w=2.0).length() == 2.0
+    ## ```
     def length(self) -> float:
         return math.sqrt(self.dot(self))
 
     ## The same rotation with length 1, which rounding drifts from after many turns.
+    ##
+    ## ```fennec
+    ## from std.math import Quat
+    ## assert Quat(w=2.0).normalize() == Quat()
+    ## ```
     def normalize(self) -> Quat:
         length = self.length()
         if length == 0.0: return Quat()
         return self._scaled(1.0 / length)
 
     ## The same turn the other way.
+    ##
+    ## ```fennec
+    ## from std.math import Quat
+    ## assert Quat(x=1.0, w=2.0).conjugate() == Quat(x=-1.0, w=2.0)
+    ## ```
     def conjugate(self) -> Quat:
         return Quat(x=-self.x, y=-self.y, z=-self.z, w=self.w)
 
     ## The rotation that undoes this one, which for a unit quaternion is its conjugate.
+    ##
+    ## ```fennec
+    ## from std.math import Quat
+    ## turn = Quat.from_rotation_z(0.5)
+    ## assert (turn * turn.inverse()).dot(Quat()) > 0.999999
+    ## ```
     def inverse(self) -> Quat:
         return self.conjugate()
 
     ## Part of the way from this rotation to `other`, the short way round, along a straight line
     ## made unit length again: quicker than `slerp`, but not at an even speed.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat
+    ## halfway = Quat().lerp(Quat.from_rotation_z(PI / 2.0), amount=0.5)
+    ## assert halfway.dot(Quat.from_rotation_z(PI / 4.0)) > 0.999999
+    ## ```
     def lerp(self, other: Quat, amount: float) -> Quat:
         if self.dot(other) < 0.0: return self._between(other._scaled(-1.0), amount)
         return self._between(other, amount)
 
     ## Part of the way from this rotation to `other`, the short way round, at an even speed.
+    ##
+    ## ```fennec
+    ## from std.math import PI, Quat
+    ## halfway = Quat().slerp(Quat.from_rotation_z(PI / 2.0), amount=0.5)
+    ## assert halfway.dot(Quat.from_rotation_z(PI / 4.0)) > 0.999999
+    ## ```
     def slerp(self, other: Quat, amount: float) -> Quat:
         mut toward = other
         mut cosine = self.dot(other)
@@ -320,35 +698,60 @@ export struct Quat:
 
 ## A 3x3 matrix, by its columns: a rotation and scale in 3D, or a 2D transform. `Mat3()` is the
 ## identity.
+##
+## ```fennec
+## from std.math import Mat3, Vec3
+## double = Mat3(x_axis=Vec3(x=2.0), y_axis=Vec3(y=2.0), z_axis=Vec3(z=2.0))
+## assert double.mul_vec3(Vec3(x=1.0, y=2.0, z=3.0)) == Vec3(x=2.0, y=4.0, z=6.0)
+## ```
 export struct Mat3:
     x_axis = Vec3(x=1.0)
     y_axis = Vec3(y=1.0)
     z_axis = Vec3(z=1.0)
 
+    ## The matrix that changes nothing, as `Mat3()` is.
+    ##
+    ## ```fennec
+    ## from std.math import Mat3
+    ## assert Mat3.identity() == Mat3()
+    ## ```
     def identity() -> Mat3:
         return Mat3()
 
     ## The rotation `rotation` makes.
+    ##
+    ## ```fennec
+    ## from std.math import Mat3, PI, Quat, Vec3
+    ## turn = Mat3.from_quat(Quat.from_rotation_z(PI / 2.0))
+    ## assert turn.mul_vec3(Vec3(x=1.0)).distance(Vec3(y=1.0)) < 0.000001
+    ## ```
     def from_quat(rotation: Quat) -> Mat3:
-        x2 = rotation.x + rotation.x
-        y2 = rotation.y + rotation.y
-        z2 = rotation.z + rotation.z
-        xx = rotation.x * x2
-        xy = rotation.x * y2
-        xz = rotation.x * z2
-        yy = rotation.y * y2
-        yz = rotation.y * z2
-        zz = rotation.z * z2
-        wx = rotation.w * x2
-        wy = rotation.w * y2
-        wz = rotation.w * z2
+        # `x_dy` is x times double y, as glam has it.
+        double_x = rotation.x + rotation.x
+        double_y = rotation.y + rotation.y
+        double_z = rotation.z + rotation.z
+        x_dx = rotation.x * double_x
+        x_dy = rotation.x * double_y
+        x_dz = rotation.x * double_z
+        y_dy = rotation.y * double_y
+        y_dz = rotation.y * double_z
+        z_dz = rotation.z * double_z
+        w_dx = rotation.w * double_x
+        w_dy = rotation.w * double_y
+        w_dz = rotation.w * double_z
         return Mat3(
-            x_axis=Vec3(x=1.0 - (yy + zz), y=xy + wz, z=xz - wy),
-            y_axis=Vec3(x=xy - wz, y=1.0 - (xx + zz), z=yz + wx),
-            z_axis=Vec3(x=xz + wy, y=yz - wx, z=1.0 - (xx + yy)),
+            x_axis=Vec3(x=1.0 - (y_dy + z_dz), y=x_dy + w_dz, z=x_dz - w_dy),
+            y_axis=Vec3(x=x_dy - w_dz, y=1.0 - (x_dx + z_dz), z=y_dz + w_dx),
+            z_axis=Vec3(x=x_dz + w_dy, y=y_dz - w_dx, z=1.0 - (x_dx + y_dy)),
         )
 
     ## `other` first, then this.
+    ##
+    ## ```fennec
+    ## from std.math import Mat3, Vec3
+    ## double = Mat3(x_axis=Vec3(x=2.0), y_axis=Vec3(y=2.0), z_axis=Vec3(z=2.0))
+    ## assert (double * double).determinant() == 64.0
+    ## ```
     def *(self, other: Mat3) -> Mat3:
         return Mat3(
             x_axis=self.mul_vec3(other.x_axis),
@@ -357,10 +760,21 @@ export struct Mat3:
         )
 
     ## This matrix times the column `vector`.
+    ##
+    ## ```fennec
+    ## from std.math import Mat3, Vec3
+    ## assert Mat3(x_axis=Vec3(x=2.0), y_axis=Vec3(y=2.0), z_axis=Vec3(z=2.0)).mul_vec3(Vec3(x=1.0)) == Vec3(x=2.0)
+    ## ```
     def mul_vec3(self, vector: Vec3) -> Vec3:
         return self.x_axis * vector.x + self.y_axis * vector.y + self.z_axis * vector.z
 
     ## Rows made columns.
+    ##
+    ## ```fennec
+    ## from std.math import Mat3, Vec3
+    ## shear = Mat3(y_axis=Vec3(x=1.0, y=1.0))
+    ## assert shear.transpose() == Mat3(x_axis=Vec3(x=1.0, y=1.0))
+    ## ```
     def transpose(self) -> Mat3:
         return Mat3(
             x_axis=Vec3(x=self.x_axis.x, y=self.y_axis.x, z=self.z_axis.x),
@@ -368,10 +782,24 @@ export struct Mat3:
             z_axis=Vec3(x=self.x_axis.z, y=self.y_axis.z, z=self.z_axis.z),
         )
 
+    ## How much the matrix scales a volume: 0 when it squashes space flat, and below 0 when it
+    ## mirrors it.
+    ##
+    ## ```fennec
+    ## from std.math import Mat3, Vec3
+    ## assert Mat3(x_axis=Vec3(x=2.0)).determinant() == 2.0
+    ## ```
     def determinant(self) -> float:
         return self.x_axis.dot(self.y_axis.cross(self.z_axis))
 
     ## The matrix that undoes this one, or `None` when it squashes space flat and nothing can.
+    ##
+    ## ```fennec
+    ## from std.math import Mat3, Vec3
+    ## half = Mat3(x_axis=Vec3(x=2.0), y_axis=Vec3(y=2.0), z_axis=Vec3(z=2.0)).inverse() else Mat3()
+    ## assert half.mul_vec3(Vec3(x=2.0)) == Vec3(x=1.0)
+    ## assert Mat3(x_axis=Vec3()).inverse() is None
+    ## ```
     def inverse(self) -> Mat3?:
         first = self.y_axis.cross(self.z_axis)
         second = self.z_axis.cross(self.x_axis)
@@ -383,20 +811,43 @@ export struct Mat3:
 
 ## A 4x4 matrix, by its columns: a transform in 3D, a camera's view or a projection. `Mat4()` is
 ## the identity.
+##
+## ```fennec
+## from std.math import Mat4, Vec3, Vec4
+## moved = Mat4(w_axis=Vec4(x=1.0, y=2.0, z=3.0, w=1.0))
+## assert moved.transform_point(Vec3()) == Vec3(x=1.0, y=2.0, z=3.0)
+## ```
 export struct Mat4:
     x_axis = Vec4(x=1.0)
     y_axis = Vec4(y=1.0)
     z_axis = Vec4(z=1.0)
     w_axis = Vec4(w=1.0)
 
+    ## The matrix that changes nothing, as `Mat4()` is.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4
+    ## assert Mat4.identity() == Mat4()
+    ## ```
     def identity() -> Mat4:
         return Mat4()
 
     ## Moving by `offset`.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3
+    ## assert Mat4.translation(Vec3(x=1.0)).transform_point(Vec3(y=1.0)) == Vec3(x=1.0, y=1.0)
+    ## ```
     def translation(offset: Vec3) -> Mat4:
         return Mat4(w_axis=offset.extend(1.0))
 
     ## The rotation `rotation` makes.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, PI, Quat, Vec3
+    ## turn = Mat4.rotation(Quat.from_rotation_z(PI / 2.0))
+    ## assert turn.transform_vector(Vec3(x=1.0)).distance(Vec3(y=1.0)) < 0.000001
+    ## ```
     def rotation(rotation: Quat) -> Mat4:
         turned = Mat3.from_quat(rotation)
         return Mat4(
@@ -406,10 +857,26 @@ export struct Mat4:
         )
 
     ## Stretching by `factors` along each axis.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3
+    ## stretch = Mat4.scaling(Vec3(x=2.0, y=3.0, z=4.0))
+    ## assert stretch.transform_point(Vec3(x=1.0, y=1.0, z=1.0)) == Vec3(x=2.0, y=3.0, z=4.0)
+    ## ```
     def scaling(factors: Vec3) -> Mat4:
         return Mat4(x_axis=Vec4(x=factors.x), y_axis=Vec4(y=factors.y), z_axis=Vec4(z=factors.z))
 
     ## Scaling, then rotating, then moving: how a model is placed in a scene.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Quat, Vec3
+    ## placed = Mat4.from_scale_rotation_translation(
+    ##     scale=Vec3(x=2.0, y=2.0, z=2.0),
+    ##     rotation=Quat(),
+    ##     translation=Vec3(x=1.0),
+    ## )
+    ## assert placed.transform_point(Vec3(x=1.0)) == Vec3(x=3.0)
+    ## ```
     def from_scale_rotation_translation(scale: Vec3, rotation: Quat, translation: Vec3) -> Mat4:
         turned = Mat3.from_quat(rotation)
         return Mat4(
@@ -420,6 +887,12 @@ export struct Mat4:
         )
 
     ## A camera's view from `eye` toward `target`, with `up` as up: right-handed, looking down -Z.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3
+    ## view = Mat4.look_at(eye=Vec3(z=5.0), target=Vec3(), up=Vec3(y=1.0))
+    ## assert view.transform_point(Vec3()).z == -5.0
+    ## ```
     def look_at(eye: Vec3, target: Vec3, up: Vec3) -> Mat4:
         forward = (target - eye).normalize()
         side = forward.cross(up).normalize()
@@ -433,6 +906,13 @@ export struct Mat4:
 
     ## A perspective projection: `fov_y` radians from the bottom of the view to its top, width
     ## over height `aspect`, and depth from `near` to `far` mapped to 0 through 1.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, PI, Vec4
+    ## projection = Mat4.perspective(fov_y=PI / 2.0, aspect=1.0, near=1.0, far=10.0)
+    ## closest = projection.mul_vec4(Vec4(z=-1.0, w=1.0))
+    ## assert closest.z == 0.0 and closest.w == 1.0
+    ## ```
     def perspective(fov_y: float, aspect: float, near: float, far: float) -> Mat4:
         half = 0.5 * fov_y
         height = math.cos(half) / math.sin(half)
@@ -445,6 +925,12 @@ export struct Mat4:
         )
 
     ## `other` first, then this.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3
+    ## both = Mat4.translation(Vec3(x=1.0)) * Mat4.translation(Vec3(y=1.0))
+    ## assert both.transform_point(Vec3()) == Vec3(x=1.0, y=1.0)
+    ## ```
     def *(self, other: Mat4) -> Mat4:
         return Mat4(
             x_axis=self.mul_vec4(other.x_axis),
@@ -454,20 +940,41 @@ export struct Mat4:
         )
 
     ## This matrix times the column `vector`.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec4
+    ## double = Mat4(x_axis=Vec4(x=2.0), y_axis=Vec4(y=2.0), z_axis=Vec4(z=2.0))
+    ## assert double.mul_vec4(Vec4(x=1.0, w=1.0)) == Vec4(x=2.0, w=1.0)
+    ## ```
     def mul_vec4(self, vector: Vec4) -> Vec4:
         first = self.x_axis * vector.x + self.y_axis * vector.y
         return first + self.z_axis * vector.z + self.w_axis * vector.w
 
     ## Where `point` goes: moved, turned and scaled, with no divide by `w`.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3
+    ## assert Mat4.translation(Vec3(x=1.0)).transform_point(Vec3(x=1.0)) == Vec3(x=2.0)
+    ## ```
     def transform_point(self, point: Vec3) -> Vec3:
         turned = self.z_axis * point.z + (self.y_axis * point.y + self.x_axis * point.x)
         return (self.w_axis + turned).xyz()
 
     ## Where the direction `vector` points: turned and scaled, but not moved.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3
+    ## assert Mat4.translation(Vec3(x=1.0)).transform_vector(Vec3(x=1.0)) == Vec3(x=1.0)
+    ## ```
     def transform_vector(self, vector: Vec3) -> Vec3:
         return (self.z_axis * vector.z + (self.y_axis * vector.y + self.x_axis * vector.x)).xyz()
 
     ## Rows made columns.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3, Vec4
+    ## assert Mat4.translation(Vec3(x=1.0)).transpose().x_axis == Vec4(x=1.0, w=1.0)
+    ## ```
     def transpose(self) -> Mat4:
         return Mat4(
             x_axis=Vec4(x=self.x_axis.x, y=self.y_axis.x, z=self.z_axis.x, w=self.w_axis.x),
@@ -476,24 +983,38 @@ export struct Mat4:
             w_axis=Vec4(x=self.x_axis.w, y=self.y_axis.w, z=self.z_axis.w, w=self.w_axis.w),
         )
 
+    ## How much the matrix scales a volume: 0 when it squashes space flat, and below 0 when it
+    ## mirrors it.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3
+    ## assert Mat4.scaling(Vec3(x=2.0, y=3.0, z=4.0)).determinant() == 24.0
+    ## ```
     def determinant(self) -> float:
         first = self.x_axis
         second = self.y_axis
         third = self.z_axis
         fourth = self.w_axis
-        zw = third.z * fourth.w - third.w * fourth.z
-        yw = third.y * fourth.w - third.w * fourth.y
-        yz = third.y * fourth.z - third.z * fourth.y
-        xw = third.x * fourth.w - third.w * fourth.x
-        xz = third.x * fourth.z - third.z * fourth.x
-        xy = third.x * fourth.y - third.y * fourth.x
-        along_x = first.x * (second.y * zw - second.z * yw + second.w * yz)
-        along_y = first.y * (second.x * zw - second.z * xw + second.w * xz)
-        along_z = first.z * (second.x * yw - second.y * xw + second.w * xy)
-        along_w = first.w * (second.x * yz - second.y * xz + second.z * xy)
+        # The two-by-two determinants of the third and fourth columns, by the rows they take.
+        minor_zw = third.z * fourth.w - third.w * fourth.z
+        minor_yw = third.y * fourth.w - third.w * fourth.y
+        minor_yz = third.y * fourth.z - third.z * fourth.y
+        minor_xw = third.x * fourth.w - third.w * fourth.x
+        minor_xz = third.x * fourth.z - third.z * fourth.x
+        minor_xy = third.x * fourth.y - third.y * fourth.x
+        along_x = first.x * (second.y * minor_zw - second.z * minor_yw + second.w * minor_yz)
+        along_y = first.y * (second.x * minor_zw - second.z * minor_xw + second.w * minor_xz)
+        along_z = first.z * (second.x * minor_yw - second.y * minor_xw + second.w * minor_xy)
+        along_w = first.w * (second.x * minor_yz - second.y * minor_xz + second.z * minor_xy)
         return along_x - along_y + along_z - along_w
 
     ## The matrix that undoes this one, or `None` when it squashes space flat and nothing can.
+    ##
+    ## ```fennec
+    ## from std.math import Mat4, Vec3
+    ## undo = Mat4.translation(Vec3(x=1.0)).inverse() else Mat4()
+    ## assert undo.transform_point(Vec3(x=1.0)).length() < 0.000001
+    ## ```
     def inverse(self) -> Mat4?:
         first = self.x_axis
         second = self.y_axis
@@ -545,10 +1066,1074 @@ export struct Mat4:
             w_axis=column3 * scale,
         )
 
+## A 2D vector, or a point in 2D.
+## Its parts are `float`s, 64 bits each, as glam's `DVec2`'s are.
+##
+## ```fennec
+## from std.math import DVec2
+## point = DVec2(x=1.0, y=2.0)
+## assert point.y == 2.0
+## ```
+export struct DVec2:
+    x = 0.0
+    y = 0.0
+
+    ## The vector with every part 0.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2.zero() == DVec2()
+    ## ```
+    def zero() -> DVec2:
+        return DVec2()
+
+    ## Each part plus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0, y=2.0) + DVec2(x=1.0, y=1.0) == DVec2(x=2.0, y=3.0)
+    ## ```
+    def +(self, other: DVec2) -> DVec2:
+        return DVec2(x=self.x + other.x, y=self.y + other.y)
+
+    ## Each part minus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0, y=2.0) - DVec2(x=1.0, y=1.0) == DVec2(x=0.0, y=1.0)
+    ## ```
+    def -(self, other: DVec2) -> DVec2:
+        return DVec2(x=self.x - other.x, y=self.y - other.y)
+
+    ## Every part times `scale`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0, y=2.0) * 2.0 == DVec2(x=2.0, y=4.0)
+    ## ```
+    def *(self, scale: float) -> DVec2:
+        return DVec2(x=self.x * scale, y=self.y * scale)
+
+    ## Each part times the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0, y=2.0).mul(DVec2(x=2.0, y=2.0)) == DVec2(x=2.0, y=4.0)
+    ## ```
+    def mul(self, other: DVec2) -> DVec2:
+        return DVec2(x=self.x * other.x, y=self.y * other.y)
+
+    ## The vector pointing the other way.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0, y=2.0).negated() == DVec2(x=-1.0, y=-2.0)
+    ## ```
+    def negated(self) -> DVec2:
+        return DVec2(x=-self.x, y=-self.y)
+
+    ## Each part times the same part of `other`, added up.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0, y=2.0).dot(DVec2(x=1.0, y=1.0)) == 3.0
+    ## ```
+    def dot(self, other: DVec2) -> float:
+        return self.x * other.x + self.y * other.y
+
+    ## The length times itself, which needs no square root: quicker, for comparing lengths.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=3.0, y=4.0).length_squared() == 25.0
+    ## ```
+    def length_squared(self) -> float:
+        return self.dot(self)
+
+    ## How long the vector is.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=3.0, y=4.0).length() == 5.0
+    ## ```
+    def length(self) -> float:
+        return math.sqrt(self.dot(self))
+
+    ## The same direction with length 1, or zero for the zero vector, which has no direction.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=2.0).normalize() == DVec2(x=1.0)
+    ## ```
+    def normalize(self) -> DVec2:
+        length = self.length()
+        if length == 0.0: return DVec2()
+        return self * (1.0 / length)
+
+    ## How far this point is from `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0).distance(DVec2(x=4.0)) == 3.0
+    ## ```
+    def distance(self, other: DVec2) -> float:
+        return (self - other).length()
+
+    ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2().lerp(DVec2(x=2.0), amount=0.5) == DVec2(x=1.0)
+    ## ```
+    def lerp(self, other: DVec2, amount: float) -> DVec2:
+        return self * (1.0 - amount) + other * amount
+
+    ## The smaller of each part.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0, y=5.0).min(DVec2(x=3.0, y=2.0)) == DVec2(x=1.0, y=2.0)
+    ## ```
+    def min(self, other: DVec2) -> DVec2:
+        return DVec2(x=min(self.x, other.x), y=min(self.y, other.y))
+
+    ## The larger of each part.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert DVec2(x=1.0, y=5.0).max(DVec2(x=3.0, y=2.0)) == DVec2(x=3.0, y=5.0)
+    ## ```
+    def max(self, other: DVec2) -> DVec2:
+        return DVec2(x=max(self.x, other.x), y=max(self.y, other.y))
+
+    ## Each part without its sign.
+    ##
+    ## ```fennec
+    ## from std.math import DVec2
+    ## assert abs(DVec2(x=-1.0, y=2.0)) == DVec2(x=1.0, y=2.0)
+    ## ```
+    def abs(self) -> DVec2:
+        return DVec2(x=abs(self.x), y=abs(self.y))
+
+## A 3D vector, or a point in 3D.
+## Its parts are `float`s, 64 bits each, as glam's `DVec3`'s are.
+##
+## ```fennec
+## from std.math import DVec3
+## point = DVec3(x=1.0, y=2.0, z=3.0)
+## assert point.y == 2.0
+## ```
+export struct DVec3:
+    x = 0.0
+    y = 0.0
+    z = 0.0
+
+    ## The vector with every part 0.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3.zero() == DVec3()
+    ## ```
+    def zero() -> DVec3:
+        return DVec3()
+
+    ## Each part plus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0, y=2.0, z=3.0) + DVec3(x=1.0, y=1.0, z=1.0) == DVec3(x=2.0, y=3.0, z=4.0)
+    ## ```
+    def +(self, other: DVec3) -> DVec3:
+        return DVec3(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z)
+
+    ## Each part minus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0, y=2.0, z=3.0) - DVec3(x=1.0, y=1.0, z=1.0) == DVec3(x=0.0, y=1.0, z=2.0)
+    ## ```
+    def -(self, other: DVec3) -> DVec3:
+        return DVec3(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z)
+
+    ## Every part times `scale`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0, y=2.0, z=3.0) * 2.0 == DVec3(x=2.0, y=4.0, z=6.0)
+    ## ```
+    def *(self, scale: float) -> DVec3:
+        return DVec3(x=self.x * scale, y=self.y * scale, z=self.z * scale)
+
+    ## Each part times the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0, y=2.0, z=3.0).mul(DVec3(x=2.0, y=2.0, z=2.0)) == DVec3(x=2.0, y=4.0, z=6.0)
+    ## ```
+    def mul(self, other: DVec3) -> DVec3:
+        return DVec3(x=self.x * other.x, y=self.y * other.y, z=self.z * other.z)
+
+    ## The vector pointing the other way.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0, y=2.0, z=3.0).negated() == DVec3(x=-1.0, y=-2.0, z=-3.0)
+    ## ```
+    def negated(self) -> DVec3:
+        return DVec3(x=-self.x, y=-self.y, z=-self.z)
+
+    ## Each part times the same part of `other`, added up.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0, y=2.0, z=3.0).dot(DVec3(x=1.0, y=1.0, z=1.0)) == 6.0
+    ## ```
+    def dot(self, other: DVec3) -> float:
+        return self.x * other.x + self.y * other.y + self.z * other.z
+
+    ## The vector at right angles to both, by the right-hand rule.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0).cross(DVec3(y=1.0)) == DVec3(z=1.0)
+    ## ```
+    def cross(self, other: DVec3) -> DVec3:
+        return DVec3(
+            x=self.y * other.z - other.y * self.z,
+            y=self.z * other.x - other.z * self.x,
+            z=self.x * other.y - other.x * self.y,
+        )
+
+    ## The length times itself, which needs no square root: quicker, for comparing lengths.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=3.0, y=4.0).length_squared() == 25.0
+    ## ```
+    def length_squared(self) -> float:
+        return self.dot(self)
+
+    ## How long the vector is.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=3.0, y=4.0).length() == 5.0
+    ## ```
+    def length(self) -> float:
+        return math.sqrt(self.dot(self))
+
+    ## The same direction with length 1, or zero for the zero vector, which has no direction.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=2.0).normalize() == DVec3(x=1.0)
+    ## ```
+    def normalize(self) -> DVec3:
+        length = self.length()
+        if length == 0.0: return DVec3()
+        return self * (1.0 / length)
+
+    ## How far this point is from `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0).distance(DVec3(x=4.0)) == 3.0
+    ## ```
+    def distance(self, other: DVec3) -> float:
+        return (self - other).length()
+
+    ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3().lerp(DVec3(x=2.0), amount=0.5) == DVec3(x=1.0)
+    ## ```
+    def lerp(self, other: DVec3, amount: float) -> DVec3:
+        return self * (1.0 - amount) + other * amount
+
+    ## The smaller of each part.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0, y=5.0).min(DVec3(x=3.0, y=2.0)) == DVec3(x=1.0, y=2.0)
+    ## ```
+    def min(self, other: DVec3) -> DVec3:
+        return DVec3(x=min(self.x, other.x), y=min(self.y, other.y), z=min(self.z, other.z))
+
+    ## The larger of each part.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert DVec3(x=1.0, y=5.0).max(DVec3(x=3.0, y=2.0)) == DVec3(x=3.0, y=5.0)
+    ## ```
+    def max(self, other: DVec3) -> DVec3:
+        return DVec3(x=max(self.x, other.x), y=max(self.y, other.y), z=max(self.z, other.z))
+
+    ## Each part without its sign.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3
+    ## assert abs(DVec3(x=-1.0, y=2.0)) == DVec3(x=1.0, y=2.0)
+    ## ```
+    def abs(self) -> DVec3:
+        return DVec3(x=abs(self.x), y=abs(self.y), z=abs(self.z))
+
+    ## This vector with a fourth part, `w`: 1 for a point and 0 for a direction.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3, DVec4
+    ## assert DVec3(x=1.0, y=2.0, z=3.0).extend(1.0) == DVec4(x=1.0, y=2.0, z=3.0, w=1.0)
+    ## ```
+    def extend(self, w: float) -> DVec4:
+        return DVec4(x=self.x, y=self.y, z=self.z, w=w)
+
+## A 4D vector: a point or direction in 3D with its `w`, or a column of a `DMat4`.
+## Its parts are `float`s, 64 bits each, as glam's `DVec4`'s are.
+##
+## ```fennec
+## from std.math import DVec4
+## point = DVec4(x=1.0, y=2.0, z=3.0, w=4.0)
+## assert point.y == 2.0
+## ```
+export struct DVec4:
+    x = 0.0
+    y = 0.0
+    z = 0.0
+    w = 0.0
+
+    ## The vector with every part 0.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4.zero() == DVec4()
+    ## ```
+    def zero() -> DVec4:
+        return DVec4()
+
+    ## Each part plus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0, y=2.0, z=3.0, w=4.0) + DVec4(x=1.0, y=1.0, z=1.0, w=1.0) == DVec4(x=2.0, y=3.0, z=4.0, w=5.0)
+    ## ```
+    def +(self, other: DVec4) -> DVec4:
+        return DVec4(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z, w=self.w + other.w)
+
+    ## Each part minus the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0, y=2.0, z=3.0, w=4.0) - DVec4(x=1.0, y=1.0, z=1.0, w=1.0) == DVec4(x=0.0, y=1.0, z=2.0, w=3.0)
+    ## ```
+    def -(self, other: DVec4) -> DVec4:
+        return DVec4(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z, w=self.w - other.w)
+
+    ## Every part times `scale`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0, y=2.0, z=3.0, w=4.0) * 2.0 == DVec4(x=2.0, y=4.0, z=6.0, w=8.0)
+    ## ```
+    def *(self, scale: float) -> DVec4:
+        return DVec4(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
+
+    ## Each part times the same part of `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0, y=2.0, z=3.0, w=4.0).mul(DVec4(x=2.0, y=2.0, z=2.0, w=2.0)) == DVec4(x=2.0, y=4.0, z=6.0, w=8.0)
+    ## ```
+    def mul(self, other: DVec4) -> DVec4:
+        return DVec4(x=self.x * other.x, y=self.y * other.y, z=self.z * other.z, w=self.w * other.w)
+
+    ## The vector pointing the other way.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0, y=2.0, z=3.0, w=4.0).negated() == DVec4(x=-1.0, y=-2.0, z=-3.0, w=-4.0)
+    ## ```
+    def negated(self) -> DVec4:
+        return DVec4(x=-self.x, y=-self.y, z=-self.z, w=-self.w)
+
+    ## Each part times the same part of `other`, added up.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0, y=2.0, z=3.0, w=4.0).dot(DVec4(x=1.0, y=1.0, z=1.0, w=1.0)) == 10.0
+    ## ```
+    def dot(self, other: DVec4) -> float:
+        return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+
+    ## The length times itself, which needs no square root: quicker, for comparing lengths.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=3.0, y=4.0).length_squared() == 25.0
+    ## ```
+    def length_squared(self) -> float:
+        return self.dot(self)
+
+    ## How long the vector is.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=3.0, y=4.0).length() == 5.0
+    ## ```
+    def length(self) -> float:
+        return math.sqrt(self.dot(self))
+
+    ## The same direction with length 1, or zero for the zero vector, which has no direction.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=2.0).normalize() == DVec4(x=1.0)
+    ## ```
+    def normalize(self) -> DVec4:
+        length = self.length()
+        if length == 0.0: return DVec4()
+        return self * (1.0 / length)
+
+    ## How far this point is from `other`.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0).distance(DVec4(x=4.0)) == 3.0
+    ## ```
+    def distance(self, other: DVec4) -> float:
+        return (self - other).length()
+
+    ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4().lerp(DVec4(x=2.0), amount=0.5) == DVec4(x=1.0)
+    ## ```
+    def lerp(self, other: DVec4, amount: float) -> DVec4:
+        return self * (1.0 - amount) + other * amount
+
+    ## The smaller of each part.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0, y=5.0).min(DVec4(x=3.0, y=2.0)) == DVec4(x=1.0, y=2.0)
+    ## ```
+    def min(self, other: DVec4) -> DVec4:
+        return DVec4(
+            x=min(self.x, other.x),
+            y=min(self.y, other.y),
+            z=min(self.z, other.z),
+            w=min(self.w, other.w),
+        )
+
+    ## The larger of each part.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert DVec4(x=1.0, y=5.0).max(DVec4(x=3.0, y=2.0)) == DVec4(x=3.0, y=5.0)
+    ## ```
+    def max(self, other: DVec4) -> DVec4:
+        return DVec4(
+            x=max(self.x, other.x),
+            y=max(self.y, other.y),
+            z=max(self.z, other.z),
+            w=max(self.w, other.w),
+        )
+
+    ## Each part without its sign.
+    ##
+    ## ```fennec
+    ## from std.math import DVec4
+    ## assert abs(DVec4(x=-1.0, y=2.0)) == DVec4(x=1.0, y=2.0)
+    ## ```
+    def abs(self) -> DVec4:
+        return DVec4(x=abs(self.x), y=abs(self.y), z=abs(self.z), w=abs(self.w))
+
+    ## The first three parts.
+    ##
+    ## ```fennec
+    ## from std.math import DVec3, DVec4
+    ## assert DVec4(x=1.0, y=2.0, z=3.0, w=4.0).xyz() == DVec3(x=1.0, y=2.0, z=3.0)
+    ## ```
+    def xyz(self) -> DVec3:
+        return DVec3(x=self.x, y=self.y, z=self.z)
+
+## A rotation in 3D, as a unit quaternion. `DQuat()` turns nothing.
+## Its parts are `float`s, 64 bits each, as glam's `DQuat`'s are.
+##
+## ```fennec
+## from std.math import DQuat
+## turn = DQuat()
+## assert turn.w == 1.0
+## ```
+export struct DQuat:
+    x = 0.0
+    y = 0.0
+    z = 0.0
+    w = 1.0
+
+    ## The rotation that turns nothing, as `DQuat()` is.
+    ##
+    ## ```fennec
+    ## from std.math import DQuat
+    ## assert DQuat.identity() == DQuat()
+    ## ```
+    def identity() -> DQuat:
+        return DQuat()
+
+    ## A turn of `angle` radians about `axis`, which has length 1: counterclockwise, looking from
+    ## the axis's tip back toward where it starts.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat, DVec3
+    ## turn = DQuat.from_axis_angle(DVec3(z=1.0), PI / 2.0)
+    ## assert turn.rotate(DVec3(x=1.0)).distance(DVec3(y=1.0)) < 0.000001
+    ## ```
+    def from_axis_angle(axis: DVec3, angle: float) -> DQuat:
+        half = angle * 0.5
+        turned = axis * math.sin(half)
+        return DQuat(x=turned.x, y=turned.y, z=turned.z, w=math.cos(half))
+
+    ## A turn of `angle` radians about the X axis.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat, DVec3
+    ## turn = DQuat.from_rotation_x(PI / 2.0)
+    ## assert turn.rotate(DVec3(y=1.0)).distance(DVec3(z=1.0)) < 0.000001
+    ## ```
+    def from_rotation_x(angle: float) -> DQuat:
+        half = angle * 0.5
+        return DQuat(x=math.sin(half), w=math.cos(half))
+
+    ## A turn of `angle` radians about the Y axis.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat, DVec3
+    ## turn = DQuat.from_rotation_y(PI / 2.0)
+    ## assert turn.rotate(DVec3(z=1.0)).distance(DVec3(x=1.0)) < 0.000001
+    ## ```
+    def from_rotation_y(angle: float) -> DQuat:
+        half = angle * 0.5
+        return DQuat(y=math.sin(half), w=math.cos(half))
+
+    ## A turn of `angle` radians about the Z axis.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat, DVec3
+    ## turn = DQuat.from_rotation_z(PI / 2.0)
+    ## assert turn.rotate(DVec3(x=1.0)).distance(DVec3(y=1.0)) < 0.000001
+    ## ```
+    def from_rotation_z(angle: float) -> DQuat:
+        half = angle * 0.5
+        return DQuat(z=math.sin(half), w=math.cos(half))
+
+    ## Turning by `roll` about Z, then `pitch` about X, then `yaw` about Y, as a camera or a
+    ## character turns.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat
+    ## assert DQuat.from_euler(yaw=PI / 2.0, pitch=0.0, roll=0.0) == DQuat.from_rotation_y(PI / 2.0)
+    ## ```
+    def from_euler(yaw: float, pitch: float, roll: float) -> DQuat:
+        return (
+            DQuat.from_rotation_y(yaw) * DQuat.from_rotation_x(pitch) * DQuat.from_rotation_z(roll)
+        )
+
+    ## Turning by `other`, then by this.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat, DVec3
+    ## quarter = DQuat.from_rotation_z(PI / 2.0)
+    ## assert (quarter * quarter).rotate(DVec3(x=1.0)).distance(DVec3(x=-1.0)) < 0.000001
+    ## ```
+    def *(self, other: DQuat) -> DQuat:
+        return DQuat(
+            x=self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
+            y=self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
+            z=self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
+            w=self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z,
+        )
+
+    ## `point` turned by this rotation.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat, DVec3
+    ## assert DQuat.from_rotation_z(PI / 2.0).rotate(DVec3(x=2.0)).distance(DVec3(y=2.0)) < 0.000001
+    ## ```
+    def rotate(self, point: DVec3) -> DVec3:
+        axis = DVec3(x=self.x, y=self.y, z=self.z)
+        squared = axis.dot(axis)
+        stretched = point * (self.w * self.w - squared) + axis * (point.dot(axis) * 2.0)
+        return stretched + axis.cross(point) * (self.w * 2.0)
+
+    ## Each part times the same part of `other`, added up: near 1 or -1 for two rotations close to each other.
+    ##
+    ## ```fennec
+    ## from std.math import DQuat
+    ## assert DQuat().dot(DQuat()) == 1.0
+    ## ```
+    def dot(self, other: DQuat) -> float:
+        return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+
+    ## The quaternion's length, which is 1 for a rotation.
+    ##
+    ## ```fennec
+    ## from std.math import DQuat
+    ## assert DQuat(w=2.0).length() == 2.0
+    ## ```
+    def length(self) -> float:
+        return math.sqrt(self.dot(self))
+
+    ## The same rotation with length 1, which rounding drifts from after many turns.
+    ##
+    ## ```fennec
+    ## from std.math import DQuat
+    ## assert DQuat(w=2.0).normalize() == DQuat()
+    ## ```
+    def normalize(self) -> DQuat:
+        length = self.length()
+        if length == 0.0: return DQuat()
+        return self._scaled(1.0 / length)
+
+    ## The same turn the other way.
+    ##
+    ## ```fennec
+    ## from std.math import DQuat
+    ## assert DQuat(x=1.0, w=2.0).conjugate() == DQuat(x=-1.0, w=2.0)
+    ## ```
+    def conjugate(self) -> DQuat:
+        return DQuat(x=-self.x, y=-self.y, z=-self.z, w=self.w)
+
+    ## The rotation that undoes this one, which for a unit quaternion is its conjugate.
+    ##
+    ## ```fennec
+    ## from std.math import DQuat
+    ## turn = DQuat.from_rotation_z(0.5)
+    ## assert (turn * turn.inverse()).dot(DQuat()) > 0.999999
+    ## ```
+    def inverse(self) -> DQuat:
+        return self.conjugate()
+
+    ## Part of the way from this rotation to `other`, the short way round, along a straight line
+    ## made unit length again: quicker than `slerp`, but not at an even speed.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat
+    ## halfway = DQuat().lerp(DQuat.from_rotation_z(PI / 2.0), amount=0.5)
+    ## assert halfway.dot(DQuat.from_rotation_z(PI / 4.0)) > 0.999999
+    ## ```
+    def lerp(self, other: DQuat, amount: float) -> DQuat:
+        if self.dot(other) < 0.0: return self._between(other._scaled(-1.0), amount)
+        return self._between(other, amount)
+
+    ## Part of the way from this rotation to `other`, the short way round, at an even speed.
+    ##
+    ## ```fennec
+    ## from std.math import PI, DQuat
+    ## halfway = DQuat().slerp(DQuat.from_rotation_z(PI / 2.0), amount=0.5)
+    ## assert halfway.dot(DQuat.from_rotation_z(PI / 4.0)) > 0.999999
+    ## ```
+    def slerp(self, other: DQuat, amount: float) -> DQuat:
+        mut toward = other
+        mut cosine = self.dot(other)
+        if cosine < 0.0:
+            toward = other._scaled(-1.0)
+            cosine = -cosine
+        # Nearly the same rotation: the angle's sine is too small to divide by.
+        if cosine > 1.0 - 2.220446049250313e-16: return self._between(toward, amount)
+        angle = math.acos(min(max(cosine, -1.0), 1.0))
+        start = math.sin(angle * (1.0 - amount))
+        end = math.sin(angle * amount)
+        return self._scaled(start)._plus(toward._scaled(end))._scaled(1.0 / math.sin(angle))
+
+    def _scaled(self, scale: float) -> DQuat:
+        return DQuat(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
+
+    def _plus(self, other: DQuat) -> DQuat:
+        return DQuat(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z, w=self.w + other.w)
+
+    def _between(self, other: DQuat, amount: float) -> DQuat:
+        return self._scaled(1.0 - amount)._plus(other._scaled(amount)).normalize()
+
+## A 3x3 matrix, by its columns: a rotation and scale in 3D, or a 2D transform. `DMat3()` is the
+## identity.
+## Its parts are `float`s, 64 bits each, as glam's `DMat3`'s are.
+##
+## ```fennec
+## from std.math import DMat3, DVec3
+## double = DMat3(x_axis=DVec3(x=2.0), y_axis=DVec3(y=2.0), z_axis=DVec3(z=2.0))
+## assert double.mul_vec3(DVec3(x=1.0, y=2.0, z=3.0)) == DVec3(x=2.0, y=4.0, z=6.0)
+## ```
+export struct DMat3:
+    x_axis = DVec3(x=1.0)
+    y_axis = DVec3(y=1.0)
+    z_axis = DVec3(z=1.0)
+
+    ## The matrix that changes nothing, as `DMat3()` is.
+    ##
+    ## ```fennec
+    ## from std.math import DMat3
+    ## assert DMat3.identity() == DMat3()
+    ## ```
+    def identity() -> DMat3:
+        return DMat3()
+
+    ## The rotation `rotation` makes.
+    ##
+    ## ```fennec
+    ## from std.math import DMat3, PI, DQuat, DVec3
+    ## turn = DMat3.from_quat(DQuat.from_rotation_z(PI / 2.0))
+    ## assert turn.mul_vec3(DVec3(x=1.0)).distance(DVec3(y=1.0)) < 0.000001
+    ## ```
+    def from_quat(rotation: DQuat) -> DMat3:
+        # `x_dy` is x times double y, as glam has it.
+        double_x = rotation.x + rotation.x
+        double_y = rotation.y + rotation.y
+        double_z = rotation.z + rotation.z
+        x_dx = rotation.x * double_x
+        x_dy = rotation.x * double_y
+        x_dz = rotation.x * double_z
+        y_dy = rotation.y * double_y
+        y_dz = rotation.y * double_z
+        z_dz = rotation.z * double_z
+        w_dx = rotation.w * double_x
+        w_dy = rotation.w * double_y
+        w_dz = rotation.w * double_z
+        return DMat3(
+            x_axis=DVec3(x=1.0 - (y_dy + z_dz), y=x_dy + w_dz, z=x_dz - w_dy),
+            y_axis=DVec3(x=x_dy - w_dz, y=1.0 - (x_dx + z_dz), z=y_dz + w_dx),
+            z_axis=DVec3(x=x_dz + w_dy, y=y_dz - w_dx, z=1.0 - (x_dx + y_dy)),
+        )
+
+    ## `other` first, then this.
+    ##
+    ## ```fennec
+    ## from std.math import DMat3, DVec3
+    ## double = DMat3(x_axis=DVec3(x=2.0), y_axis=DVec3(y=2.0), z_axis=DVec3(z=2.0))
+    ## assert (double * double).determinant() == 64.0
+    ## ```
+    def *(self, other: DMat3) -> DMat3:
+        return DMat3(
+            x_axis=self.mul_vec3(other.x_axis),
+            y_axis=self.mul_vec3(other.y_axis),
+            z_axis=self.mul_vec3(other.z_axis),
+        )
+
+    ## This matrix times the column `vector`.
+    ##
+    ## ```fennec
+    ## from std.math import DMat3, DVec3
+    ## assert DMat3(x_axis=DVec3(x=2.0), y_axis=DVec3(y=2.0), z_axis=DVec3(z=2.0)).mul_vec3(DVec3(x=1.0)) == DVec3(x=2.0)
+    ## ```
+    def mul_vec3(self, vector: DVec3) -> DVec3:
+        return self.x_axis * vector.x + self.y_axis * vector.y + self.z_axis * vector.z
+
+    ## Rows made columns.
+    ##
+    ## ```fennec
+    ## from std.math import DMat3, DVec3
+    ## shear = DMat3(y_axis=DVec3(x=1.0, y=1.0))
+    ## assert shear.transpose() == DMat3(x_axis=DVec3(x=1.0, y=1.0))
+    ## ```
+    def transpose(self) -> DMat3:
+        return DMat3(
+            x_axis=DVec3(x=self.x_axis.x, y=self.y_axis.x, z=self.z_axis.x),
+            y_axis=DVec3(x=self.x_axis.y, y=self.y_axis.y, z=self.z_axis.y),
+            z_axis=DVec3(x=self.x_axis.z, y=self.y_axis.z, z=self.z_axis.z),
+        )
+
+    ## How much the matrix scales a volume: 0 when it squashes space flat, and below 0 when it
+    ## mirrors it.
+    ##
+    ## ```fennec
+    ## from std.math import DMat3, DVec3
+    ## assert DMat3(x_axis=DVec3(x=2.0)).determinant() == 2.0
+    ## ```
+    def determinant(self) -> float:
+        return self.x_axis.dot(self.y_axis.cross(self.z_axis))
+
+    ## The matrix that undoes this one, or `None` when it squashes space flat and nothing can.
+    ##
+    ## ```fennec
+    ## from std.math import DMat3, DVec3
+    ## half = DMat3(x_axis=DVec3(x=2.0), y_axis=DVec3(y=2.0), z_axis=DVec3(z=2.0)).inverse() else DMat3()
+    ## assert half.mul_vec3(DVec3(x=2.0)) == DVec3(x=1.0)
+    ## assert DMat3(x_axis=DVec3()).inverse() is None
+    ## ```
+    def inverse(self) -> DMat3?:
+        first = self.y_axis.cross(self.z_axis)
+        second = self.z_axis.cross(self.x_axis)
+        third = self.x_axis.cross(self.y_axis)
+        determinant = self.x_axis.dot(first)
+        if determinant == 0.0: return None
+        scale = 1.0 / determinant
+        return DMat3(x_axis=first * scale, y_axis=second * scale, z_axis=third * scale).transpose()
+
+## A 4x4 matrix, by its columns: a transform in 3D, a camera's view or a projection. `DMat4()` is
+## the identity.
+## Its parts are `float`s, 64 bits each, as glam's `DMat4`'s are.
+##
+## ```fennec
+## from std.math import DMat4, DVec3, DVec4
+## moved = DMat4(w_axis=DVec4(x=1.0, y=2.0, z=3.0, w=1.0))
+## assert moved.transform_point(DVec3()) == DVec3(x=1.0, y=2.0, z=3.0)
+## ```
+export struct DMat4:
+    x_axis = DVec4(x=1.0)
+    y_axis = DVec4(y=1.0)
+    z_axis = DVec4(z=1.0)
+    w_axis = DVec4(w=1.0)
+
+    ## The matrix that changes nothing, as `DMat4()` is.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4
+    ## assert DMat4.identity() == DMat4()
+    ## ```
+    def identity() -> DMat4:
+        return DMat4()
+
+    ## Moving by `offset`.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3
+    ## assert DMat4.translation(DVec3(x=1.0)).transform_point(DVec3(y=1.0)) == DVec3(x=1.0, y=1.0)
+    ## ```
+    def translation(offset: DVec3) -> DMat4:
+        return DMat4(w_axis=offset.extend(1.0))
+
+    ## The rotation `rotation` makes.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, PI, DQuat, DVec3
+    ## turn = DMat4.rotation(DQuat.from_rotation_z(PI / 2.0))
+    ## assert turn.transform_vector(DVec3(x=1.0)).distance(DVec3(y=1.0)) < 0.000001
+    ## ```
+    def rotation(rotation: DQuat) -> DMat4:
+        turned = DMat3.from_quat(rotation)
+        return DMat4(
+            x_axis=turned.x_axis.extend(0.0),
+            y_axis=turned.y_axis.extend(0.0),
+            z_axis=turned.z_axis.extend(0.0),
+        )
+
+    ## Stretching by `factors` along each axis.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3
+    ## stretch = DMat4.scaling(DVec3(x=2.0, y=3.0, z=4.0))
+    ## assert stretch.transform_point(DVec3(x=1.0, y=1.0, z=1.0)) == DVec3(x=2.0, y=3.0, z=4.0)
+    ## ```
+    def scaling(factors: DVec3) -> DMat4:
+        return DMat4(
+            x_axis=DVec4(x=factors.x),
+            y_axis=DVec4(y=factors.y),
+            z_axis=DVec4(z=factors.z),
+        )
+
+    ## Scaling, then rotating, then moving: how a model is placed in a scene.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DQuat, DVec3
+    ## placed = DMat4.from_scale_rotation_translation(
+    ##     scale=DVec3(x=2.0, y=2.0, z=2.0),
+    ##     rotation=DQuat(),
+    ##     translation=DVec3(x=1.0),
+    ## )
+    ## assert placed.transform_point(DVec3(x=1.0)) == DVec3(x=3.0)
+    ## ```
+    def from_scale_rotation_translation(scale: DVec3, rotation: DQuat, translation: DVec3) -> DMat4:
+        turned = DMat3.from_quat(rotation)
+        return DMat4(
+            x_axis=turned.x_axis.extend(0.0) * scale.x,
+            y_axis=turned.y_axis.extend(0.0) * scale.y,
+            z_axis=turned.z_axis.extend(0.0) * scale.z,
+            w_axis=translation.extend(1.0),
+        )
+
+    ## A camera's view from `eye` toward `target`, with `up` as up: right-handed, looking down -Z.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3
+    ## view = DMat4.look_at(eye=DVec3(z=5.0), target=DVec3(), up=DVec3(y=1.0))
+    ## assert view.transform_point(DVec3()).z == -5.0
+    ## ```
+    def look_at(eye: DVec3, target: DVec3, up: DVec3) -> DMat4:
+        forward = (target - eye).normalize()
+        side = forward.cross(up).normalize()
+        upward = side.cross(forward)
+        return DMat4(
+            x_axis=DVec4(x=side.x, y=upward.x, z=-forward.x),
+            y_axis=DVec4(x=side.y, y=upward.y, z=-forward.y),
+            z_axis=DVec4(x=side.z, y=upward.z, z=-forward.z),
+            w_axis=DVec4(x=-eye.dot(side), y=-eye.dot(upward), z=eye.dot(forward), w=1.0),
+        )
+
+    ## A perspective projection: `fov_y` radians from the bottom of the view to its top, width
+    ## over height `aspect`, and depth from `near` to `far` mapped to 0 through 1.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, PI, DVec4
+    ## projection = DMat4.perspective(fov_y=PI / 2.0, aspect=1.0, near=1.0, far=10.0)
+    ## closest = projection.mul_vec4(DVec4(z=-1.0, w=1.0))
+    ## assert closest.z == 0.0 and closest.w == 1.0
+    ## ```
+    def perspective(fov_y: float, aspect: float, near: float, far: float) -> DMat4:
+        half = 0.5 * fov_y
+        height = math.cos(half) / math.sin(half)
+        depth = far / (near - far)
+        return DMat4(
+            x_axis=DVec4(x=height / aspect),
+            y_axis=DVec4(y=height),
+            z_axis=DVec4(z=depth, w=-1.0),
+            w_axis=DVec4(z=depth * near),
+        )
+
+    ## `other` first, then this.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3
+    ## both = DMat4.translation(DVec3(x=1.0)) * DMat4.translation(DVec3(y=1.0))
+    ## assert both.transform_point(DVec3()) == DVec3(x=1.0, y=1.0)
+    ## ```
+    def *(self, other: DMat4) -> DMat4:
+        return DMat4(
+            x_axis=self.mul_vec4(other.x_axis),
+            y_axis=self.mul_vec4(other.y_axis),
+            z_axis=self.mul_vec4(other.z_axis),
+            w_axis=self.mul_vec4(other.w_axis),
+        )
+
+    ## This matrix times the column `vector`.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec4
+    ## double = DMat4(x_axis=DVec4(x=2.0), y_axis=DVec4(y=2.0), z_axis=DVec4(z=2.0))
+    ## assert double.mul_vec4(DVec4(x=1.0, w=1.0)) == DVec4(x=2.0, w=1.0)
+    ## ```
+    def mul_vec4(self, vector: DVec4) -> DVec4:
+        first = self.x_axis * vector.x + self.y_axis * vector.y
+        return first + self.z_axis * vector.z + self.w_axis * vector.w
+
+    ## Where `point` goes: moved, turned and scaled, with no divide by `w`.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3
+    ## assert DMat4.translation(DVec3(x=1.0)).transform_point(DVec3(x=1.0)) == DVec3(x=2.0)
+    ## ```
+    def transform_point(self, point: DVec3) -> DVec3:
+        turned = self.z_axis * point.z + (self.y_axis * point.y + self.x_axis * point.x)
+        return (self.w_axis + turned).xyz()
+
+    ## Where the direction `vector` points: turned and scaled, but not moved.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3
+    ## assert DMat4.translation(DVec3(x=1.0)).transform_vector(DVec3(x=1.0)) == DVec3(x=1.0)
+    ## ```
+    def transform_vector(self, vector: DVec3) -> DVec3:
+        return (self.z_axis * vector.z + (self.y_axis * vector.y + self.x_axis * vector.x)).xyz()
+
+    ## Rows made columns.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3, DVec4
+    ## assert DMat4.translation(DVec3(x=1.0)).transpose().x_axis == DVec4(x=1.0, w=1.0)
+    ## ```
+    def transpose(self) -> DMat4:
+        return DMat4(
+            x_axis=DVec4(x=self.x_axis.x, y=self.y_axis.x, z=self.z_axis.x, w=self.w_axis.x),
+            y_axis=DVec4(x=self.x_axis.y, y=self.y_axis.y, z=self.z_axis.y, w=self.w_axis.y),
+            z_axis=DVec4(x=self.x_axis.z, y=self.y_axis.z, z=self.z_axis.z, w=self.w_axis.z),
+            w_axis=DVec4(x=self.x_axis.w, y=self.y_axis.w, z=self.z_axis.w, w=self.w_axis.w),
+        )
+
+    ## How much the matrix scales a volume: 0 when it squashes space flat, and below 0 when it
+    ## mirrors it.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3
+    ## assert DMat4.scaling(DVec3(x=2.0, y=3.0, z=4.0)).determinant() == 24.0
+    ## ```
+    def determinant(self) -> float:
+        first = self.x_axis
+        second = self.y_axis
+        third = self.z_axis
+        fourth = self.w_axis
+        # The two-by-two determinants of the third and fourth columns, by the rows they take.
+        minor_zw = third.z * fourth.w - third.w * fourth.z
+        minor_yw = third.y * fourth.w - third.w * fourth.y
+        minor_yz = third.y * fourth.z - third.z * fourth.y
+        minor_xw = third.x * fourth.w - third.w * fourth.x
+        minor_xz = third.x * fourth.z - third.z * fourth.x
+        minor_xy = third.x * fourth.y - third.y * fourth.x
+        along_x = first.x * (second.y * minor_zw - second.z * minor_yw + second.w * minor_yz)
+        along_y = first.y * (second.x * minor_zw - second.z * minor_xw + second.w * minor_xz)
+        along_z = first.z * (second.x * minor_yw - second.y * minor_xw + second.w * minor_xy)
+        along_w = first.w * (second.x * minor_yz - second.y * minor_xz + second.z * minor_xy)
+        return along_x - along_y + along_z - along_w
+
+    ## The matrix that undoes this one, or `None` when it squashes space flat and nothing can.
+    ##
+    ## ```fennec
+    ## from std.math import DMat4, DVec3
+    ## undo = DMat4.translation(DVec3(x=1.0)).inverse() else DMat4()
+    ## assert undo.transform_point(DVec3(x=1.0)).length() < 0.000001
+    ## ```
+    def inverse(self) -> DMat4?:
+        first = self.x_axis
+        second = self.y_axis
+        third = self.z_axis
+        fourth = self.w_axis
+        # Two-by-two determinants of pairs of columns, numbered as glam numbers them.
+        coef00 = third.z * fourth.w - fourth.z * third.w
+        coef02 = second.z * fourth.w - fourth.z * second.w
+        coef03 = second.z * third.w - third.z * second.w
+        coef04 = third.y * fourth.w - fourth.y * third.w
+        coef06 = second.y * fourth.w - fourth.y * second.w
+        coef07 = second.y * third.w - third.y * second.w
+        coef08 = third.y * fourth.z - fourth.y * third.z
+        coef10 = second.y * fourth.z - fourth.y * second.z
+        coef11 = second.y * third.z - third.y * second.z
+        coef12 = third.x * fourth.w - fourth.x * third.w
+        coef14 = second.x * fourth.w - fourth.x * second.w
+        coef15 = second.x * third.w - third.x * second.w
+        coef16 = third.x * fourth.z - fourth.x * third.z
+        coef18 = second.x * fourth.z - fourth.x * second.z
+        coef19 = second.x * third.z - third.x * second.z
+        coef20 = third.x * fourth.y - fourth.x * third.y
+        coef22 = second.x * fourth.y - fourth.x * second.y
+        coef23 = second.x * third.y - third.x * second.y
+        fac0 = DVec4(x=coef00, y=coef00, z=coef02, w=coef03)
+        fac1 = DVec4(x=coef04, y=coef04, z=coef06, w=coef07)
+        fac2 = DVec4(x=coef08, y=coef08, z=coef10, w=coef11)
+        fac3 = DVec4(x=coef12, y=coef12, z=coef14, w=coef15)
+        fac4 = DVec4(x=coef16, y=coef16, z=coef18, w=coef19)
+        fac5 = DVec4(x=coef20, y=coef20, z=coef22, w=coef23)
+        vec0 = DVec4(x=second.x, y=first.x, z=first.x, w=first.x)
+        vec1 = DVec4(x=second.y, y=first.y, z=first.y, w=first.y)
+        vec2 = DVec4(x=second.z, y=first.z, z=first.z, w=first.z)
+        vec3 = DVec4(x=second.w, y=first.w, z=first.w, w=first.w)
+        even = DVec4(x=1.0, y=-1.0, z=1.0, w=-1.0)
+        odd = DVec4(x=-1.0, y=1.0, z=-1.0, w=1.0)
+        column0 = (vec1.mul(fac0) - vec2.mul(fac1) + vec3.mul(fac2)).mul(even)
+        column1 = (vec0.mul(fac0) - vec2.mul(fac3) + vec3.mul(fac4)).mul(odd)
+        column2 = (vec0.mul(fac1) - vec1.mul(fac3) + vec3.mul(fac5)).mul(even)
+        column3 = (vec0.mul(fac2) - vec1.mul(fac4) + vec2.mul(fac5)).mul(odd)
+        products = first.mul(DVec4(x=column0.x, y=column1.x, z=column2.x, w=column3.x))
+        determinant = products.x + products.y + products.z + products.w
+        if determinant == 0.0: return None
+        scale = 1.0 / determinant
+        return DMat4(
+            x_axis=column0 * scale,
+            y_axis=column1 * scale,
+            z_axis=column2 * scale,
+            w_axis=column3 * scale,
+        )
+
 ## How `sum` adds a list of floats, written out here so the order is plain: the sum of `items`,
 ## then `start`, with item `at` going into running total `at % 8`, and the eight added pairwise
 ## at the end, `((0 + 1) + (2 + 3)) + ((4 + 5) + (6 + 7))`. A sum one item at a time adds in the
-## same order, so the two give the same bits, on every platform and engine. Eight totals lose less
+## same order, so the two give the same bits, on every platform. Eight totals lose less
 ## to rounding than one does on a long sum, and the eight adds of a round don't wait on each
 ## other, so the compiler can do them at once with no change to the order. `sum` is the way to
 ## call it.

@@ -76,12 +76,6 @@ impl FnCx<'_> {
         if lent(gives).is_none() {
             return;
         }
-        if key == "concurrent.channel"
-            && let Some(Type::Generic(_, items)) = lent(gives)
-            && let [message] = items.as_slice()
-        {
-            self.note_channel_message(message.clone(), span);
-        }
         if let Some(entry) = self.checker.program.functions.get(key) {
             // A method's type parameters start with its type's: `T` in `Pool[T].lent`.
             let owner = entry.owner.as_deref().and_then(|owner| self.checker.program.type_info(owner));
@@ -126,7 +120,7 @@ impl FnCx<'_> {
     pub(crate) fn unplaced_try_in(&mut self, body: &[Stmt]) {
         if let Some(span) = unplaced_try(body) {
             self.error(
-                Diagnostic::new("this `?` might not run, and in a source's block that isn't built yet", span)
+                Diagnostic::new("a `?` that might not run isn't built yet in a source's block", span)
                     .with_help("take it to its own line first, like `got = f()?`, and use `got` here"),
             );
         }

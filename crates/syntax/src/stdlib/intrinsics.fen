@@ -1,6 +1,6 @@
-## The machine operations the standard library stands on. Each engine supplies the body. Only
-## the standard library can import this module: a program uses `int`, `float` and `str`, which
-## are written on top of it.
+## The machine operations the standard library stands on. The compiler supplies each body.
+## Only the standard library can import this module: a program uses `int`, `float` and `str`,
+## which are written on top of it.
 from std.collections import Id, Table
 
 @intrinsic
@@ -107,7 +107,7 @@ export def text_part(text: str, start: int, end: int) -> str
 @intrinsic
 export def text_of_code(code: int) -> str
 
-## A type's name as it's written. Only native code has types as it runs.
+## A type's name as it's written.
 @intrinsic
 export def type_name[T]() -> str
 
@@ -164,13 +164,13 @@ export def bytes_set(ref data: bytes, at: int, byte: int)
 
 ## A number for a type's shape: its fields in order, with their names and types, and its cases.
 ## It changes when any of them does, so a format that saves no names can refuse to read data
-## written for another shape. Only native code has types as it runs.
+## written for another shape.
 @intrinsic
 export def shape_hash[T]() -> int
 
 ## What a type's values save as, with every struct's field names and every enum's case names, as
 ## text `std.pack` writes beside the data, so bytes from an earlier version of the type load by
-## name. Only native code has types as it runs.
+## name.
 @intrinsic
 export def layout[T]() -> str
 
@@ -262,8 +262,8 @@ export def channel_close(channel: int)
 export def channel_free(channel: int)
 
 ## Marks `cleanup`, a function taking nothing, to run if the caller crashes before
-## `crash_cleanup_done(cleanup)`: a `with` source's `else:`, for a block that crashes. It gives
-## back how it failed, as text, said with the crash, or nothing when it didn't.
+## `crash_cleanup_done(cleanup)`: a `with` source's `lend x except:`, for a block that crashes.
+## It gives back how it failed, as text, said with the crash, or nothing when it didn't.
 @intrinsic
 export def crash_cleanup(cleanup: () -> str)
 

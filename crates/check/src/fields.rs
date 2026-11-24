@@ -80,6 +80,8 @@ impl FnCx<'_> {
             return Some(());
         };
         let field = Type::Generic(field_type_name(), vec![ty, Type::Param(each_field_type(iter.span.start))]);
+        // What's looped over is a list of the fields, for the typed tree, as a tool hovering it sees.
+        self.record(iter.span, &Type::List(Box::new(field.clone())));
         let before = self.snapshot();
         self.push(false);
         self.declare_as(name, field, false, Origin::Loop, span);

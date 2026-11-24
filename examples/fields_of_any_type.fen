@@ -1,5 +1,4 @@
-## Structs and enums holding fields native code can't hold itself: optionals, tuples,
-## nested lists. The rest of the struct stays native.
+## Structs and enums holding optionals, tuples and nested lists.
 
 struct Inner:
     label: str
@@ -81,7 +80,7 @@ def main(stdout: Stdout):
     _ = holders[1].bump()
     stdout.print(holders[0].pair, holders[1].pair, holders[1].total)
 
-    # A value handed over as an object stays as it was, whatever native code does next.
+    # A value copied stays as it was, whatever changes next.
     mut original = fresh()
     original.grid = [[1]]
     held = maybe(original, given=True)

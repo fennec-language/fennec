@@ -1,0 +1,180 @@
+# Enums in messages, sent to a task: an enum, a struct holding one, an enum holding another, a
+# union and a struct holding one, a struct holding an optional number, and an enum with a case
+# that holds a list, which isn't flat; an enum of only names, and one whose cases hold a float, a
+# bool, a sized number, bytes, an optional string and a struct kept in place. Each case is sent,
+# its strings short, long and missing, and each arrives as it was sent while the sender changes its own after. It prints the
+# same with flat messages sent as their words and with FENNEC_BLOCK_MESSAGES=1, and ends with
+# nothing held.
+from std.concurrent import Closed, Crashed, Inbox
+
+enum Event:
+    Join(user: int, room: int)
+    Say(user: int, text: str)
+    Quiet
+
+struct Said:
+    seq: int
+    event: Event
+
+enum Wrapped:
+    Inner(event: Event, tag: str)
+    Plain(number: int)
+
+struct Circle:
+    radius: float
+    label: str
+
+struct Square:
+    side: int
+
+type Shape = Circle | Square
+
+struct Drawn:
+    shape: Shape
+    seq: int
+
+struct Counted:
+    seq: int
+    maybe: int?
+
+enum Listing:
+    Empty
+    Items(items: list[str])
+
+enum Color:
+    Red
+    Green
+    Blue
+
+struct Spot:
+    x: int
+    name: str
+
+enum Reading:
+    Measured(value: float, ok: bool, small: i16)
+    Raw(data: bytes)
+    Named(label: str?)
+    At(spot: Spot, color: Color)
+
+def long_text(number: int) -> str:
+    return f"a text long enough to need a block of its own, number {number}"
+
+def shown(event: Event) -> str:
+    match event:
+        case .Join(user, room):
+            return f"join {user} {room}"
+        case .Say(user, text):
+            return f"say {user} [{text}]"
+        case .Quiet:
+            return "quiet"
+
+def shape_shown(shape: Shape) -> str:
+    match shape:
+        case Circle(radius, label):
+            return f"circle {radius} [{label}]"
+        case Square(side):
+            return f"square {side}"
+
+def events(inbox: Inbox[Event], stdout: Stdout):
+    for got in inbox:
+        stdout.print("event", shown(got))
+
+def numbered(inbox: Inbox[Said], stdout: Stdout):
+    for got in inbox:
+        stdout.print("said", got.seq, shown(got.event))
+
+def wrapped(inbox: Inbox[Wrapped], stdout: Stdout):
+    for got in inbox:
+        match got:
+            case .Inner(event, tag):
+                stdout.print("wrapped", shown(event), f"[{tag}]")
+            case .Plain(number):
+                stdout.print("plain", number)
+
+def shapes(inbox: Inbox[Shape], stdout: Stdout):
+    for got in inbox:
+        stdout.print("shape", shape_shown(got))
+
+def drawings(inbox: Inbox[Drawn], stdout: Stdout):
+    for got in inbox:
+        stdout.print("drawn", got.seq, shape_shown(got.shape))
+
+def counts(inbox: Inbox[Counted], stdout: Stdout):
+    for got in inbox:
+        stdout.print("counted", got.seq, got.maybe)
+
+def listings(inbox: Inbox[Listing], stdout: Stdout):
+    for got in inbox:
+        match got:
+            case .Empty:
+                stdout.print("listing empty")
+            case .Items(items):
+                stdout.print("listing", items)
+
+def colors(inbox: Inbox[Color], stdout: Stdout):
+    for got in inbox:
+        stdout.print("color", got)
+
+def readings(inbox: Inbox[Reading], stdout: Stdout):
+    for got in inbox:
+        match got:
+            case .Measured(value, ok, small):
+                stdout.print("measured", value, ok, small)
+            case .Raw(data):
+                stdout.print("raw", len(data), data[:5])
+            case .Named(label):
+                stdout.print("named", label else "no label")
+            case .At(spot, color):
+                stdout.print("at", spot.x, f"[{spot.name}]", color)
+
+def sent(stdout: Stdout) fails Closed | Crashed:
+    mut text = long_text(1)
+    with launch((inbox) => events(inbox, stdout))? as sends:
+        sends.send(.Join(user=1, room=2))?
+        sends.send(.Say(user=3, text=text))?
+        sends.send(.Say(user=4, text="short"))?
+        sends.send(.Say(user=5, text=""))?
+        sends.send(.Quiet())?
+        text += " (changed by the sender)"
+    with launch((inbox) => numbered(inbox, stdout))? as sends:
+        for seq in range(3):
+            event = Event.Say(user=seq, text=text) if seq % 2 == 0 else Event.Join(user=seq, room=seq * 10)
+            sends.send(Said(seq=seq, event=event))?
+            text += f" {seq}"
+        sends.send(Said(seq=9, event=.Quiet()))?
+    with launch((inbox) => wrapped(inbox, stdout))? as sends:
+        sends.send(.Inner(event=.Say(user=6, text=long_text(2)), tag=long_text(3)))?
+        sends.send(.Inner(event=.Quiet(), tag="t"))?
+        sends.send(.Plain(number=7))?
+    with launch((inbox) => shapes(inbox, stdout))? as sends:
+        sends.send(Circle(radius=1.5, label=long_text(4)))?
+        sends.send(Square(side=3))?
+    with launch((inbox) => drawings(inbox, stdout))? as sends:
+        sends.send(Drawn(shape=Circle(radius=2.5, label="small"), seq=1))?
+        sends.send(Drawn(shape=Square(side=4), seq=2))?
+        sends.send(Drawn(shape=Circle(radius=0.5, label=long_text(5)), seq=3))?
+    with launch((inbox) => counts(inbox, stdout))? as sends:
+        sends.send(Counted(seq=1, maybe=5))?
+        sends.send(Counted(seq=2, maybe=None))?
+    with launch((inbox) => listings(inbox, stdout))? as sends:
+        sends.send(.Empty())?
+        sends.send(.Items(items=["one", long_text(6)]))?
+    with launch((inbox) => colors(inbox, stdout))? as sends:
+        sends.send(.Red())?
+        sends.send(.Blue())?
+    mut data = "bytes long enough to be a block of their own, sent and then changed".encode()
+    with launch((inbox) => readings(inbox, stdout))? as sends:
+        sends.send(.Measured(value=2.5, ok=True, small=-7))?
+        sends.send(.Raw(data=data))?
+        sends.send(.Raw(data="".encode()))?
+        sends.send(.Named(label=long_text(7)))?
+        sends.send(.Named(label=None))?
+        sends.send(.At(spot=Spot(x=8, name=long_text(8)), color=.Green()))?
+        data += "!".encode()
+    stdout.print("sender kept", text, len(data))
+    return
+
+def main(stdout: Stdout):
+    sent(stdout) except why:
+        stdout.print("failed", why)
+    return

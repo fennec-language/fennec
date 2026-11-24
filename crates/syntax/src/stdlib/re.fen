@@ -38,7 +38,7 @@ export struct Regex:
     ##     return
     ## ```
     def parse(pattern: str) -> Regex fails InvalidValue:
-        if not is_regex(pattern): fail InvalidValue(pattern_problem(pattern))
+        if not is_regex(pattern): fail InvalidValue(message=pattern_problem(pattern))
         return Regex(pattern=pattern)
 
 ## Where a `Regex` matched, and what its groups caught.

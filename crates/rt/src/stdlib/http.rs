@@ -376,8 +376,8 @@ type WithTls = fn(TcpStream, &str, Instant, Duration, Option<Waits<'_>>) -> Resu
 
 static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
 
-/// Says TLS is wanted: compiled code that makes a request calls this first, and so does the
-/// `fennec` command.
+/// Says TLS is wanted: compiled code that makes a request calls this first. The `fennec` command
+/// never does, so it links nothing of TLS, or of the system frameworks that check certificates.
 pub fn use_tls() {
     WITH_TLS.get_or_init(|| tls::wrap);
     RAW_TLS.get_or_init(|| tls::raw);
@@ -657,10 +657,16 @@ impl Reader<'_> {
 
     /// Everything until the other side is done.
     fn all(&mut self) -> Result<Vec<u8>, Failure> {
-        while self.more()? {
-            if self.rest().len() > self.most_body {
-                return Err(self.too_big());
+        // Checked before each read and after the last: what came in the read that ended the head
+        // is body too, and the end may come with nothing more read after it (the coverage lane's
+        // http-client-scripts fuzz target, 2026-11-23).
+        while self.rest().len() <= self.most_body {
+            if !self.more()? {
+                break;
             }
+        }
+        if self.rest().len() > self.most_body {
+            return Err(self.too_big());
         }
         if self.cut_off {
             return Err(Failure::Tls("the connection was cut off before the answer ended".to_owned()));
@@ -1553,6 +1559,38 @@ mod tests {
                 "{head}"
             );
             done.join().unwrap();
+        }
+    }
+
+    /// A body read until the server hangs up is held to `most_body=` however it came, all in the
+    /// read that found the head among it: within it, it's read whole, and a byte past it fails.
+    #[test]
+    fn a_body_read_to_the_end_with_its_head_is_held_to_most_body() {
+        for (length, fits) in [(64, true), (65, false), (74, false)] {
+            let (port, done) = serving(vec![format!("HTTP/1.1 200 OK\r\n\r\n{}", "x".repeat(length))]);
+            let got = send(&Request {
+                method: "GET".to_owned(),
+                url: format!("http://127.0.0.1:{port}/"),
+                params: Vec::new(),
+                headers: Vec::new(),
+                body: Vec::new(),
+                timeout: Duration::from_secs(10),
+                most_body: 64,
+                hosts: None,
+            });
+            done.join().unwrap();
+            if fits {
+                assert_eq!(got.map(|answer| answer.body.len()).ok(), Some(length), "{length} bytes");
+                continue;
+            }
+            let Err(Failure::Other(reason)) = got else {
+                panic!("{length} bytes: {:?}", got.map(|answer| answer.body.len()));
+            };
+            assert_eq!(
+                reason,
+                "the response's body is longer than 64 bytes: give `most_body=` a bigger number if it needs one",
+                "{length} bytes"
+            );
         }
     }
 

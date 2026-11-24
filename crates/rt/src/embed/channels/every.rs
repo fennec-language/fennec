@@ -126,7 +126,7 @@ pub(super) fn push(
 /// The next message for `listener`, its own to take, or what a receive gives back instead, as
 /// `channels::next` says.
 pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Result<Message, i64> {
-    let timeout_ns = match super::replayed(channel, "receive", false) {
+    let timeout_ns = match super::replayed(channel, "receive", timeout_ns < 0) {
         super::Turn::Live => timeout_ns,
         super::Turn::Goes => -1,
         super::Turn::Gives(code) => return Err(code),
@@ -171,7 +171,7 @@ pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Re
             super::met(channel, "receive", CLOSED);
             return Err(CLOSED);
         }
-        match wait(channel, queue, deadline, Side::Receiving) {
+        match wait(channel, queue, deadline, Side::Receiving, Some(listener)) {
             Waited::Again => {}
             Waited::TimedOut => {
                 super::met(channel, "receive", TIMED_OUT);
@@ -184,6 +184,18 @@ pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Re
             }
         }
     }
+}
+
+/// Whether `listener` has seen every message `queue`, its channel's, keeps, so its receive would
+/// wait: a listener that's behind would go on, failing or skipping what it missed, and one that's
+/// gone would end.
+pub(super) fn caught_up(queue: &Queue, listener: i64) -> bool {
+    let kept = u64::try_from(queue.messages.len()).unwrap_or(u64::MAX);
+    queue
+        .every
+        .as_ref()
+        .and_then(|every| Some((every.first, every.by_number.get(&listener)?.next)))
+        .is_some_and(|(first, next)| next >= first && next >= first.saturating_add(kept))
 }
 
 /// A listener's own copy of a message kept for every listener, as this thread's.

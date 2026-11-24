@@ -374,6 +374,7 @@ dependencies = [
  "fennec-re",
  "fennec-rt",
  "fennec-syntax",
+ "socket2",
 ]
 
 [[package]]
@@ -402,6 +403,7 @@ dependencies = [
 name = "fennec-launcher"
 version = "0.0.1"
 dependencies = [
+ "ctrlc",
  "fennec-blake3",
  "fennec-dist",
  "fennec-temp",

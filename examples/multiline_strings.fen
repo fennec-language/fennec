@@ -1,0 +1,19 @@
+# `"""` strings run across lines, with the closing `"""`'s indent taken off every line.
+
+def main(stdout: Stdout):
+    usage = """
+        Usage: hoard [options] <path>
+
+          --dry-run    say what would change
+        """
+    stdout.print(repr(usage))
+
+    name = "Ana"
+    count = 3
+    greeting = f"""
+        Hello, {name}!
+        You have {count} new messages.
+        """
+    stdout.print(greeting)
+    raw = r"""C:\saves\{name}"""
+    stdout.print(raw)

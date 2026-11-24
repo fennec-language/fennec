@@ -38,14 +38,26 @@ impl Limits {
     /// negative one is none at all.
     pub(crate) fn of(args: &[Value]) -> Option<Limits> {
         let [Value::Int(bytes), Value::Int(lines), Value::Int(blank)] = args else { return None };
-        let most = |given: &i64| usize::try_from(*given).unwrap_or(0);
-        Some(Limits { bytes: most(bytes), lines: most(lines), blank: most(blank) })
+        Some(Limits::new(*bytes, *lines, *blank))
+    }
+
+    /// The limits as a typed call hands them over, words rather than values.
+    pub(crate) fn new(bytes: i64, lines: i64, blank: i64) -> Limits {
+        let most = |given: i64| usize::try_from(given).unwrap_or(0);
+        Limits { bytes: most(bytes), lines: most(lines), blank: most(blank) }
+    }
+
+    /// The limits as the call's arguments, for a connection that takes them as values.
+    pub(crate) fn values(self) -> Vec<Value> {
+        let word = |most: usize| Value::Int(i64::try_from(most).unwrap_or(i64::MAX));
+        vec![word(self.bytes), word(self.lines), word(self.blank)]
     }
 }
 
-/// What a head read gave.
+/// What a head read gave. Its cases are in the order std.net declares them, which
+/// [`Head::case`] numbers.
 #[derive(Debug, PartialEq, Eq)]
-enum Head {
+pub(crate) enum Head {
     Lines(Vec<String>),
     Ended,
     Unended,
@@ -78,9 +90,22 @@ pub(crate) fn read<E>(
 /// [`read`] for a connection whose line reader has no failure of its own besides the connection's.
 pub(crate) fn read_lines(
     limits: Limits,
-    mut line: impl FnMut() -> Result<Option<String>, Failure>,
+    line: impl FnMut() -> Result<Option<String>, Failure>,
 ) -> Result<Value, Failure> {
-    read(limits, || Ok::<_, std::convert::Infallible>(line())).unwrap_or_else(|never| match never {})
+    read_head(limits, line).map(value)
+}
+
+/// [`read_lines`] giving the head itself, for a typed call that makes no value of it.
+pub(crate) fn read_head(
+    limits: Limits,
+    mut line: impl FnMut() -> Result<Option<String>, Failure>,
+) -> Result<Head, Failure> {
+    let mut line = || Ok::<_, std::convert::Infallible>(line());
+    match head(limits, &mut line) {
+        Ok(head) | Err(Stopped::Gave(head)) => Ok(head),
+        Err(Stopped::Failed(failure)) => Err(failure),
+        Err(Stopped::Call(never)) => match never {},
+    }
 }
 
 fn head<E>(
@@ -126,8 +151,48 @@ fn head<E>(
     }
 }
 
+impl Head {
+    /// Its case's number in std.net's `Head`: `Lines` 0, `Ended` 1, `Unended` 2, `LongFirst` 3
+    /// and `TooBig` 4. A typed call gives this, and compiled code makes the case.
+    pub(crate) fn case(&self) -> i64 {
+        match self {
+            Head::Lines(_) => 0,
+            Head::Ended => 1,
+            Head::Unended => 2,
+            Head::LongFirst => 3,
+            Head::TooBig => 4,
+        }
+    }
+
+    /// The head a value of std.net's `Head` is, as [`value`] made it, or `None` for anything
+    /// else: a recording's, for a replay of a typed call.
+    pub(crate) fn of_value(value: &Value) -> Option<Head> {
+        let Value::Instance(made) = value else { return None };
+        if &*made.type_name != "Head" {
+            return None;
+        }
+        match made.case.as_deref()? {
+            "Lines" => {
+                let Some(Value::List(lines)) = made.field("lines").cloned().map(Value::unpacked) else {
+                    return None;
+                };
+                let lines = lines.iter().map(|line| match line {
+                    Value::Str(text) => Some(text.to_string()),
+                    _ => None,
+                });
+                lines.collect::<Option<Vec<String>>>().map(Head::Lines)
+            }
+            "Ended" => Some(Head::Ended),
+            "Unended" => Some(Head::Unended),
+            "LongFirst" => Some(Head::LongFirst),
+            "TooBig" => Some(Head::TooBig),
+            _ => None,
+        }
+    }
+}
+
 /// A head as std.net's `Head`.
-fn value(head: Head) -> Value {
+pub(crate) fn value(head: Head) -> Value {
     let (case, fields) = match head {
         Head::Lines(lines) => {
             let lines = lines.iter().map(|line| Value::str(line)).collect();

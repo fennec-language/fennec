@@ -1354,7 +1354,7 @@ mod tests {
         let text = seen.written();
         assert_eq!(super::Seen::read(&text), Some(seen));
         assert_eq!(super::Seen::read(text.trim_end()), None);
-        assert_eq!(super::Seen::read(&text[..text.len() / 2]), None);
+        assert_eq!(super::Seen::read(text.get(..text.len() / 2).unwrap()), None);
         assert_eq!(super::Seen::read(&format!("{} 6\n", text.trim_end())), None);
     }
 

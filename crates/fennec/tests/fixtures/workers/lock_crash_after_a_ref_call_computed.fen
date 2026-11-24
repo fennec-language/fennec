@@ -1,0 +1,38 @@
+# A task changes a shared bag under a write lock, calling a `ref self` method on it with
+# a computed argument, then crashes under the next lock, whose rollback puts the
+# bag back as the last lock left it. Its owner then locks the bag again and prints it (#2516).
+
+from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+struct Bag:
+    items: list[int]
+    counts: dict[str, int]
+
+    def add_twice(ref self, n: int):
+        self.items.append(n)
+        self.items.append(n)
+
+def changes(inbox: Inbox[int], bag: shared Bag):
+    for number in inbox:
+        lock bag as ref held:
+            # The second message finds no "a" and crashes the task.
+            _ = held.counts.pop("a")
+            held.add_twice((number * 1))
+
+def handed(bag: shared Bag, numbers: list[int]) fails Crashed | Closed | Timeout:
+    with launch((inbox) => changes(inbox, bag))? as sends:
+        for number in numbers:
+            sends.send(number)?
+
+def main(stdout: Stdout):
+    shared bag = Bag(items=[0, 100], counts={"a": 8, "b": 5})
+    handed(bag, numbers=[-1, 2, 0]) except why:
+        case Crashed():
+            stdout.print("crashed")
+        case Closed():
+            stdout.print("closed")
+        case Timeout():
+            stdout.print("timed out")
+    lock bag as held:
+        stdout.print(held)
+    stdout.print("done")

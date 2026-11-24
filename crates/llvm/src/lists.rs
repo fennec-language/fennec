@@ -576,12 +576,16 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// Takes out each place this instruction changes that was waiting for it.
+    /// Takes out each place this instruction changes that was waiting for it, unless it's been put
+    /// back: what names it after that, as letting go of the local at a lock's end does, would take
+    /// it out again and leave its slot saying it's out, so a crash later in the function would
+    /// write the emptied local over what holds it (#2516).
     pub(crate) fn take_waiting_places(&mut self, inst: &InstKind, span: Span) -> Result<(), String> {
         let (InstKind::Call { args, .. } | InstKind::Builtin { args, .. }) = inst else { return Ok(()) };
         for arg in args {
             if let Operand::Local(local) = arg
                 && self.known.place_waits(*local)
+                && !self.places_back.contains(&local.0)
             {
                 self.take_place(*local, span)?;
             }
@@ -716,8 +720,10 @@ impl Emit<'_, '_, '_> {
     /// a crash's way out, a failure's doesn't put back what's taken out first. A failure leaves a
     /// lock's body through a branch of its own, so none comes between a take and its put back,
     /// which are in one block; this says so if that ever stops holding. Only the places taken out
-    /// earlier in the function's text are known here.
-    pub(crate) fn proof_nothing_out(&mut self) {
+    /// earlier in the function's text are known here. Said for a lock's normal end too, `why`
+    /// saying which: a place left out there, as one taken out again after its put back was, is
+    /// written over what holds it by a crash later in the function (#2516).
+    pub(crate) fn proof_nothing_out(&mut self, why: &str) {
         if !self.checks_proofs() {
             return;
         }
@@ -729,11 +735,7 @@ impl Emit<'_, '_, '_> {
             let (home, out) = (self.temp(), self.temp());
             self.line(&format!("{home} = load ptr, ptr {slot}"));
             self.line(&format!("{out} = icmp ne ptr {home}, null"));
-            self.proof_held(
-                &out,
-                "nothing is out of its place when a failure has a lock put back what it changed",
-                span,
-            );
+            self.proof_held(&out, why, span);
         }
     }
 
@@ -760,6 +762,7 @@ impl Emit<'_, '_, '_> {
     }
 
     fn put_place_back(&mut self, value: LocalId) -> Result<(), String> {
+        self.places_back.insert(value.0);
         let (at, kind, access) = self.place_homes.get(&value.0).cloned().ok_or("a place never taken out")?;
         if let Some(slot) = self.places_out.get(&value.0).cloned() {
             self.line(&format!("store ptr null, ptr {slot}"));

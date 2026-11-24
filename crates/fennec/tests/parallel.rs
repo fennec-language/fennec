@@ -1156,6 +1156,52 @@ fn locals_changed_under_a_write_lock_are_let_go_of_as_outside_it() -> std::io::R
     Ok(())
 }
 
+/// A task that crashes under a write lock, after an earlier lock called a `ref self` method on the
+/// shared value with a computed argument, leaves the value as that lock left it (#2516). The
+/// computed argument made the method's place wait for the call, and something after the call took
+/// it out a second time, leaving its slot saying it was out: the crash wrote the emptied local
+/// over the value, whose next lock found its list and dict gone and crashed the process. The same
+/// program with a plain argument is beside it. `ThreadSanitizer` runs both.
+#[test]
+fn a_crash_under_a_lock_after_a_ref_call_with_a_computed_argument_keeps_the_value() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-lock-crash-ref-call-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let programs = [
+        (
+            "lock_crash_after_a_ref_call_computed",
+            include_str!("fixtures/workers/lock_crash_after_a_ref_call_computed.fen"),
+        ),
+        (
+            "lock_crash_after_a_ref_call_plain",
+            include_str!("fixtures/workers/lock_crash_after_a_ref_call_plain.fen"),
+        ),
+    ];
+    let wanted = include_str!("fixtures/workers/lock_crash_after_a_ref_call_computed.out");
+    assert_eq!(wanted, include_str!("fixtures/workers/lock_crash_after_a_ref_call_plain.out"));
+    for (name, source) in programs {
+        let built = build_on_threads(&dir, source, name)?;
+        for threads in ["1", "4", "8"] {
+            let ran = Command::new(&built)
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(ran.status.code(), Some(0), "{name} on {threads} threads: {said}");
+            assert_eq!(printed, wanted, "{name} on {threads} threads");
+            assert!(said.contains("the dict has no key \"a\""), "{name} on {threads} threads: {said}");
+            assert!(said.contains(" live 0"), "{name} on {threads} threads left blocks live: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task that's stopped while it's parked in a comprehension passes the stop on to its pieces,
 /// which sleep on every worker: each sleep is cut short, the call ends, and the task with it. The
 /// pieces sleep for two hours, so a stop that only reached the task would leave the program

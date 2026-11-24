@@ -230,6 +230,7 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn unlock(&mut self, handle: &Operand) -> Result<(), String> {
+        self.proof_nothing_out("nothing is out of its place when a lock's block ends");
         let (word, cell, plain) = self.lock_word(handle)?;
         // A `lock ... as ref` block ending normally keeps what it changed.
         if self.saves_changes(handle) && !self.take_rolled_back(handle) {

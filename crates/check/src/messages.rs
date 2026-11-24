@@ -334,7 +334,9 @@ pub(crate) fn bad_spec(spec: &str, ty: &Type, span: Span) -> Option<Diagnostic> 
         (Type::Float, "d", _) => {
             "show it with no decimal places with `.0f`, or round it to an int with `round(x)`"
         }
-        (Type::Str, _, _) => "drop the format, or read the text as a number first, as `{float.parse(text)?:.2f}`",
+        (Type::Str, _, _) => {
+            "drop the format, or read the text as a number first, as `{float.parse(text)?:.2f}`"
+        }
         _ => "only an int or a float takes a format: turn it into one first, or drop the format",
     };
     Some(Diagnostic::new(format!("the format `{spec}` doesn't apply to {}", a(ty)), span).with_help(help))

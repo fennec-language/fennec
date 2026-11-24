@@ -242,6 +242,7 @@ fn a_table_s_slots_keep_their_own_tags_crossing_to_a_block_and_back() {
     assert_ne!(block, 0);
     let Value::Table(back) = temp(heap::to_value(block)) else { panic!("not a Table") };
     assert_eq!(*back, original);
+    assert_eq!(back.slots, original.slots, "each slot's tag came back too");
     assert_eq!(back.get(Id::new(2, 0, tags[1])), Some(&Value::Int(30)));
     assert_eq!(back.get(Id::new(2, 0, tags[0])), None, "the same slot under another tag");
     assert_eq!(back.get(Id::new(1, 0, 0)), None, "a slot taken out finds nothing");

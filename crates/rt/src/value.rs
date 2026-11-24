@@ -143,10 +143,12 @@ pub(crate) fn new_tag() -> u64 {
     NEXT_TAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Maps are the same when their slots are: where one's looking for a free slot is no part of it.
+/// Maps are the same when the same slots hold the same items, as `==` has it: where one's looking for
+/// a free slot, and the tags its `Id`s were handed out with, are no part of it.
 impl PartialEq for Table {
     fn eq(&self, other: &Table) -> bool {
-        self.slots == other.slots
+        self.slots.len() == other.slots.len()
+            && self.slots.iter().zip(&other.slots).all(|(one, another)| one.value == another.value)
     }
 }
 

@@ -7444,6 +7444,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A float written out takes `f32` where one goes: on the right of a type's own operator, with `*=`
+/// too, beside an `f32` in `min` and `max`, and as a `case`. Each is the nearest `f32`, so `0.1`
+/// matches a tenth held as an `f32`, and the arithmetic is `f32`'s. What it prints is what the
+/// reference evaluator prints.
+#[test]
+fn a_float_written_out_takes_f32_by_an_operator_min_max_and_a_case() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "f32_literals_where_they_go",
+        r#"struct Velocity:
+    x: f32 = 0.0
+
+    def *(self, scale: f32) -> Velocity:
+        return Velocity(x=self.x * scale)
+
+error TooFast:
+    speed: f32
+
+def check(speed: f32) fails TooFast:
+    if speed > 0.25: fail TooFast(speed)
+
+def named(speed: f32) -> str:
+    match speed:
+        case 0.1: return "a tenth"
+        case _: return "other"
+
+def main(stdout: Stdout):
+    mut velocity = Velocity(x=0.1) * 3.0
+    velocity *= 0.1
+    tenth: f32 = 0.1
+    stdout.print(velocity.x, min(tenth, 0.1) == tenth, max(-1.0, tenth, 0.05), named(tenth))
+    check(0.3) except why:
+        case TooFast(speed=0.3): stdout.print("matched", why)
+        case _: stdout.print("missed", why)
+"#,
+    )?;
+    assert_eq!(printed, "0.030000001 True 0.1 a tenth\nmatched TooFast(speed=0.3)\n");
+    Ok(())
+}
+
 /// `**` on `u64`s, worked out by squaring and checked: `0 ** 0` is 1, `2 ** 63` is past `int`'s top,
 /// `3 ** 40` takes most of the 64 bits, and `2 ** 64` doesn't fit, which stops the program.
 #[test]

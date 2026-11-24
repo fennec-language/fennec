@@ -130,6 +130,13 @@ impl FnCx<'_> {
                     // `small -= 1`: a number literal takes the size of what it changes.
                     None => self.declared_type(name).filter(|ty| matches!(ty, Type::Sized(_))),
                 };
+                // `velocity *= 2.0`: one taken by a type's own operator takes the size it takes.
+                let expected = match (op, expected) {
+                    (Some(op), None) if crate::expect::number_literal(value) => {
+                        self.lookup(name).and_then(|(current, _)| self.operator_takes_sized(op, &current))
+                    }
+                    (_, expected) => expected,
+                };
                 let ty = match &expected {
                     Some(expected) => self.expr_as(value, expected),
                     None => self.expr(value),
@@ -174,7 +181,16 @@ impl FnCx<'_> {
                 let adds_literal = op == Some(BinOp::Add) && matches!(current, Type::LiteralStr);
                 // `small += 1`: a number literal takes the size of what it changes.
                 let sized = matches!(current, Type::Sized(_)) && crate::expect::number_literal(value);
-                let mut ty = if op.is_none() || adds_literal || sized {
+                // `velocity *= 2.0`: one taken by a type's own operator takes the size it takes.
+                let takes = match op {
+                    Some(op) if crate::expect::number_literal(value) => {
+                        self.operator_takes_sized(op, &current)
+                    }
+                    _ => None,
+                };
+                let mut ty = if let Some(takes) = takes {
+                    self.expr_as(value, &takes)
+                } else if op.is_none() || adds_literal || sized {
                     self.expr_as(value, &current)
                 } else {
                     self.expr(value)

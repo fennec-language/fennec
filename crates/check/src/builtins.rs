@@ -679,7 +679,8 @@ impl FnCx<'_> {
             (_, Some((_, function))) => function.named,
             _ => &[],
         };
-        let plain = self.builtin_args(name, args, named, (&[], std::slice::from_ref(&item)), span);
+        let sized = self.sized_among(name, args);
+        let plain = self.builtin_args(name, args, named, (&sized, std::slice::from_ref(&item)), span);
         let (low, high) = match stdlib::function(name) {
             Some((_, function)) => function.arity,
             None => BUILTINS
@@ -711,6 +712,27 @@ impl FnCx<'_> {
             self.needs_order(name, &result, span);
         }
         result
+    }
+
+    /// For `min` and `max` of two or more values, the sized number one of them is, given for
+    /// each, so a number literal among them takes that size: `max(speed, 0.0)` for an `f32`
+    /// `speed`. Nothing for any other builtin.
+    fn sized_among(&mut self, name: &str, args: &[Arg]) -> Vec<Type> {
+        let plain: Vec<&Arg> = args.iter().filter(|arg| arg.name.is_none()).collect();
+        if !matches!(name, "min" | "max") || plain.len() < 2 {
+            return Vec::new();
+        }
+        let mut sized = None;
+        for arg in &plain {
+            if !crate::expect::number_literal(&arg.value) {
+                let ty = self.peek_type(&arg.value);
+                if let ty @ Type::Sized(_) = self.checker.settled(&ty) {
+                    sized = Some(ty);
+                    break;
+                }
+            }
+        }
+        sized.map_or_else(Vec::new, |ty| vec![ty; plain.len()])
     }
 
     /// A number written out, or one negated, given to `u8(...)` and the like, which has to fit.
@@ -1099,7 +1121,8 @@ fn cased_param<'p>(arg: &Arg, params: &'p [Type], position: &mut usize) -> Optio
     }
     *position += 1;
     let cased = crate::expect::leading_dot(&arg.value) || crate::expect::written_with_cases(&arg.value);
-    params.get(*position - 1).filter(|_| cased)
+    let sized = |param: &&Type| matches!(param, Type::Sized(_)) && crate::expect::number_literal(&arg.value);
+    params.get(*position - 1).filter(|param| cased || sized(param))
 }
 
 #[cfg(test)]

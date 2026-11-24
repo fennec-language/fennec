@@ -192,6 +192,46 @@ fn literals_take_the_size_they_go_into() {
     );
 }
 
+/// A number literal takes the size a type's own operator takes on its right, as `velocity * 2.0`
+/// and `velocity *= 2.0` do for `def *(self, scale: f32)`, the size of what's beside it in `min`
+/// and `max`, and the size a `case` matches, `assert ... fails` too. One that doesn't fit is still
+/// reported.
+#[test]
+fn literals_take_the_size_of_operators_min_max_and_cases() {
+    let program = "
+        struct Velocity:
+            x: f32 = 0.0
+
+            def *(self, scale: f32) -> Velocity:
+                return Velocity(x=self.x * scale)
+
+        error TooFast:
+            speed: f32
+
+        def check(speed: f32) fails TooFast:
+            if speed > 9.5: fail TooFast(speed)
+
+        def named(speed: f32) -> str:
+            match speed:
+                case 0.5: return \"slow\"
+                case _: return \"other\"
+
+        def main(stdout: Stdout):
+            mut velocity = Velocity(x=1.5) * 2.0
+            velocity *= 0.5
+            speed = velocity.x
+            stdout.print(min(speed, 2.0), max(-1.0, speed, 0.25), named(speed))
+            check(speed) except why:
+                case TooFast(speed=10.5): stdout.print(why)
+                case _: stdout.print(why)
+            stdout.print(velocity * 1e39)
+
+        test \"too fast\":
+            assert check(10.5) fails TooFast(speed=10.5)
+    ";
+    assert_eq!(problems(program), ["1000000000000000000000000000000000000000 is too big for an f32 @ 1e39"]);
+}
+
 /// A set, dict or tuple literal written where one holding sized numbers goes takes their sizes,
 /// each number checked to fit, as a list literal's items are.
 #[test]

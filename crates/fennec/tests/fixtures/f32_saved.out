@@ -18,5 +18,9 @@ Reading(level=0.25, peak=0.5, note="")
 the text is too big for an f32
 the text should be an f32, but it's a str
 expected a digit in the exponent, but found the end of the text, at line 1, column 5
+`level` is too big for an f32
+inf
+nan
+column `level`: it holds 1e+39, which is too big for an f32
 0.10000000149011612
 the data was saved as a float, not an f32, at byte 14

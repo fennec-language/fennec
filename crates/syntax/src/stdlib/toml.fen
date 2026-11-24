@@ -880,7 +880,16 @@ struct TomlReader:
         # own shortest text, as TOML writes it, reads back as the same `f32`.
         match self._here:
             case .Float(x):
-                return f32(x)
+                narrow = f32(x)
+                # A number too big for an f32 would come out as infinity, which isn't what it said.
+                # TOML's own `inf` and `nan` are what they say.
+                if narrow - narrow != 0.0 and x - x == 0.0:
+                    fail ParseError(
+                        message=f"{self._where()} is too big for an f32",
+                        line=0,
+                        column=0,
+                    )
+                return narrow
             case .Int(n):
                 return f32(n)
             case _:

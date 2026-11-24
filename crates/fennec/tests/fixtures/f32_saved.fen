@@ -1,7 +1,9 @@
 # An `f32` saved as itself: JSON writes and reads its own shortest text, rounded once, `std.pack`
 # its 4 bytes with every NaN the one quiet NaN, and TOML through its float. Read back, each is the
-# same `f32`; a struct of them goes through all three; and what can't be read says why.
-from std import json, math, pack, toml
+# same `f32`; a struct of them goes through all three; and what can't be read says why: a number
+# too big for an f32 is refused by JSON, TOML and SQL alike, and TOML's `inf` and `nan` load.
+from std import json, math, pack, sql, toml
+from std.sql import SqlRows
 
 struct Reading:
     level: f32
@@ -48,6 +50,23 @@ def main(stdout: Stdout):
         _ = json.loads[f32](text) except why:
             stdout.print(why)
             continue
+    for text in ["level = 1e39", "level = inf", "level = nan"]:
+        from_text = toml.loads[Reading](text) except why:
+            stdout.print(why)
+            continue
+        stdout.print(from_text.level)
+    held = SqlRows(
+        columns=["level"],
+        kinds=[2, 2],
+        at=[0, 1],
+        ints=[],
+        floats=[0.5, 1e39],
+        texts=[],
+        blobs=[],
+    )
+    _ = sql.rows_as[f32](held) except why:
+        stdout.print(why)
+        list[f32]()
     widened = pack.loads[float](pack.dumps(f32(0.1))) except ParseError(): -1.0
     stdout.print(widened)
     _ = pack.loads[f32](pack.dumps(1.5)) except why:

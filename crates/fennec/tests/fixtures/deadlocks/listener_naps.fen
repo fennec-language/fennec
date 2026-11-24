@@ -1,0 +1,15 @@
+# A task listening to a channel to `.Every` while main naps before it sends: never a deadlock.
+from std.concurrent import Closed, Crashed, Inbox, channel
+
+def heard(hits: Inbox[int], stdout: Stdout):
+    for hit in hits:
+        stdout.print("heard", hit)
+        if hit == 3: break
+
+def main(stdout: Stdout, clock: Clock) fails Closed | Crashed:
+    with channel[int](size=4, to=.Every) as hits:
+        listening = hits.inbox()
+        with launch(() => heard(listening, stdout))?:
+            clock.sleep(20ms)
+            for hit in range(1, 4):
+                hits.send(hit)?

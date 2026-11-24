@@ -656,13 +656,36 @@ fn reader(name: &str) -> Result<PathBuf, String> {
             .ok_or_else(|| format!("LLVM doesn't take the `{name}` reader"))?;
         std::fs::create_dir_all(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
         let copying = folder.join(format!("program.{}", std::process::id()));
-        std::fs::copy(&made, &copying).map_err(|err| format!("{}: {err}", copying.display()))?;
+        copied(&made, &copying)?;
         put_in_place(&copying, &kept)?;
         kept
     };
     used(&executable);
     built.push((name.to_owned(), executable.clone()));
     Ok(executable)
+}
+
+/// Copies a program from `from` to `to`, by another process on Unix, so that this one never holds
+/// the copy open for writing.
+///
+/// A program can't be run while anything holds it open for writing: Linux says the text file is
+/// busy. Closing the copy before it's run isn't enough, nor is writing it under another name and
+/// renaming it, which keeps the same file. Each of this process's threads that starts a process
+/// while the copy is open hands that child a handle to it, which the child holds until it runs
+/// its own program. Tests start processes on many threads at once, and one did, between the copy's
+/// open and its close, just before the copy was run (main's CI at 17a9f206d). A copy made by `cp`
+/// is open only in `cp`, and no thread here can hand it on. Windows hands on no handles that way.
+fn copied(from: &Path, to: &Path) -> Result<(), String> {
+    let failed = |err: String| format!("couldn't copy `{}` to `{}`: {err}", from.display(), to.display());
+    if cfg!(unix) {
+        let status = Command::new("cp").arg(from).arg(to).stdin(std::process::Stdio::null()).status();
+        return match status {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(failed(format!("`cp` ended with {status}"))),
+            Err(err) => Err(failed(err.to_string())),
+        };
+    }
+    std::fs::copy(from, to).map(drop).map_err(|err| failed(err.to_string()))
 }
 
 /// Moves a reader just built from `copying` to `kept` whole, so another process never runs half of
@@ -757,7 +780,7 @@ pub(crate) fn read_natively(name: &str, input: &[u8]) -> Result<Option<Vec<u8>>,
 mod placing_tests {
     use std::process::{Command, Stdio};
 
-    use super::put_in_place;
+    use super::{copied, put_in_place};
 
     /// A reader built while the same one is in place and running lands without an error and leaves
     /// no copy behind. On Windows, which won't replace a program that's running, the one running is
@@ -771,10 +794,10 @@ mod placing_tests {
         let folder = std::env::temp_dir().join(format!("fennec-fuzz-placing-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let kept = folder.join("program");
-        std::fs::copy(program, &kept).unwrap();
+        assert_eq!(copied(std::path::Path::new(program), &kept), Ok(()));
         let mut running = Command::new(&kept).args(args).stdout(Stdio::null()).spawn().unwrap();
         let copying = folder.join("program.2");
-        std::fs::copy(program, &copying).unwrap();
+        assert_eq!(copied(std::path::Path::new(program), &copying), Ok(()));
         let placed = put_in_place(&copying, &kept);
         let _ = running.kill();
         let _ = running.wait();

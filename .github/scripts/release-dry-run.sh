@@ -37,6 +37,8 @@ fi
 home="$work/home"
 mkdir -p "$home" "$work/bin" "$work/dist"
 cp "$built/fennec-launcher$exe" "$work/bin/fennec$exe"
+# What fetches over the network for it goes beside it, as an install puts it.
+cp "$built/fennec-fetch$exe" "$work/bin/fennec-fetch$exe"
 cp "$built/examples/dry_run$exe" "$work/dry_run$exe"
 cp -R "$repo/examples" "$work/examples"
 within="$repo/.github/scripts/within.sh"

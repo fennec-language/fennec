@@ -1079,6 +1079,7 @@ impl<'p> Module<'_, 'p> {
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
             places_out: HashMap::new(),
+            places_back: HashSet::new(),
             out_of_dicts: BTreeSet::new(),
             at: (usize::MAX, usize::MAX),
             check_kind: None,
@@ -1264,6 +1265,11 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// For each place taken out to change, the stack slot saying where it goes back while it's out.
     pub(crate) places_out: HashMap<usize, String>,
+    /// The places that have been put back. One that waited for the call that changes it is taken
+    /// out there; what names it after it's back, as letting go of the local at a lock's end does,
+    /// doesn't take it out again, which would leave its slot saying it's out with nothing to put it
+    /// back (#2516).
+    pub(crate) places_back: HashSet<usize>,
     /// Those of them that are values out of a dict or a list, which go back after the others: a
     /// field out of such a value goes back into it first.
     pub(crate) out_of_dicts: BTreeSet<usize>,

@@ -22,6 +22,13 @@ def main(stdout: Stdout):
     stdout.print(left == right)
     _ = right.add("kit")
     stdout.print(left == right)
+    # A slot in use is never the same as a free one, even holding a value that's all zero.
+    mut kept = Table[int]()
+    _ = kept.add(0)
+    mut emptied = Table[int]()
+    seven = emptied.add(7)
+    _ = emptied.remove(seven)
+    stdout.print(kept == emptied)
 
     # Functions are equal only to themselves. Types and builtins aren't values, and arrow
     # functions are only passed straight to calls, so neither is ever compared.

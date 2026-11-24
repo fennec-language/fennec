@@ -29,17 +29,20 @@ pub(super) const NO_MESSAGE: i64 = 3;
 
 /// A flat message on its way: its words, and copies of the blocks they name, which no heap holds
 /// until the receiver takes them in.
+///
+/// It's made on the sender's thread and let go of on the receiver's, so each allocation it holds is
+/// one the sender's allocator later takes back from another thread (#2492): it holds only its words
+/// and its copies, and travels unboxed.
 pub(in crate::embed) struct Flat {
     /// Its kind's number in the program's table of kinds.
     kind: usize,
     words: Box<[u64]>,
     blocks: Vec<Box<[u64]>>,
-    /// For each word that names a copy, where it is in `words` and which of `blocks` it names.
-    named: Vec<(usize, usize)>,
 }
 
 impl Flat {
-    /// A copy of its own for a listener of a channel to `.Every`, counted as a copy is.
+    /// A copy of its own for a listener of a channel to `.Every`, counted as a copy is: each word
+    /// that names one of its copies names that one's copy.
     fn copied(&self, state: &mut State) -> Flat {
         let blocks: Vec<Box<[u64]>> = self
             .blocks
@@ -49,13 +52,123 @@ impl Flat {
                 block.clone()
             })
             .collect();
+        let mut places = Vec::new();
+        each_place(&plan_of(state, self.kind).parts, &self.words, &mut |place| places.push(place));
         let mut words = self.words.clone();
-        for (place, which) in &self.named {
-            if let (Some(word), Some(block)) = (words.get_mut(*place), blocks.get(*which)) {
-                *word = address_of(block);
+        for place in places {
+            let Some(word) = words.get_mut(place) else { continue };
+            // A word that names none of them names a block every thread can read, which wasn't copied.
+            if let Some(copy) =
+                self.blocks.iter().position(|block| address_of(block) == *word).and_then(|at| blocks.get(at))
+            {
+                *word = address_of(copy);
             }
         }
-        Flat { kind: self.kind, words, blocks, named: self.named.clone() }
+        Flat { kind: self.kind, words, blocks }
+    }
+}
+
+/// Where the words of a flat message of one kind may name blocks, and how many words it takes:
+/// worked out from its type once a run on each thread, the first time a message is sent or taken
+/// there, so a send or a receive reads it rather than walking the type again (#2492).
+pub(in crate::embed) struct Plan {
+    width: usize,
+    parts: Box<[Part]>,
+}
+
+/// One place in a flat message's words where a block may be named.
+enum Part {
+    /// A string's three-word header at this word, naming a block unless its bytes are in place.
+    Text(usize),
+    /// A word naming a block, or 0 for none.
+    Block(usize),
+    /// An enum's case number at this word, and where each case's fields may name blocks.
+    Cases(usize, Box<[Box<[Part]>]>),
+}
+
+/// The plan of every kind the run has, `None` for one that isn't flat: made the first time this
+/// thread's runtime sends or takes a message as words.
+fn plans(state: &State) -> &[Option<Plan>] {
+    state.message_plans.get_or_init(|| {
+        let planned = |element: &std::rc::Rc<Element>| {
+            element.is_flat_message().then(|| {
+                let mut parts = Vec::new();
+                parts_of(element, 0, &mut parts);
+                Plan { width: element.words(), parts: parts.into_boxed_slice() }
+            })
+        };
+        state.tables.elements.iter().map(planned).collect()
+    })
+}
+
+/// The plan of kind `kind`, which the caller checked is flat: anything else is a bug in Fennec.
+fn plan_of(state: &State, kind: usize) -> &Plan {
+    let Some(Some(plan)) = plans(state).get(kind) else {
+        heap::runtime_bug("a message's kind isn't a flat one the program described");
+    };
+    plan
+}
+
+/// Into `parts`, where the words of a value of `element`, from word `at`, may name blocks.
+fn parts_of(element: &Element, at: usize, parts: &mut Vec<Part>) {
+    match element {
+        Element::Struct { fields, .. } => {
+            let mut field_at = at;
+            for (_, field) in fields {
+                parts_of(field, field_at, parts);
+                field_at += field.words();
+            }
+        }
+        Element::Text => parts.push(Part::Text(at)),
+        // Its first word is its case's number, and its case's fields follow; the words past them,
+        // up to the widest case's, are zero.
+        Element::Enum { cases, .. } => {
+            let cases = cases
+                .iter()
+                .map(|(_, fields)| {
+                    let mut case = Vec::new();
+                    let mut field_at = at + 1;
+                    for (_, field) in fields {
+                        parts_of(field, field_at, &mut case);
+                        field_at += field.words();
+                    }
+                    case.into_boxed_slice()
+                })
+                .collect();
+            parts.push(Part::Cases(at, cases));
+        }
+        // All three words zero is `None`, which `block_of` reads as no block too.
+        Element::Maybe(inner) if **inner == Element::Text => parts.push(Part::Text(at)),
+        Element::Str | Element::Boxed(_) | Element::Maybe(_) => parts.push(Part::Block(at)),
+        _ => {}
+    }
+}
+
+/// Calls `each` with the place in `words` of each word that names a block, as `parts` says.
+fn each_place(parts: &[Part], words: &[u64], each: &mut dyn FnMut(usize)) {
+    for part in parts {
+        match part {
+            Part::Text(at) => {
+                if let Some(header) =
+                    words.get(*at..at + 3).and_then(|header| <[u64; 3]>::try_from(header).ok())
+                    && super::super::text::block_of(&header).is_some_and(|block| block != 0)
+                {
+                    each(*at);
+                }
+            }
+            Part::Block(at) => {
+                if words.get(*at).is_some_and(|word| *word != 0) {
+                    each(*at);
+                }
+            }
+            Part::Cases(at, cases) => {
+                let case = words.get(*at).and_then(|number| usize::try_from(*number).ok());
+                let Some(fields) = case.and_then(|case| cases.get(case)) else {
+                    heap::runtime_bug("a message's case isn't one its enum has");
+                };
+                each_place(fields, words, each);
+            }
+        }
     }
 }
 
@@ -68,12 +181,11 @@ impl Flat {
 pub extern "C" fn channel_send_words(channel: i64, kind: i64, width: i64, done: i64, timeout_ns: i64) -> i64 {
     // First, before anything can make way: another task on this thread may fill the buffer next.
     let taken = with(|state| {
-        let (kind, element) = flat_kind(state, kind, width);
-        let words = buffered(state, element.words());
-        Some((kind, element, words))
+        let kind = flat_kind(state, kind, width);
+        Some((kind, buffered(state, plan_of(state, kind).width)))
     });
     // With no runtime running there's nothing to send on.
-    let Some((kind, element, words)) = taken else { return CLOSED };
+    let Some((kind, words)) = taken else { return CLOSED };
     if done != 0 {
         heap::runtime_bug("a message's owners were handed over at a send, which isn't built yet");
     }
@@ -86,9 +198,9 @@ pub extern "C" fn channel_send_words(channel: i64, kind: i64, width: i64, done: 
         Turn::Goes => -1,
         Turn::Gives(code) => return code,
     };
-    let copied = attempt(|state: &mut State| copied(state, kind, &element, words).map(Some));
+    let copied = attempt(|state: &mut State| copied(state, kind, words).map(Some));
     let Some(message) = copied else { return DONE };
-    send_on(&channel, Message::Words(Box::new(message)), timeout_ns)
+    send_on(&channel, Message::Words(message), timeout_ns)
 }
 
 /// `fennec_channel_receive_words(channel, kind, width, timeout_ns)`: takes the next message, of
@@ -97,7 +209,7 @@ pub extern "C" fn channel_send_words(channel: i64, kind: i64, width: i64, done: 
 /// otherwise, but 3, `NO_MESSAGE`, where that gives 0 with no message, as for a stop. A message that
 /// was sent as one word, or as another kind, stops the program as a bug in Fennec.
 pub extern "C" fn channel_receive_words(channel: i64, kind: i64, width: i64, timeout_ns: i64) -> i64 {
-    let Some(kind) = with(|state| Some(flat_kind(state, kind, width).0)) else { return CLOSED };
+    let Some(kind) = with(|state| Some(flat_kind(state, kind, width))) else { return CLOSED };
     match next(channel, timeout_ns) {
         Ok(message) => {
             taken_in(message, kind);
@@ -111,18 +223,18 @@ pub extern "C" fn channel_receive_words(channel: i64, kind: i64, width: i64, tim
 /// The kind numbered `kind`, checked as flat and `width` words wide: anything else is a bug in the
 /// code that asked, which stops the program. A kind the runtime numbered itself, past those the
 /// program described, is numbered on each thread, so it means nothing to the receiver: refused.
-fn flat_kind(state: &State, kind: i64, width: i64) -> (usize, std::rc::Rc<Element>) {
-    let found = usize::try_from(kind).ok().and_then(|at| Some((at, state.tables.elements.get(at)?)));
-    let Some((kind, element)) = found else {
+fn flat_kind(state: &State, kind: i64, width: i64) -> usize {
+    let found = usize::try_from(kind).ok().and_then(|at| Some((at, plans(state).get(at)?)));
+    let Some((kind, plan)) = found else {
         heap::runtime_bug("a message's kind isn't one the program described");
     };
-    if !element.is_flat_message() {
+    let Some(plan) = plan else {
         heap::runtime_bug("a message sent or received as words isn't flat");
-    }
-    if usize::try_from(width).ok() != Some(element.words()) {
+    };
+    if usize::try_from(width).ok() != Some(plan.width) {
         heap::runtime_bug("a message's width isn't its kind's");
     }
-    (kind, std::rc::Rc::clone(element))
+    kind
 }
 
 /// The first `count` words of this thread's buffer.
@@ -133,31 +245,39 @@ fn buffered(state: &State, count: usize) -> Box<[u64]> {
     .unwrap_or_else(|| heap::runtime_bug("a message is wider than the buffer it's passed in"))
 }
 
-/// `words`, a message of `element`, with each block they name copied, the word naming it pointed at
-/// its copy: a block two words name is copied once, with two owners. A block every thread can read,
-/// a string literal, isn't copied: it travels as its address. A block the sender can't find fails.
-fn copied(
+/// `words`, a message of kind `kind`, with each block they name copied, the word naming it pointed
+/// at its copy: a block two words name is copied once, with two owners. A block every thread can
+/// read, a string literal, isn't copied: it travels as its address. A block the sender can't find
+/// fails. Where the blocks are named, and which each copy was made of, are kept in this thread's
+/// own lists between sends, so a send makes only the copies and the list that holds them.
+fn copied(state: &mut State, kind: usize, mut words: Box<[u64]>) -> Result<Flat, Diagnostic> {
+    let (mut places, mut made_of) = std::mem::take(&mut state.message_lists);
+    places.clear();
+    made_of.clear();
+    each_place(&plan_of(state, kind).parts, &words, &mut |place| places.push(place));
+    let copies = copies(state, &places, &mut words, &mut made_of);
+    state.message_lists = (places, made_of);
+    Ok(Flat { kind, words, blocks: copies? })
+}
+
+/// The copies of the blocks the words at `places` in `words` name, each word pointed at its copy,
+/// with `made_of` the block each copy was made of, by its place in the copies.
+fn copies(
     state: &mut State,
-    kind: usize,
-    element: &Element,
-    mut words: Box<[u64]>,
-) -> Result<Flat, Diagnostic> {
-    let mut places = Vec::new();
-    block_places(element, 0, &words, &mut places);
+    places: &[usize],
+    words: &mut [u64],
+    made_of: &mut Vec<u64>,
+) -> Result<Vec<Box<[u64]>>, Diagnostic> {
     let mut blocks: Vec<Box<[u64]>> = Vec::new();
-    let mut named = Vec::new();
-    // Which block each copy was made of, by its place in `blocks`.
-    let mut made_of: Vec<u64> = Vec::new();
     for place in places {
-        let Some(&address) = words.get(place) else { continue };
+        let Some(&address) = words.get(*place) else { continue };
         if let Some(which) = made_of.iter().position(|old| *old == address) {
             if let Some(count) = blocks.get_mut(which).and_then(|block| block.first_mut()) {
                 *count += 1;
             }
-            if let (Some(word), Some(block)) = (words.get_mut(place), blocks.get(which)) {
+            if let (Some(word), Some(block)) = (words.get_mut(*place), blocks.get(which)) {
                 *word = address_of(block);
             }
-            named.push((place, which));
             continue;
         }
         let block = state.heap.block(address).ok_or_else(|| {
@@ -174,55 +294,13 @@ fn copied(
             *count = 1;
         }
         state.heap.copied(copy.len());
-        if let Some(word) = words.get_mut(place) {
+        if let Some(word) = words.get_mut(*place) {
             *word = address_of(&copy);
         }
-        named.push((place, blocks.len()));
         made_of.push(address);
         blocks.push(copy);
     }
-    Ok(Flat { kind, words, blocks, named })
-}
-
-/// The places in `words`, from `at`, of the words of a message of `element` that name a block.
-fn block_places(element: &Element, at: usize, words: &[u64], places: &mut Vec<usize>) {
-    match element {
-        Element::Struct { fields, .. } => {
-            let mut field_at = at;
-            for (_, field) in fields {
-                block_places(field, field_at, words, places);
-                field_at += field.words();
-            }
-        }
-        Element::Text => {
-            if let Some(header) = words.get(at..at + 3).and_then(|header| <[u64; 3]>::try_from(header).ok())
-                && super::super::text::block_of(&header).is_some_and(|block| block != 0)
-            {
-                places.push(at);
-            }
-        }
-        // Its first word is its case's number, and its case's fields follow; the words past them,
-        // up to the widest case's, are zero.
-        Element::Enum { cases, .. } => {
-            let case = words.get(at).and_then(|number| usize::try_from(*number).ok());
-            let Some((_, fields)) = case.and_then(|case| cases.get(case)) else {
-                heap::runtime_bug("a message's case isn't one its enum has");
-            };
-            let mut field_at = at + 1;
-            for (_, field) in fields {
-                block_places(field, field_at, words, places);
-                field_at += field.words();
-            }
-        }
-        // All three words zero is `None`, which `block_of` reads as no block too.
-        Element::Maybe(inner) if **inner == Element::Text => block_places(inner, at, words, places),
-        Element::Str | Element::Boxed(_) | Element::Maybe(_)
-            if words.get(at).is_some_and(|word| *word != 0) =>
-        {
-            places.push(at);
-        }
-        _ => {}
-    }
+    Ok(blocks)
 }
 
 /// Takes `message` in as the receiver's: its blocks into this thread's heap, marked as its own, and
@@ -230,7 +308,7 @@ fn block_places(element: &Element, at: usize, words: &[u64], places: &mut Vec<us
 fn taken_in(message: Message, kind: usize) {
     with(|state| {
         let words = match message {
-            Message::Words(words) => *words,
+            Message::Words(words) => words,
             Message::SharedWords(kept) => kept.copied(state),
             Message::Word(_) | Message::Block(..) | Message::Shared(..) => {
                 heap::runtime_bug("a message sent as one word was received as words")

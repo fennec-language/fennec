@@ -393,6 +393,7 @@ fn each_listener_of_a_channel_to_every_takes_its_own_copy_of_an_enum_s_blocks() 
 #[should_panic(expected = "a message's case isn't one its enum has")]
 fn a_case_its_enum_does_not_have_stops_the_program() {
     // Through `fennec_channel_send_words` it stops the program, which a test can't catch.
-    let mut places = Vec::new();
-    block_places(&event(), 0, &[4, 0, 0, 0, 0], &mut places);
+    let mut parts = Vec::new();
+    parts_of(&event(), 0, &mut parts);
+    each_place(&parts, &[4, 0, 0, 0, 0], &mut |_| {});
 }

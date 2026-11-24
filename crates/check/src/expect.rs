@@ -224,17 +224,17 @@ impl FnCx<'_> {
         (left, right)
     }
 
-    /// The sized number a type's own operator takes on its right, if its first definition takes
-    /// one: `f32` for `def *(self, scale: f32)`.
+    /// The sized number a struct's own operator takes on its right, if its first definition is
+    /// written to take one: `f32` for `def *(self, scale: f32)`. It reads only what's written, so
+    /// it asks for no signature, which would note a call the operator's own check notes later.
     pub(crate) fn operator_takes_sized(&mut self, op: BinOp, left: &Type) -> Option<Type> {
-        let left = self.checker.settled(left);
-        if matches!(left, Type::Sized(_)) {
+        let Type::Named(owner) = self.checker.settled(left) else { return None };
+        let (_, entry) = self.checker.program.method(&owner, op.method_name()?)?;
+        let written = entry.def.params.get(1)?.ty.as_ref()?;
+        if !written.args.is_empty() || written.optional {
             return None;
         }
-        let (owner, method) = (left.method_owner()?, op.method_name()?);
-        let (key, _) = self.checker.program.method(owner, method)?;
-        let param = self.method_signature(&left, &key)?.params.get(1)?.ty.clone();
-        Some(self.checker.settled(&param)).filter(|takes| matches!(takes, Type::Sized(_)))
+        crate::types::Num::named(&written.name).map(Type::Sized)
     }
 
     pub(crate) fn operands(&mut self, lhs: &Expr, rhs: &Expr) -> (Type, Type) {

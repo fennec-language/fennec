@@ -227,7 +227,7 @@ fn every_modules_names_have_to_be_imported() {
         [
             "can't use `+` on a float and a str @ math.sqrt(2.0) + \"a\"",
             "can't use `+` on a float and a str @ math.PI + \"a\"",
-            "can't use `+` on a float and a str @ math.Vec3.zero().x + \"a\"",
+            "can't use `+` on an f32 and a str @ math.Vec3.zero().x + \"a\"",
             "can't use `+` on an int and a str @ pool[id] + \"a\"",
         ]
     );

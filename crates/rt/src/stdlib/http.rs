@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::net::SecureStream;
-use super::net::{Failure, TlsServer, Waits, Wanted, parked_out_on};
+use super::net::{Failure, TlsServer, Waits, Wanted, connected_until, parked_out_on};
 
 /// How many redirects a request follows.
 const MOST_REDIRECTS: usize = 10;
@@ -332,30 +332,13 @@ fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream,
         .to_socket_addrs()
         .map_err(|_| Failure::NotFound(url.host.clone()))?
         .collect();
-    let mut failure = Failure::NotFound(url.host.clone());
-    for address in addresses {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(Failure::TimedOut(timeout));
-        }
-        match TcpStream::connect_timeout(&address, left) {
-            Ok(stream) => {
-                // A request is its head and then its body, two writes. Each goes out at once,
-                // rather than the body waiting for the head to be acknowledged, which a server
-                // may delay by up to 40 ms. If it can't be set, the request is only slower.
-                let _ = stream.set_nodelay(true);
-                return Ok(stream);
-            }
-            Err(error) => {
-                failure = match error.kind() {
-                    ErrorKind::ConnectionRefused => Failure::Refused(url.host.clone(), i64::from(url.port)),
-                    ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut(timeout),
-                    _ => Failure::Other(error.to_string()),
-                };
-            }
-        }
-    }
-    Err(failure)
+    let target = (url.host.as_str(), url.port);
+    let stream = super::net::first_connected(target, &addresses, (timeout, Some(deadline)), connected_until)?;
+    // A request is its head and then its body, two writes. Each goes out at once, rather than the
+    // body waiting for the head to be acknowledged, which a server may delay by up to 40 ms. If it
+    // can't be set, the request is only slower.
+    let _ = stream.set_nodelay(true);
+    Ok(stream)
 }
 
 /// A connection with TLS over it.

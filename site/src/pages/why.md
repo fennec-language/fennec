@@ -14,7 +14,7 @@ Builds that take minutes break your focus. Build setups that need pages of confi
 
 **Fast iteration while you work.** When you change a line, you should see the result in moments. Fennec compiles a function at a time and caches each one by its content, so a change costs only what it touches.
 
-**What you run is what ships.** There's one optimizing backend, LLVM, so the program you try while you work is the one you ship, with no garbage collector. Whole-program optimization is the only extra step, and it comes with `--release`. On eight real programs, release builds run at 77.2% to 139.6% of the speed of hand-written twins by instructions on an Apple M5, and at 60.9% to 128.0% by clock in CI on Linux, measured on 2026-11-18.
+**What you run is what ships.** There's one optimizing backend, LLVM, so the program you try while you work is the one you ship, with no garbage collector. Whole-program optimization is the only extra step, and it comes with `--release`. On eight real programs, release builds run at 77.2% to 139.6% of the speed of hand-written Rust twins by instructions on an Apple M5, and at 60.9% to 128.0% by clock in CI on Linux, measured on 2026-11-18.
 
 **Code that reads like Python.** If you can read Python, you can read Fennec: indentation, `def`, comprehensions and f-strings, with types checked before anything runs.
 

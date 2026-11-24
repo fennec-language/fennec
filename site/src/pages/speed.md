@@ -1,7 +1,7 @@
 ---
 layout: ../layouts/Doc.astro
 title: How Fennec gets fast
-description: How Fennec runs near native speed and builds almost instantly, with one LLVM backend and a function-level cache.
+description: How Fennec runs close to Rust and builds almost instantly, with one LLVM backend and a function-level cache.
 ---
 
 # How Fennec gets fast
@@ -12,7 +12,7 @@ description: How Fennec runs near native speed and builds almost instantly, with
 
 `fennec run` builds through LLVM one function at a time, and each function is cached by its content, so a change recompiles only what it touched. Where LLVM can't build a program yet, it says why, as `fennec build` does. `fennec build` always makes a native program through LLVM, and `--release` optimizes the whole program as one.
 
-In CI on 2026-11-07, release builds of the kernel suite ran at 96.3% of the speed of hand-written twins in a fast, C-class systems language on x86-64 Linux, and 101.6% on Arm macOS, by clock. That's the whole run of each program, startup included. A development build of one kernel took well under a second. The [benchmarks](/benchmarks/) have every number and how it's measured.
+In CI on 2026-11-07, release builds of the kernel suite ran at 96.3% of the speed of hand-written Rust twins on x86-64 Linux, and 101.6% on Arm macOS, by clock. That's the whole run of each program, startup included. A development build of one kernel took well under a second. The [benchmarks](/benchmarks/) have every number and how it's measured.
 
 ## One backend
 
@@ -69,10 +69,10 @@ Fast builds come from design decisions, not just a fast compiler.
 
 ## The performance target
 
-Each benchmark has a twin: idiomatic code for the same work in a fast, C-class systems language, fully optimized and with overflow checks, as Fennec has. Release builds aim for 110% of the twin's speed on every kernel. That's a promise we intend to check, not just make:
+Each benchmark has a twin: idiomatic Rust for the same work, fully optimized and with overflow checks, as Fennec has. Release builds aim for 110% of the twin's speed on every kernel. That's a promise we intend to check, not just make:
 
 - A suite of kernels that cover the ways a language has to be fast: calls, float math, hash tables, strings, allocation, generics, closures and object-heavy code.
-- Each written idiomatically in Fennec and compared against expert hand-written native code.
+- Each written idiomatically in Fennec and compared against expert hand-written Rust.
 - Realistic work that neither side's optimizer can delete.
 - Twins are built for a fixed CPU level so they're reproducible. Where the twin's standard library does something Fennec doesn't, like a slower default hash, the twin matches Fennec, and the standard default is shown as its own number.
 - A slow kernel is fixed in the compiler, never by changing the benchmark. Once a kernel reaches its floor, CI fails if it drops below it.

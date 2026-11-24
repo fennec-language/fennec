@@ -99,6 +99,18 @@ pub(crate) fn missing_step(span: Span) -> Diagnostic {
         .with_help("end the chain with `else` and a default, like `x.name else \"\"`, or check with `if x is None:` first")
 }
 
+/// A chain ending in `else` that goes through a call that can fail, at that call: `else` is for a
+/// value that's missing, and a failure is handled with `except`, on a line of its own.
+pub(crate) fn else_through_failure(call: Span) -> Diagnostic {
+    Diagnostic::new(
+        "this can fail, and `else` doesn't handle a failure: `else` is for a value that's missing",
+        call,
+    )
+    .with_help(
+        "give the call its own line with `except`, as `found = find(id) except why:` or `found = find(id) except Lost(): None`, then go on from it: `found.name else \"?\"`",
+    )
+}
+
 /// What to do with a failure nothing handles, in the forms of 2026-11-11.
 const HANDLE_IT: &str = "handle the failure with `except why:`, give a value for the cases it fails with, as `x = f() except Missing(): 0`, or pass it up with `?` from a function that says `fails`";
 

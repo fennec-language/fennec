@@ -2461,8 +2461,10 @@ fn a_loop_and_a_block_keep_their_names_to_themselves() {
     );
 }
 
+/// A call that can fail gets its own line with `except`, and a chain from what it gave ends in
+/// `else` at the first step that's missing.
 #[test]
-fn an_else_ends_a_chain_at_a_missing_or_failed_step() {
+fn an_else_ends_a_chain_at_a_missing_step() {
     prints(
         "
         error Lost:
@@ -2476,7 +2478,9 @@ fn an_else_ends_a_chain_at_a_missing_or_failed_step() {
             return Part(name='gear')
 
         def main(stdout: Stdout):
-            stdout.print(find(1).name else '?', find(2).name else '?')
+            first = find(1) except Lost(): None
+            second = find(2) except Lost(): None
+            stdout.print(first.name else '?', second.name else '?')
             counts = {'a': 1}
             stdout.print(counts.get('b') else 0, counts.get('a') else 0)
         ",

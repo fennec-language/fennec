@@ -70,6 +70,8 @@ pub(crate) fn with_spec(number: &Number, spec: &str) -> Option<String> {
     let text = match (number, kind, places) {
         (Number::Int(n), "" | "d", None) => n.to_string(),
         (Number::Int(n), "" | "f", Some(places)) => format!("{:.places$}", int_as_float(*n)),
+        // A NaN or an infinity prints as it does without a spec, so a NaN is `nan`, not Rust's `NaN`.
+        (Number::Float(x), "" | "f", Some(_)) if !x.is_finite() => float(*x),
         (Number::Float(x), "" | "f", Some(places)) => format!("{x:.places$}"),
         (Number::Float(x), "" | "f", None) => float(*x),
         _ => return None,

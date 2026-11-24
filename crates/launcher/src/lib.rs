@@ -148,8 +148,7 @@ impl Helper {
     ///
     /// When the program running can't be found.
     pub fn beside_this() -> Result<Self, String> {
-        let this = std::env::current_exe().map_err(|err| format!("couldn't find the launcher: {err}"))?;
-        Ok(Helper(this.with_file_name(format!("fennec-fetch{}", std::env::consts::EXE_SUFFIX))))
+        beside_this("fennec-fetch").map(Helper)
     }
 
     fn run(&self, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -180,6 +179,65 @@ impl Web for Helper {
         let said = self.run(&["redirect", url])?;
         Ok(String::from_utf8_lossy(&said).trim().to_owned())
     }
+}
+
+/// The program `name` beside the one running, as the launcher's programs are installed together.
+///
+/// # Errors
+///
+/// When the program running can't be found.
+pub fn beside_this(name: &str) -> Result<PathBuf, String> {
+    let this = std::env::current_exe().map_err(|err| format!("couldn't find the launcher: {err}"))?;
+    Ok(this.with_file_name(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The launcher's three programs, as installed side by side in Fennec's `bin`: `fennec`, which
+/// hands a command to the toolchain it's for when that's installed already; `fennec-setup`, which
+/// it hands everything else to; and `fennec-fetch`, which does the network's work.
+pub const PROGRAMS: [&str; 3] = ["fennec", "fennec-setup", "fennec-fetch"];
+
+/// Runs `command` in place of this process, with the arguments, called `fennec` as the launcher
+/// was: signals, the exit code and every stream go straight to it. It's told to fetch nothing when
+/// the launcher was.
+///
+/// # Errors
+///
+/// When it can't be run.
+#[cfg(unix)]
+pub fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<std::process::ExitCode, String> {
+    use std::os::unix::process::CommandExt as _;
+    let err = toolchain(command, args, offline).arg0("fennec").exec();
+    Err(format!("couldn't run {}: {err}", command.display()))
+}
+
+/// Runs `command`, with the arguments, and exits as it does. Ctrl-C reaches every program in the
+/// console, so the launcher lets it go by and waits: the program decides what it means, and the
+/// launcher exits as it does, rather than leaving it running behind a prompt.
+///
+/// # Errors
+///
+/// When it can't be run.
+#[cfg(not(unix))]
+pub fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<std::process::ExitCode, String> {
+    ctrlc::set_handler(|| {})
+        .map_err(|err| format!("couldn't let Ctrl-C through to the toolchain: {err}"))?;
+    let status = toolchain(command, args, offline)
+        .status()
+        .map_err(|err| format!("couldn't run {}: {err}", command.display()))?;
+    Ok(status
+        .code()
+        .and_then(|code| u8::try_from(code).ok())
+        .map_or(std::process::ExitCode::FAILURE, std::process::ExitCode::from))
+}
+
+/// `command` with the arguments, told to fetch nothing when the launcher was.
+fn toolchain(command: &Path, args: &[String], offline: bool) -> std::process::Command {
+    let mut toolchain = std::process::Command::new(command);
+    toolchain.args(args);
+    if offline {
+        toolchain.env("FENNEC_OFFLINE", "1");
+    }
+    toolchain
 }
 
 /// What a launcher knows: where toolchains go, where releases come from, and whom it trusts.
@@ -428,14 +486,31 @@ impl Launcher {
         version: &str,
         pin: Option<fennec_blake3::Hash>,
     ) -> Result<fennec_blake3::Hash, String> {
+        match self.found(version, pin)? {
+            Some(hash) => Ok(hash),
+            None if self.offline => {
+                Err(format!("Fennec {version} isn't installed, and --offline says not to fetch it"))
+            }
+            None => self.install(version, pin),
+        }
+    }
+
+    /// The hash of the manifest of the toolchain `version`, if it's installed. Nothing is
+    /// fetched, installed or written.
+    ///
+    /// # Errors
+    ///
+    /// When it isn't a version, or what's installed isn't `pin` or is where others could write.
+    fn found(
+        &self,
+        version: &str,
+        pin: Option<fennec_blake3::Hash>,
+    ) -> Result<Option<fennec_blake3::Hash>, String> {
         if !kit::plain_version(version) {
             return Err(format!("`{version}` isn't a version"));
         }
         let Ok(manifest) = std::fs::read(self.folder(version).join("manifest")) else {
-            if self.offline {
-                return Err(format!("Fennec {version} isn't installed, and --offline says not to fetch it"));
-            }
-            return self.install(version, pin);
+            return Ok(None);
         };
         // A toolchain is run as it's found, as one installed another way is, and the pin in
         // kit.lock is what holds a kit to its own. But not from a folder others can write to,
@@ -454,8 +529,40 @@ impl Launcher {
                 hash.to_hex(),
                 pin.to_hex()
             )),
-            _ => Ok(hash),
+            _ => Ok(Some(hash)),
         }
+    }
+
+    /// The `fennec` to hand a command to, run from the folder `from`, when it's there to run as it
+    /// is: what `toolchain_for`, or with a version named `exactly` or `outside_a_kit`, gives, with
+    /// every check, for a toolchain installed already and a kit pinned already. Nothing is fetched,
+    /// installed or written, and none of the code that would is reached, so the launcher's `fennec`
+    /// links none of it. None for anything else, which those then do in full and say what's wrong.
+    #[must_use]
+    pub fn ready(&self, from: &Path, pick: Option<&Pick>) -> Option<PathBuf> {
+        let root = kit::root(from).ok()?;
+        let version = match (pick, root) {
+            (Some(Pick::JustThisOnce(version)), _) | (Some(Pick::OutsideAKit(version)), None) => {
+                version.clone()
+            }
+            (Some(Pick::OutsideAKit(_)), Some(_)) => return None,
+            (None, None) => self.for_scripts()?,
+            (None, Some(root)) => {
+                let version = kit::version(&std::fs::read_to_string(root.join("kit.toml")).ok()?).ok()?;
+                if kit::linked_name(&version) {
+                    return self.linked_command(&version).ok();
+                }
+                let (pinned, hash) =
+                    kit::pinned(&std::fs::read_to_string(root.join("kit.lock")).ok()?).ok()??;
+                self.found(&version, Some(hash)).ok()?.filter(|_| pinned == version)?;
+                return Some(self.command(&version));
+            }
+        };
+        if kit::linked_name(&version) {
+            return self.linked_command(&version).ok();
+        }
+        self.found(&version, None).ok()??;
+        Some(self.command(&version))
     }
 
     /// The newest release there is, checked as one to install would be: what `--latest` asks, and
@@ -554,13 +661,13 @@ impl Launcher {
         std::fs::read(&path).map_err(|err| format!("couldn't read {}: {err}", path.display()))
     }
 
-    /// Replaces this launcher, `running`, which is version `this`, with the newest launcher
-    /// release in `launchers`, a folder or the address of one, and `fennec-fetch` beside it. Only
-    /// the launcher installed in Fennec's folder, `bin/fennec`, replaces itself, and only with a
-    /// release newer than it that two of the release keys signed. Each program is written beside
-    /// where it goes and moved there, so each is the old one or the new one, never part of one;
-    /// `fennec-fetch` goes first, so one stopped halfway is still the old launcher, and the next
-    /// `self update` does it all again. Gives back what changed.
+    /// Replaces this launcher, which is version `this` and whose `fennec-setup` is `running`, with
+    /// the newest launcher release in `launchers`, a folder or the address of one: each of its
+    /// `PROGRAMS`. Only the launcher installed in Fennec's folder, in `bin`, replaces itself, and
+    /// only with a release newer than it that two of the release keys signed. Each program is
+    /// written beside where it goes and moved there, so each is the old one or the new one, never
+    /// part of one; `fennec` goes last, so one stopped halfway is still the old launcher, and the
+    /// next `self update` does it all again. Gives back what changed.
     ///
     /// # Errors
     ///
@@ -580,13 +687,14 @@ impl Launcher {
             return Err("--offline says not to fetch a new launcher".to_owned());
         }
         let bin = self.home.join("bin");
-        let installed = bin.join(fennec_file());
+        let programs = PROGRAMS.map(|program| format!("{program}{}", std::env::consts::EXE_SUFFIX));
+        let installed = bin.join(&programs[1]);
         let same = |a: &Path, b: &Path| a.canonicalize().is_ok_and(|a| b.canonicalize().ok() == Some(a));
         if !same(running, &installed) {
             return Err(format!(
-                "this launcher is {}, not the one installed as {}, so it doesn't replace itself",
+                "this launcher is {}, not the one installed in {}, so it doesn't replace itself",
                 running.display(),
-                installed.display()
+                bin.display()
             ));
         }
         if !fennec_dist::trusted(&bin) {
@@ -623,13 +731,14 @@ impl Launcher {
             .ok_or_else(|| format!("the launcher {newest} has no release for {}", self.target))?;
         let bytes = self.read_from(launchers, &format!("v{newest}/{}", archive.file), archive.size)?;
         archive.check(&bytes)?;
-        let fetcher = format!("fennec-fetch{}", std::env::consts::EXE_SUFFIX);
-        let entries = unpacked(archive, &bytes, &[&fennec_file(), &fetcher])?;
+        let entries = unpacked(archive, &bytes, &programs.each_ref().map(String::as_str))?;
         let partial = bin.join(format!(".update.{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&partial);
         let placed = unpack::write(&entries, &partial).and_then(|()| {
-            put_in_place(&partial.join(&fetcher), &bin.join(&fetcher))?;
-            put_in_place(&partial.join(fennec_file()), &installed)
+            programs
+                .iter()
+                .rev()
+                .try_for_each(|program| put_in_place(&partial.join(program), &bin.join(program)))
         });
         let _ = std::fs::remove_dir_all(&partial);
         placed?;

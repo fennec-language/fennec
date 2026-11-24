@@ -24,6 +24,12 @@ use crate::lists::{FIELDS_OFFSET, list_item};
 const MISSING: &str =
     "this Id finds nothing in this Table: its item was taken out, or it's from another Table";
 
+/// This thread's run of tags for `add`: the next to hand out, then where the run ends.
+const TAGS: &str = "@fen_table_tags";
+
+/// How many tags a thread takes from the runtime's count at once.
+const TAGS_A_TIME: u32 = 65_536;
+
 /// A slot removed at the last generation an `Id` can hold, `-1 - u32::MAX`, which is never used
 /// again.
 const RETIRED: i64 = -4_294_967_296;
@@ -430,7 +436,7 @@ impl Emit<'_, '_, '_> {
                 let (generations_place, generations) = self.part(&block, parts.slots, !asks);
                 let (items_place, items) = self.part(&block, parts.items, !asks);
                 // A tag no `Id` has had, which the slot keeps for this item's.
-                let tag = self.new_tag();
+                let tag = self.tag_for_add();
                 let length = self.list_length(&generations);
                 // The first removed slot, if there is one, from where there could be one.
                 let fields = self.offset(&block, FIELDS_OFFSET);
@@ -767,6 +773,39 @@ impl Emit<'_, '_, '_> {
         let live_at = self.offset(&fields, parts.live);
         self.line(&format!("store i64 {taken}, ptr {live_at}"));
         self.assign(dest, &block)
+    }
+
+    /// A tag no `Id` has had, for an `add`: the next of this thread's own run of them, with no
+    /// atomic. A thread takes a run of `TAGS_A_TIME` from the runtime's one count when it has none
+    /// left, so every thread's tags, and those `fennec_new_tag` gives, are apart, and threads adding
+    /// at once never share the count's cache line for each one.
+    fn tag_for_add(&mut self) -> String {
+        self.declare(&format!(
+            "{TAGS} = linkonce_odr hidden thread_local(initialexec) global [2 x i64] zeroinitializer, align 8"
+        ));
+        self.declare("declare i64 @fennec_tag_count() nounwind");
+        let (next, end, have) = (self.temp(), self.temp(), self.temp());
+        let end_at = format!("getelementptr inbounds (i8, ptr {TAGS}, i64 8)");
+        self.line(&format!("{next} = load i64, ptr {TAGS}"));
+        self.line(&format!("{end} = load i64, ptr {end_at}"));
+        self.line(&format!("{have} = icmp ult i64 {next}, {end}"));
+        let before = self.current.clone();
+        let (more, ready) = (self.label("more_tags"), self.label("tagged"));
+        self.line(&format!("br i1 {have}, label %{ready}, label %{more}, !prof !8"));
+        self.start_block(&more);
+        let (address, count, first, last) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{address} = call i64 @fennec_tag_count()"));
+        self.line(&format!("{count} = inttoptr i64 {address} to ptr"));
+        self.line(&format!("{first} = atomicrmw add ptr {count}, i64 {TAGS_A_TIME} monotonic"));
+        self.line(&format!("{last} = add i64 {first}, {TAGS_A_TIME}"));
+        self.line(&format!("store i64 {last}, ptr {end_at}"));
+        self.line(&format!("br label %{ready}"));
+        self.start_block(&ready);
+        let (tag, after) = (self.temp(), self.temp());
+        self.line(&format!("{tag} = phi i64 [ {next}, %{before} ], [ {first}, %{more} ]"));
+        self.line(&format!("{after} = add i64 {tag}, 1"));
+        self.line(&format!("store i64 {after}, ptr {TAGS}"));
+        tag
     }
 
     /// A tag no `Table` has had, from the runtime's one count.

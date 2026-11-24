@@ -8,7 +8,7 @@ from std.collections import Id, Table
 from std.concurrent import Closed, Crashed, Sender, channel
 
 error Undone:
-    why: str
+    made: Id[Unit]
 
 struct Unit:
     health: int
@@ -80,16 +80,13 @@ def taken(world: shared World) -> Table[Unit]:
 
 # Adds an item to the shared Table and gives back its Id.
 def added(world: shared World, health: int) -> Id[Unit]:
-    mut made = list[Id[Unit]]()
     lock world as ref held:
-        made.append(held.units.add(Unit(health=health)))
-    return made[0]
+        return held.units.add(Unit(health=health))
 
-# Adds an item to the shared Table, keeps its Id, and fails, which puts the Table back as it was.
-def added_and_undone(world: shared World, ref made: list[Id[Unit]]) fails Undone:
+# Adds an item to the shared Table and fails with its Id, which puts the Table back as it was.
+def added_and_undone(world: shared World) fails Undone:
     lock world as ref held:
-        made.append(held.units.add(Unit(health=111)))
-        fail Undone(why="undone")
+        fail Undone(made=held.units.add(Unit(health=111)))
 
 # A Table read out of a lock, and a lock that fails.
 def locked(stdout: Stdout):
@@ -100,12 +97,13 @@ def locked(stdout: Stdout):
     shared_id = added(world, health=20)
     lock world as held:
         stdout.print("out of a lock:", own_id == shared_id, found(held.units, own_id), found(mine, shared_id))
-    mut made = list[Id[Unit]]()
-    added_and_undone(world, ref made) except Undone():
-        pass
+    # Its Id comes out with its failure, past the lock, which has put the Table back.
+    mut undone = list[Id[Unit]]()
+    added_and_undone(world) except Undone(made):
+        undone.append(made)
     next_id = added(world, health=222)
     lock world as held:
-        stdout.print("a lock that failed:", len(held.units), made[0] == next_id, found(held.units, made[0]))
+        stdout.print("a lock that failed:", len(held.units), undone[0] == next_id, found(held.units, undone[0]))
 
 def main(stdout: Stdout) fails Closed | Crashed:
     copies(stdout)

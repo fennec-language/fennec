@@ -201,6 +201,38 @@ fn build_on_threads(dir: &Path, source: &str, name: &str) -> std::io::Result<std
     Ok(executable)
 }
 
+/// Sums over `parallel` whose items count loops of their own (#2499): an inner `sum`, a filtered
+/// one, and a comprehension. Each range starts its partial from its own first item. It once took
+/// the inner loop's count for its position, so it never started the partial and added into
+/// whatever was on the stack. Every turn prints the same, and every sum is worked out by hand:
+/// 5,000 items are split into many ranges.
+const INNER_LOOPS: &str = "\
+def main(stdout: Stdout):
+    xs = [n for n in range(5000)]
+    for turn in range(3):
+        stdout.print(turn, sum(sum(y for y in [1, 2]) for x in parallel(xs)))
+        stdout.print(sum(float(x) * sum(float(y) * 1.5 for y in parallel([1, 2]) if y % 2 == 0) for x in parallel(xs)))
+        stdout.print(sum(len([y for y in range(x % 3)]) for x in parallel(xs)))
+";
+
+#[test]
+fn a_sum_whose_items_count_loops_of_their_own_adds_every_item_natively() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-inner-loops-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let executable = build_on_threads(&dir, INNER_LOOPS, "inner")?;
+    let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    let turn = |turn: u32| format!("{turn} 15000\n37492500.0\n4999\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), format!("{}{}{}", turn(0), turn(1), turn(2)));
+    Ok(())
+}
+
 #[test]
 fn ranges_run_on_the_runtime_s_workers_each_with_its_own_stack_limit_and_failure_flag() -> std::io::Result<()>
 {

@@ -2,7 +2,7 @@ error BadAge:
     text: str
 
 def parse_age(text: str) -> int fails BadAge:
-    return int(text) except InvalidValue(): fail BadAge(text=text)
+    return int.parse(text) except InvalidValue(): fail BadAge(text=text)
 
 def next_age(text: str) -> int fails BadAge:
     return parse_age(text)? + 1

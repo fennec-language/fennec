@@ -190,7 +190,6 @@ impl FnCx<'_> {
         self.lent_kept(target, value);
     }
 
-    /// The type a field or item holds, as declared: not narrowed by a check for None.
     /// The type what's given to a name is checked against: its written type, or what it holds
     /// where that's what decides, as a literal's size does.
     fn expected_by_name(
@@ -219,6 +218,7 @@ impl FnCx<'_> {
         }
     }
 
+    /// The type a field or item holds, as declared: not narrowed by a check for None.
     fn place_type(&mut self, target: &Expr) -> Type {
         match &target.kind {
             ExprKind::Attr { object, name, optional: false } => {

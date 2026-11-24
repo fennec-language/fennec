@@ -220,7 +220,7 @@ fn started(
     if std::env::var_os("FENNEC_RUN_WAITS").is_none() {
         use std::io::Write as _;
         use std::os::unix::process::CommandExt as _;
-        sweep_now_and_then(executable);
+        fennec_daemon::sweep_now_and_then(executable);
         let _ = std::io::stdout().flush();
         let _ = std::io::stderr().flush();
         let failed = command.exec();
@@ -310,67 +310,6 @@ fn exception_name(code: u32) -> &'static str {
         0xC000_013A => ", a Ctrl-C",
         0x8000_0003 => ", a breakpoint",
         _ => "",
-    }
-}
-
-/// How old what an earlier `fennec run` built has to be before a run sweeps it up: far longer than
-/// a run takes from building its program to starting it, so another run's is never taken from it
-/// in between. One still running can go: on Unix a running program keeps its file until it ends.
-#[cfg(unix)]
-const SWEPT_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
-
-/// How long after one sweep the next waits: a sweep looks at every file beside the program, which
-/// costs each run about 50 thousand instructions a file, and an agent running a program in a loop,
-/// or a machine running many tests, leaves a thousand there. Each run then only looks at when the
-/// last sweep was, and a file is never left there much past `SWEPT_AFTER`.
-#[cfg(unix)]
-const SWEPT_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// The file whose time says when the last sweep was, beside the programs runs built. It isn't a
-/// `fennec-run-` file, so no sweep takes it.
-#[cfg(unix)]
-const LAST_SWEPT: &str = "fennec-swept";
-
-/// Sweeps what earlier runs built, beside `executable`, unless that was done in the last
-/// `SWEPT_EVERY`.
-#[cfg(unix)]
-fn sweep_now_and_then(executable: &std::path::Path) {
-    let Some(folder) = executable.parent() else { return };
-    let marker = folder.join(LAST_SWEPT);
-    let recent = std::fs::metadata(&marker)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|swept| swept.elapsed().ok())
-        .is_some_and(|since| since < SWEPT_EVERY);
-    if recent {
-        return;
-    }
-    // Noted before sweeping, so runs that start meanwhile leave it to this one. A marker that
-    // can't be written only means the next run sweeps too.
-    let _ = std::fs::write(&marker, b"");
-    sweep_old_runs(executable);
-}
-
-/// Removes what earlier runs built and started, beside `executable`, once they're old enough.
-#[cfg(unix)]
-fn sweep_old_runs(executable: &std::path::Path) {
-    let Some(folder) = executable.parent() else { return };
-    let Ok(entries) = std::fs::read_dir(folder) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let ours = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("fennec-run-"));
-        let old = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > SWEPT_AFTER);
-        if ours && old && path != executable {
-            let _ = std::fs::remove_file(&path);
-        }
     }
 }
 
@@ -610,44 +549,14 @@ mod tests {
         // own, sweeps.
         let second = work.join("fennec-run-2-b-0");
         assert!(cache.link_out("programs", "root", &second).unwrap());
-        super::sweep_old_runs(&work.join("fennec-run-3-c-0"));
+        fennec_daemon::sweep_old_runs(&work.join("fennec-run-3-c-0"));
         assert!(second.exists(), "the sweep took a program about to start");
         // One an earlier run started long ago goes.
         let old = work.join("fennec-run-4-d-0");
         std::fs::write(&old, b"another program").unwrap();
         std::fs::File::open(&old).unwrap().set_modified(hours_ago).unwrap();
-        super::sweep_old_runs(&work.join("fennec-run-3-c-0"));
+        fennec_daemon::sweep_old_runs(&work.join("fennec-run-3-c-0"));
         assert!(!old.exists() && second.exists());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// A run sweeps only when the last sweep was a while ago, so with a thousand programs left
-    /// beside it, it looks at one file, not a thousand; once it's a while, it sweeps them all.
-    #[test]
-    fn a_run_sweeps_only_now_and_then() {
-        let dir =
-            fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-sweeps-{}", std::process::id())));
-        let _ = std::fs::remove_dir_all(&dir);
-        let work = dir.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        let hours_ago = SystemTime::now() - Duration::from_hours(4);
-        let old = |name: &str| {
-            let path = work.join(name);
-            std::fs::write(&path, b"a program").unwrap();
-            std::fs::File::open(&path).unwrap().set_modified(hours_ago).unwrap();
-            path
-        };
-        let first = old("fennec-run-1-a-0");
-        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
-        assert!(!first.exists(), "the first run sweeps");
-        let second = old("fennec-run-2-b-0");
-        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
-        assert!(second.exists(), "a run just after one that swept doesn't");
-        let marker = work.join(super::LAST_SWEPT);
-        let a_while_ago = SystemTime::now() - super::SWEPT_EVERY - Duration::from_secs(1);
-        std::fs::File::options().write(true).open(&marker).unwrap().set_modified(a_while_ago).unwrap();
-        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
-        assert!(!second.exists() && marker.exists(), "a run a while after one that swept does");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1161,7 +1161,8 @@ fn locals_changed_under_a_write_lock_are_let_go_of_as_outside_it() -> std::io::R
 /// computed argument made the method's place wait for the call, and something after the call took
 /// it out a second time, leaving its slot saying it was out: the crash wrote the emptied local
 /// over the value, whose next lock found its list and dict gone and crashed the process. The same
-/// program with a plain argument is beside it. `ThreadSanitizer` runs both.
+/// program with a plain argument is beside it, and one with two such calls in the lock.
+/// `ThreadSanitizer` runs all three.
 #[test]
 fn a_crash_under_a_lock_after_a_ref_call_with_a_computed_argument_keeps_the_value() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -1171,19 +1172,25 @@ fn a_crash_under_a_lock_after_a_ref_call_with_a_computed_argument_keeps_the_valu
         std::env::temp_dir().join(format!("fennec-parallel-lock-crash-ref-call-{}", std::process::id())),
     );
     std::fs::create_dir_all(&dir)?;
+    // The same with two calls in the lock, each of which takes the place out for itself.
     let programs = [
         (
             "lock_crash_after_a_ref_call_computed",
             include_str!("fixtures/workers/lock_crash_after_a_ref_call_computed.fen"),
+            include_str!("fixtures/workers/lock_crash_after_a_ref_call_computed.out"),
         ),
         (
             "lock_crash_after_a_ref_call_plain",
             include_str!("fixtures/workers/lock_crash_after_a_ref_call_plain.fen"),
+            include_str!("fixtures/workers/lock_crash_after_a_ref_call_plain.out"),
+        ),
+        (
+            "lock_crash_after_two_ref_calls",
+            include_str!("fixtures/workers/lock_crash_after_two_ref_calls.fen"),
+            include_str!("fixtures/workers/lock_crash_after_two_ref_calls.out"),
         ),
     ];
-    let wanted = include_str!("fixtures/workers/lock_crash_after_a_ref_call_computed.out");
-    assert_eq!(wanted, include_str!("fixtures/workers/lock_crash_after_a_ref_call_plain.out"));
-    for (name, source) in programs {
+    for (name, source, wanted) in programs {
         let built = build_on_threads(&dir, source, name)?;
         for threads in ["1", "4", "8"] {
             let ran = Command::new(&built)

@@ -872,24 +872,7 @@ impl Interp {
             return self.generator_from_def(def, vars, shown);
         }
         let previous = self.push_frame(vars, parent)?;
-        if let Some(frame) = self.frames.get_mut(self.cur) {
-            if let Some(owner) = self.program.owner_of(def) {
-                frame.owner = Some(owner.to_owned());
-            }
-            frame.types = types;
-        }
-        let returns = def.ret.as_ref().map_or(0, |ret| self.levels_written(ret));
-        if let Some(frame) = self.frames.get_mut(self.cur) {
-            frame.returns = returns;
-        }
-        for (name, given, written) in optionals {
-            let wanted = self.levels_written(written);
-            let Some(frame) = self.frames.get_mut(self.cur) else { break };
-            if let Some((_, Binding::Value(value))) = frame.vars.iter_mut().rfind(|(bound, _)| bound == name)
-            {
-                *value = super::typed::held_in(std::mem::replace(value, Value::Unit), Some(given), wanted);
-            }
-        }
+        self.frame_typed(def, types, optionals);
         let ran = (|| {
             for (name, default) in defaults {
                 let value = self.eval(default)?;
@@ -909,6 +892,36 @@ impl Interp {
             Err(Flow::Return(value)) => Ok(value),
             Err(Flow::Break | Flow::Continue) => unsupported("a `break` or `continue` outside a loop"),
             Err(other) => Err(other),
+        }
+    }
+
+    /// Notes on the call's new frame whose method it is, what its type parameters stand for and
+    /// how many levels of optional it gives back. Then each parameter in `optionals`, given a
+    /// `None` the checker typed as fewer levels than the parameter is written with, is held in a
+    /// `Some` for each level more.
+    fn frame_typed(
+        &mut self,
+        def: &'static FnDef,
+        types: Bound,
+        optionals: Vec<(&'static str, usize, &'static TypeExpr)>,
+    ) {
+        if let Some(frame) = self.frames.get_mut(self.cur) {
+            if let Some(owner) = self.program.owner_of(def) {
+                frame.owner = Some(owner.to_owned());
+            }
+            frame.types = types;
+        }
+        let returns = def.ret.as_ref().map_or(0, |ret| self.levels_written(ret));
+        if let Some(frame) = self.frames.get_mut(self.cur) {
+            frame.returns = returns;
+        }
+        for (name, given, written) in optionals {
+            let wanted = self.levels_written(written);
+            let Some(frame) = self.frames.get_mut(self.cur) else { break };
+            if let Some((_, Binding::Value(value))) = frame.vars.iter_mut().rfind(|(bound, _)| bound == name)
+            {
+                *value = super::typed::held_in(std::mem::replace(value, Value::Unit), Some(given), wanted);
+            }
         }
     }
 

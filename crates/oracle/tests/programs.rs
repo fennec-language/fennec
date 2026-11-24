@@ -5875,7 +5875,7 @@ fn an_optional_of_an_optional_keeps_a_none_inside_apart() {
 #[test]
 fn a_none_put_in_an_optional_of_an_optional_is_held_apart() {
     prints(
-        r#"
+        r"
         struct Holder:
             value: int??
 
@@ -5897,7 +5897,7 @@ fn a_none_put_in_an_optional_of_an_optional_is_held_apart() {
         def main(stdout: Stdout):
             probe(None, stdout)
             probe(3, stdout)
-        "#,
+        ",
         "False True False\nFalse True\nTrue\nFalse\nFalse True False\nFalse False\nTrue\nFalse\n",
     );
 }

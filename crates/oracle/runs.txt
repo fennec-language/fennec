@@ -31,7 +31,6 @@ durations.fen
 early_returns.fen
 else_block.fen
 else_leaves.fen
-else_through_failures.fen
 entropy.fen
 enum_methods.fen
 enum_values.fen

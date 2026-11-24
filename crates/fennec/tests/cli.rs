@@ -1592,6 +1592,39 @@ fn the_sites_front_page_program_and_every_pages_sample_compile() {
     assert!(samples.len() > 3, "found only {} samples on the site", samples.len());
 }
 
+/// The language page is the source of truth, so a whole program it shows has to compile as it's
+/// shown. A sample marked `fragment`, a piece of a program, or `planned`, not built yet, is left
+/// out, and the page says which are which.
+#[test]
+fn the_language_pages_whole_programs_compile() {
+    let page = std::fs::read_to_string(repo().join("docs/language.md")).unwrap();
+    let dir = scratch("language").unwrap();
+    let mut checked = 0;
+    let mut lines = page.lines().enumerate();
+    while let Some((at, line)) = lines.next() {
+        let Some(info) = line.strip_prefix("```fennec") else { continue };
+        let sample: Vec<&str> =
+            lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+        match info.trim() {
+            "fragment" | "planned" => continue,
+            "" => {}
+            other => panic!("the language page's sample at line {} is marked `{other}`", at + 2),
+        }
+        let name = format!("line_{}.fen", at + 2);
+        std::fs::write(dir.join(&name), sample.join("\n") + "\n").unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the language page's sample at line {} doesn't compile:\n{}",
+            at + 2,
+            text(&output.stderr)
+        );
+        checked += 1;
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(checked >= 4, "found only {checked} whole programs on the language page");
+}
+
 /// The guide says every sample compiles and passes its tests on main. Each whole program is
 /// checked as it's shown. One whose fence names a file, as ```` ```fennec src/store.fen ````, is
 /// that file of Hoard, the kit the guide builds: they're put together, in order, as the kit, which
@@ -3371,7 +3404,7 @@ fn fix_renames_a_top_level_name_that_starts_with_an_underscore() {
 
 /// `fennec fix` gives a function that uses a capability it wasn't given the parameter, passes it
 /// at each call, and gives each caller the parameter in turn, across a kit's files, up to the
-/// first that has one, `main`, or a test. A function named other than in a call is left alone.
+/// first that has one, or a test. A function named other than in a call is left alone.
 #[test]
 fn fix_threads_a_capability_up_to_the_first_caller_that_has_it() {
     let dir = fennec_temp::Temp::at(
@@ -3412,6 +3445,65 @@ fn fix_threads_a_capability_up_to_the_first_caller_that_has_it() {
     assert!(!left.status.success());
     assert_eq!(kept, as_value);
     assert!(text(&left.stderr).contains("`stdout` doesn't exist"), "{}", text(&left.stderr));
+}
+
+/// `fennec fix` never adds to `main`: what `main` takes is the program's grant, so only a person
+/// widens it. A chain reaching a `main` without the capability changes nothing anywhere, and the
+/// error says what to add to `main`; once a person has, the same fix threads it the rest of the way.
+#[test]
+fn fix_never_gives_main_a_capability() {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-cli-{}-main-grant", std::process::id())),
+    );
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"hello\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    let main = "from settings import load_settings\n\ndef main(stdout: Stdout):\n    stdout.print(load_settings())\n";
+    let settings = "export def load_settings() -> str:\n    return read_named(\"settings.toml\")\n\ndef read_named(name: str) -> str:\n    text = fs.read_text(name) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): \"none\"\n    return text\n";
+    std::fs::write(src.join("main.fen"), main).unwrap();
+    std::fs::write(src.join("settings.fen"), settings).unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    let refused = fennec(&["fix", &path], "").unwrap();
+    let main_after = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    let settings_after = std::fs::read_to_string(src.join("settings.fen")).unwrap();
+    // Used in `main` itself: the same.
+    let own = dir.join("own.fen");
+    let in_main = "def main(stdout: Stdout):\n    text = fs.read_text(\"settings.toml\") except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): \"none\"\n    stdout.print(text)\n";
+    std::fs::write(&own, in_main).unwrap();
+    let own_path = own.to_string_lossy().into_owned();
+    let own_refused = fennec(&["fix", &own_path], "").unwrap();
+    let own_after = std::fs::read_to_string(&own).unwrap();
+    // Once a person gives `main` an `Fs`, the fix passes it down.
+    std::fs::write(src.join("main.fen"), main.replace("(stdout: Stdout)", "(stdout: Stdout, fs: Fs)"))
+        .unwrap();
+    let threaded = fennec(&["fix", &path], "").unwrap();
+    let main_threaded = std::fs::read_to_string(src.join("main.fen")).unwrap();
+    let settings_threaded = std::fs::read_to_string(src.join("settings.fen")).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(!refused.status.success());
+    assert_eq!(main_after, main);
+    assert_eq!(settings_after, settings);
+    let said = text(&refused.stderr);
+    assert!(said.contains("`read_named` uses an `Fs`, and `main` doesn't take one"), "{said}");
+    assert!(
+        said.contains("`fennec fix` doesn't give `main` a capability: add `fs: Fs` to `main` if this program should touch files"),
+        "{said}"
+    );
+    assert!(!own_refused.status.success());
+    assert_eq!(own_after, in_main);
+    let said = text(&own_refused.stderr);
+    assert!(said.contains("`main` uses an `Fs`, and doesn't take one"), "{said}");
+    assert!(said.contains("add `fs: Fs` to `main`"), "{said}");
+    assert!(threaded.status.success(), "{}", text(&threaded.stderr));
+    assert_eq!(
+        main_threaded,
+        "from settings import load_settings\n\ndef main(stdout: Stdout, fs: Fs):\n    stdout.print(load_settings(fs))\n"
+    );
+    assert_eq!(
+        settings_threaded,
+        "export def load_settings(fs: Fs) -> str:\n    return read_named(fs, \"settings.toml\")\n\ndef read_named(fs: Fs, name: str) -> str:\n    text = fs.read_text(name) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(): \"none\"\n    return text\n"
+    );
 }
 
 /// `fennec fix` takes a plain `copy(...)` off, since every copy is a snapshot already, and keeps

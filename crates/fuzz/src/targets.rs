@@ -299,6 +299,13 @@ pub(crate) const TARGETS: [Target; 26] = [
         stuck: STUCK,
     },
     Target {
+        name: "http-splits",
+        corpus: &["crates/fuzz/seeds/http"],
+        tokens: &HTTP,
+        run: crate::http_sessions::http_splits,
+        stuck: STUCK,
+    },
+    Target {
         name: "http-client",
         corpus: &["crates/fuzz/seeds/http-client"],
         tokens: &HTTP,
@@ -404,6 +411,7 @@ pub(crate) const NATIVE: [&str; 18] = [
     "http-client-scripts",
     "http-server",
     "http-sessions",
+    "http-splits",
     "json",
     "json-rules",
     "numbers",

@@ -11,6 +11,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_OFFLINE`: never fetch anything. The launcher passes it on to the toolchain.
 - `FENNEC_TRUST`: folders, listed as `PATH` lists them, whose kits are trusted whoever owns them, as a project mounted into a container is the host user's. A folder anyone can write to still isn't. Without it, a kit is taken only through folders this user or the system owns.
 - `FENNEC_DIST`: the mirror the launcher fetches releases from.
+- `FENNEC_LAUNCHER_DIST`: the mirror `fennec self update` fetches launcher releases from.
 - `FENNEC_VERSION`: which release `install.sh` installs.
 - `FENNEC_DOWNLOAD`: where `install.sh` downloads from.
 - `FENNEC_STATIC`: `0` links a built program against the system's libc in place of musl.

@@ -10,6 +10,10 @@
 //! its toolchain's manifest, the first time it runs, and from then on nothing else is run for it:
 //! not a release made again under the same version, and not one installed by hand. Nothing here
 //! updates itself, or asks what's newest, unless asked.
+//!
+//! `fennec self update` replaces the launcher itself, with the newest launcher release, from
+//! `FENNEC_LAUNCHER_DIST` or the launcher's release folder. A launcher release has to be signed by
+//! two of the release keys, not one, since it's what checks everything else.
 
 mod kit;
 mod unpack;
@@ -24,6 +28,10 @@ pub const TARGET: &str = env!("FENNEC_TARGET");
 /// Where releases are fetched from, unless `FENNEC_DIST` says otherwise: each one's files are in
 /// `<dist>/v<version>/`.
 pub const RELEASES: &str = "https://github.com/fennec-language/fennec/releases/download";
+
+/// Where launcher releases come from, unless `FENNEC_LAUNCHER_DIST` says otherwise: `latest`, the
+/// newest one's version, and each one's files in `<dist>/v<version>/`.
+pub const LAUNCHER_RELEASES: &str = "https://dl.fennec-lang.dev/launcher";
 
 /// What `fennec default` says when none is set.
 pub const NO_DEFAULT: &str = "no version of Fennec is set for scripts outside a kit, so the newest stable one installed runs: `fennec default 0.4.2` sets one, with the version you want";
@@ -467,14 +475,7 @@ impl Launcher {
             let (_, version) = tag.rsplit_once("/tag/v").ok_or("the release page has no release yet")?;
             version.to_owned()
         } else {
-            let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist).trim_end_matches('/');
-            let latest = if dist.starts_with("https://") || dist.starts_with("http://") {
-                self.web.fetch(&format!("{dist}/latest"), MOST_BYTES)?
-            } else {
-                std::fs::read(Path::new(dist).join("latest"))
-                    .map_err(|err| format!("couldn't read {dist}/latest: {err}"))?
-            };
-            String::from_utf8_lossy(&latest).trim().to_owned()
+            self.latest_in(&self.dist)?
         };
         if !kit::plain_version(&version) {
             return Err(format!("couldn't tell the newest release from `{version}`"));
@@ -531,20 +532,114 @@ impl Launcher {
         })
     }
 
-    /// Reads one of a release's files that its signed manifest says how big is, taking in no more:
-    /// an archive.
-    fn fetch_at_most(&self, version: &str, file: &str, most: u64) -> Result<Vec<u8>, String> {
-        let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);
+    /// The version a mirror's file `latest` names, as it says it.
+    fn latest_in(&self, dist: &str) -> Result<String, String> {
+        let latest = self.read_from(dist, "latest", MOST_BYTES)?;
+        Ok(String::from_utf8_lossy(&latest).trim().to_owned())
+    }
+
+    /// Reads a file of `dist`, a folder or the address of one, taking in at most `most` bytes: an
+    /// archive's size comes from its signed manifest, and anything else is small.
+    fn read_from(&self, dist: &str, file: &str, most: u64) -> Result<Vec<u8>, String> {
+        let dist = dist.strip_prefix("file://").unwrap_or(dist);
         if dist.starts_with("https://") || dist.starts_with("http://") {
-            return self.web.fetch(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), most);
+            return self.web.fetch(&format!("{}/{file}", dist.trim_end_matches('/')), most);
         }
-        let path = Path::new(dist).join(format!("v{version}")).join(file);
+        let path = Path::new(dist).join(file);
         let size =
             std::fs::metadata(&path).map_err(|err| format!("couldn't read {}: {err}", path.display()))?.len();
         if size > most {
-            return Err(format!("{} is bigger than the {most} bytes its manifest says", path.display()));
+            return Err(format!("{} is bigger than the {most} bytes it can be", path.display()));
         }
         std::fs::read(&path).map_err(|err| format!("couldn't read {}: {err}", path.display()))
+    }
+
+    /// Replaces this launcher, `running`, which is version `this`, with the newest launcher
+    /// release in `launchers`, a folder or the address of one, and `fennec-fetch` beside it. Only
+    /// the launcher installed in Fennec's folder, `bin/fennec`, replaces itself, and only with a
+    /// release newer than it that two of the release keys signed. Each program is written beside
+    /// where it goes and moved there, so each is the old one or the new one, never part of one;
+    /// `fennec-fetch` goes first, so one stopped halfway is still the old launcher, and the next
+    /// `self update` does it all again. Gives back what changed.
+    ///
+    /// # Errors
+    ///
+    /// When there aren't enough release keys to sign one, the release isn't signed as it has to
+    /// be, is older, or has no archive for this platform with both programs in it, or the
+    /// programs can't be replaced.
+    pub fn self_update(&self, launchers: &str, running: &Path, this: &str) -> Result<String, String> {
+        let needs = Kind::Launcher.needs();
+        if self.trusted.len() < needs {
+            let keys = if self.trusted.len() == 1 { "key" } else { "keys" };
+            return Err(format!(
+                "this launcher trusts {} release {keys}, and a new launcher has to be signed by {needs}, so there's none it could install yet",
+                self.trusted.len()
+            ));
+        }
+        if self.offline {
+            return Err("--offline says not to fetch a new launcher".to_owned());
+        }
+        let bin = self.home.join("bin");
+        let installed = bin.join(fennec_file());
+        let same = |a: &Path, b: &Path| a.canonicalize().is_ok_and(|a| b.canonicalize().ok() == Some(a));
+        if !same(running, &installed) {
+            return Err(format!(
+                "this launcher is {}, not the one installed as {}, so it doesn't replace itself",
+                running.display(),
+                installed.display()
+            ));
+        }
+        if !fennec_dist::trusted(&bin) {
+            return Err(format!(
+                "{} is where others could write to it, so no launcher is put there",
+                bin.display()
+            ));
+        }
+        let newest = self.latest_in(launchers)?;
+        if !kit::plain_version(&newest) {
+            return Err(format!("couldn't tell the newest launcher from `{newest}`"));
+        }
+        match version_order(&newest).cmp(&version_order(this)) {
+            std::cmp::Ordering::Equal => return Ok(format!("the launcher is {this}, the newest, already\n")),
+            // A mirror can't roll the launcher back to an older one, with bugs since fixed, by
+            // calling it the latest.
+            std::cmp::Ordering::Less => {
+                return Err(format!(
+                    "the newest launcher the mirror names, {newest}, is older than this one, {this}"
+                ));
+            }
+            std::cmp::Ordering::Greater => {}
+        }
+        let name = format!("v{newest}/fennec-launcher-v{newest}.manifest");
+        let text = self.read_from(launchers, &name, MOST_BYTES)?;
+        let signatures = String::from_utf8(self.read_from(launchers, &format!("{name}.sig"), MOST_BYTES)?)
+            .map_err(|_| "the launcher's signatures aren't text".to_owned())?;
+        let manifest = fennec_dist::verified_by(&text, &signatures, Kind::Launcher, &self.trusted)?;
+        if manifest.version != newest {
+            return Err(format!("the launcher release {newest} says it's {}", manifest.version));
+        }
+        let archive = manifest
+            .archive(&self.target)
+            .ok_or_else(|| format!("the launcher {newest} has no release for {}", self.target))?;
+        let bytes = self.read_from(launchers, &format!("v{newest}/{}", archive.file), archive.size)?;
+        archive.check(&bytes)?;
+        let fetcher = format!("fennec-fetch{}", std::env::consts::EXE_SUFFIX);
+        let entries = unpacked(archive, &bytes, &[&fennec_file(), &fetcher])?;
+        let partial = bin.join(format!(".update.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&partial);
+        let placed = unpack::write(&entries, &partial).and_then(|()| {
+            put_in_place(&partial.join(&fetcher), &bin.join(&fetcher))?;
+            put_in_place(&partial.join(fennec_file()), &installed)
+        });
+        let _ = std::fs::remove_dir_all(&partial);
+        placed?;
+        Ok(format!("the launcher: {this} → {newest}\n"))
+    }
+
+    /// Reads one of a release's files that its signed manifest says how big is, taking in no more:
+    /// an archive.
+    fn fetch_at_most(&self, version: &str, file: &str, most: u64) -> Result<Vec<u8>, String> {
+        self.read_from(&self.dist, &format!("v{version}/{file}"), most)
     }
 
     /// Makes Fennec's folder and its toolchains' folder, if they aren't there, its user's alone, as
@@ -557,12 +652,7 @@ impl Launcher {
 
     /// Reads one of a release's files.
     fn fetch(&self, version: &str, file: &str) -> Result<Vec<u8>, String> {
-        let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);
-        if dist.starts_with("https://") || dist.starts_with("http://") {
-            return self.web.fetch(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), MOST_BYTES);
-        }
-        let path = Path::new(dist).join(format!("v{version}")).join(file);
-        std::fs::read(&path).map_err(|err| format!("couldn't read {}: {err}", path.display()))
+        self.read_from(&self.dist, &format!("v{version}/{file}"), MOST_BYTES)
     }
 
     /// Installs the toolchain `version`, giving back its manifest's hash.
@@ -598,21 +688,7 @@ impl Launcher {
             .ok_or_else(|| format!("Fennec {version} has no release for {}", self.target))?;
         let bytes = self.fetch_at_most(version, &archive.file, archive.size)?;
         archive.check(&bytes)?;
-        let entries = if let Some(top) = archive.file.strip_suffix(".tar.gz") {
-            unpack::tar_gz(&bytes, top)?
-        } else if let Some(top) = archive.file.strip_suffix(".zip") {
-            unpack::zip(&bytes, top)?
-        } else {
-            return Err(format!("{} isn't a .tar.gz or a .zip", archive.file));
-        };
-        let has_command = entries.iter().any(|entry| {
-            entry.runnable
-                && entry.bytes.is_some()
-                && entry.path == Path::new(&format!("fennec{}", std::env::consts::EXE_SUFFIX))
-        });
-        if !has_command {
-            return Err(format!("{} has no `fennec` to run", archive.file));
-        }
+        let entries = unpacked(archive, &bytes, &[&fennec_file()])?;
         let toolchains = self.toolchains();
         self.private_toolchains()?;
         // Unpacked beside where it goes and then moved there, so a toolchain is there whole or not at all.
@@ -633,6 +709,57 @@ impl Launcher {
         placed?;
         self.ensure(version, Some(hash))
     }
+}
+
+/// What a release's archive holds, checked already, which has to have each of `programs`, to run,
+/// in its top folder.
+fn unpacked(
+    archive: &fennec_dist::Archive,
+    bytes: &[u8],
+    programs: &[&str],
+) -> Result<Vec<unpack::Entry>, String> {
+    let entries = if let Some(top) = archive.file.strip_suffix(".tar.gz") {
+        unpack::tar_gz(bytes, top)?
+    } else if let Some(top) = archive.file.strip_suffix(".zip") {
+        unpack::zip(bytes, top)?
+    } else {
+        return Err(format!("{} isn't a .tar.gz or a .zip", archive.file));
+    };
+    for program in programs {
+        let there = entries
+            .iter()
+            .any(|entry| entry.runnable && entry.bytes.is_some() && entry.path == Path::new(program));
+        if !there {
+            let shown = program.strip_suffix(std::env::consts::EXE_SUFFIX).unwrap_or(program);
+            return Err(format!("{} has no `{shown}` to run", archive.file));
+        }
+    }
+    Ok(entries)
+}
+
+/// Moves the program `new` to `at`, in place of the one there, in one step. Windows won't let a
+/// program that's running be replaced, which the launcher is, but will let it be renamed: so there
+/// the old one is moved aside first, to a name of its own, and taken away the next time, when it's
+/// no longer running.
+fn put_in_place(new: &Path, at: &Path) -> Result<(), String> {
+    let failed = |err: std::io::Error| format!("couldn't put the new launcher in {}: {err}", at.display());
+    if cfg!(windows) && at.exists() {
+        let folder = at.parent().unwrap_or(Path::new("."));
+        for old in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+            if old.file_name().to_str().is_some_and(|name| name.starts_with(".replaced.")) {
+                let _ = std::fs::remove_file(old.path());
+            }
+        }
+        let name = at.file_name().and_then(|name| name.to_str()).unwrap_or("fennec");
+        let aside = folder.join(format!(".replaced.{name}.{}", std::process::id()));
+        std::fs::rename(at, &aside).map_err(failed)?;
+        return std::fs::rename(new, at).map_err(|err| {
+            // The old one goes back, so there's still a launcher to run.
+            let _ = std::fs::rename(&aside, at);
+            failed(err)
+        });
+    }
+    std::fs::rename(new, at).map_err(failed)
 }
 
 /// The name of the `fennec` command on this platform.

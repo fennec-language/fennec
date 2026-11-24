@@ -109,7 +109,7 @@ pub(super) fn push(
 ) -> Option<Message> {
     let message = message.map(|message| match message {
         Message::Block(address, table) => Message::Shared(address, Arc::new(*table)),
-        Message::Words(words) => Message::SharedWords(Arc::new(*words)),
+        Message::Words(words) => Message::SharedWords(Arc::new(words)),
         message => message,
     });
     queue.messages.extend(message);

@@ -159,6 +159,15 @@ impl Program {
         self.from_std.get(self.imported.get(imported_as, span)?).map(String::as_str)
     }
 
+    /// Whether the type called `name` is the core's own, not a program's of the same name.
+    pub(crate) fn core_type(&self, name: &str) -> bool {
+        let Some(declared) = self.types.get(name) else { return false };
+        let Ok(core) = fennec_syntax::core_to_run() else { return false };
+        core.iter()
+            .flat_map(|module| module.items.iter())
+            .any(|item| matches!(item, Item::Struct(def) if std::ptr::eq(def, declared.def)))
+    }
+
     /// Whether the code at `span` reaches the top-level function or constant `name`, which is
     /// std's when `std` says so, by the checker's own rule: std's code reaches only std's names,
     /// so a program's own `reversed` is never the one std's `Tree` calls. No code here is a
@@ -279,8 +288,9 @@ const RUN_FROM_SOURCE: &[&str] = &[
 /// `std.time`'s `Instant` and `Time`.
 const CAPABILITY_MODULES: &[(&str, &str)] = &[("Env", "env"), ("Clock", "time")];
 
-/// The core's types run from their own source, as `core_types` takes them in.
-const FROM_CORE: &[&str] = &["Template", "Interpolation"];
+/// The core's types run from their own source, as `core_types` takes them in: `embed_folder` gives
+/// an `EmbeddedFolder`.
+const FROM_CORE: &[&str] = &["Template", "Interpolation", "EmbeddedFolder"];
 
 /// The sized ints whose functions the core writes in Fennec, as `core_types` takes them in.
 const SIZED_FROM_CORE: &[&str] = &["i8", "i16", "i32", "u8", "u16", "u32", "u64"];
@@ -399,8 +409,9 @@ impl Gathered {
     }
 
     /// Takes in the types of the standard library's core a program may make without an import
-    /// that the oracle runs from their own source: the `Template` a template string builds, and
-    /// its `Interpolation`. A program's own type of either name is its own.
+    /// that the oracle runs from their own source: the `Template` a template string builds, its
+    /// `Interpolation`, and the `EmbeddedFolder` an `embed_folder` gives. A program's own type of
+    /// any of those names is its own.
     fn core_types(&mut self) -> Result<(), Refused> {
         let core =
             fennec_syntax::core_to_run().map_err(|problem| Refused::Invalid(problem.message.clone()))?;

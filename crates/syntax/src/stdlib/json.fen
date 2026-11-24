@@ -1028,7 +1028,8 @@ struct JsonReader:
             self._at = start
             fail self._misfit("f32")
         _ = self.float()?
-        value = f32(text_part(self._source, start, self._at)) except InvalidValue(): fail no_reason()
+        written = text_part(self._source, start, self._at)
+        value = f32(written) except InvalidValue(): fail no_reason()
         # A number too big for an f32 comes out as infinity, which isn't what it said.
         if value - value != 0.0:
             if not self._explain: fail no_reason()

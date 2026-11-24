@@ -35,6 +35,9 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_cos",
     "fennec_tan",
     "fennec_acos",
+    "fennec_sinf",
+    "fennec_cosf",
+    "fennec_acosf",
     "fennec_exp",
     "fennec_log",
     "fennec_float_power",
@@ -145,6 +148,7 @@ pub const NEVER_FAIL: &[&str] = &[
     // for as an answer. It runs under `with`, which sets no flag, and only reads the text's bytes
     // and parses them.
     "fennec_parse_float_header",
+    "fennec_parse_f32_header",
     // Where a part first is in a slice of a text, read where the text is, or -1 for nowhere, which
     // native code tests for as an answer. It runs under `with`, which sets no flag, and only reads
     // the two texts' bytes.
@@ -373,6 +377,9 @@ export! {
     fennec_cos(a0: f64) -> f64 => checks::cos(a0);
     fennec_tan(a0: f64) -> f64 => checks::tan(a0);
     fennec_acos(a0: f64) -> f64 => checks::acos(a0);
+    fennec_sinf(a0: f64) -> f64 => checks::sinf(a0);
+    fennec_cosf(a0: f64) -> f64 => checks::cosf(a0);
+    fennec_acosf(a0: f64) -> f64 => checks::acosf(a0);
     fennec_exp(a0: f64) -> f64 => checks::exp(a0);
     fennec_log(a0: f64) -> f64 => checks::log(a0);
     fennec_float_power(a0: f64, a1: f64) -> f64 => lists::float_power(a0, a1);
@@ -396,6 +403,8 @@ export! {
     fennec_parse_u64(a0: i64, a1: &mut i64) -> i64 => numbers::parse_u64(a0, a1);
     fennec_parse_float(a0: i64, a1: &mut i64) -> i64 => numbers::parse_float(a0, a1);
     fennec_parse_float_header(a0: u64, a1: u64, a2: u64, a3: &mut i64) -> i64 => numbers::parse_float_header(a0, a1, a2, a3);
+    fennec_parse_f32(a0: i64, a1: &mut i64) -> i64 => numbers::parse_f32(a0, a1);
+    fennec_parse_f32_header(a0: u64, a1: u64, a2: u64, a3: &mut i64) -> i64 => numbers::parse_f32_header(a0, a1, a2, a3);
     fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_u64_text(a0: i64) -> i64 => strings::u64_text(a0);

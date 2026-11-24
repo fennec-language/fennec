@@ -3756,9 +3756,18 @@ impl Emit<'_, '_, '_> {
                 let negative = self.temp();
                 self.line(&format!("{negative} = fcmp olt double {value}, {}", float_text(0.0)));
                 self.fail_if(&negative, NEGATIVE_SQRT, span);
-                self.declare("declare double @llvm.sqrt.f64(double)");
                 let temp = self.temp();
-                self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
+                if kind == Kind::F32 {
+                    // An `f32`'s square root, which IEEE makes exact, as the `f64` holding it.
+                    let (narrow, root) = (self.temp(), self.temp());
+                    self.declare("declare float @llvm.sqrt.f32(float)");
+                    self.line(&format!("{narrow} = fptrunc double {value} to float"));
+                    self.line(&format!("{root} = call float @llvm.sqrt.f32(float {narrow})"));
+                    self.line(&format!("{temp} = fpext float {root} to double"));
+                } else {
+                    self.declare("declare double @llvm.sqrt.f64(double)");
+                    self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
+                }
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             "int.abs" => {

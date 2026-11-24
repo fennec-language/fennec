@@ -1123,7 +1123,9 @@ impl Interp {
                     return unsupported("`channel_receive` with no place for why");
                 };
                 self.write_place(&place, Value::Int(why), span)?;
-                Ok(got)
+                // A `T?`, so a `None` sent on a `channel[int?]` is kept apart from the channel
+                // closing.
+                Ok(if why == 0 { Value::found(got) } else { got })
             }
             ("close", [Value::Int(number)]) => {
                 self.channel_in_rounds(*number, ChannelUse::Close)?;

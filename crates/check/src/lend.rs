@@ -126,7 +126,7 @@ impl FnCx<'_> {
     pub(crate) fn unplaced_try_in(&mut self, body: &[Stmt]) {
         if let Some(span) = unplaced_try(body) {
             self.error(
-                Diagnostic::new("this `?` might not run, and in a source's block that isn't built yet", span)
+                Diagnostic::new("a `?` that might not run isn't built yet in a source's block", span)
                     .with_help("take it to its own line first, like `got = f()?`, and use `got` here"),
             );
         }

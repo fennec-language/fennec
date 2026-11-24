@@ -1,0 +1,23 @@
+# A failure carries notes: `add_note` changes one held in a `mut` name, and `with_note` gives a copy
+# with one more.
+
+error LoadError:
+    path: str
+
+    def message(self) -> str:
+        return f"couldn't load {self.path}"
+
+def load(path: str) -> str fails LoadError:
+    fail LoadError(path=path)
+
+def main(stdout: Stdout) -> int:
+    loaded = load("save.json") except why:
+        mut failure = why
+        failure.add_note("while starting up")
+        passed_on = failure.with_note("using the defaults")
+        stdout.print(passed_on)
+        stdout.print(passed_on.notes())
+        ""
+    stdout.print(len(loaded))
+    # `main` may give back the exit code
+    return 0

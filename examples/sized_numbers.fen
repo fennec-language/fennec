@@ -1,0 +1,29 @@
+# Sized numbers convert only when written, check overflow, and say when they wrap.
+
+def main(stdout: Stdout):
+    # a literal takes the type it goes into, checked to fit
+    pixel: u8 = 250
+    speed: f32 = 1.5
+    small: i32 = 40000
+
+    # widening is written, and can't fail
+    wide = i64(small) * 100000
+    stdout.print(pixel, speed, wide)
+
+    # mixing sizes is an error, so one side is converted
+    total = int(pixel) + 1000
+    stdout.print(total)
+
+    # numbers from outside may not fit, so they fail cleanly
+    level = u8.from(300) except InvalidValue(): u8(0)
+    stdout.print(level)
+
+    # wrapping and saturating are written out; plain arithmetic checks overflow
+    stdout.print(pixel.wrapping_add(10), pixel.saturating_add(10))
+
+    # `<<` is bit work: it drops the bits shifted past the top
+    byte: u8 = 200
+    stdout.print(byte << 1, ~byte)
+
+    # `/` gives a float, `//` keeps the size
+    stdout.print(small / 3, small // 3)

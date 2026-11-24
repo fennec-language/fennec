@@ -386,9 +386,7 @@ impl FnCx<'_> {
                 "this arrow function can fail, but where it's passed takes one that can't",
                 body.span,
             )
-            .with_help(
-                "give a value for a failure with `else` inside it, or write a loop, which can use `?`",
-            ),
+            .with_help("handle the failure inside it with `except`, or write a loop, which can use `?`"),
         );
     }
 
@@ -1019,6 +1017,27 @@ impl FnCx<'_> {
         signature.returns
     }
 
+    /// A `with` source of a type parameter's interface, as `self.db.transaction()` for `D:
+    /// Database`, called in a method: refused. A generic function runs the source of each type it's
+    /// called with, from a copy made for that type, and a method has no copy of its own.
+    fn no_interface_source_in_a_method(&mut self, param: &str, method: &str, span: Span) {
+        let Some(entry) = self.checker.program.functions.get(&self.key) else { return };
+        let Some(owner) = entry.owner.as_deref() else { return };
+        let name = entry.def.name.rsplit('.').next().unwrap_or(&entry.def.name).to_owned();
+        let shown = owner.rsplit(fennec_syntax::KIT_MARK).next().unwrap_or(owner).to_owned();
+        let bound = self.bounds_of(param).first().cloned().unwrap_or_else(|| "Interface".to_owned());
+        let message = format!(
+            "`{method}` is a `with` source of `{param}`'s interface, which runs from a generic function, not from a method like `{shown}.{name}`"
+        );
+        let generic_owner =
+            self.checker.program.type_info(owner).is_some_and(|info| !info.def.generics.is_empty());
+        let takes = if generic_owner { format!("{shown}[{param}]") } else { shown.clone() };
+        let help = format!(
+            "write it as a generic function, as `def {name}[{param}: {bound}](value: {takes}, ...)`, which runs the source of the type it's called with"
+        );
+        self.error(Diagnostic::new(message, span).with_help(help));
+    }
+
     /// A method called on a value of a type parameter, which has the methods of its
     /// interfaces and no others.
     fn interface_call(&mut self, call: &MethodCall<'_>, name: &str) -> Type {
@@ -1050,6 +1069,7 @@ impl FnCx<'_> {
         };
         if crate::lend::lent(gives).is_some() {
             self.checker.generic_sources.insert(self.key.clone());
+            self.no_interface_source_in_a_method(name, method, span);
         }
         if signature.params.first().is_some_and(|param| param.is_mut) {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");

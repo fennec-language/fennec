@@ -136,6 +136,7 @@ mod launcher {
             offline: false,
             trusted: vec![trusted.clone()],
             target: TARGET.to_owned(),
+            web: Box::new(fennec_launcher::Helper(PathBuf::from(env!("CARGO_BIN_EXE_fennec-fetch")))),
         }
     }
 
@@ -307,8 +308,9 @@ mod launcher {
         let (pair, public) = key();
         release(&dir.join("dist"), "0.4.2", &pair);
         let launcher = launcher(&dir, &public);
+        // Nothing installed, and nothing fetched to find one.
         let none = launcher.toolchain_for(&dir).unwrap_err();
-        assert!(none.contains("`fennec default 0.4.2` sets one"), "{none}");
+        assert!(none.contains("`fennec toolchain install --latest` installs the newest"), "{none}");
         let offline = Launcher { offline: true, ..self::launcher(&dir, &public) };
         assert!(offline.set_default("0.4.2").unwrap_err().contains("isn't installed"));
         // Setting one fetches it if it has to.
@@ -378,7 +380,7 @@ mod launcher {
         assert_eq!(String::from_utf8_lossy(&ran.stdout), "fennec 0.4.2: run --offline main.fen\n");
         assert_eq!(ran.status.code(), Some(3));
         let listed = fennec(&["toolchain", "list"]);
-        assert_eq!(String::from_utf8_lossy(&listed.stdout), "0.4.2\n");
+        assert_eq!(String::from_utf8_lossy(&listed.stdout), "0.4.2 (for scripts, this kit)\n");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -447,23 +449,106 @@ mod launcher {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The version for scripts outside a kit, set once; with none set, it says how.
+    /// The version for scripts outside a kit, set once; with none set, the newest stable one
+    /// installed, and with none installed, it says how to get one.
     #[test]
     fn fennec_default_sets_the_version_for_scripts() {
         let dir = scratch("default-command");
         let home = dir.join("home");
-        installed(&home, "0.4.2");
         let loose = dir.join("scripts");
         std::fs::create_dir_all(&loose).unwrap();
         let (_, why, code) = run_in(&loose, &home, &["run", "x.fen"]);
         assert_eq!(code, Some(1));
-        assert!(why.contains("`fennec default 0.4.2` sets one"), "{why}");
+        assert!(why.contains("`fennec toolchain install --latest` installs the newest"), "{why}");
+        installed(&home, "0.4.2");
+        assert_eq!(run_in(&loose, &home, &["run", "x.fen"]).0, "fennec 0.4.2: run x.fen\n");
         let (_, why, code) = run_in(&loose, &home, &["default"]);
         assert_eq!(code, Some(1), "{why}");
+        assert!(why.contains("the newest stable one installed runs"), "{why}");
         assert_eq!(run_in(&loose, &home, &["default", "0.4.2"]).2, Some(0));
         assert_eq!(run_in(&loose, &home, &["default"]).0, "0.4.2\n");
         assert_eq!(run_in(&loose, &home, &["run", "x.fen"]).0, "fennec 0.4.2: run x.fen\n");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// With no default set, a script outside a kit runs with the newest stable version installed,
+    /// by its numbers, never a prerelease; a default set wins. `fennec new` makes a kit with that
+    /// version, wherever it's run, and `toolchain list` says which version is for scripts and
+    /// which this kit asks for.
+    #[test]
+    fn outside_a_kit_the_newest_stable_version_installed_runs() {
+        let dir = scratch("newest");
+        let home = dir.join("home");
+        for version in ["0.4.2", "0.10.0", "0.9.1", "0.11.0-rc.1"] {
+            installed(&home, version);
+        }
+        let loose = dir.join("scripts");
+        std::fs::create_dir_all(&loose).unwrap();
+        assert_eq!(run_in(&loose, &home, &["run", "x.fen"]).0, "fennec 0.10.0: run x.fen\n");
+        assert_eq!(run_in(&loose, &home, &["new", "app"]).0, "fennec 0.10.0: new app\n");
+        let kit = kit(&dir, "0.4.2");
+        assert_eq!(run_in(&kit, &home, &["new", "tool"]).0, "fennec 0.10.0: new tool\n");
+        assert_eq!(run_in(&kit, &home, &["+0.9.1", "new", "tool"]).0, "fennec 0.9.1: new tool\n");
+        let listed = run_in(&kit, &home, &["toolchain", "list"]).0;
+        assert_eq!(listed, "0.4.2 (this kit)\n0.9.1\n0.10.0 (for scripts)\n0.11.0-rc.1\n");
+        assert_eq!(run_in(&loose, &home, &["default", "0.9.1"]).2, Some(0));
+        assert_eq!(run_in(&loose, &home, &["run", "x.fen"]).0, "fennec 0.9.1: run x.fen\n");
+        let listed = run_in(&loose, &home, &["toolchain", "list"]).0;
+        assert_eq!(listed, "0.4.2\n0.9.1 (default)\n0.10.0\n0.11.0-rc.1\n");
+        // Only prereleases installed: none is for scripts.
+        let early = dir.join("early");
+        installed(&early, "0.11.0-rc.1");
+        let (_, why, code) = run_in(&loose, &early, &["run", "x.fen"]);
+        assert_eq!(code, Some(1));
+        assert!(why.contains("no stable version of Fennec is installed"), "{why}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `toolchain install --latest` asks what's newest, and installs only what the keys built in
+    /// signed: none yet. From a mirror's address, the launcher fetches through `fennec-fetch`,
+    /// beside it, which gets every file the asking needs, and says why one couldn't be fetched.
+    #[test]
+    fn toolchain_install_latest_installs_only_a_signed_newest() {
+        let dir = scratch("install-latest");
+        let (pair, _) = key();
+        release(&dir.join("dist"), "0.4.3", &pair);
+        std::fs::write(dir.join("dist/latest"), "0.4.3\n").unwrap();
+        let install = |dist: &str| {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_fennec-launcher"))
+                .args(["toolchain", "install", "--latest"])
+                .current_dir(&dir)
+                .env("FENNEC_HOME", dir.join("home"))
+                .env("FENNEC_DIST", dist)
+                .env_remove("FENNEC_OFFLINE")
+                .output()
+                .unwrap();
+            (output.status.success(), String::from_utf8_lossy(&output.stderr).into_owned())
+        };
+        let (installed, said) = install(&dir.join("dist").display().to_string());
+        assert!(!installed && said.contains("signed by 0 of the 0 keys"), "{said}");
+        let mirror = serve(dir.join("dist"));
+        let (installed, said) = install(&mirror);
+        assert!(!installed && said.contains("signed by 0 of the 0 keys"), "{said}");
+        let (installed, said) = install(&format!("{mirror}/nothing-here"));
+        assert!(!installed && said.contains("404"), "{said}");
+        assert!(!dir.join("home/toolchains/0.4.3").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The launcher starts as fast as a program can: on macOS it loads no framework, since the
+    /// Security framework that checking certificates needs costs every start milliseconds. Only
+    /// `fennec-fetch` loads it, when something is fetched.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_launcher_loads_nothing_for_https() {
+        let linked = |program: &str| {
+            let listed = std::process::Command::new("otool").args(["-L", program]).output().unwrap();
+            assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
+            String::from_utf8_lossy(&listed.stdout).into_owned()
+        };
+        let launcher = linked(env!("CARGO_BIN_EXE_fennec-launcher"));
+        assert!(!launcher.contains(".framework/"), "{launcher}");
+        assert!(linked(env!("CARGO_BIN_EXE_fennec-fetch")).contains("Security.framework"));
     }
 
     /// A build of your own, linked as `dev`, runs for a kit asking for it, and for `+dev`, with

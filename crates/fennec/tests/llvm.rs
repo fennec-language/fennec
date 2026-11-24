@@ -3815,6 +3815,25 @@ fn a_flat_message_crosses_a_channel_as_its_words() -> std::io::Result<()> {
     )
 }
 
+/// Enums in messages: an enum, a struct holding one, an enum holding another, a union and a struct
+/// holding one, a struct holding an optional number, and an enum with a case holding a list, which
+/// isn't flat. A struct holding a flat enum crosses as its words, with a copy of the blocks only its
+/// case names. Each case arrives as sent while the sender changes its own. It prints the same with
+/// `FENNEC_BLOCK_MESSAGES=1`, in dev and release, and ends with nothing held. CI runs it under the
+/// address and thread sanitizers, at 1, 4 and 8 threads.
+#[test]
+fn an_enum_in_a_message_crosses_whole_as_its_words_or_a_block() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BLOCK_MESSAGES",
+        "enum_messages",
+        include_str!("fixtures/workers/enum_messages.fen"),
+        include_str!("fixtures/workers/enum_messages.out"),
+    )
+}
+
 /// Tasks that stop with a message made as they run: an `expect` that fails, with and without notes
 /// under its error, a number that doesn't fit its size, and a pick from a range given backwards.
 /// Each ends its task as a crash and the program goes on, with nothing left of the messages. The
@@ -9756,6 +9775,10 @@ fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
         // first, which a replay says as its recording did (Fable 5.2's review, 2026-11-20).
         "skipped_would_wait",
         "range_at_block_end",
+        // A listener's receive on a channel to `.Every` waits past its recording's end, as any
+        // receive with no time limit does (#2430).
+        "listener_alone",
+        "listener_in_a_task",
     ];
     for name in deadlocking {
         let dir = folder(&format!("deadlock-replays-{name}"))?;
@@ -9806,7 +9829,9 @@ fn a_recorded_deadlock_replays_to_the_same_report() -> std::io::Result<()> {
 /// blocks' ends with no time limit, the program stops with exit code 1, after what it printed,
 /// saying who waits for what, as Go's "all goroutines are asleep" does. Without threads, `main`
 /// alone; with them, two tasks on each other's channels, a task at a full channel, the last task
-/// that could move ending, and a task waiting at a block's end of its own.
+/// that could move ending, and a task waiting at a block's end of its own. A listener of a channel
+/// to `.Every` with nothing new for it is one of the waits too: `main`'s, with a message kept from
+/// before it listened, and a task's (#2430).
 #[test]
 fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -9816,6 +9841,11 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
     let main_for =
         |task: u32| format!("  main is waiting at the end of a `with launch` block, for task {task}\n");
     let receives = |task: u32| format!("  task {task} is waiting to receive on a channel that's empty\n");
+    let listens = |who: &str| {
+        format!(
+            "  {who} is waiting to receive as a listener of a channel to `.Every`, with nothing new for it\n"
+        )
+    };
     let cases = [
         ("receive_alone", "before\n", "  main is waiting to receive on a channel that's empty\n".to_owned()),
         ("each_other", "both launched\n", format!("{}{}{}", main_for(2), receives(1), receives(2))),
@@ -9826,6 +9856,8 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
             format!("{}  task 1 is waiting to send on a channel that's full\n", main_for(1)),
         ),
         ("last_ends", "napped\n", format!("{}{}", main_for(2), receives(2))),
+        ("listener_alone", "listening\n", listens("main")),
+        ("listener_in_a_task", "launched\n", format!("{}{}", main_for(1), listens("task 1"))),
         (
             "inside_a_task",
             "launched inside\n",
@@ -9929,7 +9961,7 @@ fn a_parallel_call_that_can_still_end_is_never_a_deadlock() -> std::io::Result<(
 }
 
 /// A wait that something can still end is never taken for a deadlock: a receive with a time limit;
-/// one whose sender naps first; one a crash of the task its code launched cuts short, which
+/// one whose sender naps first; a listener of a channel to `.Every` whose sender naps first; one a crash of the task its code launched cuts short, which
 /// changes nothing on the channel; a task stopped while it counts that only then comes to a
 /// receive, while its launcher waits at the block's end with no time limit left (from Fable 5.2's
 /// review of the design); and, where there's `sleep` to run, a task waiting on `main` while `main`
@@ -9942,6 +9974,7 @@ fn a_wait_something_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
     let mut cases = vec![
         ("timeout_fine", "gave up\n", ""),
         ("sender_naps", "7\n", ""),
+        ("listener_naps", "heard 1\nheard 2\nheard 3\n", ""),
         (
             "crash_wakes",
             "it crashed\n",
@@ -16738,6 +16771,24 @@ def main(stdout: Stdout):
     if first is not None:
         stdout.print(first.text, first.start)
     stdout.print(Regex(r"\d+").match("ab 42") is None)
+"#,
+    )
+}
+
+/// `re.pattern_problem` says what's wrong with text that isn't a pattern, as a `Regex` built from
+/// it would, for a program to report a pattern from outside rather than stop on it.
+#[test]
+fn a_patterns_problem_is_what_a_regex_built_from_it_would_say() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_expected_in_both_builds(
+        "pattern_problems",
+        r#"from std.re import is_regex, pattern_problem
+
+def main(stdout: Stdout):
+    for pattern in ["[0-9+", "a{2,1}", "(" * 251 + "a" + ")" * 251]:
+        stdout.print(is_regex(pattern), pattern_problem(pattern))
 "#,
     )
 }
@@ -36516,7 +36567,7 @@ def main(stdout: Stdout):
     add_value2 = add("1", b="two") except InvalidValue(): -1
     stdout.print(add_value, add_value2)
     for pattern in ["[0-9]+", "[0-9+"]:
-        regex = Regex(pattern) except error:
+        regex = Regex.parse(pattern) except error:
             stdout.print(error.message)
             continue
         stdout.print(regex.pattern)

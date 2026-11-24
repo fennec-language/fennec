@@ -4,7 +4,7 @@ use super::Module;
 
 pub(crate) const MODULE: Module = Module {
     name: "re",
-    names: &["Regex", "Match", "is_regex"],
+    names: &["Regex", "Match", "is_regex", "pattern_problem"],
     source: include_str!("re.fen"),
     gives: &[("match", "Match"), ("fullmatch", "Match"), ("search", "Match"), ("find_all", "Match")],
 };

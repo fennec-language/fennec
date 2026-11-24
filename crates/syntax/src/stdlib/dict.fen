@@ -1,5 +1,5 @@
 ## `dict`'s methods written in Fennec. Reading, writing and walking its pairs are machine
-## operations the engines provide.
+## operations the compiler gives.
 extend dict[K: Hashable, V]:
     ## Adds every pair of `more`, replacing the values of keys it already has.
     ##
@@ -107,7 +107,7 @@ extend dict[K: Hashable & Deserializable, V: Deserializable]:
             if len(found) == before: fail src.here(f"has {twice_key(key)} twice")
         return found
 
-## `dict`'s methods the engines provide. Each is declared here for its signature and its doc, and a
+## `dict`'s methods the compiler gives. Each is declared here for its signature and its doc, and a
 ## test holds it to the checker's own.
 extend dict[K: Hashable, V]:
     ## How many keys it has.

@@ -548,7 +548,7 @@ export struct Mat4:
 ## How `sum` adds a list of floats, written out here so the order is plain: the sum of `items`,
 ## then `start`, with item `at` going into running total `at % 8`, and the eight added pairwise
 ## at the end, `((0 + 1) + (2 + 3)) + ((4 + 5) + (6 + 7))`. A sum one item at a time adds in the
-## same order, so the two give the same bits, on every platform and engine. Eight totals lose less
+## same order, so the two give the same bits, on every platform. Eight totals lose less
 ## to rounding than one does on a long sum, and the eight adds of a round don't wait on each
 ## other, so the compiler can do them at once with no change to the order. `sum` is the way to
 ## call it.

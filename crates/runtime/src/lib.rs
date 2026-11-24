@@ -4,11 +4,11 @@
 //!
 //! The functions are `fennec_rt::embed`'s; this crate gives them names a linker can find,
 //! and asks the system for what only it can give: Windows's fine timer, and a process's end.
-//! It also has mimalloc call it when it runs out of memory. Those are the things here Rust calls
-//! unsafe.
+//! It also has mimalloc call it when it runs out of memory, and on Linux with glibc keeps glibc's
+//! own allocator to one arena. Those are the things here Rust calls unsafe.
 #![expect(
     unsafe_code,
-    reason = "exporting the runtime's functions under fixed names, calling the system to end the process, and giving mimalloc its error handler"
+    reason = "exporting the runtime's functions under fixed names, calling the system to end the process, giving mimalloc its error handler, and keeping glibc's allocator to one arena"
 )]
 
 use fennec_rt::embed::guarded::rollback;
@@ -35,6 +35,9 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_cos",
     "fennec_tan",
     "fennec_acos",
+    "fennec_sinf",
+    "fennec_cosf",
+    "fennec_acosf",
     "fennec_exp",
     "fennec_log",
     "fennec_float_power",
@@ -118,6 +121,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_str_char_at",
     "fennec_str_repr",
     "fennec_int_text",
+    "fennec_u64_text",
+    "fennec_f32_text",
     "fennec_float_text",
     "fennec_text_block",
     "fennec_str_from_code_problem",
@@ -125,6 +130,10 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_notes_shown",
     "fennec_not_a_number",
     "fennec_regex_problem",
+    // Questions about a pattern, answered under `with`, which sets no flag: whether it's one, and
+    // how many groups it has, -1 for one that isn't.
+    "fennec_regex_is_valid",
+    "fennec_regex_groups",
     // A block, or 0 for none, which native code tests for as an answer: a code that isn't a
     // character, bytes that aren't UTF-8, a key that isn't there. None sets the flag.
     "fennec_str_from_code",
@@ -137,6 +146,7 @@ pub const NEVER_FAIL: &[&str] = &[
     // for as an answer. It runs under `with`, which sets no flag, and only reads the text's bytes
     // and parses them.
     "fennec_parse_float_header",
+    "fennec_parse_f32_header",
     // Where a part first is in a slice of a text, read where the text is, or -1 for nowhere, which
     // native code tests for as an answer. It runs under `with`, which sets no flag, and only reads
     // the two texts' bytes.
@@ -365,6 +375,9 @@ export! {
     fennec_cos(a0: f64) -> f64 => checks::cos(a0);
     fennec_tan(a0: f64) -> f64 => checks::tan(a0);
     fennec_acos(a0: f64) -> f64 => checks::acos(a0);
+    fennec_sinf(a0: f64) -> f64 => checks::sinf(a0);
+    fennec_cosf(a0: f64) -> f64 => checks::cosf(a0);
+    fennec_acosf(a0: f64) -> f64 => checks::acosf(a0);
     fennec_exp(a0: f64) -> f64 => checks::exp(a0);
     fennec_log(a0: f64) -> f64 => checks::log(a0);
     fennec_float_power(a0: f64, a1: f64) -> f64 => lists::float_power(a0, a1);
@@ -388,6 +401,8 @@ export! {
     fennec_parse_u64(a0: i64, a1: &mut i64) -> i64 => numbers::parse_u64(a0, a1);
     fennec_parse_float(a0: i64, a1: &mut i64) -> i64 => numbers::parse_float(a0, a1);
     fennec_parse_float_header(a0: u64, a1: u64, a2: u64, a3: &mut i64) -> i64 => numbers::parse_float_header(a0, a1, a2, a3);
+    fennec_parse_f32(a0: i64, a1: &mut i64) -> i64 => numbers::parse_f32(a0, a1);
+    fennec_parse_f32_header(a0: u64, a1: u64, a2: u64, a3: &mut i64) -> i64 => numbers::parse_f32_header(a0, a1, a2, a3);
     fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_u64_text(a0: i64) -> i64 => strings::u64_text(a0);
@@ -611,11 +626,39 @@ pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 
     fine_timer();
     #[cfg(not(feature = "sanitize"))]
     say_when_out_of_memory();
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    one_glibc_arena();
     let code = aot::run(entry, length, stop);
     #[cfg(windows)]
     end_process(code);
     #[cfg(not(windows))]
     code
+}
+
+/// Keeps glibc's allocator to its one main arena, before any worker starts. mimalloc doesn't take
+/// glibc's place, so what glibc allocates for itself comes from glibc's allocator: as a new
+/// thread's first thread-local value with a destructor registers it, with `calloc`
+/// (`__cxa_thread_atexit_impl`). By default glibc gives each new thread an arena of its own, and
+/// making one reserves 64 MiB of address space at once. A program short of address space, as one
+/// under `ulimit -v` running out of memory in several ranges at once is, then can't make it: glibc
+/// aborts with "failed to register TLS destructor: out of memory" and a core dump, before the
+/// runtime can say it ran out. That was one run in a thousand of
+/// `llvm::ranges_running_out_of_memory_at_once_say_so_once` under load, on Linux Arm in CI and in
+/// the VM. The one main arena grows a little at a time, and glibc's own allocations are few and
+/// small, so sharing it costs nothing a program would notice.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn one_glibc_arena() {
+    unsafe extern "C" {
+        /// glibc's, from malloc.h: sets one of its allocator's parameters, giving back 1 when it
+        /// did and 0 when it didn't.
+        fn mallopt(parameter: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    /// malloc.h's `M_ARENA_MAX`: the most arenas glibc's allocator makes.
+    const M_ARENA_MAX: std::ffi::c_int = -8;
+    // SAFETY: `mallopt` takes any parameter and value, and changes only how glibc's allocator
+    // chooses arenas for allocations made after it, from any thread. Nothing else runs yet: this is
+    // before the runtime starts a thread. If it isn't taken, glibc goes on as it was.
+    unsafe { mallopt(M_ARENA_MAX, 1) };
 }
 
 /// Asks Windows to tick its timer every millisecond while the program runs, as Go's runtime does.

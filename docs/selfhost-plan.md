@@ -4,13 +4,13 @@
 
 ## Where it stands
 
-`selfhost/` is a Fennec kit of 3,761 lines that mirrors the Rust front end file for file. `crates/fennec/tests/selfhost.rs` builds it through LLVM and compares its output with the Rust front end's on 151 examples, 202 error examples, 58 kit files, the standard library's Fennec sources, selfhost's own 13 files and about 100 small cases.
+`selfhost/` is a Fennec kit of about 5,000 lines that mirrors the Rust front end file for file. `crates/fennec/tests/selfhost.rs` builds it through LLVM and compares its output with the Rust front end's on every example, error example and kit file, the standard library's Fennec sources, selfhost's own files and about 100 small cases.
 
 | Part | Lines | How far it gets |
 |---|---|---|
-| Lexer | 477 | Prints the same tokens as Rust on every file compared |
-| Parser | 1,598 | Prints the same tree as Rust on every file compared |
-| Checker | 786 | Compares 11 kinds of error, mostly declarations and extensions, out of about 258 places the Rust checker reports one |
+| Lexer | 807 | Prints the same tokens as Rust on every file compared |
+| Parser | 2,328 | Prints the same tree as Rust on every file compared |
+| Checker | 913 | Compares 12 kinds of error, mostly declarations and extensions, the ones `CHECK_KINDS` lists |
 
 There's no lowering or code generation in Fennec yet.
 
@@ -18,10 +18,10 @@ There's no lowering or code generation in Fennec yet.
 
 | Needed | On main? |
 |---|---|
-| Bit operations on `int` | Yes (#251) |
-| Sized numbers: `u8`, `u32`, `u64`, `f64.to_bits()` and the rest | No: decided, not built |
-| `with` and `lend`, for files and the compiler's own resources | No: decided, not built |
-| Dicts and strings close to Rust | Partly: at 70% of Rust on `dicts`, 64% on `strings` and 52% on `k_nucleotide`, measured 2026-11-05 |
+| Bit operations on `int` | Yes |
+| Sized numbers: `u8`, `u32`, `u64` and the rest | Yes, natively |
+| `with` and `lend`, for files and the compiler's own resources | Yes |
+| Dicts and strings close to Rust | Yes: the benchmark suite holds them to their Rust twins |
 
 ## The backend
 
@@ -31,7 +31,7 @@ The Fennec compiler writes LLVM's text IR (`.ll`) and runs LLVM's tools, `opt` a
 
 Each step has an owner and a check that proves it's done.
 
-1. **The language prerequisites land.** Owners: checker and LLVM lanes. *Check:* sized numbers, bit operations on them, and `with`/`lend` each have an example that builds natively and prints what its `.out` says.
+1. **The language prerequisites land.** Done. *Check:* sized numbers, bit operations on them, and `with`/`lend` each have an example that builds natively and prints what its `.out` says.
 2. **The self-hosted checker reports everything the Rust checker does.** Owner: selfhost lane. *Check:* `CHECK_KINDS` is removed, and the two checkers print the same diagnostics on every example, error example, kit, standard library source and `bench/kernels` program.
 3. **The front end is fast enough to live in.** Owner: selfhost lane, with the LLVM lane for any slow paths found. *Check:* checking the self-hosted compiler's own source and the standard library fits in the edit-loop budget that today's compiler is held to.
 4. **Lowering to IR in Fennec.** Owner: selfhost lane. *Check:* a dump of the typed IR, compared like the trees are today, matches Rust's lowering on every example and kernel.

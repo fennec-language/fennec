@@ -40,8 +40,8 @@ def built_in_types() -> list[str]:
     return [
         "int", "float", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool",
         "str", "LiteralStr", "bytes", "None", "nothing", "list", "array", "SoaList", "Buffer",
-        "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Stderr", "Fs", "Clock", "Args",
-        "Stdin", "Process", "Entropy", "Net", "Env", "Signals", "Result", "->",
+        "Iterator", "set", "dict", "tuple", "Id", "Table", "Stdout", "Stderr", "Fs", "Clock",
+        "Args", "Stdin", "Process", "Entropy", "Net", "Env", "Signals", "Result", "->",
     ]
 
 ## Every declaration in a program, keyed the way the signature table is: `name` for a
@@ -209,8 +209,25 @@ struct Program:
         prelude: bool,
         extension: list[Generic],
     ):
-        key = f"{type_name}.{method.name}"
+        mut key = f"{type_name}.{method.name}"
+        right = operator_right(method)
+        # An operator is defined once for each type on its right, so a second one taking
+        # another type is kept under a key of its own.
+        first = self.functions.get(key)
+        if first is not None and right is not None:
+            first_right = operator_right(first.function)
+            if first_right is not None and first_right != right:
+                key = f"{key}@{right}"
         if key in self.functions:
+            if right is not None:
+                self.problems.append(
+                    Diagnostic(
+                        message=f"`{type_name}` already has a `{method.name}` taking {right} on its right",
+                        span=method.span,
+                        help="an operator is defined once for each type on its right: take another type, or remove one",
+                    ),
+                )
+                return
             self.problems.append(
                 Diagnostic(
                     message=f"`{type_name}` already has a method called `{method.name}`",
@@ -450,3 +467,27 @@ def not_own(name: str, why: str, extension: Extension) -> Diagnostic:
         span=extension.span,
         help=f"an extension adds methods to one of this kit's own types; write a function that takes a `{name}` instead",
     )
+
+## The type an operator method takes on its right, as written, if it's an operator.
+def operator_right(method: FnDef) -> str?:
+    if method.name == "" or method.name.startswith("["): return None
+    first = method.name[0]
+    if (
+        first == "_"
+        or (first >= "a" and first <= "z")
+        or (first >= "A" and first <= "Z")
+        or (first >= "0" and first <= "9")
+    ):
+        return None
+    if len(method.params) < 2: return None
+    right = method.params[1].ty else return None
+    return written(right)
+
+## A written type as text, as `list[int]?`.
+def written(type_expr: TypeExpr) -> str:
+    mut text = type_expr.name
+    if len(type_expr.args) > 0:
+        text += "[" + ", ".join([written(arg) for arg in type_expr.args]) + "]"
+    if type_expr.optional:
+        text += "?"
+    return text

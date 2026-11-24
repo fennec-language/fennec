@@ -1,4 +1,4 @@
-## Lists, dicts and strings held as objects, read and changed where they are.
+## Lists, dicts and strings read and changed where they are.
 
 struct Shelf:
     items: list[int]

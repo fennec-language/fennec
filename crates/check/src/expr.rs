@@ -1,5 +1,5 @@
 //! Checking expressions and working out their types: names, operators, fields, indexing,
-//! comprehensions, arrow functions, and `?`, `?.` and `else`.
+//! comprehensions, arrow functions, `?` and `else`.
 
 use fennec_syntax::{BinOp, CompKind, Diagnostic, Expr, ExprKind, FStrPart, Span, StmtKind, UnaryOp};
 
@@ -985,7 +985,7 @@ impl FnCx<'_> {
             return ty;
         }
         self.error(crate::messages::else_through_failure(object));
-        Type::optional(inner.as_ref().clone())
+        Type::or_none(inner.as_ref().clone())
     }
 
     /// Whether a field or method of a value that might be missing is read in the chain before
@@ -1003,7 +1003,7 @@ impl FnCx<'_> {
         match ty {
             Type::Unknown => Type::Unknown,
             Type::None if optional => Type::None,
-            Type::Optional(inner) if optional => Type::optional(self.field_of(inner, name, false, span)),
+            Type::Optional(inner) if optional => Type::or_none(self.field_of(inner, name, false, span)),
             ty if ty.maybe_none() => {
                 self.error(crate::messages::missing_step(span));
                 Type::Unknown

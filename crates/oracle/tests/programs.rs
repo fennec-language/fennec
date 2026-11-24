@@ -3646,6 +3646,47 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
     );
 }
 
+/// `std.math`'s `sqrt`, `sin`, `cos` and `acos` take an `f32` and give one, computed in `f32` by
+/// `libm`'s own, the same bits everywhere, and `abs` of an `f32` is one. Given a `float`, each is
+/// what it was.
+#[test]
+fn std_math_takes_an_f32_and_gives_one() {
+    prints(
+        "
+        from std import math
+
+        def main(stdout: Stdout):
+            half: f32 = 0.5
+            root: f32 = math.sqrt(f32(2))
+            stdout.print(root, math.sin(half), math.cos(half), math.acos(half), abs(f32(-1.5)))
+            stdout.print(root * root, math.sqrt(2.0))
+        ",
+        "1.4142135 0.47942555 0.87758255 1.0471976 1.5\n1.9999999 1.4142135623730951\n",
+    );
+}
+
+/// `f32.parse` reads text straight to the nearest `f32`, rounded once. Read as a `float` first and
+/// converted, a number just past halfway between two `f32`s lands on halfway and rounds to the
+/// even one: this one reads as the `f32` after 1, and through a `float` as 1. What isn't a number
+/// fails, saying so.
+#[test]
+fn f32_parse_rounds_once() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            once = f32.parse('1.00000005960464477539062501') except InvalidValue(): f32(0)
+            wide = float.parse('1.00000005960464477539062501') except InvalidValue(): 0.0
+            twice = f32(wide)
+            bad = f32.parse('1,5') except why:
+                stdout.print(why)
+                f32(0)
+            spaced = f32.parse(' -2e3 ') except InvalidValue(): f32(0)
+            stdout.print(once, twice, once == twice, bad, spaced)
+        ",
+        "\"1,5\" isn't a float\n1.0000001 1.0 False 0.0 -2000.0\n",
+    );
+}
+
 /// `toml.loads` runs `std.toml`'s own reader, written in Fennec, in place of the runtime's,
 /// through the `def deserialize` the checker writes for each type, as the oracle models it: a
 /// field left out takes its default, an optional one is `None`, a `@skip` field keeps its
@@ -5774,6 +5815,55 @@ fn two_shared_values_are_equal_when_they_hold_equal_values() {
             stdout.print(first == second, first != second)
         ",
         "True True True\nFalse True\n",
+    );
+}
+
+/// An optional of an optional keeps a `None` inside apart from `None`, nothing found (#2413): a
+/// `None` popped, got or removed from a `list[int?]` or a `SortedMap[int, str?]`, and a generic
+/// `T?` or an `int??` returned that holds an `int?` that's `None`. `else` takes off one level, as
+/// narrowing with `is not None` does, and it prints as what it holds. Held to native code, debug
+/// and release.
+#[test]
+fn an_optional_of_an_optional_keeps_a_none_inside_apart() {
+    prints(
+        r#"
+        from std.collections import SortedMap
+
+        def first_of[T](items: list[T]) -> T?:
+            if len(items) == 0:
+                return None
+            return items[0]
+
+        def held_as_found(given: int?) -> int??:
+            return given
+
+        def described(found: int??) -> str:
+            match found:
+                case None:
+                    return "nothing"
+                case inner:
+                    return f"found {inner}"
+
+        def main(stdout: Stdout):
+            none_int: int? = None
+            mut numbers: list[int?] = [none_int, 5]
+            stdout.print(numbers.get(0) is None, numbers.get(9) is None, numbers.get(0) else 8, numbers.get(9) else 8)
+            stdout.print(numbers.remove(none_int) is None, numbers.remove(none_int) is None, len(numbers))
+            mut map = SortedMap[int, str?]()
+            none_str: str? = None
+            map[1] = none_str
+            stdout.print(map.get(1) is None, map.get(2) is None, map.get(1) else "missing", map.get(2) else "missing")
+            stdout.print(map.remove(1) is None, map.remove(1) is None)
+            held: list[int?] = [none_int]
+            found = first_of(held)
+            if found is not None:
+                stdout.print("narrowed", found is None, found)
+            stdout.print(f"shown {found}", described(found), described(held_as_found(none_int)), described(held_as_found(3)))
+            nothing: list[int?] = []
+            stdout.print(described(first_of(nothing)), held_as_found(none_int) is None)
+            return
+        "#,
+        "False True None 8\nFalse True 1\nFalse True None missing\nFalse True\nnarrowed True None\nshown None found None found None found 3\nnothing False\n",
     );
 }
 

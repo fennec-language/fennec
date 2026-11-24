@@ -14,7 +14,7 @@ mod launcher {
     use std::path::{Path, PathBuf};
 
     use fennec_dist::{Kind, Manifest, PublicKey};
-    use fennec_launcher::Launcher;
+    use fennec_launcher::{Launcher, PROGRAMS};
     use ring::signature::Ed25519KeyPair;
 
     const TARGET: &str = "aarch64-apple-darwin";
@@ -430,6 +430,48 @@ mod launcher {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The launcher's `fennec` runs a toolchain that's installed for a kit pinned already, for
+    /// `+0.4.2`, and for a script outside a kit, all by itself, with nothing beside it. Everything
+    /// else, its own commands and a kit to pin the first time, it hands to `fennec-setup`, beside it.
+    #[test]
+    fn fennec_runs_what_is_ready_by_itself_and_hands_the_rest_to_fennec_setup() {
+        let dir = scratch("fast-path");
+        let home = dir.join("home");
+        installed(&home, "0.4.2");
+        let alone = dir.join("bin/fennec");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_fennec-launcher"), &alone).unwrap();
+        let kit = kit(&dir, "0.4.2");
+        let fennec = |at: &Path, args: &[&str]| {
+            let output = std::process::Command::new(&alone)
+                .args(args)
+                .current_dir(at)
+                .env("FENNEC_HOME", &home)
+                .env_remove("FENNEC_OFFLINE")
+                .output()
+                .unwrap();
+            (
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+        let (_, why) = fennec(&kit, &["run"]);
+        assert!(why.contains("fennec-setup"), "{why}");
+        assert!(!kit.join("kit.lock").exists());
+        // Pinned, as `fennec-setup` pins a kit the first time.
+        let (pair, public) = key();
+        release(&dir.join("dist"), "0.4.2", &pair);
+        launcher(&dir, &public).toolchain_for(&kit).unwrap();
+        assert_eq!(fennec(&kit, &["run", "main.fen"]).0, "fennec 0.4.2: run main.fen\n");
+        assert_eq!(fennec(&kit, &["+0.4.2", "update"]).0, "fennec 0.4.2: update\n");
+        assert_eq!(fennec(&dir, &["fmt"]).0, "fennec 0.4.2: fmt\n");
+        for its_own in [&["toolchain", "list"][..], &["update"], &["+0.9.9", "run"]] {
+            let (_, why) = fennec(&kit, its_own);
+            assert!(why.contains("fennec-setup"), "{its_own:?}: {why}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// `--version` chooses for a script outside a kit, and a kit's `kit.toml` is what chooses in one.
     #[test]
     fn a_version_flag_works_only_outside_a_kit() {
@@ -535,9 +577,167 @@ mod launcher {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A launcher release of `version` in `launchers`, laid out as the bucket is, signed in the
+    /// launcher's namespace by each of `signers`, one signature after another, and named the newest.
+    /// Its programs say which they are; `programs` picks which it holds.
+    fn launcher_release(
+        launchers: &Path,
+        version: &str,
+        programs: &[&str],
+        namespace: &str,
+        signers: &[&Ed25519KeyPair],
+    ) {
+        let folder = launchers.join(format!("v{version}"));
+        std::fs::create_dir_all(&folder).unwrap();
+        let top = format!("fennec-launcher-v{version}-{TARGET}");
+        let mut entries = vec![(format!("{top}/"), 0o755, Vec::new(), b'5')];
+        for program in programs {
+            entries.push((format!("{top}/{program}"), 0o755, launcher_program(program, version), b'0'));
+        }
+        let entries: Vec<(&str, u32, &[u8], u8)> = entries
+            .iter()
+            .map(|(name, mode, bytes, kind)| (name.as_str(), *mode, bytes.as_slice(), *kind))
+            .collect();
+        let archive = tar_gz(&entries);
+        let file = format!("{top}.tar.gz");
+        std::fs::write(folder.join(&file), &archive).unwrap();
+        let manifest = Manifest::of_archives(Kind::Launcher, version, &[(file, archive)]).unwrap().write();
+        let name = format!("fennec-launcher-v{version}.manifest");
+        std::fs::write(folder.join(&name), &manifest).unwrap();
+        let signatures: String =
+            signers.iter().map(|pair| sign(pair, namespace, manifest.as_bytes())).collect();
+        std::fs::write(folder.join(format!("{name}.sig")), signatures).unwrap();
+        std::fs::write(launchers.join("latest"), format!("{version}\n")).unwrap();
+    }
+
+    /// One of a test's launcher release's programs: a script saying which it is.
+    fn launcher_program(program: &str, version: &str) -> Vec<u8> {
+        format!("#!/bin/sh\necho \"{program} {version}\"\n").into_bytes()
+    }
+
+    /// A Fennec folder with a launcher installed in `bin`, as an installer leaves one, each of its
+    /// programs saying `old`. Gives back its `fennec-setup`, which runs `self update`.
+    fn installed_launcher(home: &Path) -> PathBuf {
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for program in PROGRAMS {
+            std::fs::write(bin.join(program), b"old").unwrap();
+        }
+        bin.join("fennec-setup")
+    }
+
+    /// `fennec self update` replaces the launcher installed in Fennec's folder, all three of its
+    /// programs, only with a newer launcher release that two of the keys it trusts signed, and
+    /// leaves each as it was when it doesn't.
+    #[test]
+    fn self_update_installs_only_a_newer_launcher_two_keys_signed() {
+        let dir = scratch("self-update");
+        let (first, one) = key();
+        let (second, two) = key();
+        let launchers = dir.join("launchers");
+        let running = installed_launcher(&dir.join("home"));
+        let bin = dir.join("home/bin");
+        let updater = Launcher { trusted: vec![one.clone(), two], ..launcher(&dir, &one) };
+        let update = |from: &str, this: &str| updater.self_update(from, &running, this);
+        let folder = launchers.display().to_string();
+        let programs =
+            || PROGRAMS.map(|program| String::from_utf8(std::fs::read(bin.join(program)).unwrap()).unwrap());
+        let old = PROGRAMS.map(|_| "old".to_owned());
+        let all = PROGRAMS;
+        // One key, even signing twice, isn't two.
+        for signers in [&[&first][..], &[&first, &first]] {
+            launcher_release(&launchers, "0.0.2", &all, "fennec-launcher", signers);
+            let said = update(&folder, "0.0.1").unwrap_err();
+            assert!(said.contains("signed by 1 of the 2 keys") && said.contains("needs 2"), "{said}");
+            assert_eq!(programs(), old);
+        }
+        // Signatures for a toolchain never count for a launcher.
+        launcher_release(&launchers, "0.0.2", &all, "fennec-toolchain", &[&first, &second]);
+        let said = update(&folder, "0.0.1").unwrap_err();
+        assert!(said.contains("signed by 0 of the 2 keys"), "{said}");
+        // An archive changed after the release was signed.
+        launcher_release(&launchers, "0.0.2", &all, "fennec-launcher", &[&first, &second]);
+        let archive = launchers.join(format!("v0.0.2/fennec-launcher-v0.0.2-{TARGET}.tar.gz"));
+        let mut bytes = std::fs::read(&archive).unwrap();
+        bytes[20] ^= 1;
+        std::fs::write(&archive, bytes).unwrap();
+        let said = update(&folder, "0.0.1").unwrap_err();
+        assert!(said.contains("has the hash"), "{said}");
+        // A release without `fennec-fetch` would leave a launcher that can't fetch.
+        launcher_release(
+            &launchers,
+            "0.0.2",
+            &["fennec", "fennec-setup"],
+            "fennec-launcher",
+            &[&first, &second],
+        );
+        let said = update(&folder, "0.0.1").unwrap_err();
+        assert!(said.contains("has no `fennec-fetch` to run"), "{said}");
+        assert_eq!(programs(), old);
+        // Signed by both, and fetched from a mirror's address through `fennec-fetch`.
+        launcher_release(&launchers, "0.0.2", &all, "fennec-launcher", &[&first, &second]);
+        let mirror = serve(launchers.clone());
+        assert_eq!(update(&mirror, "0.0.1").unwrap(), "the launcher: 0.0.1 → 0.0.2\n");
+        let new = all.map(|program| String::from_utf8(launcher_program(program, "0.0.2")).unwrap());
+        assert_eq!(programs(), new);
+        assert_eq!(ran(&bin.join("fennec"), "x"), ("fennec 0.0.2\n".to_owned(), Some(0)));
+        let mut left: Vec<String> = std::fs::read_dir(&bin)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        let mut sorted = all.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(left, sorted);
+        assert_eq!(update(&folder, "0.0.2").unwrap(), "the launcher is 0.0.2, the newest, already\n");
+        // A mirror can't roll the launcher back by calling an older one the latest.
+        let said = update(&folder, "0.0.3").unwrap_err();
+        assert!(said.contains("0.0.2, is older than this one, 0.0.3"), "{said}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Before fetching anything, `fennec self update` refuses when no launcher release could be
+    /// trusted, when it mayn't fetch, and when the launcher running isn't the one installed.
+    #[test]
+    fn self_update_refuses_before_fetching_what_it_couldnt_install() {
+        let dir = scratch("self-update-refused");
+        let (_, one) = key();
+        let (_, two) = key();
+        let running = installed_launcher(&dir.join("home"));
+        let nowhere = dir.join("no launchers here").display().to_string();
+        let said = launcher(&dir, &one).self_update(&nowhere, &running, "0.0.1").unwrap_err();
+        assert!(said.contains("trusts 1 release key, and a new launcher has to be signed by 2"), "{said}");
+        let both = Launcher { trusted: vec![one.clone(), two], ..launcher(&dir, &one) };
+        let offline = Launcher { offline: true, ..both };
+        let said = offline.self_update(&nowhere, &running, "0.0.1").unwrap_err();
+        assert!(said.contains("--offline"), "{said}");
+        let both = Launcher { offline: false, ..offline };
+        let elsewhere = installed_launcher(&dir.join("elsewhere"));
+        let said = both.self_update(&nowhere, &elsewhere, "0.0.1").unwrap_err();
+        assert!(
+            said.contains("not the one installed in") && said.contains("doesn't replace itself"),
+            "{said}"
+        );
+        let said = both.self_update(&nowhere, &running, "0.0.1").unwrap_err();
+        assert!(said.contains("couldn't read") && said.contains("latest"), "{said}");
+        // The launcher people install trusts the release keys alone, and there are none yet.
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_fennec-launcher"))
+            .args(["self", "update"])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env("FENNEC_LAUNCHER_DIST", &nowhere)
+            .env_remove("FENNEC_OFFLINE")
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success() && said.contains("trusts 0 release keys"), "{said}");
+        assert_eq!(std::fs::read(&running).unwrap(), b"old");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The launcher starts as fast as a program can: on macOS it loads no framework, since the
-    /// Security framework that checking certificates needs costs every start milliseconds. Only
-    /// `fennec-fetch` loads it, when something is fetched.
+    /// Security framework that checking certificates needs costs every start milliseconds. Nor
+    /// does `fennec-setup`. Only `fennec-fetch` loads it, when something is fetched.
     #[test]
     #[cfg(target_os = "macos")]
     fn the_launcher_loads_nothing_for_https() {
@@ -546,8 +746,10 @@ mod launcher {
             assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
             String::from_utf8_lossy(&listed.stdout).into_owned()
         };
-        let launcher = linked(env!("CARGO_BIN_EXE_fennec-launcher"));
-        assert!(!launcher.contains(".framework/"), "{launcher}");
+        for program in [env!("CARGO_BIN_EXE_fennec-launcher"), env!("CARGO_BIN_EXE_fennec-setup")] {
+            let linked = linked(program);
+            assert!(!linked.contains(".framework/"), "{linked}");
+        }
         assert!(linked(env!("CARGO_BIN_EXE_fennec-fetch")).contains("Security.framework"));
     }
 

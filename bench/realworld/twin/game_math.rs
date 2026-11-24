@@ -1,7 +1,7 @@
 //! Game math as a game's frame uses it, with glam: each frame places a model with a scale, a
 //! turn and a move, puts it through a camera and a projection, then moves every point of a cloud
 //! by that matrix and lights it by the turned direction it faces. glam's f64 types, as Fennec's
-//! `float` is 64-bit.
+//! `D` types are.
 #![allow(deprecated)]
 
 use std::f64::consts::PI;

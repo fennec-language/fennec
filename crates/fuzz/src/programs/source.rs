@@ -2783,7 +2783,7 @@ fn popped_written(popping: &Popping) -> String {
     let missing = value(3);
     let _ = write!(
         out,
-        "struct Holder{id}:\n    items = list[{t}?]()\n\ndef taken{id}(ref items: list[{t}?]) -> {t}?:\n    return \
+        "struct Holder{id}:\n    items = list[{t}?]()\n\ndef taken{id}(ref items: list[{t}?]) -> {t}??:\n    return \
          items.pop()\n\ndef popped{id}(stdout: Stdout):\n    mut holder = Holder{id}()\n    mut items = list[{t}?]()\n"
     );
     let place = if *in_field { "holder.items" } else { "items" };
@@ -3883,6 +3883,11 @@ impl Writer {
                 let _ = write!(self.helpers, "{}", super::storing::written(storing));
                 self.line(indent, &format!("stored{}(fs, stdout) except why:", storing.id));
                 self.line(indent + 1, "stdout.print(\"stored failed\", why.message())");
+            }
+            Stmt::Messaged(messaging) => {
+                let _ = write!(self.helpers, "{}", super::messaging::written(messaging));
+                self.line(indent, &format!("messaged{}(stdout) except why:", messaging.id));
+                self.line(indent + 1, "stdout.print(\"messaged failed\", why)");
             }
             Stmt::Opened(opening) => {
                 let _ = write!(self.helpers, "{}", super::opening::written(opening));

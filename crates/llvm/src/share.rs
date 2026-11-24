@@ -280,3 +280,34 @@ fn written(shared: &Shared) -> impl PartialEq + '_ {
         (&shared.starts, &shared.ran, &shared.places, &shared.checks, &shared.sites),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A unit written on its own is written with every setting of the build it's in: a setting
+    /// left out would write it as a build without it, untraced, watching native blocks a release
+    /// build leaves alone, or handing LLVM facts it was asked to strip, and nothing would say so.
+    /// Only the settings come along; what units add starts empty.
+    #[test]
+    fn a_unit_of_its_own_is_written_with_every_setting_of_the_build() {
+        let mut build = Shared {
+            traced: true,
+            tracing_costs: true,
+            noting_checks: true,
+            proofs: crate::Proofs::Checked,
+            facts: crate::Facts::Stripped,
+            native_blocks: crate::NativeBlocks::Trusted,
+            ..Shared::default()
+        };
+        build.strings.insert("s_kept".to_owned(), "kept".to_owned());
+        build.ran.insert("main".to_owned());
+        let own = settings_of(&build);
+        assert!(own.traced && own.tracing_costs && own.noting_checks, "{own:?}");
+        assert_eq!(
+            (own.proofs, own.facts, own.native_blocks),
+            (crate::Proofs::Checked, crate::Facts::Stripped, crate::NativeBlocks::Trusted)
+        );
+        assert!(own.strings.is_empty() && own.ran.is_empty(), "{own:?}");
+    }
+}

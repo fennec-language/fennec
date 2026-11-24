@@ -2089,6 +2089,11 @@ impl Machine {
                     let _ = writeln!(self.out, "{line}");
                 }
             }
+            Stmt::Messaged(messaging) => {
+                for line in super::messaging::printed(messaging) {
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
             Stmt::Opened(opening) => {
                 let (lines, stops) = super::opening::printed(opening);
                 for line in lines {
@@ -3501,7 +3506,15 @@ impl Machine {
             None => "None".to_owned(),
         };
         let missing = alone(3);
+        // `pop(at)` and `remove` give the item, a `T?`, so `else` takes a `None` held for the default.
         let taken = |item: Option<Option<usize>>| item.flatten().map_or_else(|| missing.clone(), alone);
+        // `pop()` gives a `T??`, which keeps a `None` held apart from the list being empty: `else`
+        // takes off only the outer one, so a `None` held comes out as itself.
+        let popped = |item: Option<Option<usize>>| match item {
+            None => missing.clone(),
+            Some(None) => "None".to_owned(),
+            Some(Some(at)) => alone(at),
+        };
         let mut list: Vec<Option<usize>> = vec![Some(0), None, Some(1)];
         let mut lines = Vec::new();
         for &(way, which) in &popping.steps {
@@ -3511,7 +3524,7 @@ impl Machine {
             match way {
                 PopWay::Pushed => list.push(Some(which)),
                 PopWay::PushedNone => list.push(None),
-                PopWay::Kept | PopWay::Inline | PopWay::ByRef => lines.push(taken(list.pop())),
+                PopWay::Kept | PopWay::Inline | PopWay::ByRef => lines.push(popped(list.pop())),
                 PopWay::Dropped => {
                     let _ = list.pop();
                 }

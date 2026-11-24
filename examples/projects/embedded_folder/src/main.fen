@@ -1,0 +1,16 @@
+# `embed_folder` gives every file under a folder, read when the program is built, by its path
+# from the folder, written with `/`, in sorted order. Hidden files are left out. The program holds
+# them and takes no `Fs` capability to have them. A kit can embed anything inside its own folder,
+# not only what's in src.
+
+TILES = embed_folder("../assets/tiles")
+
+def main(stdout: Stdout):
+    stdout.print(len(TILES))
+    for path, tile in TILES.items():
+        stdout.print(path, len(tile))
+    stdout.print(TILES.get("deep/sand.txt") == embed_file("../assets/tiles/deep/sand.txt"))
+    stdout.print(TILES.get("lava.txt") is None)
+
+test "a hidden file isn't embedded":
+    assert TILES.get(".notes") is None

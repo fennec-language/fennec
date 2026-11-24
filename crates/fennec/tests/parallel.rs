@@ -1095,6 +1095,35 @@ fn a_task_s_pieces_holding_write_locks_leave_lent_counts_to_the_runtime() -> std
     Ok(())
 }
 
+/// Locals from before a write lock, changed under it, are let go of as outside it (#2456): under
+/// the lock, `fennec_thread` is the lock's owner, so this thread's own blocks went through the
+/// counts kept for other threads, which lost them. Appends, a set index, a reassign, a dict, a
+/// read beside a change, a lock that fails, a loop of locks and a read lock each left a block live
+/// at the end, on any number of threads. `ThreadSanitizer` runs this program too.
+#[test]
+fn locals_changed_under_a_write_lock_are_let_go_of_as_outside_it() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-outside-locals-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/outside_locals_changed_under_a_lock.fen");
+    let built = build_on_threads(&dir, source, "outside_locals_changed_under_a_lock")?;
+    let wanted = include_str!("fixtures/workers/outside_locals_changed_under_a_lock.out");
+    for threads in ["1", "4", "8"] {
+        let ran =
+            Command::new(&built).env("FENNEC_THREADS", threads).env("FENNEC_COUNTS", "1").output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(ran.status.code(), Some(0), "on {threads} threads: {said}");
+        assert_eq!(printed, wanted, "on {threads} threads");
+        assert!(said.contains(" live 0"), "on {threads} threads it left blocks live: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task that's stopped while it's parked in a comprehension passes the stop on to its pieces,
 /// which sleep on every worker: each sleep is cut short, the call ends, and the task with it. The
 /// pieces sleep for two hours, so a stop that only reached the task would leave the program

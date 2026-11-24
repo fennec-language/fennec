@@ -63,3 +63,5 @@ Print the private key, then destroy the file. Each `.pub` file's line goes in `R
 5. Upload `fennec-v0.4.2.manifest.sig` to the release, and mark it a release.
 
 A launcher release is signed the same way in the `fennec-launcher` namespace, by two of the keys. The two signatures go one after the other in one `.sig` file.
+
+`fennec self update` installs a launcher release. It reads `latest`, the newest launcher's version, then `v<version>/fennec-launcher-v<version>.manifest`, its `.sig` and the archive for its platform, from `https://dl.fennec-lang.dev/launcher` or `FENNEC_LAUNCHER_DIST`. The archive's one top folder, `fennec-launcher-v<version>-<platform>`, holds the launcher's three programs: `fennec`, `fennec-setup` and `fennec-fetch`. It replaces only the launcher installed as `~/.fennec/bin/fennec`, only with a newer version, and only one two of the keys signed. Until there are keys, it refuses before fetching anything.

@@ -7410,6 +7410,40 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `std.math`'s `sqrt`, `sin`, `cos` and `acos` of an `f32` give an `f32`, worked out in `f32`, and
+/// `abs` of one is one. `f32.parse` reads text straight to the nearest `f32`, rounded once, where
+/// reading a `float` first rounds twice, and text that isn't a number fails as `float`'s does.
+/// What it prints is what the reference evaluator prints.
+#[test]
+fn an_f32s_math_and_parse_work_out_in_f32() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "f32_math_and_parse",
+        "from std import math
+
+def main(stdout: Stdout):
+    two = f32(2)
+    stdout.print(math.sqrt(two), math.sin(f32(0.5)), math.cos(f32(0.5)), math.acos(f32(0.5)), abs(f32(-1.5)))
+    once = f32.parse(\"1.00000005960464477539062501\") except InvalidValue(): f32(0)
+    wide = float.parse(\"1.00000005960464477539062501\") except InvalidValue(): 0.0
+    twice = f32(wide)
+    bad = f32.parse(\"1,5\") except why:
+        stdout.print(why)
+        f32(0)
+    spaced = f32.parse(\" -2e3 \") except InvalidValue(): f32(0)
+    stdout.print(once, twice, once == twice, bad, spaced)
+",
+    )?;
+    assert_eq!(
+        printed,
+        "1.4142135 0.47942555 0.87758255 1.0471976 1.5\n\"1,5\" isn't a float\n\
+         1.0000001 1.0 False 0.0 -2000.0\n"
+    );
+    Ok(())
+}
+
 /// `**` on `u64`s, worked out by squaring and checked: `0 ** 0` is 1, `2 ** 63` is past `int`'s top,
 /// `3 ** 40` takes most of the 64 bits, and `2 ** 64` doesn't fit, which stops the program.
 #[test]
@@ -7526,6 +7560,57 @@ fn optionals_that_are_none_reach_another_task_as_none_every_way() -> std::io::Re
     assert!(counts_of("none_crosses_every_way_counts", NONE_EVERY_WAY)?.ends_with(" live 0"));
     Ok(())
 }
+
+/// An optional of an optional keeps a `None` inside apart from `None` (#2413): a `None` popped
+/// out of a `list[int?]` isn't the list being empty, a generic `T?` of a `Point?` that holds
+/// `None` isn't nothing found, and an `Inbox[int?]` hears a `None` that was sent, and goes on to
+/// the messages after it, where it once read the message's block as its number and kept it.
+#[test]
+fn an_optional_of_an_optional_keeps_a_none_inside_apart() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("nested_optionals", NESTED_OPTIONALS, NESTED_OPTIONALS_PRINTS)?;
+    assert!(counts_of("nested_optionals_counts", NESTED_OPTIONALS)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NESTED_OPTIONALS: &str = r#"from std.concurrent import Closed, Crashed, Inbox
+
+struct Point:
+    x: int
+
+def first_of[T](items: list[T]) -> T?:
+    if len(items) == 0:
+        return None
+    return items[0]
+
+def gather(inbox: Inbox[int?], stdout: Stdout):
+    for got in inbox:
+        stdout.print("got", got, got is None)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    none_int: int? = None
+    mut numbers: list[int?] = [7, none_int]
+    first_pop = numbers.pop() else 99
+    second_pop = numbers.pop() else 99
+    third_pop = numbers.pop() else 99
+    stdout.print(first_pop, second_pop, third_pop)
+    none_point: Point? = None
+    points: list[Point?] = [none_point]
+    found = first_of(points)
+    stdout.print(found is None, (found else Point(x=1)) is None)
+    nothing: list[Point?] = []
+    stdout.print(first_of(nothing) is None)
+    with launch((inbox) => gather(inbox, stdout))? as sends:
+        sends.send(12)?
+        sends.send(none_int)?
+        sends.send(3)?
+    return
+"#;
+
+const NESTED_OPTIONALS_PRINTS: &str =
+    "None 7 99\nFalse True\nTrue\ngot 12 False\ngot None True\ngot 3 False\n";
 
 const NONE_EVERY_WAY: &str = r#"# Optionals that are `None` going every way a value goes to another task: a channel, a task's
 # captures, `parallel`'s items and what it gives back, and a lock, for `str?`, `list[int]?` and
@@ -21518,6 +21603,90 @@ def main(net: Net, stdout: Stdout):
     Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
 }
 
+/// What a server echoing each request says on a connection of its own to each of `scripts`, sent
+/// whole with the sending side then closed, as `served_on` sends one. It's built on the runtime
+/// `threads` names, with the calls std.net makes for each request through their typed exports, or
+/// by name when `named`. A reset after what was said shows as `[reset]`.
+fn echoed_on(threads: &str, named: bool, scripts: &[&[u8]]) -> std::io::Result<Vec<String>> {
+    use std::io::{Read, Write};
+    let source = r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, headers={"x-asked": f"{request.method} {request.path}"}, body=request.body)
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+"#;
+    let dir = folder(&format!("conn_calls_{threads}_{}", if named { "named" } else { "typed" }))?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("serve");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_THREADS_RUNTIME", threads)
+        .env("FENNEC_NAMED_CONN_CALLS", if named { "1" } else { "0" })
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut said = Vec::new();
+    for asked in scripts {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        let _ = stream.write_all(asked);
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        let mut heard = Vec::new();
+        let reset = stream.read_to_end(&mut heard).is_err();
+        said.push(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }));
+    }
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(said)
+}
+
+/// A server whose per-request calls go through their typed exports, `fennec_conn_*`, answers every
+/// byte as one calling them by name, `FENNEC_NAMED_CONN_CALLS=1`, on either runtime: requests with
+/// and without bodies, one after another on a connection, and each way a head or body goes wrong.
+#[test]
+fn typed_connection_calls_answer_every_byte_as_named_ones_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let long_line = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(70_000));
+    let many_headers = format!("GET /many HTTP/1.1\r\n{}\r\n", "X-A: b\r\n".repeat(101));
+    let scripts: [&[u8]; 10] = [
+        b"GET /a?b=c HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        b"GET /a HTTP/1.1\r\n\r\nPOST /echo HTTP/1.1\r\nContent-Length: 3\r\n\r\nden\
+          \r\nHEAD /h HTTP/1.1\r\n\r\nPOST /empty HTTP/1.1\r\nContent-Length: 0\r\n\r\n",
+        b"POST /short HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc",
+        b"POST /big HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n",
+        b"POST /n HTTP/1.1\r\nContent-Length: 1x\r\n\r\nab",
+        b"GET /lf HTTP/1.1\nHost: x\n\n",
+        b"GET /u HTTP/1.1\r\nHost: x\r\n",
+        b"\r\n\r\n\r\n",
+        long_line.as_bytes(),
+        many_headers.as_bytes(),
+    ];
+    for threads in ["0", "1"] {
+        if threads == "1" {
+            assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
+        }
+        let typed = echoed_on(threads, false, &scripts)?;
+        let named = echoed_on(threads, true, &scripts)?;
+        for (at, (typed, named)) in typed.iter().zip(&named).enumerate() {
+            assert_eq!(typed, named, "script {at}, threads {threads}");
+        }
+        // Each script was answered, so there was something to compare: all but the one that sends
+        // only blank lines, which the server closes on with nothing said.
+        let answered = typed.iter().filter(|said| said.starts_with("HTTP/1.1 ")).count();
+        assert_eq!(answered, scripts.len() - 1, "threads {threads}: {typed:?}");
+    }
+    Ok(())
+}
+
 /// A server built on the plain runtime, as `fennec build` makes one where the runtime with threads
 /// isn't there, closes as gently as one on the threads runtime: a refusal with what the client
 /// sent still unread reaches it whole, with no reset. `close` on the plain runtime shut the
@@ -34508,7 +34677,7 @@ def main(stdout: Stdout):
     rows.append([1, 2])
     rows.append(None)
     rows.append([3])
-    stdout.print(len(rows.pop() else [9, 9, 9]), len(rows.pop() else [9, 9, 9]), len(rows.pop(0) else [9]), len(rows))
+    stdout.print(len((rows.pop() else None) else [9, 9, 9]), len((rows.pop() else None) else [9, 9, 9]), len(rows.pop(0) else [9]), len(rows))
     rows.append([4, 5])
     _ = rows.pop(0)
     stdout.print(len(rows))
@@ -34516,13 +34685,13 @@ def main(stdout: Stdout):
     points.append(Point(x=5))
     points.append(None)
     points.append(Point(x=7))
-    stdout.print((points.pop() else Point(x=0)).x, (points.pop() else Point(x=-1)).x, (points.pop(0) else Point(x=0)).x, len(points))
+    stdout.print(((points.pop() else None) else Point(x=0)).x, ((points.pop() else None) else Point(x=-1)).x, (points.pop(0) else Point(x=0)).x, len(points))
     points.append(Point(x=8))
     _ = points.pop()
     stdout.print(len(points))
     return
 "#,
-        "fox a word long enough to be held in a block of its own none 1\nkit 0 empty\nkit 0\n1 3 2 0\n0\n7 -1 5 0\n0\n",
+        "fox a word long enough to be held in a block of its own None 1\nkit 0 empty\nkit 0\n1 3 2 0\n0\n7 -1 5 0\n0\n",
     )
 }
 
@@ -34639,8 +34808,10 @@ fn a_constant_is_worked_out_once() -> std::io::Result<()> {
     Ok(())
 }
 
-/// `embed_folder`'s lists are made the first time it's reached and kept: a function giving one,
-/// called a thousand times, makes them once, where it made both each time. A list taken from it
+/// `embed_folder`'s lists, and `embed_file`'s bytes, are made the first time each thread reaches
+/// them and kept: a function giving a folder, called a thousand times beside a file read as often,
+/// makes them once, where it made both lists each time. So does a program with a task, which runs
+/// on the threads runtime, where the lists were made each time still (#2429). A list taken from it
 /// and changed is the caller's own copy, and the kept one stays as it was.
 #[test]
 fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
@@ -34651,17 +34822,29 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("site/css"))?;
     std::fs::write(dir.join("site/css/app.css"), "body{}")?;
     std::fs::write(dir.join("site/index.html"), "<h1>hi</h1>")?;
-    let allocations = |calls: u32| -> std::io::Result<(String, u64)> {
+    let allocations = |calls: u32, task: bool| -> std::io::Result<(String, u64)> {
+        // A task, so the program runs with the threads runtime.
+        let (imported, signature, launched) = if task {
+            (
+                "from std.concurrent import Crashed\n\n",
+                "def idle():\n    pass\n\ndef main(stdout: Stdout) fails Crashed:\n",
+                "    with launch(() => idle())?:\n        pass\n",
+            )
+        } else {
+            ("", "def main(stdout: Stdout):\n", "")
+        };
         let source = format!(
-            "def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
-             def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
-             files = site()\n        total += len(files) + len(files.get(\"index.html\") else bytes())\n    \
+            "{imported}def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
+             {signature}{launched}    mut total = 0\n    for i in range({calls}):\n        \
+             files = site()\n        total += len(files) + len(files.get(\"index.html\") else bytes())\n        \
+             total += len(embed_file(\"site/css/app.css\"))\n    \
              mut paths = site().keys()\n    paths.append(\"extra\")\n    \
              stdout.print(total, paths, site().keys())\n"
         );
-        let program = dir.join(format!("calls{calls}.fen"));
+        let name = format!("calls{calls}{}", if task { "_task" } else { "" });
+        let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source)?;
-        let executable = dir.join(format!("calls{calls}"));
+        let executable = dir.join(&name);
         let built = fennec(
             &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
             &dir,
@@ -34677,14 +34860,18 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
             .unwrap_or_else(|| panic!("no counts: {said}"));
         Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), made))
     };
-    let (once, made_once) = allocations(1)?;
-    let (often, made_often) = allocations(1000)?;
-    std::fs::remove_dir_all(&dir)?;
     let shown = "[\"css/app.css\", \"index.html\", \"extra\"] [\"css/app.css\", \"index.html\"]\n";
-    assert_eq!(once, format!("13 {shown}"));
-    assert_eq!(often, format!("13000 {shown}"));
-    // Each call may make the folder's own block, but never its two lists again.
-    assert!(made_often - made_once <= 999, "{made_once} against {made_often}");
+    let tasks: &[bool] = if crate::executables::threads_runtime_built() { &[false, true] } else { &[false] };
+    for task in tasks {
+        let (once, made_once) = allocations(1, *task)?;
+        let (often, made_often) = allocations(1000, *task)?;
+        assert_eq!(once, format!("19 {shown}"), "with a task: {task}");
+        assert_eq!(often, format!("19000 {shown}"), "with a task: {task}");
+        // Each call may make the folder's own block, but never its two lists, or the file's bytes,
+        // again.
+        assert!(made_often - made_once <= 999, "with a task: {task}: {made_once} against {made_often}");
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -35853,10 +36040,12 @@ def main(stdout: Stdout):
     )
 }
 
-/// A generic's `T?` with `T` an optional is that optional, as the checker has it: `first` of a
-/// `list[str?]` gives back a `str?`, and a `SortedMap[int, str?]`'s `get` and `remove` do too.
+/// A generic's `T?` with `T` an optional is an optional of it, which keeps a `None` inside apart
+/// (#2413): `first` of a `list[str?]` holding `None` found something, and so did a
+/// `SortedMap[int, str?]`'s `get` and `remove` of a key whose value is `None`. Pinned when the two
+/// were the same, it now pins what decisions.md has: `T??` never collapses into `T?`.
 #[test]
-fn an_optional_of_an_optional_is_the_optional_as_pinned() -> std::io::Result<()> {
+fn an_optional_of_an_optional_keeps_its_none_apart_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }

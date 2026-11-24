@@ -705,6 +705,9 @@ pub extern "C" fn retain_shared(address: i64, owner: i64) {
     if super::with(|state| state.heap.change_lent_owners(address.cast_unsigned(), 1)) {
         return;
     }
+    if counted_behind(address.cast_unsigned(), 1).is_some() {
+        return;
+    }
     ANY_SHARED.store(true, Ordering::Relaxed);
     let owner = u16::try_from(owner).unwrap_or(0);
     shared(|table| {
@@ -726,6 +729,11 @@ pub extern "C" fn release_shared(address: i64, owner: i64) {
     if super::with(|state| state.heap.change_lent_owners(address, -1)) {
         return;
     }
+    match counted_behind(address, -1) {
+        Some(true) => return super::heap::free(address.cast_signed()),
+        Some(false) => return,
+        None => {}
+    }
     let freed = shared(|table| {
         let entry = table.get_mut(&address)?;
         entry.count = entry.count.saturating_sub(1);
@@ -738,6 +746,21 @@ pub extern "C" fn release_shared(address: i64, owner: i64) {
         remote(|queues| queues.entry(queue).or_default().push(address));
         ANY_REMOTE.store(true, Ordering::Release);
     }
+}
+
+/// A count of this thread's on one of its own blocks, in a table behind a write lock it holds: under
+/// the lock, `fennec_thread` is the lock's owner, so native code took the block for another
+/// thread's. It's this thread's to count, as it would be outside the lock, so its own count changes
+/// by `by` (#2456). Counted in the shared table, a release found nothing there and the block was
+/// left at the end, and a retain made an entry that kept it from ever being freed. Whether the
+/// count reached 0, or `None`, having changed nothing, for any other block.
+fn counted_behind(address: u64, by: i64) -> Option<bool> {
+    super::with(|state| {
+        state.heap.behind_holding(usize::try_from(address).ok()?)?;
+        let count = state.heap.block_mut(address)?.first_mut()?;
+        *count = count.saturating_add_signed(by);
+        Some(*count == 0)
+    })
 }
 
 /// Whether a block whose owner has just let go of its last count is still held by another

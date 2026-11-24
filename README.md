@@ -119,6 +119,7 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 - `crates/launcher` and `crates/dist`: the `fennec` people install, which runs the toolchain each kit asks for, and the signed release manifests it checks.
 - `crates/loader`: checks a program's compiled objects and links them into memory images.
 - `crates/fmt`, `crates/lint` and `crates/lsp`: the formatter, the linter and the language server.
+- `crates/daemon`: what a command and the build daemon say to each other, and where the daemon listens, shared by `crates/fennec`, which runs the daemon, and the launcher.
 - `crates/fennec`: the `fennec` command.
 - `crates/bench` and `crates/count`: the benchmark suite, and counting the instructions a program runs.
 - `crates/blake3`, `crates/re` and `crates/parked`: hashing, regular expressions and parked network tasks for the standard library.

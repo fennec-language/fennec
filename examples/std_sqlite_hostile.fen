@@ -87,7 +87,7 @@ test "text that isn't UTF-8 fails naming its column, and NaN isn't stored as nul
         said = outcome(() => db.query[str](t"select cast(data as text) as words from notes")?)
         assert said == "Column words: it holds text that isn't UTF-8"
         assert db.query[bytes](t"select data from notes")? == [broken]
-        nan = float("nan") except InvalidValue(): 0.0
+        nan = float.parse("nan") except InvalidValue(): 0.0
         assert (
             outcome(() => db.execute(t"insert into notes values ({nan})")?)
             == "Failed: NaN can't be stored: SQLite would turn it into NULL"

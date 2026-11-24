@@ -12,7 +12,7 @@ struct Point:
     y: float
 
 def main(stdout: Stdout):
-    nan = float("nan") except InvalidValue(): 0.0
+    nan = float.parse("nan") except InvalidValue(): 0.0
     other_nan = 0.0 - nan
     zero = 0.0
     negative_zero = -0.0

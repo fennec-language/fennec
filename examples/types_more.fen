@@ -42,7 +42,7 @@ def find(name: str) -> Player?:
 
 def parse(text: str) -> int fails NotANumber:
     if not text.isdigit(): fail NotANumber(text=text)
-    return int(text) except InvalidValue(): 0
+    return int.parse(text) except InvalidValue(): 0
 
 def call(make: () -> int) -> int:
     return make()

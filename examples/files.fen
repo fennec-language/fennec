@@ -12,7 +12,7 @@ def load(fs: Fs, path: str) -> list[int] fails IoError:
     mut found = list[int]()
     with fs.open(path)? as file:
         for line in file.lines()?:
-            int_value = int(line) except InvalidValue(): 0
+            int_value = int.parse(line) except InvalidValue(): 0
             found.append(int_value)
     return found
 

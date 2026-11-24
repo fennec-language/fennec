@@ -1,3 +1,5 @@
+# A conversion never fails: text is read as a number with `.parse`, which can.
+
 def main(stdout: Stdout):
-    count = int("42")
+    count = int("42") except InvalidValue(): 0
     stdout.print(count + 1)

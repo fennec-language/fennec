@@ -42,7 +42,7 @@ def main(net: Net, args: Args, stdout: Stdout):
     if len(args) == 0:
         stdout.print("give a port to serve on, like 8080")
         return
-    port = int(args[0]) except InvalidValue(): 8080
+    port = int.parse(args[0]) except InvalidValue(): 8080
     with net.listen(port)? as server:
         stdout.print(f"serving on http://localhost:{server.port}")
         server.serve(respond)

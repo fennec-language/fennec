@@ -797,36 +797,55 @@ impl FnCx<'_> {
                 Type::Bytes
             }
             name if let Some(num) = crate::types::Num::named(name) => self.sized_conversion(num, &first, at),
-            "int" | "float" | "i64" | "f64" => {
-                // `i64` is `int` and `f64` is `float`, so they're their conversions, and what's built
-                // from them is written as theirs.
-                let plain = if matches!(name, "int" | "i64") { "int" } else { "float" };
-                if plain != name {
-                    self.checker.std_calls.insert((span.start, span.end), plain.to_owned());
-                }
-                if !matches!(
-                    first,
-                    Type::Sized(_) | Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown
-                ) {
-                    let message = format!("`{name}` converts a number or text, not {}", a(&first));
-                    let help = match self.checker.settled(&first) {
-                        Type::List(_) | Type::Set(_) => {
-                            format!("convert each item, as `[{name}(item) for item in items]`")
-                        }
-                        _ => format!("pass a number or text, as `{name}(\"42\")`"),
-                    };
-                    self.error(Diagnostic::new(message, at).with_help(help));
-                }
-                let number = if plain == "int" { Type::Int } else { Type::Float };
-                // Text might not be a number, so reading one can fail.
-                if self.checker.settled(&first) == Type::Str {
-                    return Type::result(number, Type::named("InvalidValue"));
-                }
-                number
-            }
+            "int" | "float" | "i64" | "f64" => self.number_conversion(name, &first, span, at),
             "round" => self.math(name, &types, span),
             _ => self.collection_builtin(name, plain, span),
         }
+    }
+
+    /// `int(x)` or `float(x)`, `i64` and `f64` among them: a number of another kind as this one.
+    /// Text isn't converted: it's read with `.parse`, which can fail.
+    fn number_conversion(&mut self, name: &str, first: &Type, span: Span, at: Span) -> Type {
+        // `i64` is `int` and `f64` is `float`, so they're their conversions, and what's built
+        // from them is written as theirs.
+        let plain = if matches!(name, "int" | "i64") { "int" } else { "float" };
+        if plain != name {
+            self.checker.std_calls.insert((span.start, span.end), plain.to_owned());
+        }
+        if !matches!(
+            *first,
+            Type::Sized(_) | Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown
+        ) {
+            let message = format!("`{name}` converts a number, not {}", a(first));
+            let help = match self.checker.settled(first) {
+                Type::List(item) | Type::Set(item) if *item == Type::Str => {
+                    format!("read each item with `.parse`, as `[{plain}.parse(item)? for item in items]`")
+                }
+                Type::List(_) | Type::Set(_) => {
+                    format!("convert each item, as `[{name}(item) for item in items]`")
+                }
+                _ => format!("pass a number, as `{name}(2.5)`, or read text with `{plain}.parse(text)`"),
+            };
+            self.error(Diagnostic::new(message, at).with_help(help));
+        }
+        let number = if plain == "int" { Type::Int } else { Type::Float };
+        // Text is read as a number with `.parse`, which can fail: a conversion never does.
+        // std's own `parse` is written over this, so std's code may.
+        if self.checker.settled(first) == Type::Str {
+            if !span.in_prelude() && !crate::lend_lowering::not_written_by_hand(span) {
+                let message = format!(
+                    "`{name}(...)` converts a number, and never fails: text is read with `{plain}.parse(text)`, which can"
+                );
+                let named =
+                    Span { start: span.start, end: span.start + u32::try_from(name.len()).unwrap_or(0) };
+                let help = format!("write `{plain}.parse(...)`, keeping the `?` or `except` after it");
+                self.error(
+                    Diagnostic::new(message, at).with_help(help).with_fix(named, format!("{plain}.parse")),
+                );
+            }
+            return Type::result(number, Type::named("InvalidValue"));
+        }
+        number
     }
 
     /// `f32(x)`, the `f32` nearest a number, or `u8(x)`, an integer of another size as this one,
@@ -838,7 +857,9 @@ impl FnCx<'_> {
             if !matches!(first, Type::Int | Type::Float | Type::Sized(_) | Type::Unknown) {
                 let message = format!("`{name}(...)` converts a number, not {}", a(first));
                 let help = if *first == Type::Str {
-                    format!("read the text as a number first, as `{name}(float(text)?)`")
+                    format!(
+                        "read the text as a number with `float.parse`, as `x = {name}(float.parse(text)?)`"
+                    )
                 } else {
                     format!("pass a number, as `{name}(1.5)`")
                 };
@@ -851,7 +872,9 @@ impl FnCx<'_> {
         if !integer {
             let message = format!("`{name}(...)` converts an integer, not {}", a(first));
             let help = match self.checker.settled(first) {
-                Type::Str => format!("read it as an int first: `{name}(int(text)?)`"),
+                Type::Str => format!(
+                    "read the text as a number with `{name}.parse(text)`, as `x = {name}.parse(text)?`"
+                ),
                 Type::Float => {
                     format!("make it a whole number first: `{name}(round(x))` or `{name}(int(x))`")
                 }

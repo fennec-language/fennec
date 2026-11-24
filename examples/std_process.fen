@@ -73,7 +73,7 @@ test "a value inside an argument, or a dash in the template's own text, runs"(pr
 def count_lines(process: Process, text: str, word: str) -> int:
     found = process.run("grep", ["-c", word], input=text, env={"LC_ALL": "C"}) except .NotRun(
     ) | .LooksLikeAnOption() | .TimedOut() | .TooMuchOutput(): Output()
-    return int(found.stdout.strip()) except InvalidValue(): 0
+    return int.parse(found.stdout.strip()) except InvalidValue(): 0
 
 test "grep is given the text to read"(process: Process):
     process.script("grep", Output(stdout="2\n"))

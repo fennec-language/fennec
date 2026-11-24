@@ -549,7 +549,7 @@ fn failing_tests_say_why_through_llvm_and_run_once() {
     }
     let dir = scratch("llvm-failures").unwrap();
     let text = "error Broke:\n    why: str\n\ndef double(x: int) -> int:\n    return x * 3\n\n\
-                def parse(text: str) -> int fails Broke:\n    if text == \"\":\n        fail Broke(why=\"empty\")\n    return int(text) except InvalidValue(): 0\n\n\
+                def parse(text: str) -> int fails Broke:\n    if text == \"\":\n        fail Broke(why=\"empty\")\n    return int.parse(text) except InvalidValue(): 0\n\n\
                 test \"a comparison\":\n    assert double(2) == 4\n\n\
                 test \"a plain condition\":\n    ready = double(1) > 10\n    assert ready\n\n\
                 test \"a failure passed up\":\n    assert parse(\"\")? == 1\n\n\

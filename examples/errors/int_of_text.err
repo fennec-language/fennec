@@ -1,7 +1,7 @@
-error: this is the result of something that can fail
- --> examples/errors/int_of_text.fen:3:18
+error: `int(...)` converts a number, and never fails: text is read with `int.parse(text)`, which can
+ --> examples/errors/int_of_text.fen:4:17
   |
-3 |     stdout.print(count + 1)
-  |                  ^^^^^^^^^
+4 |     count = int("42") except InvalidValue(): 0
+  |                 ^^^^
   |
-  = help: handle the failure where it's made: `x = f()?` passes it up, `x = f() except Missing(): 0` gives a value instead, and `x = f() except why:` handles it in a block
+  = help: write `int.parse(...)`, keeping the `?` or `except` after it

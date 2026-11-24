@@ -21518,6 +21518,90 @@ def main(net: Net, stdout: Stdout):
     Ok(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }))
 }
 
+/// What a server echoing each request says on a connection of its own to each of `scripts`, sent
+/// whole with the sending side then closed, as `served_on` sends one. It's built on the runtime
+/// `threads` names, with the calls std.net makes for each request through their typed exports, or
+/// by name when `named`. A reset after what was said shows as `[reset]`.
+fn echoed_on(threads: &str, named: bool, scripts: &[&[u8]]) -> std::io::Result<Vec<String>> {
+    use std::io::{Read, Write};
+    let source = r#"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, headers={"x-asked": f"{request.method} {request.path}"}, body=request.body)
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+"#;
+    let dir = folder(&format!("conn_calls_{threads}_{}", if named { "named" } else { "typed" }))?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("serve");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()])
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_THREADS_RUNTIME", threads)
+        .env("FENNEC_NAMED_CONN_CALLS", if named { "1" } else { "0" })
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let mut said = Vec::new();
+    for asked in scripts {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        let _ = stream.write_all(asked);
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        let mut heard = Vec::new();
+        let reset = stream.read_to_end(&mut heard).is_err();
+        said.push(format!("{}{}", String::from_utf8_lossy(&heard), if reset { "[reset]" } else { "" }));
+    }
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(said)
+}
+
+/// A server whose per-request calls go through their typed exports, `fennec_conn_*`, answers every
+/// byte as one calling them by name, `FENNEC_NAMED_CONN_CALLS=1`, on either runtime: requests with
+/// and without bodies, one after another on a connection, and each way a head or body goes wrong.
+#[test]
+fn typed_connection_calls_answer_every_byte_as_named_ones_do() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let long_line = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(70_000));
+    let many_headers = format!("GET /many HTTP/1.1\r\n{}\r\n", "X-A: b\r\n".repeat(101));
+    let scripts: [&[u8]; 10] = [
+        b"GET /a?b=c HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        b"GET /a HTTP/1.1\r\n\r\nPOST /echo HTTP/1.1\r\nContent-Length: 3\r\n\r\nden\
+          \r\nHEAD /h HTTP/1.1\r\n\r\nPOST /empty HTTP/1.1\r\nContent-Length: 0\r\n\r\n",
+        b"POST /short HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc",
+        b"POST /big HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n",
+        b"POST /n HTTP/1.1\r\nContent-Length: 1x\r\n\r\nab",
+        b"GET /lf HTTP/1.1\nHost: x\n\n",
+        b"GET /u HTTP/1.1\r\nHost: x\r\n",
+        b"\r\n\r\n\r\n",
+        long_line.as_bytes(),
+        many_headers.as_bytes(),
+    ];
+    for threads in ["0", "1"] {
+        if threads == "1" {
+            assert!(crate::executables::threads_runtime_built(), "couldn't build the runtime with threads");
+        }
+        let typed = echoed_on(threads, false, &scripts)?;
+        let named = echoed_on(threads, true, &scripts)?;
+        for (at, (typed, named)) in typed.iter().zip(&named).enumerate() {
+            assert_eq!(typed, named, "script {at}, threads {threads}");
+        }
+        // Each script was answered, so there was something to compare: all but the one that sends
+        // only blank lines, which the server closes on with nothing said.
+        let answered = typed.iter().filter(|said| said.starts_with("HTTP/1.1 ")).count();
+        assert_eq!(answered, scripts.len() - 1, "threads {threads}: {typed:?}");
+    }
+    Ok(())
+}
+
 /// A server built on the plain runtime, as `fennec build` makes one where the runtime with threads
 /// isn't there, closes as gently as one on the threads runtime: a refusal with what the client
 /// sent still unread reaches it whole, with no reset. `close` on the plain runtime shut the

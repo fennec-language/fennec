@@ -41,6 +41,7 @@ mod capabilities;
 mod channels;
 mod checks_left;
 mod closures;
+mod conn_calls;
 mod conversions;
 mod copies_made;
 mod dicts;

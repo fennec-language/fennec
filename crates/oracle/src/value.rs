@@ -221,11 +221,10 @@ pub(crate) struct Table {
     pub(crate) tag: u64,
 }
 
-/// One slot of a `Table`: the generation of the item it holds, or of the last it held, the tag the
-/// `Id` handed out for that item has, and the item, while it has one.
+/// One slot of a `Table`: the tag the `Id` handed out for its item has, 0 once it's taken out, and
+/// the item, while it has one.
 #[derive(Clone, Debug)]
 pub(crate) struct Slot {
-    pub(crate) generation: u32,
     /// A new one for every item added, so no two items anywhere, in any copy of a `Table`, ever
     /// have the same `Id` (#2424).
     pub(crate) tag: u64,
@@ -251,42 +250,37 @@ impl Table {
         Table { slots: Vec::new(), tag }
     }
 
-    /// Where the item an `Id` names is, while it's there: its slot holds the generation and the tag
-    /// the `Id` was handed out with.
+    /// Where the item an `Id` names is, while it's there: its slot holds the tag the `Id` was
+    /// handed out with.
     pub(crate) fn find(&self, id: Id) -> Option<usize> {
         let slot = self.slots.get(id.slot)?;
-        (slot.generation == id.generation && slot.tag == id.tag && slot.item.is_some()).then_some(id.slot)
+        (id.tag != 0 && slot.tag == id.tag && slot.item.is_some()).then_some(id.slot)
     }
 
     /// Adds an item under `tag`, a new one for each item but those a load puts in, in the lowest
-    /// slot whose item was removed, at the next generation, or in a new slot at generation 0. A
-    /// slot that's held as many items as an `Id` can count is never used again.
+    /// slot whose item was taken out, or a new slot.
     pub(crate) fn add(&mut self, item: Value, tag: u64) -> Id {
-        let free = self
-            .slots
-            .iter_mut()
-            .enumerate()
-            .find(|(_, slot)| slot.item.is_none() && slot.generation < u32::MAX);
-        if let Some((at, slot)) = free {
-            slot.generation += 1;
+        if let Some((at, slot)) = self.slots.iter_mut().enumerate().find(|(_, slot)| slot.item.is_none()) {
             slot.tag = tag;
             slot.item = Some(item);
-            return Id { slot: at, generation: slot.generation, tag };
+            return Id { slot: at, generation: 0, tag };
         }
-        self.slots.push(Slot { generation: 0, tag, item: Some(item) });
+        self.slots.push(Slot { tag, item: Some(item) });
         Id { slot: self.slots.len() - 1, generation: 0, tag }
     }
 
-    /// Takes out the item an `Id` names, if it's there.
+    /// Takes out the item an `Id` names, if it's there, its slot's tag with it.
     pub(crate) fn remove(&mut self, id: Id) -> Option<Value> {
         let at = self.find(id)?;
-        self.slots.get_mut(at).and_then(|slot| slot.item.take())
+        let slot = self.slots.get_mut(at)?;
+        slot.tag = 0;
+        slot.item.take()
     }
 
     /// Each item there, with its `Id`, in slot order.
     pub(crate) fn live(&self) -> impl Iterator<Item = (Id, &Value)> {
         self.slots.iter().enumerate().filter_map(|(at, slot)| {
-            let id = Id { slot: at, generation: slot.generation, tag: slot.tag };
+            let id = Id { slot: at, generation: 0, tag: slot.tag };
             slot.item.as_ref().map(|item| (id, item))
         })
     }
@@ -328,8 +322,7 @@ pub(crate) fn same(left: &Value, right: &Value) -> bool {
         (Value::Table(a), Value::Table(b)) => {
             a.slots.len() == b.slots.len()
                 && a.slots.iter().zip(&b.slots).all(|(x, y)| {
-                    x.generation == y.generation
-                        && x.tag == y.tag
+                    x.tag == y.tag
                         && match (&x.item, &y.item) {
                             (Some(x), Some(y)) => same(x, y),
                             (None, None) => true,

@@ -304,7 +304,7 @@ impl Interp {
                         (None, None) => true,
                         _ => false,
                     };
-                    if !same || x.generation != y.generation {
+                    if !same {
                         return Ok(false);
                     }
                 }
@@ -485,7 +485,7 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
                     (None, None) => true,
                     _ => false,
                 };
-                if !same || x.generation != y.generation {
+                if !same {
                     return Ok(false);
                 }
             }

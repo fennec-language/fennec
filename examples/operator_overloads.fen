@@ -1,0 +1,30 @@
+# A type may define an operator once for each right-hand type, matched exactly.
+
+struct Length:
+    seconds: float
+
+struct Moment:
+    seconds: float
+
+    # two moments give the time between them
+    def -(self, other: Moment) -> Length:
+        return Length(seconds=self.seconds - other.seconds)
+
+    # a moment minus a length of time gives an earlier moment
+    def -(self, length: Length) -> Moment:
+        return Moment(seconds=self.seconds - length.seconds)
+
+struct Meters:
+    value: float
+
+    def /(self, other: Meters) -> float:
+        return self.value / other.value
+
+    def /(self, by: float) -> Meters:
+        return Meters(value=self.value / by)
+
+def main(stdout: Stdout):
+    now = Moment(seconds=100.0)
+    deadline = Moment(seconds=130.0)
+    stdout.print(deadline - now, deadline - Length(seconds=30.0))
+    stdout.print(Meters(value=9.0) / Meters(value=3.0), Meters(value=9.0) / 2.0)

@@ -235,9 +235,8 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     if first.is_empty() {
         return Err(Stop::End);
     }
-    // A first line longer than a whole head may be is a 414, before it's taken apart.
-    if first.len() > MOST_HEADER_BYTES {
-        return refused(414);
+    if let Some(early) = head_refusal(input, *at, first) {
+        return early;
     }
     let first = std::str::from_utf8(first).map_err(|_| Stop::Unpromised)?;
     let parts: Vec<&str> = first.split(' ').collect();
@@ -328,6 +327,47 @@ fn whole_target(target: &str) -> Option<(String, String)> {
 enum Early {
     Refused(u16),
     Stop(Stop),
+}
+
+/// What a head refused before any of it is taken apart gets: a first line longer than a whole head
+/// may be is a 414, and then, as the server reads the whole head in one go, a head that doesn't end
+/// or is over its limits. `None` for a head the server takes apart.
+fn head_refusal(input: &[u8], at: usize, first: &[u8]) -> Option<Result<(Wanted, bool), Stop>> {
+    if first.len() > MOST_HEADER_BYTES {
+        return Some(Ok((Wanted::Refused(414), false)));
+    }
+    match head_fits(input, at, first.len()) {
+        Ok(()) => None,
+        Err(Early::Refused(status)) => Some(Ok((Wanted::Refused(status), false))),
+        Err(Early::Stop(stop)) => Some(Err(stop)),
+    }
+}
+
+/// Whether the header lines from `at` end, with an empty line, within the head's limits, `size`
+/// bytes counted from its first line, as the server reads a head in one go before taking any of it
+/// apart: a line ended by a bare `\n`, or none ending them, is a 400, and over a limit a 431.
+fn head_fits(input: &[u8], mut at: usize, size: usize) -> Result<(), Early> {
+    let (mut size, mut lines) = (size, 0);
+    loop {
+        let Some(Ok((line, next))) = request_line(input, at) else { return Err(Early::Refused(400)) };
+        at = next;
+        if line.is_empty() {
+            return Ok(());
+        }
+        if std::str::from_utf8(line).is_err() {
+            return Err(Early::Stop(Stop::Unpromised));
+        }
+        size += line.len();
+        lines += 1;
+        // Near a limit, how it's counted decides, which isn't promised.
+        if lines > MOST_HEADERS || size > MOST_HEADER_BYTES {
+            return if lines > MOST_HEADERS + 1 || size > MOST_HEADER_BYTES + 4096 {
+                Err(Early::Refused(431))
+            } else {
+                Err(Early::Stop(Stop::Unpromised))
+            };
+        }
+    }
 }
 
 /// The headers of a request from `at`, past the empty line that ends them, with `size` bytes

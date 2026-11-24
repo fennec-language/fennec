@@ -10,8 +10,8 @@
 //! get, however they were split. Clients may meet the server at the same time, up to four at once.
 //! After the script, a last client asks for one plain request, which the server has to answer:
 //! whatever came before, it's still up for the next one. By then it must also have let go of what
-//! the clients held: its descriptors come back to where they were and its memory near it. The
-//! server runs with one worker or four.
+//! the clients held: its sockets come back to where they were and its memory near it. The server
+//! runs with one worker or four.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
@@ -179,18 +179,39 @@ fn answers(port: u16) -> Result<(), String> {
     Ok(())
 }
 
-/// What's wrong if the server `id` still holds more descriptors than it did `before` its clients,
-/// once it's had `CLOSED_WITHIN` to close theirs.
-fn still_held(id: u32, before: Option<usize>) -> Option<String> {
+/// Whether a descriptor, as `supervise::descriptors` says it, is a socket: the listener or a
+/// connection. Every other one a server holds is the runtime's own: its workers' polls, their
+/// copies and their wakers.
+fn socket(open: &str) -> bool {
+    let what = open.split_once(' ').map_or("", |(_, what)| what);
+    what.starts_with("socket:")
+        || ["IPv4 ", "IPv6 ", "unix ", "sock "].iter().any(|kind| what.starts_with(kind))
+}
+
+/// The descriptors of the server `id` that `counted` picks.
+fn descriptors(id: u32, counted: fn(&str) -> bool) -> Option<Vec<String>> {
+    crate::supervise::descriptors(id).map(|open| open.into_iter().filter(|open| counted(open)).collect())
+}
+
+/// What's wrong if the server `id` still holds more of the descriptors `counted` picks than it did
+/// `before` its clients, once it's had `CLOSED_WITHIN` to close theirs: how many, and what the
+/// ones it didn't hold are.
+fn still_held(id: u32, before: Option<Vec<String>>, counted: fn(&str) -> bool) -> Option<String> {
     let before = before?;
     let waited = Instant::now();
-    let mut now = crate::supervise::descriptors(id)?;
-    while now > before && waited.elapsed() < CLOSED_WITHIN {
+    let mut now = descriptors(id, counted)?;
+    while now.len() > before.len() && waited.elapsed() < CLOSED_WITHIN {
         std::thread::sleep(Duration::from_millis(50));
-        now = crate::supervise::descriptors(id)?;
+        now = descriptors(id, counted)?;
     }
-    (now > before).then(|| {
-        format!("the server holds {now} descriptors {CLOSED_WITHIN:?} after its clients closed, and held {before} before them")
+    (now.len() > before.len()).then(|| {
+        let new: Vec<&String> = now.iter().filter(|open| !before.contains(open)).collect();
+        format!(
+            "the server holds {} descriptors {CLOSED_WITHIN:?} after its clients closed, and held {} before them: \
+             {new:?} are new",
+            now.len(),
+            before.len()
+        )
     })
 }
 
@@ -215,10 +236,12 @@ pub(crate) fn http_sessions(input: &[u8]) -> Result<(), String> {
     let script = script(input);
     let (mut server, port) = started(&executable, Some(script.threads))?;
     let id = server.0.id();
-    // The runtime opens its own descriptors as it starts; one request first has it hold whatever
-    // else it keeps, so what it holds afterwards is what a script can be held to.
     answers(port).map_err(|wrong| format!("the first client: {wrong}"))?;
-    let before = crate::supervise::descriptors(id);
+    // Only sockets are counted, which is what the clients held. The runtime's own descriptors
+    // aren't all there yet when the first client is answered: each worker copies its poll's
+    // registry when its thread starts, which may come after. That `the runtime lets go of what
+    // connections held` is held to every descriptor, over many rounds, by the tests.
+    let before = descriptors(id, socket);
     let held = crate::supervise::kilobytes(id);
     let shown = |at: usize| {
         format!(
@@ -243,7 +266,7 @@ pub(crate) fn http_sessions(input: &[u8]) -> Result<(), String> {
     let after =
         || format!("after {:?}, {} at once, at {} workers", script.clients, script.together, script.threads);
     answers(port).map_err(|wrong| format!("the last client: {wrong}, {}", after()))?;
-    if let Some(wrong) = still_held(id, before) {
+    if let Some(wrong) = still_held(id, before, socket) {
         return Err(format!("{wrong}, {}", after()));
     }
     if let Some(now) = crate::supervise::kilobytes(id) {
@@ -256,6 +279,54 @@ pub(crate) fn http_sessions(input: &[u8]) -> Result<(), String> {
                 after()
             ));
         }
+    }
+    Ok(())
+}
+
+/// The most bytes an input may have to be split at every one of them by `http-splits`. A longer
+/// one, like a kept input of a million blank lines or 20,000 requests, is split at its first and
+/// last `FEW_SPLITS` bytes and at `FEW_SPLITS` places between, as meeting it once for each byte
+/// would take hours.
+const EVERY_BYTE_UP_TO: usize = 4096;
+const FEW_SPLITS: usize = 16;
+
+/// Where `http-splits` splits an input `length` bytes long: after each of its bytes but the last,
+/// or, past `EVERY_BYTE_UP_TO`, at a few places from its start, its end and between.
+fn split_points(length: usize) -> Vec<usize> {
+    if length <= EVERY_BYTE_UP_TO {
+        return (1..length).collect();
+    }
+    let mut points: Vec<usize> = (1..=FEW_SPLITS).collect();
+    points.extend((1..=FEW_SPLITS).map(|at| at * length / (FEW_SPLITS + 1)));
+    points.extend(length - FEW_SPLITS..length);
+    points
+}
+
+/// The `http-splits` target: an `http-server` input sent to one server once for each place it
+/// can be split, its two pieces a millisecond apart, so the server reads a head, a line, a length
+/// or a body cut wherever a network might cut it, or two requests in one read. Each time, the
+/// answers have to be what `http-server`'s reader says the whole input gets, and the server has to
+/// answer a plain request after them all.
+pub(crate) fn http_splits(input: &[u8]) -> Result<(), String> {
+    let Some(executable) = crate::llvm::built_reader("http-server")? else { return Ok(()) };
+    let (mut server, port) = started(&executable, None)?;
+    for at in split_points(input.len()) {
+        let (first, rest) = input.split_at(at);
+        let client = Client {
+            pieces: vec![first.to_vec(), rest.to_vec()],
+            pause: Duration::from_millis(1),
+            end: End::Reads,
+        };
+        let shown = || format!("split after byte {at} of {}", input.len());
+        let (said, slow) = met(port, &client).map_err(|wrong| format!("{wrong}, {}", shown()))?;
+        if let Ok(Some(status)) = server.0.try_wait() {
+            return Err(format!("the server stopped ({status}), {}", shown()));
+        }
+        judged(input, &said, slow).map_err(|wrong| format!("{wrong}, {}", shown()))?;
+    }
+    answers(port).map_err(|wrong| format!("the last client: {wrong}"))?;
+    if crate::supervise::kilobytes(server.0.id()).is_some_and(|held| held > 512 * 1024) {
+        return Err(format!("the server holds more than 512 MB after {} bytes, split", input.len()));
     }
     Ok(())
 }
@@ -275,9 +346,11 @@ fn written(flags: u8, clients: &[(u8, &[u8])]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{End, MOST_PIECES, answers, group_met, http_sessions, script, still_held, written};
+    use super::{
+        End, MOST_PIECES, answers, descriptors, group_met, http_sessions, script, socket, still_held, written,
+    };
     use crate::http_rules::started;
-    use crate::supervise::{descriptors, kilobytes};
+    use crate::supervise::kilobytes;
 
     const GET: &[u8] = b"GET /a?b=c HTTP/1.1\r\nHost: h\r\n\r\n";
     const POST: &[u8] = b"POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello";
@@ -361,20 +434,30 @@ mod tests {
             };
             let id = server.0.id();
             assert_eq!(answers(port), Ok(()));
-            let before = descriptors(id);
-            let mut settled = None;
+            let sockets = descriptors(id, socket);
+            // The listener at least is a socket, or the check counts nothing.
+            assert!(
+                sockets.as_ref().is_none_or(|open| !open.is_empty()),
+                "no sockets in {:?}",
+                descriptors(id, |_| true)
+            );
+            let (mut settled, mut every) = (None, None);
             for round in 0..ROUNDS {
                 for heard in group_met(port, &clients) {
                     if let Err(wrong) = heard {
                         unreachable!("round {round} at {threads} workers: {wrong}");
                     }
                 }
+                // By now every worker has long started and made its own descriptors, so from
+                // here on all of them are counted.
                 if round == SETTLED {
                     settled = kilobytes(id);
+                    every = descriptors(id, |_| true);
                 }
             }
             assert_eq!(answers(port), Ok(()));
-            assert_eq!(still_held(id, before), None, "at {threads} workers");
+            assert_eq!(still_held(id, sockets, socket), None, "sockets, at {threads} workers");
+            assert_eq!(still_held(id, every, |_| true), None, "after round {SETTLED}, at {threads} workers");
             if let (Some(settled), Some(now)) = (settled, kilobytes(id)) {
                 assert!(
                     now <= settled + 8 * 1024,

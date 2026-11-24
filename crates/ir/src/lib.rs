@@ -43,6 +43,7 @@
 #![deny(clippy::iter_over_hash_type)]
 
 pub mod arrays;
+mod codec;
 mod costs;
 pub mod eval;
 pub mod facts;

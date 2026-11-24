@@ -603,6 +603,33 @@ fn stoppable_output(mut command: Command) -> std::io::Result<std::process::Outpu
     Ok(std::process::Output { status, stdout: out, stderr: err })
 }
 
+/// Builds the `taken` tests of `module` into `work`, as functions by `names`, and gives the flags
+/// each set, or `None` when the program couldn't be trimmed to them.
+fn tests_built(
+    module: &Module,
+    taken: &[&TestDef],
+    written: Option<crate::aot::TestsText>,
+    names: &[String],
+    work: &std::path::Path,
+) -> Option<Result<Vec<String>, String>> {
+    // The text written to see they could all be taken is the text of the very program built here.
+    // A daemon whose builds go to processes of their own builds the tests in one, with the analyses
+    // the builds before kept, rather than from the text written here, which used none: the daemon
+    // keeps none itself, so writing it here leaves the program's own kept ones as they were.
+    let apart = crate::child::wanted();
+    if let Some(written) = written.filter(|_| !apart) {
+        return Some(crate::aot::tests_executable_from(written, names, work));
+    }
+    let trimmed = trimmed_for(module, taken)?;
+    if !apart {
+        return Some(crate::aot::tests_executable(&trimmed, names, work));
+    }
+    Some(crate::child::tests_built(&trimmed, names, work).unwrap_or_else(|no_answer| {
+        crate::child::said_no_answer(&no_answer, work);
+        crate::aot::tests_executable(&trimmed, names, work)
+    }))
+}
+
 /// Runs the tests of a checked `module` named in `wanted` that LLVM can take. `defines` says
 /// whether the program defines a function by a name.
 pub(crate) fn run(
@@ -636,20 +663,17 @@ pub(crate) fn run(
         return result;
     }
     let names: Vec<String> = (0..taken.len()).map(function_name).collect();
-    let work = crate::own_temp("tests").with_extension(std::env::consts::EXE_EXTENSION);
-    // The text written to see they could all be taken is the text of the very program built here.
-    let built = if let Some(written) = written {
-        crate::aot::tests_executable_from(written, &names, &work)
-    } else {
-        let Some(trimmed) = trimmed_for(module, &taken) else {
+    // The tests' executable goes however this ends: a build stopped with its command, as on
+    // Ctrl-C, can have written some of it.
+    let made = Removed(crate::own_temp("tests").with_extension(std::env::consts::EXE_EXTENSION));
+    let work = made.0.as_path();
+    let flags = match tests_built(module, &taken, written, &names, work) {
+        None => {
             result.left.extend(taken.iter().map(|test| test.name.clone()));
             return result;
-        };
-        crate::aot::tests_executable(&trimmed, &names, &work)
-    };
-    let flags = match built {
-        Ok(flags) => flags,
-        Err(why) => {
+        }
+        Some(Ok(flags)) => flags,
+        Some(Err(why)) => {
             result.left.extend(taken.iter().map(|test| test.name.clone()));
             result.refused.get_or_insert(why);
             return result;
@@ -657,7 +681,7 @@ pub(crate) fn run(
     };
     let fused = fusible(module);
     let prelude = prelude_functions();
-    let ran = if real { vec![run_for_real(&work, taken.len())] } else { run_workers(&work, taken.len()) };
+    let ran = if real { vec![run_for_real(work, taken.len())] } else { run_workers(work, taken.len()) };
     let mut seen = vec![false; taken.len()];
     for (number, failure, set) in ran.iter().flat_map(|output| output.lines()).filter_map(read_line) {
         let (Some(test), Some(done)) = (taken.get(number), seen.get_mut(number)) else { continue };
@@ -687,9 +711,17 @@ pub(crate) fn run(
             }
         }
     }
-    rerun_crashed(&work, &taken, &seen, &mut result);
-    let _ = std::fs::remove_file(&work);
+    rerun_crashed(work, &taken, &seen, &mut result);
     result
+}
+
+/// A file removed when this goes.
+struct Removed(std::path::PathBuf);
+
+impl Drop for Removed {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// A worker that crashed leaves the tests it hadn't finished, and each of those runs again alone,

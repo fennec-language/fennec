@@ -1592,6 +1592,39 @@ fn the_sites_front_page_program_and_every_pages_sample_compile() {
     assert!(samples.len() > 3, "found only {} samples on the site", samples.len());
 }
 
+/// The language page is the source of truth, so a whole program it shows has to compile as it's
+/// shown. A sample marked `fragment`, a piece of a program, or `planned`, not built yet, is left
+/// out, and the page says which are which.
+#[test]
+fn the_language_pages_whole_programs_compile() {
+    let page = std::fs::read_to_string(repo().join("docs/language.md")).unwrap();
+    let dir = scratch("language").unwrap();
+    let mut checked = 0;
+    let mut lines = page.lines().enumerate();
+    while let Some((at, line)) = lines.next() {
+        let Some(info) = line.strip_prefix("```fennec") else { continue };
+        let sample: Vec<&str> =
+            lines.by_ref().map(|(_, line)| line).take_while(|line| !line.starts_with("```")).collect();
+        match info.trim() {
+            "fragment" | "planned" => continue,
+            "" => {}
+            other => panic!("the language page's sample at line {} is marked `{other}`", at + 2),
+        }
+        let name = format!("line_{}.fen", at + 2);
+        std::fs::write(dir.join(&name), sample.join("\n") + "\n").unwrap();
+        let output = fennec_in(&dir, &["check", &name], "").unwrap();
+        assert!(
+            output.status.success(),
+            "the language page's sample at line {} doesn't compile:\n{}",
+            at + 2,
+            text(&output.stderr)
+        );
+        checked += 1;
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(checked >= 4, "found only {checked} whole programs on the language page");
+}
+
 /// The guide says every sample compiles and passes its tests on main. Each whole program is
 /// checked as it's shown. One whose fence names a file, as ```` ```fennec src/store.fen ````, is
 /// that file of Hoard, the kit the guide builds: they're put together, in order, as the kit, which
@@ -6410,6 +6443,163 @@ fn tests_through_the_daemon_print_and_end_as_ones_here_do() {
     assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 
+/// `fennec` in `kit`, through the daemon of the Fennec folder `home` when `daemon`, whose build
+/// processes hang as `noted` says (`FENNEC_TEST_BUILD_CHILD=hang-building`), or else in its own
+/// process with a Fennec folder of its own.
+#[cfg(unix)]
+fn child_daemon_fennec(
+    kit: &Path,
+    home: &Path,
+    noted: &Path,
+    (args, daemon): (&[&str], bool),
+) -> std::process::Command {
+    let mut command = crate::executables::fennec_command();
+    command.args(args).current_dir(kit).env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env_remove("CI");
+    if daemon {
+        command.env("FENNEC_HOME", home).env_remove("FENNEC_NO_DAEMON");
+        command.env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
+        command.env("FENNEC_TEST_BUILD_CHILD", format!("hang-building:{}", noted.display()));
+    } else {
+        command.env("FENNEC_HOME", home.with_file_name("home-here"));
+    }
+    command
+}
+
+/// A build through the daemon of `kit`'s program edited to print `word`, once its build process
+/// has started and hangs, with that process's id.
+#[cfg(unix)]
+fn hung_build(
+    kit: &Path,
+    home: &Path,
+    noted: &Path,
+    word: &str,
+) -> std::io::Result<(std::process::Child, String)> {
+    std::fs::write(
+        kit.join("src/main.fen"),
+        format!("def main(stdout: Stdout):\n    stdout.print(\"{word}\")\n"),
+    )?;
+    let _ = std::fs::remove_file(noted);
+    let mut build = child_daemon_fennec(kit, home, noted, (&["build", ".", "-o", "hung"], true));
+    let build = build.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    let waiting = std::time::Instant::now();
+    while waiting.elapsed() < std::time::Duration::from_secs(120) {
+        if let Some(pid) = std::fs::read_to_string(noted).ok().filter(|pid| !pid.is_empty()) {
+            return Ok((build, pid));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Err(std::io::Error::other("the build's process never started"))
+}
+
+/// Whether the process `pid` ends within 10 seconds.
+#[cfg(unix)]
+fn ends(pid: &str) -> bool {
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let waiting = std::time::Instant::now();
+    while alive() && waiting.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    !alive()
+}
+
+/// The daemon hands each build to a process of its own, whose memory goes when it ends:
+/// - what it builds is the program a command's own process builds, byte for byte;
+/// - a command that goes mid-build, as on Ctrl-C, stops that process and everything it runs, and
+///   the daemon goes on to the next build;
+/// - a daemon killed mid-build leaves no build process behind.
+#[cfg(unix)]
+#[test]
+fn the_daemons_builds_go_to_processes_that_never_outlive_them() {
+    if !crate::llvm::ready() || !cfg!(debug_assertions) {
+        return;
+    }
+    let (folder, kit, home) =
+        kit_of("build-child-daemon", "def main(stdout: Stdout):\n    stdout.print(\"apart\")\n").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let noted = folder.join("child-pid");
+    let fennec = |args: &[&str], daemon: bool| child_daemon_fennec(&kit, &home, &noted, (args, daemon));
+    let status = || fennec(&["daemon", "status"], true).output();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"], true), &status).unwrap();
+    // With the file there, the build's process doesn't hang.
+    std::fs::write(&noted, "").unwrap();
+    let mut programs = Vec::new();
+    for daemon in [false, true] {
+        let build = fennec(&["build", ".", "-o", "prog"], daemon).output().unwrap();
+        assert!(build.status.success(), "{}", text(&build.stderr));
+        assert!(!text(&build.stderr).contains("own process"), "{}", text(&build.stderr));
+        programs.push(std::fs::read(kit.join("prog")).unwrap());
+    }
+    assert!(programs[0] == programs[1], "the daemon's build process made another program");
+    assert_eq!(served_by_daemon(&kit, &home).unwrap(), "1 request served");
+    // The command going stops its build's process, and the daemon builds the next.
+    let (mut build, pid) = hung_build(&kit, &home, &noted, "going").unwrap();
+    build.kill().unwrap();
+    build.wait().unwrap();
+    assert!(ends(&pid), "the build's process {pid} outlived its command");
+    std::fs::write(kit.join("src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(\"next\")\n")
+        .unwrap();
+    let next = fennec(&["build", ".", "-o", "next"], true).output().unwrap();
+    assert!(next.status.success(), "{}", text(&next.stderr));
+    assert_eq!(text(&std::process::Command::new(kit.join("next")).output().unwrap().stdout), "next\n");
+    assert_eq!(served_by_daemon(&kit, &home).unwrap(), "3 requests served");
+    // A daemon killed mid-build takes its build's process with it.
+    let (mut build, pid) = hung_build(&kit, &home, &noted, "killed").unwrap();
+    let said = text(&status().unwrap().stdout);
+    let daemon =
+        said.split("process ").nth(1).and_then(|rest| rest.split(',').next()).unwrap_or_default().to_owned();
+    assert!(std::process::Command::new("kill").args(["-9", &daemon]).status().unwrap().success());
+    assert!(ends(&pid), "the build's process {pid} outlived the daemon");
+    let _ = build.kill();
+    build.wait().unwrap();
+}
+
+/// A build the daemon hands to a process of its own uses the analyses the build before it kept, as
+/// one in the daemon does: the daemon holds what each build's process kept and hands it to the
+/// next, so an edit analyzes what it changed, not every function. Each used again is checked here
+/// against analyzing it again (`FENNEC_CHECK_WHOLE=1`), and the program is what it should be.
+#[cfg(unix)]
+#[test]
+fn a_build_in_its_own_process_uses_the_analyses_the_one_before_kept() {
+    if !crate::llvm::ready() || !cfg!(debug_assertions) {
+        return;
+    }
+    let program = |word: &str| {
+        format!(
+            "def doubled(count: int) -> int:\n    return count * 2\n\ndef said(count: int) -> str:\n    return f\"{word} {{count}}\"\n\ndef main(stdout: Stdout):\n    stdout.print(said(doubled(2)))\n"
+        )
+    };
+    let (folder, kit, home) = kit_of("build-child-kept", &program("first")).unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let noted = folder.join("child-pid");
+    std::fs::write(&noted, "").unwrap();
+    let fennec = |args: &[&str]| {
+        let mut command = child_daemon_fennec(&kit, &home, &noted, (args, true));
+        command.env("FENNEC_CHECK_WHOLE", "1");
+        command
+    };
+    let status = || fennec(&["daemon", "status"]).output();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"]), &status).unwrap();
+    let mut used = Vec::new();
+    for word in ["first", "second"] {
+        std::fs::write(kit.join("src/main.fen"), program(word)).unwrap();
+        let build = fennec(&["build", ".", "-o", "prog"]).output().unwrap();
+        let said = text(&build.stderr);
+        assert!(build.status.success() && !said.contains("own process"), "{said}");
+        let ran = std::process::Command::new(kit.join("prog")).output().unwrap();
+        assert_eq!(text(&ran.stdout), format!("{word} 4\n"));
+        let count = said.split("note: used ").nth(1).and_then(|rest| rest.split(' ').next());
+        used.push(count.and_then(|count| count.parse::<usize>().ok()).unwrap_or_default());
+    }
+    assert_eq!(used[0], 0, "the first build had nothing to use again");
+    assert!(used[1] > 0, "the edit's build used no analysis the first kept: {used:?}");
+}
+
 /// A `fennec test` that goes while the daemon runs its tests, as on Ctrl-C, stops them, even one
 /// that never ends, and the daemon goes on to the next command.
 #[cfg(unix)]
@@ -6429,9 +6619,18 @@ fn a_test_command_gone_stops_its_tests_in_the_daemon() {
         .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
         .stdout(Stdio::null());
     let mut testing = command.stderr(std::fs::File::create(&said).unwrap()).spawn().unwrap();
-    // The tests' executable is in the Fennec folder's `work` while they run, and goes once
-    // they're done.
+    // The tests' executable is in the Fennec folder's `work`, from while it's built, which can be
+    // in a process of its own, till the tests are done. They're running once a process runs it.
+    let made_in: Vec<String> = [Some(home.clone()), home.canonicalize().ok()]
+        .into_iter()
+        .flatten()
+        .map(|home| home.join("work").join("fennec-tests-").to_string_lossy().into_owned())
+        .collect();
     let tests_running = || {
+        let listed = std::process::Command::new("ps").args(["-axww", "-o", "command="]).output().unwrap();
+        text(&listed.stdout).lines().any(|line| made_in.iter().any(|made| line.contains(made.as_str())))
+    };
+    let executable_left = || {
         std::fs::read_dir(home.join("work")).is_ok_and(|listing| {
             listing.flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("fennec-tests-"))
         })
@@ -6449,13 +6648,57 @@ fn a_test_command_gone_stops_its_tests_in_the_daemon() {
     testing.kill().unwrap();
     testing.wait().unwrap();
     let stopping = std::time::Instant::now();
-    while tests_running() {
-        assert!(stopping.elapsed().as_secs() < 30, "the daemon didn't stop the tests");
+    while tests_running() || executable_left() {
+        assert!(!tests_running() || stopping.elapsed().as_secs() < 30, "the daemon didn't stop the tests");
+        assert!(stopping.elapsed().as_secs() < 30, "the tests' executable was left in `work`");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let built = fennec_in_kit(&kit, &home, true, (&["build", "."], ""), false).unwrap();
     assert!(built.status.success(), "{}", text(&built.stderr));
     with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
+/// A `fennec test` that goes while its tests are being built in a process of their own, as on
+/// Ctrl-C, stops that process, and leaves nothing of the tests' executable in `work`, though the
+/// build had started it.
+#[cfg(unix)]
+#[test]
+fn a_test_command_gone_while_its_tests_build_leaves_nothing_behind() {
+    if !crate::llvm::ready() || !cfg!(debug_assertions) {
+        return;
+    }
+    let source = "def main(stdout: Stdout):\n    stdout.print(1)\n\ntest \"one\":\n    assert 1 == 1\n";
+    let (folder, kit, home) = kit_of("stopped-test-build", source).unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let noted = folder.join("child-pid");
+    let fennec = |args: &[&str]| child_daemon_fennec(&kit, &home, &noted, (args, true));
+    let status = || fennec(&["daemon", "status"]).output();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"]), &status).unwrap();
+    let mut testing = fennec(&["test"]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let waiting = std::time::Instant::now();
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&noted).ok().filter(|pid| !pid.is_empty()) {
+            break pid;
+        }
+        assert!(testing.try_wait().unwrap().is_none(), "the command ended before its tests were built");
+        assert!(waiting.elapsed().as_secs() < 300, "the tests' build process never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    testing.kill().unwrap();
+    testing.wait().unwrap();
+    assert!(ends(&pid), "the tests' build process outlived the command");
+    let left = || {
+        std::fs::read_dir(home.join("work")).is_ok_and(|listing| {
+            listing.flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("fennec-tests-"))
+        })
+    };
+    let stopping = std::time::Instant::now();
+    while left() {
+        assert!(stopping.elapsed().as_secs() < 30, "the tests' executable was left in `work`");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    fennec(&["daemon", "stop"]).output().unwrap();
     assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 

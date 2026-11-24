@@ -601,7 +601,8 @@ fn analyses_agree_in(versions: &[Version], folder: &Path) -> Result<usize, Strin
     for (at, version) in versions.iter().enumerate() {
         // A version that doesn't build leaves what the one before kept, as it does in the daemon.
         let Some(lowered) = lowered(&version.files, folder) else { continue };
-        let (differ, used_again) = fennec_llvm::analyses_kept_and_checked(&lowered, &mut kept);
+        let (differ, used_again) = fennec_llvm::analyses_kept_and_checked(&lowered, &mut kept)
+            .map_err(|why| format!("after edit {at}, {why}, in:\n{}", shown_files(version)))?;
         if !differ.is_empty() {
             return Err(format!(
                 "after edit {at}, the analyses of {differ:?} used again from the version before aren't what \

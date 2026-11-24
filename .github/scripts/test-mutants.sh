@@ -128,6 +128,36 @@ echo "crates/ir/src/lower.rs:2:15: replace && with || in Lowering::assign" > "$w
 equivalent same
 check "a line that changed is missed again" 1 "$(grep -c . "$work/same/missed.txt")"
 
+# The same line twice in one function, told apart by the line above it: only the one the entry
+# gives is equivalent, and only while the line above is as it says.
+printf 'fn twice() {\n    for a in b {\n        if c {\n            go(a + 1);\n        }\n    }\n    for a in d {\n        go(a + 1);\n    }\n}\n' > "$work/source/crates/ir/src/lower.rs"
+cat > "$work/twice-list.txt" << 'LIST'
+crates/ir/src/lower.rs
+replace + with * in twice
+for a in d {
+go(a + 1);
+Why the second changes nothing.
+LIST
+twice() {
+  MUTANTS_EQUIVALENT="$work/twice-list.txt" MUTANTS_SOURCE="$work/source" "$here/mutants-equivalent.sh" "$work/$1"
+}
+{
+  echo "crates/ir/src/lower.rs:4:18: replace + with * in twice"
+  echo "crates/ir/src/lower.rs:8:14: replace + with * in twice"
+} > "$work/same/missed.txt"
+twice same
+check "of a line written twice, the one the entry's lines above name is equivalent" \
+  "crates/ir/src/lower.rs:8:14: replace + with * in twice" "$(cat "$work/same/equivalent.txt")"
+check "and its twin is still missed" \
+  "crates/ir/src/lower.rs:4:18: replace + with * in twice" "$(cat "$work/same/missed.txt")"
+sed -i.bak 's/for a in d {/for a in e {/' "$work/source/crates/ir/src/lower.rs"
+echo "crates/ir/src/lower.rs:8:14: replace + with * in twice" > "$work/same/missed.txt"
+twice same
+check "a changed line above it makes it missed again" 1 "$(grep -c . "$work/same/missed.txt")"
+echo "crates/ir/src/lower.rs:1:1: replace + with * in twice" > "$work/same/missed.txt"
+twice same
+check "an entry with more lines than are above the mutant's matches nothing" 1 "$(grep -c . "$work/same/missed.txt")"
+
 mkdir -p "$work/nothing"
 check "a run that listed nothing missed is left alone" 0 "$(equivalent nothing; echo $?)"
 check "and gets no equivalent list" no "$([ -e "$work/nothing/equivalent.txt" ] && echo yes || echo no)"

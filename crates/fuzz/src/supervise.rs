@@ -89,26 +89,45 @@ pub(crate) fn kilobytes(id: u32) -> Option<u64> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
-/// How many descriptors a process holds open, where that can be asked: from `/proc` on Linux and
-/// from `lsof` on macOS.
-pub(crate) fn descriptors(id: u32) -> Option<usize> {
+/// The descriptors a process holds open, each as its number and what it is, where that can be
+/// asked: from `/proc` on Linux and from `lsof` on macOS.
+pub(crate) fn descriptors(id: u32) -> Option<Vec<String>> {
     if cfg!(target_os = "linux") {
-        return std::fs::read_dir(format!("/proc/{id}/fd")).ok().map(Iterator::count);
+        let listed = std::fs::read_dir(format!("/proc/{id}/fd")).ok()?;
+        return Some(
+            listed
+                .flatten()
+                .map(|entry| {
+                    let what = std::fs::read_link(entry.path()).map(|to| to.display().to_string());
+                    format!("{} {}", entry.file_name().to_string_lossy(), what.unwrap_or_default())
+                })
+                .collect(),
+        );
     }
     if !cfg!(target_os = "macos") {
         return None;
     }
     let output =
-        Command::new("lsof").args(["-n", "-P", "-a", "-p", &id.to_string(), "-F", "f"]).output().ok()?;
+        Command::new("lsof").args(["-n", "-P", "-a", "-p", &id.to_string(), "-F", "ftn"]).output().ok()?;
     if !output.status.success() {
         return None;
     }
-    // `lsof` lists the working folder and the executable as `fcwd` and `ftxt`, which aren't
-    // descriptors.
-    let open = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| line.strip_prefix('f').is_some_and(|fd| fd.parse::<u32>().is_ok()))
-        .count();
+    // `lsof` says each descriptor as lines of its own: `f` and its number, `t` and its type, `n`
+    // and its name. It lists the working folder and the executable as `fcwd` and `ftxt`, which
+    // aren't descriptors.
+    let mut open: Vec<String> = Vec::new();
+    let mut counted = false;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(fd) = line.strip_prefix('f') {
+            counted = fd.parse::<u32>().is_ok();
+            if counted {
+                open.push(fd.to_owned());
+            }
+        } else if counted && let Some(last) = open.last_mut() {
+            last.push(' ');
+            last.push_str(line.get(1..).unwrap_or_default());
+        }
+    }
     Some(open)
 }
 
@@ -367,7 +386,7 @@ impl Run<'_> {
     pub(crate) fn until(&self, seconds: Option<u64>, inputs: u64) -> Result<Outcome, String> {
         let deadline = seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds));
         let folder = std::env::temp_dir().join(format!("fennec-fuzz-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+        crate::owned::own(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
         let progress = folder.join(self.target.name);
         let mut outcome = Outcome { inputs: 0, failures: Vec::new() };
         let mut next = 0_u64;
@@ -389,7 +408,7 @@ impl Run<'_> {
             outcome.note(failure, reached);
             next = reached + 1;
         }
-        let _ = std::fs::remove_dir_all(&folder);
+        crate::owned::let_go(&folder);
         Ok(outcome)
     }
 

@@ -1,11 +1,12 @@
 # Mutants no test can catch, since the program still does just what it did, at most slower.
 # `.github/scripts/mutants-equivalent.sh` takes them out of what a run missed. Each entry is four
-# lines, with a blank line after:
+# lines or more, with a blank line after:
 # - the file;
 # - what cargo-mutants says the mutant does, after the line and column;
 # - the whole line it changes, leading and trailing spaces aside, so the entry goes with the line
 #   as code above it moves, and a line changed anywhere is a missed mutant again, to be looked at
-#   afresh;
+#   afresh. Where the same line is written twice in one function, the lines just above it go
+#   first, down to it, as many as tell the two apart;
 # - why no program can tell the difference.
 #
 # Add one only when no program could tell the difference. A mutant that only a wrong program
@@ -95,6 +96,42 @@ crates/llvm/src/lists.rs
 replace > with >= in Emit<'_, '_, '_>::see_to
 Kind::List(_) if step > 0 => {
 Also makes a root list alone first, which the change through it would do anyway: a shared list is still copied exactly once, so values and copy counts are the same.
+
+crates/llvm/src/rollback.rs
+replace + with * in Emit<'_, '_, '_>::undo_case_in_cell
+for word in (8..size).step_by(8) {
+self.undo_word(cell, offset + word, Word::Plain);
+Runs only for a tag that's none of the enum's cases, which no value it holds has: each case puts back its own words in its own block above.
+
+crates/llvm/src/rollback.rs
+replace || with && in Emit<'_, '_, '_>::run_crash_cleanup
+if !params.is_empty() || !matches!(*returns, Kind::Str) {
+Refuses only a cleanup the IR never makes: a crash's cleanup is the checker's own closure, passed to `intrinsics.crash_cleanup`, which takes a `() -> str`, so both sides are false and nothing is refused either way.
+
+crates/llvm/src/rollback.rs
+replace match guard self.headers() with true in Emit<'_, '_, '_>::words_of
+Kind::Str | Kind::MaybeText if self.headers() => words.push((at, Word::Header)),
+Text headers are on in every build: both of `Layouts`' constructors turn them on, and nothing turns them off.
+
+crates/llvm/src/rollback.rs
+replace match guard !self.holds_inline(kind) with true in Emit<'_, '_, '_>::words_of
+Kind::Enum(_) if !self.holds_inline(kind) => {
+Only an enum holding no blocks in place gets here: `undo_in_cell` and `save_words` send one that does to its own case-by-case code first, and the struct arm, the other way in, is never reached.
+
+crates/llvm/src/rollback.rs
+delete match arm Kind::Struct(id) in Emit<'_, '_, '_>::words_of
+Kind::Struct(id) => {
+Never reached: both callers, `undo_in_cell` and `save_words`, take a struct apart field by field themselves, and pass `words_of` only what isn't one.
+
+crates/llvm/src/rollback.rs
+replace + with - in Emit<'_, '_, '_>::words_of
+self.words_of(&inner, at + offset, words)?;
+In the struct arm, which is never reached: both callers, `undo_in_cell` and `save_words`, take a struct apart field by field themselves.
+
+crates/llvm/src/rollback.rs
+replace match guard kind.counted() with true in Emit<'_, '_, '_>::words_of
+_ if kind.counted() => words.push((at, Word::Block)),
+The one kind that gets here uncounted is `Unit`, and no field holds one: a program keeping a value of type `nothing` isn't lowered, so it never builds.
 
 crates/llvm/src/share.rs
 replace < with <= in moves

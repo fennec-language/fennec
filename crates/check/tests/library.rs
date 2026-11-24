@@ -681,6 +681,37 @@ fn with_launch_takes_an_arrow_its_inbox_and_its_own_options() {
     );
 }
 
+/// A channel's message can't be optional: a closed channel answers `None`, so a `None` sent would
+/// read as the channel closing. A struct holding the optional crosses as any struct does.
+#[test]
+fn a_channel_message_cant_be_optional() {
+    let program = |body: &str| {
+        problems(&format!(
+            "from std.concurrent import Crashed, Inbox, channel\n\nstruct Maybe:\n    value: int?\n\n\
+             def work(inbox: Inbox[int?]):\n    pass\n\n\
+             def held(inbox: Inbox[Maybe]):\n    pass\n\ndef main():\n{body}"
+        ))
+    };
+    let refused = "a channel's message can't be optional, since `None` is how a closed channel answers, \
+                   and this one is `int?`";
+    assert_eq!(
+        program("    with channel[int?](size=4) as numbers:\n        _ = numbers.receive()\n"),
+        [format!("{refused} @ channel[int?](size=4)")]
+    );
+    assert_eq!(
+        program("    with launch((inbox) => work(inbox))? as to:\n        _ = to\n"),
+        [format!("{refused} @ (inbox) => work(inbox)")]
+    );
+    let crossing: [&str; 0] = [];
+    assert_eq!(
+        program(
+            "    with channel[Maybe](size=4) as numbers:\n        _ = numbers.receive()\n    \
+             with launch((inbox) => held(inbox))? as to:\n        _ = to\n"
+        ),
+        crossing
+    );
+}
+
 /// `tls=` is a yes or no on `connect` and the `Certificate` a server shows on `listen`, and a plain
 /// connection can start TLS later.
 #[test]

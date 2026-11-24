@@ -5778,3 +5778,58 @@ mod tests {
         Ok(())
     }
 }
+
+// A function's analysis as bytes, kept by the daemon between builds and handed to the process that
+// builds (see `crate::kept`). Every field is named, so one added later has to be written too.
+fennec_syntax::codec_fields!(Analysis {
+    safe,
+    nonzero,
+    below,
+    length_of,
+    reads,
+    writes,
+    shared,
+    changed,
+    maybe_marked,
+    given_mut,
+    read_again,
+    borrowed,
+    borrowed_from,
+    taken,
+    items_taken,
+    put_back_reads,
+    slot_homes,
+    path_taken,
+    path_waits,
+    path_waiting,
+    loop_taken,
+    places_taken,
+    place_parts,
+    place_paths,
+    places_waiting,
+    field_of,
+    slice_keys,
+    unmade,
+    aliases,
+    alone_in_loops,
+    steady_lengths,
+    adjacent_reads,
+    reservations,
+    zero_filled,
+    zero_counts,
+    room_enough,
+    length_kept,
+    last_copies,
+    last_reads,
+    last_made,
+    enumerated,
+    map_walks,
+    walk_items,
+    walk_keys,
+    pairs,
+    guarded_reads,
+    param_ranges,
+    slice_ranges,
+});
+fennec_syntax::codec_fields!(AloneInLoop { entry, blocks, locals });
+fennec_syntax::codec_fields!(Reserved { list, limit, copied_from });

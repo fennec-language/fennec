@@ -16,6 +16,7 @@ mod items;
 mod lookups;
 mod loops;
 mod names;
+mod optionals;
 mod parallel;
 mod params;
 mod paths;
@@ -116,13 +117,15 @@ pub fn across_files(module: &Module, sources: &Sources) -> Vec<Lint> {
 }
 
 /// What the lints of one file at a time take from all of a program: which files extend a type,
-/// whose imports are used for that, and whether it declares an `expect` of its own, which
-/// `expect-in-kit` then leaves alone. A nested function can be named `expect`, so an edit to a
-/// body can change these, and then every file's lints have to be found again.
+/// whose imports are used for that, whether it declares an `expect` of its own, which
+/// `expect-in-kit` then leaves alone, and which of its type aliases stand for an optional, which
+/// `optional-of-optional` reads. A nested function can be named `expect`, so an edit to a body can
+/// change these, and then every file's lints have to be found again.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Facts {
     pub extending: Vec<String>,
     pub declares_expect: bool,
+    pub optional_aliases: Vec<String>,
 }
 
 impl Facts {
@@ -132,7 +135,11 @@ impl Facts {
             dead::extending(module, sources).into_iter().map(str::to_owned).collect();
         extending.sort();
         extending.dedup();
-        Facts { extending, declares_expect: asserts::declares_expect(module) }
+        Facts {
+            extending,
+            declares_expect: asserts::declares_expect(module),
+            optional_aliases: optionals::aliases(&module.items),
+        }
     }
 }
 
@@ -149,6 +156,7 @@ fn in_each_file(module: &Module, sources: &Sources, facts: &Facts) -> Vec<Lint> 
     found.extend(paths::of(sources));
     found.extend(asserts::of(module));
     found.extend(docs::of(module, sources));
+    found.extend(optionals::of(module, sources, &facts.optional_aliases));
     found
 }
 

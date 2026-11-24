@@ -15,6 +15,10 @@ miniz_oxide.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 
+# Ctrl-C goes to every program in a Windows console: the launcher lets it through to the toolchain.
+[target.'cfg(windows)'.dependencies]
+ctrlc.workspace = true
+
 [dev-dependencies]
 fennec-temp.workspace = true
 # Signing the releases the tests make, with keys made for them.

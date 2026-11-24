@@ -1383,25 +1383,81 @@ pub(crate) fn connected_parked(
         off_thread(move || (name.as_str(), port).to_socket_addrs().map(Iterator::collect::<Vec<_>>))
             .map_err(|_| Failure::NotFound(host.to_owned()))?
     };
+    let stream = first_connected((host, port), &addresses, (timeout, by), connected_by)?;
+    let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
+    Ok((stream, peer))
+}
+
+/// How long one of a name's addresses is tried before the next, when it has more than one: RFC
+/// 8305's delay between connection attempts.
+const NEXT_ADDRESS_AFTER: Duration = Duration::from_millis(250);
+
+/// The first of `host`'s `addresses` that `attempt` connects to by the deadline it's given. Each
+/// address has `timeout`, or all of them share what's left until `by`.
+///
+/// A name with more than one address tries each for `NEXT_ADDRESS_AFTER` at most before going on
+/// to the next. Otherwise one that never answers, or is refused slowly, uses up all the time there
+/// is before the next is tried. Windows refuses a connect to a port nothing listens on only after
+/// trying again for about 2 seconds, so `localhost`, which it looks up as `::1` first, timed out
+/// for a server listening only on `127.0.0.1`. If none connects, those that only ran out of their
+/// short time are tried again, one at a time, with all the time left.
+pub(crate) fn first_connected<T>(
+    (host, port): (&str, u16),
+    addresses: &[std::net::SocketAddr],
+    (timeout, by): (Duration, Option<Instant>),
+    mut attempt: impl FnMut(std::net::SocketAddr, Instant) -> std::io::Result<T>,
+) -> Result<T, Failure> {
+    let failed = |error: &std::io::Error| match error.kind() {
+        ErrorKind::ConnectionRefused => Failure::Refused(host.to_owned(), i64::from(port)),
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut(timeout),
+        _ => Failure::Other(error.to_string()),
+    };
+    let ran_out =
+        |error: &std::io::Error| matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock);
+    let several = addresses.len() > 1;
     let mut failure = Failure::NotFound(host.to_owned());
-    for address in addresses {
-        let deadline = by.unwrap_or_else(|| Instant::now() + timeout);
-        match connected_by(address, deadline) {
-            Ok(stream) => {
-                let peer =
-                    stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
-                return Ok((stream, peer));
+    let mut slow = Vec::new();
+    for &address in addresses {
+        let now = Instant::now();
+        let deadline = by.unwrap_or(now + timeout);
+        if deadline <= now {
+            return Err(Failure::TimedOut(timeout));
+        }
+        let short = now + NEXT_ADDRESS_AFTER;
+        let cut_short = several && short < deadline;
+        match attempt(address, if cut_short { short } else { deadline }) {
+            Ok(made) => return Ok(made),
+            Err(error) if cut_short && ran_out(&error) => {
+                failure = failed(&error);
+                slow.push(address);
             }
-            Err(error) => {
-                failure = match error.kind() {
-                    ErrorKind::ConnectionRefused => Failure::Refused(host.to_owned(), i64::from(port)),
-                    ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut(timeout),
-                    _ => Failure::Other(error.to_string()),
-                };
-            }
+            Err(error) => failure = failed(&error),
+        }
+    }
+    for address in slow {
+        let now = Instant::now();
+        let deadline = by.unwrap_or(now + timeout);
+        if deadline <= now {
+            return Err(Failure::TimedOut(timeout));
+        }
+        match attempt(address, deadline) {
+            Ok(made) => return Ok(made),
+            Err(error) => failure = failed(&error),
         }
     }
     Err(failure)
+}
+
+/// A connection to one address, blocking its thread until it's made or `deadline` passes.
+pub(crate) fn connected_until(
+    address: std::net::SocketAddr,
+    deadline: Instant,
+) -> std::io::Result<TcpStream> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(ErrorKind::TimedOut.into());
+    }
+    TcpStream::connect_timeout(&address, left)
 }
 
 /// Without threads no task parks, so nothing connects this way.
@@ -1477,27 +1533,9 @@ fn upgrade(handle: i64, host: &str, timeout: Duration, shake: http::RawTls) -> R
 fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, String), Failure> {
     let addresses: Vec<_> =
         (host, port).to_socket_addrs().map_err(|_| Failure::NotFound(host.to_owned()))?.collect();
-    if addresses.is_empty() {
-        return Err(Failure::NotFound(host.to_owned()));
-    }
-    let mut failure = Failure::NotFound(host.to_owned());
-    for address in addresses {
-        match TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => {
-                let peer =
-                    stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
-                return Ok((stream, peer));
-            }
-            Err(error) => {
-                failure = match error.kind() {
-                    ErrorKind::ConnectionRefused => Failure::Refused(host.to_owned(), i64::from(port)),
-                    ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut(timeout),
-                    _ => Failure::Other(error.to_string()),
-                };
-            }
-        }
-    }
-    Err(failure)
+    let stream = first_connected((host, port), &addresses, (timeout, None), connected_until)?;
+    let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
+    Ok((stream, peer))
 }
 
 /// How much of what a connection writes the kernel holds before a write waits for the other side to
@@ -3112,6 +3150,56 @@ pub(crate) mod tests {
         assert_eq!(POOL.load(Ordering::SeqCst), 0);
         assert!(hold().take(100, 100));
         assert_eq!(POOL.load(Ordering::SeqCst), 0, "a hold that goes gives its room back");
+    }
+
+    /// A name with several addresses tries each for a short time before the next, so one refused
+    /// slowly, as Windows refuses `::1` for a server listening only on `127.0.0.1`, doesn't use up
+    /// the time the next one needed. If none connects, one that only ran out of its short time
+    /// gets all the time left. One address has all the time there is from the start.
+    #[test]
+    fn a_names_addresses_each_get_a_short_try_before_the_next() {
+        use std::io::{Error, ErrorKind};
+        use std::net::SocketAddr;
+        use std::time::{Duration, Instant};
+        let (six, four): (SocketAddr, SocketAddr) =
+            ("[::1]:9".parse().unwrap(), "127.0.0.1:9".parse().unwrap());
+        let by = Instant::now() + Duration::from_secs(10);
+        let connect = |addresses: &[SocketAddr],
+                       answers: &dyn Fn(SocketAddr, Instant) -> Option<ErrorKind>| {
+            let mut tried = Vec::new();
+            let made = super::first_connected(
+                ("localhost", 9),
+                addresses,
+                (Duration::from_secs(10), Some(by)),
+                |to, until| {
+                    tried.push((to, until));
+                    answers(to, until).map_or(Ok(to), |kind| Err(Error::from(kind)))
+                },
+            );
+            (made, tried)
+        };
+        let short = |until: Instant| until < by && until <= Instant::now() + super::NEXT_ADDRESS_AFTER;
+        // `::1` runs out of its short time, and `127.0.0.1` connects.
+        let (made, tried) = connect(&[six, four], &|to, _| (to == six).then_some(ErrorKind::TimedOut));
+        assert_eq!(made.ok(), Some(four));
+        assert!(matches!(tried.as_slice(), [(a, first), (b, _)] if *a == six && *b == four && short(*first)));
+        // `::1` is slow, `127.0.0.1` refuses: `::1` is tried again with all the time left.
+        let (made, tried) = connect(&[six, four], &|to, until| match to == six {
+            true if until < by => Some(ErrorKind::TimedOut),
+            true => None,
+            false => Some(ErrorKind::ConnectionRefused),
+        });
+        assert_eq!(made.ok(), Some(six));
+        assert_eq!(tried.iter().map(|(to, _)| *to).collect::<Vec<_>>(), [six, four, six]);
+        assert_eq!(tried.last().map(|(_, until)| *until), Some(by));
+        // Both refuse: refused, with nothing tried again.
+        let (made, tried) = connect(&[six, four], &|_, _| Some(ErrorKind::ConnectionRefused));
+        assert!(matches!(made, Err(Failure::Refused(..))));
+        assert_eq!(tried.len(), 2);
+        // One address has all the time, and none is not found.
+        let (_, tried) = connect(&[four], &|_, _| Some(ErrorKind::TimedOut));
+        assert_eq!(tried, [(four, by)]);
+        assert!(matches!(connect(&[], &|_, _| None).0, Err(Failure::NotFound(_))));
     }
 
     /// A server's queue of connections waiting for it to take them holds as many as the system

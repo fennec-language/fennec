@@ -34639,8 +34639,10 @@ fn a_constant_is_worked_out_once() -> std::io::Result<()> {
     Ok(())
 }
 
-/// `embed_folder`'s lists are made the first time it's reached and kept: a function giving one,
-/// called a thousand times, makes them once, where it made both each time. A list taken from it
+/// `embed_folder`'s lists, and `embed_file`'s bytes, are made the first time each thread reaches
+/// them and kept: a function giving a folder, called a thousand times beside a file read as often,
+/// makes them once, where it made both lists each time. So does a program with a task, which runs
+/// on the threads runtime, where the lists were made each time still (#2429). A list taken from it
 /// and changed is the caller's own copy, and the kept one stays as it was.
 #[test]
 fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
@@ -34651,17 +34653,29 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("site/css"))?;
     std::fs::write(dir.join("site/css/app.css"), "body{}")?;
     std::fs::write(dir.join("site/index.html"), "<h1>hi</h1>")?;
-    let allocations = |calls: u32| -> std::io::Result<(String, u64)> {
+    let allocations = |calls: u32, task: bool| -> std::io::Result<(String, u64)> {
+        // A task, so the program runs with the threads runtime.
+        let (imported, signature, launched) = if task {
+            (
+                "from std.concurrent import Crashed\n\n",
+                "def idle():\n    pass\n\ndef main(stdout: Stdout) fails Crashed:\n",
+                "    with launch(() => idle())?:\n        pass\n",
+            )
+        } else {
+            ("", "def main(stdout: Stdout):\n", "")
+        };
         let source = format!(
-            "def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
-             def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
-             files = site()\n        total += len(files) + len(files.get(\"index.html\") else bytes())\n    \
+            "{imported}def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
+             {signature}{launched}    mut total = 0\n    for i in range({calls}):\n        \
+             files = site()\n        total += len(files) + len(files.get(\"index.html\") else bytes())\n        \
+             total += len(embed_file(\"site/css/app.css\"))\n    \
              mut paths = site().keys()\n    paths.append(\"extra\")\n    \
              stdout.print(total, paths, site().keys())\n"
         );
-        let program = dir.join(format!("calls{calls}.fen"));
+        let name = format!("calls{calls}{}", if task { "_task" } else { "" });
+        let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source)?;
-        let executable = dir.join(format!("calls{calls}"));
+        let executable = dir.join(&name);
         let built = fennec(
             &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
             &dir,
@@ -34677,14 +34691,18 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
             .unwrap_or_else(|| panic!("no counts: {said}"));
         Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), made))
     };
-    let (once, made_once) = allocations(1)?;
-    let (often, made_often) = allocations(1000)?;
-    std::fs::remove_dir_all(&dir)?;
     let shown = "[\"css/app.css\", \"index.html\", \"extra\"] [\"css/app.css\", \"index.html\"]\n";
-    assert_eq!(once, format!("13 {shown}"));
-    assert_eq!(often, format!("13000 {shown}"));
-    // Each call may make the folder's own block, but never its two lists again.
-    assert!(made_often - made_once <= 999, "{made_once} against {made_often}");
+    let tasks: &[bool] = if crate::executables::threads_runtime_built() { &[false, true] } else { &[false] };
+    for task in tasks {
+        let (once, made_once) = allocations(1, *task)?;
+        let (often, made_often) = allocations(1000, *task)?;
+        assert_eq!(once, format!("19 {shown}"), "with a task: {task}");
+        assert_eq!(often, format!("19000 {shown}"), "with a task: {task}");
+        // Each call may make the folder's own block, but never its two lists, or the file's bytes,
+        // again.
+        assert!(made_often - made_once <= 999, "with a task: {task}: {made_once} against {made_often}");
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 

@@ -95,6 +95,7 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_set_remove",
     "fennec_set_remove_header",
     "fennec_list_new",
+    "fennec_list_constant",
     "fennec_list_with_room",
     "fennec_list_grow",
     "fennec_list_reserve",
@@ -383,6 +384,7 @@ export! {
     fennec_float_power(a0: f64, a1: f64) -> f64 => lists::float_power(a0, a1);
     fennec_int_power(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::int_power(a0, a1, a2, a3);
     fennec_list_new(a0: i64, a1: i64) -> i64 => lists::new(a0, a1);
+    fennec_list_constant(a0: i64, a1: i64) -> i64 => lists::constant(a0, a1);
     fennec_list_grow(a0: i64) -> i64 => lists::grow(a0);
     fennec_list_pop_unshare(a0: i64) -> i64 => lists::pop_unshare(a0);
     fennec_list_item_unshare(a0: i64, a1: i64) -> i64 => lists::item_unshare(a0, a1);

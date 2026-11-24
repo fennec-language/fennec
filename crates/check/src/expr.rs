@@ -850,7 +850,7 @@ impl FnCx<'_> {
         false
     }
 
-    fn unary(&mut self, op: UnaryOp, inner: &Expr, span: Span) -> Type {
+    pub(crate) fn unary(&mut self, op: UnaryOp, inner: &Expr, span: Span) -> Type {
         let ty = self.expr(inner);
         match (op, &ty) {
             (_, Type::Unknown)

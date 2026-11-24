@@ -721,6 +721,19 @@ impl<'a> Lowering<'a> {
         self.locals.get(local.0).map_or(Type::Unknown, |held| held.ty.clone())
     }
 
+    /// An operator's two sides, each a number written out, in an operation of a sized number, as
+    /// `16.0 / 9.0` where an `f32` goes: the left one is put in a local of that size first, so
+    /// it's worked out in that size, as one beside a sized number is. Any other two as they are.
+    fn sized_sides(&mut self, (lhs, rhs): (Operand, Operand), ty: &Type, span: Span) -> (Operand, Operand) {
+        let literal = |side: &Operand| matches!(side, Operand::Int(_) | Operand::Float(_));
+        if !matches!(ty, Type::Sized(_)) || !literal(&lhs) || !literal(&rhs) {
+            return (lhs, rhs);
+        }
+        let sized = self.temporary(ty.clone());
+        self.emit(InstKind::Copy { dest: sized, value: lhs }, span);
+        (Operand::Local(sized), rhs)
+    }
+
     fn temporary(&mut self, ty: Type) -> LocalId {
         self.locals.push(Local { name: None, ty, copied: false });
         LocalId(self.locals.len() - 1)
@@ -1221,6 +1234,7 @@ impl<'a> Lowering<'a> {
                 let ty = self.ty(expr)?;
                 let lhs = self.expr(lhs)?;
                 let sides = self.both(lhs, |lowering| lowering.expr(rhs), span)?;
+                let sides = self.sized_sides(sides, &ty, span);
                 self.operate(*op, sides, &ty, span)
             }
             ExprKind::Cond { then, cond, otherwise } => self.conditional(expr, (then, cond, otherwise)),

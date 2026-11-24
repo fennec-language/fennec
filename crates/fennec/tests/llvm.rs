@@ -7444,6 +7444,34 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Numbers written out and joined by arithmetic, where a sized number goes, are worked out in that
+/// size: `16.0 / 9.0` as an `f32` is `f32` 16 over `f32` 9, rounded to 32 bits, not the `float`
+/// quotient rounded after. Beside a sized number, in a list of them and negated, too.
+#[test]
+fn sums_of_literals_are_worked_out_in_the_size_they_go_into() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "literal_sums_sized",
+        "def scaled(by: f32) -> f32:
+    return by * (1.0 + 0.5)
+
+def main(stdout: Stdout):
+    aspect: f32 = 16.0 / 9.0
+    back: f32 = -(1.5 + 2.0) * 2.0
+    mut level: u8 = 200 + 55
+    level -= 2 * 3
+    low: i8 = -(64 // 2) - 1
+    stdout.print(aspect, back, level, low, scaled(2.0 ** 3.0 - 1.0), aspect * (1.0 / 3.0))
+    sized: list[f32] = [16.0 / 9.0, 0.5 - 0.25]
+    stdout.print(sized, 16.0 / 9.0)
+",
+    )?;
+    assert_eq!(printed, "1.7777778 -7.0 249 -33 10.5 0.5925926\n[1.7777778, 0.25] 1.7777777777777777\n");
+    Ok(())
+}
+
 /// `**` on `u64`s, worked out by squaring and checked: `0 ** 0` is 1, `2 ** 63` is past `int`'s top,
 /// `3 ** 40` takes most of the 64 bits, and `2 ** 64` doesn't fit, which stops the program.
 #[test]

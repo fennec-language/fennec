@@ -192,6 +192,42 @@ fn literals_take_the_size_they_go_into() {
     );
 }
 
+/// Numbers written out and joined by arithmetic take the size they go into, as one alone does:
+/// `16.0 / 9.0` where an `f32` goes is worked out in `f32`, wherever it goes and however deep, and
+/// each number is checked to fit, beside a sized number too. A sum mixing a float with a whole
+/// number is refused as before, and one with a name in it takes its size from the name.
+#[test]
+fn sums_of_literals_take_the_size_they_go_into() {
+    let program = "
+        def scaled(by: f32) -> f32:
+            return by * (1.0 + 0.5)
+
+        def main(stdout: Stdout):
+            aspect: f32 = 16.0 / 9.0
+            back: f32 = -(1.5 + 2.0) * 2.0
+            mut level: u8 = 200 + 55
+            level -= 2 * 3
+            low: i8 = -(64 // 2) - 1
+            stdout.print(aspect, back, level, low, scaled(2.0 ** 3.0 - 1.0), aspect * (1.0 / 3.0))
+            sized: list[f32] = [16.0 / 9.0, 0.5 - 0.25]
+            stdout.print(sized)
+
+        def refused(stdout: Stdout):
+            mixed: f32 = 16.0 / 9
+            huge: f32 = 1e39 * 2.0
+            over: u8 = 256 - 1
+            stdout.print(mixed, huge, over)
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't mix int and float in `/` @ 16.0 / 9",
+            "1000000000000000000000000000000000000000 is too big for an f32 @ 1e39",
+            "256 doesn't fit in u8 @ 256",
+        ]
+    );
+}
+
 /// A set, dict or tuple literal written where one holding sized numbers goes takes their sizes,
 /// each number checked to fit, as a list literal's items are.
 #[test]

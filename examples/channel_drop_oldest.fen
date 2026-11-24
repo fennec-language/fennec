@@ -1,0 +1,41 @@
+# A listener that falls behind on a channel to every listener, and asked to go on from the oldest
+# message kept rather than fail: it hears only the newest messages, as a screen showing the
+# latest score would.
+from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, Timeout, channel
+
+# Listens from the first message it hears, says so, waits for `go`, then prints what it hears up
+# to `last`, which is all the channel kept for it.
+def slow_screen(
+    scores: Channel[int],
+    listening: Sender[bool],
+    go: Inbox[bool],
+    last: int,
+    stdout: Stdout,
+) fails Closed:
+    mut ready = False
+    for score in scores.listen(when_behind=.DropOldest):
+        if not ready:
+            listening.send(True)?
+            _ = go.receive()
+            ready = True
+            continue
+        stdout.print(score)
+        if score == last: return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with channel[int](size=4, to=.Every) as scores, channel[bool](size=1) as listening, channel[
+        bool
+    ](size=1, to=.Every) as go:
+        waiting = go.inbox()
+        with launch(
+            () => slow_screen(scores, listening.sender(), waiting, last=10, stdout=stdout)?,
+        )?:
+            # Says 0 until the screen is listening, so it hears what comes next.
+            while True:
+                scores.send(0)?
+                _ = listening.receive_within(10ms) except Timeout(): continue
+                break
+            # Ten scores, while the screen hears none: it keeps the newest four.
+            for score in range(1, 11):
+                scores.send(score)?
+            go.send(True)?

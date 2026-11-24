@@ -1,16 +1,22 @@
-# `embed` gives a file's bytes, read when the program is built, so the program holds them and
-# takes no `Fs` capability to have them. A kit can embed anything inside its own folder, not
-# only what's in src.
+# `embed_file` gives a file's bytes, read when the program is built, so the program holds them
+# and takes no `Fs` capability to have them. `embed_folder` gives every file in a folder, by its
+# path within it, written with `/`, in sorted order. A kit can embed anything inside its own
+# folder, not only what's in src.
 from levels.first import size
 
 NAME = embed_file("../assets/name.txt")
 START = NAME[0:3]
+TILES = embed_folder("../assets/tiles")
 
 def main(stdout: Stdout):
     stdout.print(size())
     stdout.print(len(NAME))
     stdout.print(len(START))
     stdout.print(len(embed_file("levels/first.bin")) == size())
+    for path, tile in TILES.items():
+        stdout.print(path, len(tile))
+    stdout.print(TILES.get("deep/sand.txt") == embed_file("../assets/tiles/deep/sand.txt"))
+    stdout.print(TILES.get("lava.txt") is None)
 
 test "the name is all there":
     assert len(NAME) == 6

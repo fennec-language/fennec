@@ -184,37 +184,56 @@ impl Channel {
     }
 
     /// Whether a wait on `side` would still find nothing to do, with `queue`, its own, held: it's
-    /// open, and empty for a receiver or full for a sender.
-    fn still_waits(&self, queue: &Queue, side: Side) -> bool {
+    /// open, and empty for a receiver or full for a sender. A listener's, on a channel to `.Every`,
+    /// is caught up: what it has yet to see is its own, not the queue's.
+    fn still_waits(&self, queue: &Queue, side: Side, listener: Option<i64>) -> bool {
         let open = !queue.closed && !self.freed.load(Ordering::Acquire);
-        open && match side {
-            Side::Receiving => queue.messages.is_empty(),
-            Side::Sending => queue.messages.len() >= self.size,
+        open && match (side, listener) {
+            (Side::Receiving, Some(listener)) => every::caught_up(queue, listener),
+            (Side::Receiving, None) => queue.messages.is_empty(),
+            (Side::Sending, _) => queue.messages.len() >= self.size,
         }
     }
 
-    /// The note a wait on `side` with no time limit leaves for the deadlock check, if it's a stuck
-    /// one: any but a listener's, on a channel to every listener, where what it has yet to see is
-    /// its own and not the queue's.
-    fn stuck_note(&self, side: Side) -> Option<Note> {
+    /// The note a wait on `side` with no time limit leaves for the deadlock check: on the channel,
+    /// or for a listener's on a channel to `.Every`, on the listener, whose number the check finds
+    /// it by, as what it has yet to see is its own and not the queue's.
+    fn stuck_note(&self, side: Side, listener: Option<i64>) -> Option<Note> {
         let kind = match side {
             Side::Receiving => Kind::Receive,
             Side::Sending => Kind::Send,
         };
-        (!self.to_every).then(|| Note::on_channel(self.number, kind, self.replay.as_deref()))
+        let on = match (self.to_every, listener) {
+            (false, _) => self.number,
+            (true, Some(listener)) => listener,
+            // A send to `.Every` never waits.
+            (true, None) => return None,
+        };
+        Some(Note::on_channel(on, kind, self.replay.as_deref()))
     }
 }
 
 /// For the deadlock check, whether a wait of `kind` on the channel numbered `channel` would still
-/// find nothing to do: it's open, and empty for a receive or full for a send. A channel that's gone
-/// is as closed.
+/// find nothing to do: it's open, and empty for a receive or full for a send. For a listener's
+/// number, it's the listener's receive: its channel to `.Every` is open and it's caught up. A
+/// channel that's gone is as closed.
 pub(in crate::embed) fn still_waits_on(channel: i64, kind: Kind) -> bool {
     let side = match kind {
         Kind::Receive => Side::Receiving,
         Kind::Send => Side::Sending,
         Kind::BlockEnd | Kind::Join | Kind::Turn => return false,
     };
-    find(channel).is_some_and(|channel| channel.still_waits(&channel.queue(), side))
+    if let Some((channel, listener)) = every::listening(channel) {
+        return matches!(side, Side::Receiving)
+            && channel.still_waits(&channel.queue(), side, Some(listener));
+    }
+    find(channel).is_some_and(|channel| channel.still_waits(&channel.queue(), side, None))
+}
+
+/// Whether the number a stuck wait's note names is a listener's, on a channel to `.Every`, for the
+/// deadlock report to say so.
+pub(in crate::embed) fn is_listener(number: i64) -> bool {
+    every::listening(number).is_some()
 }
 
 /// A channel's size, or the failure of one that couldn't hold a message.
@@ -318,7 +337,7 @@ fn send_on(channel: &Arc<Channel>, message: Message, timeout_ns: i64) -> i64 {
             channel.tell(asleep);
             return DONE;
         }
-        match wait(channel, queue, deadline, Side::Sending) {
+        match wait(channel, queue, deadline, Side::Sending, None) {
             Waited::Again => {}
             Waited::TimedOut => {
                 met(channel, "send", TIMED_OUT);
@@ -394,7 +413,7 @@ fn next(channel: i64, timeout_ns: i64) -> Result<Message, i64> {
             met(&channel, "receive", CLOSED);
             return Err(CLOSED);
         }
-        match wait(&channel, queue, deadline, Side::Receiving) {
+        match wait(&channel, queue, deadline, Side::Receiving, None) {
             Waited::Again => {}
             Waited::TimedOut => {
                 met(&channel, "receive", TIMED_OUT);
@@ -426,9 +445,11 @@ fn replayed(channel: &Channel, what: &str, for_good: bool) -> Turn {
     let Some(place) = channel.replay.as_deref() else { return Turn::Live };
     // A send or a receive with no time limit is a stuck wait where nothing can end it, which a
     // replay of a run that deadlocked goes on into past its recording's end, as the run was when
-    // the check fired. One with a limit, or a listener's on a channel to `.Every`, is no stuck
-    // wait, so it never goes past: it fails at once, where it waited its limit out first.
-    let turn = if for_good && matches!(what, "send" | "receive") && !channel.to_every {
+    // the check fired: a listener's on a channel to `.Every` too, the one receive there is. One with
+    // a limit is no stuck wait, so it never goes past: it fails at once, where it waited its limit
+    // out first. A send to `.Every` never waits.
+    let stuck_kind = what == "receive" || (what == "send" && !channel.to_every);
+    let turn = if for_good && stuck_kind {
         crate::replay::turn_to_wait(Some(place), what)
     } else {
         crate::replay::turn(Some(place), what)
@@ -651,6 +672,7 @@ fn wait<'a>(
     queue: MutexGuard<'a, Queue>,
     deadline: Option<Instant>,
     side: Side,
+    listener: Option<i64>,
 ) -> Waited {
     if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
         return Waited::TimedOut;
@@ -663,7 +685,7 @@ fn wait<'a>(
     if super::serve::can_park()
         && let Some(here) = super::parallel::here()
     {
-        return wait_parked(channel, queue, deadline, side, here);
+        return wait_parked(channel, queue, deadline, (side, listener), here);
     }
     let mut queue = queue;
     // A crash of a task this code launched wakes it: told with the queue held, so the crash can't
@@ -700,7 +722,7 @@ fn wait<'a>(
             channel.changed.wait_timeout(queue, left).unwrap_or_else(PoisonError::into_inner);
         (queue, waited.timed_out(), false)
     } else {
-        let Some((queue, stuck)) = wait_stuck(channel, queue, side) else {
+        let Some((queue, stuck)) = wait_stuck(channel, queue, side, listener) else {
             #[cfg(any(test, feature = "threads"))]
             super::threads::Launcher::waited_here(said);
             return Waited::Again;
@@ -734,8 +756,9 @@ fn wait_stuck<'a>(
     channel: &'a Arc<Channel>,
     queue: MutexGuard<'a, Queue>,
     side: Side,
+    listener: Option<i64>,
 ) -> Option<(MutexGuard<'a, Queue>, bool)> {
-    let Some(note) = channel.stuck_note(side) else {
+    let Some(note) = channel.stuck_note(side, listener) else {
         return Some((channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), false));
     };
     let (queue, waited) =
@@ -744,12 +767,12 @@ fn wait_stuck<'a>(
     let cut_short = super::threads::Launcher::cut_short_here();
     #[cfg(not(any(test, feature = "threads")))]
     let cut_short = false;
-    if !waited.timed_out() || cut_short || !channel.still_waits(&queue, side) {
+    if !waited.timed_out() || cut_short || !channel.still_waits(&queue, side, listener) {
         return Some((queue, false));
     }
     // Noted and counted with the queue held, as it's counted asleep.
     let look = deadlock::thread_waits(note.blocking(), true);
-    let queue = if look { looked(channel, queue, side)? } else { queue };
+    let queue = if look { looked(channel, queue, side, listener)? } else { queue };
     Some((channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), true))
 }
 
@@ -762,6 +785,7 @@ fn looked<'a>(
     channel: &'a Arc<Channel>,
     queue: MutexGuard<'a, Queue>,
     side: Side,
+    listener: Option<i64>,
 ) -> Option<MutexGuard<'a, Queue>> {
     drop(queue);
     deadlock::look();
@@ -770,7 +794,7 @@ fn looked<'a>(
     let cut_short = super::threads::Launcher::cut_short_here();
     #[cfg(not(any(test, feature = "threads")))]
     let cut_short = false;
-    if !cut_short && channel.still_waits(&queue, side) {
+    if !cut_short && channel.still_waits(&queue, side, listener) {
         return Some(queue);
     }
     match side {
@@ -790,7 +814,7 @@ fn wait_parked(
     channel: &Arc<Channel>,
     queue: MutexGuard<'_, Queue>,
     deadline: Option<Instant>,
-    side: Side,
+    (side, listener): (Side, Option<i64>),
     (pool, at): (&'static super::parallel::Pool, usize),
 ) -> Waited {
     let mut queue = queue;
@@ -811,7 +835,7 @@ fn wait_parked(
     let left_at = channel.taken(side);
     drop(queue);
     // With no time limit it's a stuck wait, whose note goes with it, for the deadlock check.
-    let parked = match deadline.is_none().then(|| channel.stuck_note(side)).flatten() {
+    let parked = match deadline.is_none().then(|| channel.stuck_note(side, listener)).flatten() {
         Some(note) => super::serve::park_stuck(token, note),
         None => super::serve::park_on(token, deadline),
     };

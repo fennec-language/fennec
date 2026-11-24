@@ -17,7 +17,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 
-use crate::http_rules::{judged, started};
+use crate::http_rules::{answers_before_end, heard_whole, judged, judged_before_end, started};
 
 /// How long a client waits for the server to answer and close: past the 2 seconds
 /// `SESSIONS_SERVER` waits for a request to come whole, with room for a busy machine.
@@ -283,6 +283,53 @@ pub(crate) fn http_sessions(input: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// How the server's every answer starts.
+const STATUS_LINE: &[u8] = b"HTTP/1.1 ";
+
+/// What a client heard that sends `pieces` a millisecond apart and, once it's heard the answers
+/// `heads` says come before the input's end, resets the connection, or once the server's closed.
+///
+/// A client that closes its side first waits out `TIME_WAIT` after, holding a port of its own for a
+/// minute or so, and a run splitting inputs thousands of ways held more than 3,000 of them on
+/// macOS (CI's time-wait check, main at 17a9f206d). A reset leaves nothing waiting on either side.
+/// A server that closes first, as after refusing a request, waits on the one port it listens on.
+fn reset(port: u16, (first, rest): (&[u8], &[u8]), heads: &[bool]) -> Result<Vec<u8>, String> {
+    let mut stream =
+        TcpStream::connect(("127.0.0.1", port)).map_err(|err| format!("couldn't connect: {err}"))?;
+    stream.set_read_timeout(Some(ANSWERED_WITHIN)).map_err(|err| err.to_string())?;
+    // The server may close before it's read everything, which isn't wrong.
+    let _ = stream.write_all(first).and_then(|()| {
+        std::thread::sleep(Duration::from_millis(1));
+        stream.write_all(rest)
+    });
+    let mut said = Vec::new();
+    let mut chunk = vec![0; 16 * 1024];
+    // Each answer starts with a status line, so until as many have come as are wanted, there's no
+    // need to read what's come as answers: counted as it comes, the whole of what's heard isn't
+    // read again after every read, which for 20,000 answers took a minute.
+    let (mut started, mut counted) = (0, 0_usize);
+    while started < heads.len() || !heard_whole(&said, heads) {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                said.extend_from_slice(chunk.get(..read).unwrap_or_default());
+                let from = counted.saturating_sub(STATUS_LINE.len() - 1);
+                let new = said.get(from..).unwrap_or_default();
+                started += new.windows(STATUS_LINE.len()).filter(|window| *window == STATUS_LINE).count();
+                counted = said.len();
+            }
+            Err(err)
+                if matches!(err.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+            {
+                return Err(format!("the server neither answered nor closed within {ANSWERED_WITHIN:?}"));
+            }
+            Err(_) => break,
+        }
+    }
+    socket2::SockRef::from(&stream).set_linger(Some(Duration::ZERO)).map_err(|err| err.to_string())?;
+    Ok(said)
+}
+
 /// The most bytes an input may have to be split at every one of them by `http-splits`. A longer
 /// one, like a kept input of a million blank lines or 20,000 requests, is split at its first and
 /// last `FEW_SPLITS` bytes and at `FEW_SPLITS` places between, as meeting it once for each byte
@@ -310,19 +357,26 @@ fn split_points(length: usize) -> Vec<usize> {
 pub(crate) fn http_splits(input: &[u8]) -> Result<(), String> {
     let Some(executable) = crate::llvm::built_reader("http-server")? else { return Ok(()) };
     let (mut server, port) = started(&executable, None)?;
-    for at in split_points(input.len()) {
+    let heads = answers_before_end(input);
+    for (nth, at) in split_points(input.len()).into_iter().enumerate() {
         let (first, rest) = input.split_at(at);
-        let client = Client {
-            pieces: vec![first.to_vec(), rest.to_vec()],
-            pause: Duration::from_millis(1),
-            end: End::Reads,
-        };
         let shown = || format!("split after byte {at} of {}", input.len());
-        let (said, slow) = met(port, &client).map_err(|wrong| format!("{wrong}, {}", shown()))?;
+        // An input's end is the same however it's split, so the first split closes its side to
+        // say so, and the rest each read the answers that come before it and reset (see `reset`).
+        let heard = if nth == 0 {
+            let client = Client {
+                pieces: vec![first.to_vec(), rest.to_vec()],
+                pause: Duration::from_millis(1),
+                end: End::Reads,
+            };
+            met(port, &client).and_then(|(said, slow)| judged(input, &said, slow))
+        } else {
+            reset(port, (first, rest), &heads).and_then(|said| judged_before_end(input, &said))
+        };
         if let Ok(Some(status)) = server.0.try_wait() {
             return Err(format!("the server stopped ({status}), {}", shown()));
         }
-        judged(input, &said, slow).map_err(|wrong| format!("{wrong}, {}", shown()))?;
+        heard.map_err(|wrong| format!("{wrong}, {}", shown()))?;
     }
     answers(port).map_err(|wrong| format!("the last client: {wrong}"))?;
     if crate::supervise::kilobytes(server.0.id()).is_some_and(|held| held > 512 * 1024) {

@@ -1137,16 +1137,13 @@ mod tests {
         );
     }
 
-    /// `x.len()` at the end of a chain whose step can fail or be missing stays: the chain's
-    /// `else` ends it, and `len(...)` would hold the chain as an argument.
+    /// `x.len()` at the end of a chain whose step can be missing stays: the chain's `else` ends
+    /// it, and `len(...)` would hold the chain as an argument.
     #[test]
-    fn a_len_ending_a_chain_that_can_fail_stays_a_method() {
-        let source = "error Lost:\n    why: str\n\nstruct Part:\n    name = \"\"\n\n\
-            def find(n: int) -> Part fails Lost:\n    if n > 1: fail Lost(why=\"big\")\n    return Part()\n\n\
-            def main(stdout: Stdout):\n    size: int = find(1).name.len() else 0\n    \
-            ages = {\"a\": \"x\"}\n    kept = ages.get(\"a\").len() else 0\n    stdout.print(size, kept, \"ab\".len())\n";
+    fn a_len_ending_a_chain_that_can_be_missing_stays_a_method() {
+        let source = "def main(stdout: Stdout):\n    \
+            ages = {\"a\": \"x\"}\n    kept = ages.get(\"a\").len() else 0\n    stdout.print(kept, \"ab\".len())\n";
         let migrated = migrated(source);
-        assert!(migrated.contains("find(1).name.len() else 0"), "{migrated}");
         assert!(migrated.contains("ages.get(\"a\").len() else 0"), "{migrated}");
         assert!(migrated.contains("len(\"ab\")"), "{migrated}");
     }

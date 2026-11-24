@@ -97,8 +97,6 @@ error: `load_settings` uses an `Fs`, and `main` doesn't take one
   = help: `fennec fix` doesn't give `main` a capability: add `fs: Fs` to `main` if this program should touch files
 ```
 
-Not built yet: today `fennec fix` still gives `main` the parameter too.
-
 ### Several programs in one kit
 
 A kit's program is `src/main.fen`. Any other program, such as one for each place it runs, a tool, or a task, is a file of its own in `entries/`, beside `src/`, with a `main` of its own:

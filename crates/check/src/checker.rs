@@ -205,7 +205,6 @@ tables! {
     method_calls: BTreeSet<(u32, u32)>,
     array_zeros: BTreeMap<(u32, u32), Expr>,
     optional_steps: BTreeSet<(u32, u32)>,
-    failing_steps: BTreeSet<(u32, u32)>,
     std_names: BTreeMap<(u32, u32), String>,
     names_outer: BTreeSet<String>,
     std_calls: BTreeMap<(u32, u32), String>,
@@ -404,8 +403,6 @@ pub(crate) struct Checker {
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     pub(crate) optional_steps: BTreeSet<(u32, u32)>,
-    /// Those read from something that can fail, which is written in as `value else None`.
-    pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
     /// The functions that name a `with` source's own function, constant or module where it's
@@ -633,7 +630,6 @@ impl Checker {
             method_calls: BTreeSet::new(),
             array_zeros: BTreeMap::new(),
             optional_steps: BTreeSet::new(),
-            failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
             names_outer: BTreeSet::new(),
             std_calls: BTreeMap::new(),
@@ -1176,7 +1172,6 @@ impl Checker {
             method_calls: self.method_calls,
             array_zeros: self.array_zeros,
             optional_steps: self.optional_steps,
-            failing_steps: self.failing_steps,
             std_names: self.std_names,
             std_calls: self.std_calls,
             field_args: self.field_args,

@@ -27466,7 +27466,8 @@ def main(stdout: Stdout):
         unit = back.units[id]
         target = unit.target
         stdout.print(unit.name, back.units[target].name if target is not None else "-")
-    # Slot for slot: the same slots and generations, and the Id whose item has gone still gone.
+    # Slot for slot: the same slots, and the Id whose item has gone saved as missing, since a
+    # load gives every slot one tag and it would find what's in its slot.
     exact = pack.dumps(world, exact=True)
     mut same = pack.loads[World](exact) except ParseError(): World()
     stdout.print(len(exact), exact[3], len(same.units), same.units[same.selected[1]].name)
@@ -27502,8 +27503,8 @@ def main(stdout: Stdout):
 "#;
 
 /// `std.pack` saves a `Table` as JSON does, by position, with an `Id` whose item has gone saved
-/// as missing, and with `exact=True` slot for slot: the gone `Id` still gone, and the next `add`
-/// in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
+/// as missing, and with `exact=True` slot for slot: the gone `Id` saved as missing there too, and
+/// the next `add` in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
 /// no truncation or changed byte crashes a load in either mode.
 #[test]
 fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
@@ -27513,7 +27514,7 @@ fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
     let printed = printed_by("pack_tables", PACK_TABLES)?;
     assert_eq!(
         printed,
-        "84 2 True True\nvex -\nkit vex\n95 88 2 kit\nTrue False\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[0]` is item 10 of `units`, which has only 3\nthe data ends too soon, at byte 75\ntruncated 0 changed 2520\ntruncated 0 changed 2850\n"
+        "84 2 True True\nvex -\nkit vex\n91 88 2 kit\nFalse True\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[1]` is item 10 of `units`, which has only 3\na number is written in more bytes than it needs, at byte 71\ntruncated 0 changed 2520\ntruncated 0 changed 2730\n"
     );
     Ok(())
 }
@@ -29119,6 +29120,41 @@ fn copies_of_a_table_never_hand_out_one_id() -> std::io::Result<()> {
         include_str!("fixtures/table_copies_keep_ids_apart.fen"),
         include_str!("fixtures/table_copies_keep_ids_apart.out"),
     )
+}
+
+/// A `Table` saved slot for slot keeps its slots, and an `Id` saves as its slot only where it finds
+/// its item: one whose item has gone saves as missing when it's optional, and stops the save when it
+/// isn't, since after the load it would find whatever is in its slot. A load refuses an `Id` whose
+/// generation isn't its slot's, as main saved one before (#2424). In dev and release.
+#[test]
+fn a_table_saved_exactly_keeps_no_id_whose_item_has_gone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_saved_exactly",
+        include_str!("fixtures/table_saved_exactly.fen"),
+        include_str!("fixtures/table_saved_exactly.out"),
+    )?;
+    let program = "from std import pack\nfrom std.collections import Id, Table\n\nstruct Unit:\n    hp: int\n\nstruct Saved:\n    units: Table[Unit]\n    chosen: Id[Unit]\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    stale = units.add(Unit(hp=1))\n    _ = units.remove(stale)\n    data = pack.dumps(Saved(units=units, chosen=stale), exact=True)\n    stdout.print(len(data))\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("table_saved_exactly_stale")?;
+        let (at, executable) = (dir.join("stale.fen"), dir.join("stale"));
+        std::fs::write(&at, program)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([at.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        let why = "`chosen` is an Id that finds nothing in `units`: its item was taken out, or it's from another `Table[Unit]`";
+        assert!(said.contains(why), "{how:?}: {said}");
+    }
+    Ok(())
 }
 
 /// An item taken out of a `Table` to change in place never changes a copy of the `Table`: it's
@@ -36055,10 +36091,10 @@ struct Words:
     def here(self, message: str) -> ParseError:
         return ParseError(message=message, line=0, column=0)
 
-    def saw_id(ref self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int, generation: int):
         pass
 
-    def saw_table(ref self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
         pass
 
     def tag(ref self, kind: str) -> int:

@@ -120,24 +120,7 @@ impl FnCx<'_> {
                 {
                     self.read_from.insert(name.clone(), crate::loops::place_text(value));
                 }
-                let expected = match written {
-                    Some(written) => self.written_type(written),
-                    None if op.is_none() => self.declared_type(name),
-                    // `query += " where id = 1"` keeps a `LiteralStr` one when what's added is.
-                    None if op == Some(BinOp::Add) => {
-                        self.declared_type(name).filter(|ty| matches!(ty, Type::LiteralStr | Type::Sized(_)))
-                    }
-                    // `small -= 1`: a number literal takes the size of what it changes.
-                    None => self.declared_type(name).filter(|ty| matches!(ty, Type::Sized(_))),
-                };
-                // `velocity *= 2.0`: one taken by a type's own operator takes the size it takes.
-                let expected = match (op, expected) {
-                    (Some(op), None) if crate::expect::number_literal(value) => {
-                        self.lookup(name).and_then(|(current, _)| self.operator_takes_sized(op, &current))
-                    }
-                    (_, expected) => expected,
-                };
-                let ty = match &expected {
+                let ty = match &self.expected_by_name(name, op, value, written) {
                     Some(expected) => self.expr_as(value, expected),
                     None => self.expr(value),
                 };
@@ -208,6 +191,34 @@ impl FnCx<'_> {
     }
 
     /// The type a field or item holds, as declared: not narrowed by a check for None.
+    /// The type what's given to a name is checked against: its written type, or what it holds
+    /// where that's what decides, as a literal's size does.
+    fn expected_by_name(
+        &mut self,
+        name: &str,
+        op: Option<BinOp>,
+        value: &Expr,
+        written: Option<&TypeExpr>,
+    ) -> Option<Type> {
+        let expected = match written {
+            Some(written) => self.written_type(written),
+            None if op.is_none() => self.declared_type(name),
+            // `query += " where id = 1"` keeps a `LiteralStr` one when what's added is.
+            None if op == Some(BinOp::Add) => {
+                self.declared_type(name).filter(|ty| matches!(ty, Type::LiteralStr | Type::Sized(_)))
+            }
+            // `small -= 1`: a number literal takes the size of what it changes.
+            None => self.declared_type(name).filter(|ty| matches!(ty, Type::Sized(_))),
+        };
+        // `velocity *= 2.0`: one taken by a type's own operator takes the size it takes.
+        match (op, expected) {
+            (Some(op), None) if crate::expect::number_literal(value) => {
+                self.lookup(name).and_then(|(current, _)| self.operator_takes_sized(op, &current))
+            }
+            (_, expected) => expected,
+        }
+    }
+
     fn place_type(&mut self, target: &Expr) -> Type {
         match &target.kind {
             ExprKind::Attr { object, name, optional: false } => {

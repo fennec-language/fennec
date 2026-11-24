@@ -34688,6 +34688,82 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The workers of a `parallel` loop race to reach an `embed_file` first, each reading it whole,
+/// slicing it and joining parts of it in the runtime. The one copy the process makes is the
+/// winner's, but nothing a program or its replay sees says which thread won (#2429).
+/// - What it prints and how many blocks it made are the same at 1, 4 and 16 threads.
+/// - A run recorded at each of those replays the same at the other two.
+#[test]
+fn an_embedded_file_is_made_once_whichever_thread_reaches_it_first() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("embedded_raced")?;
+    let data: Vec<u8> =
+        (0..4096u32).map(|n| u8::try_from(n.wrapping_mul(2_654_435_761) >> 24).unwrap_or(0)).collect();
+    std::fs::write(dir.join("data.bin"), &data)?;
+    let source = "def data() -> bytes:\n    return embed_file(\"data.bin\")\n\n\
+                  def looked(n: int) -> int:\n    file = data()\n    mut total = 0\n    \
+                  for i in range(len(file)):\n        total += file[i]\n    \
+                  part = file[n:n + 5] + file[:2]\n    return total + len(part) * 1000 + part[0]\n\n\
+                  def main(stdout: Stdout):\n    mut totals: list[int] = []\n    \
+                  for i in range(64):\n        totals.append(i)\n    \
+                  for ref t in parallel(totals):\n        t = looked(t)\n    \
+                  stdout.print(sum(totals), data()[0], len(data()[1:4]))\n";
+    let program = dir.join("raced.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("raced");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let byte = |at: usize| data.get(at).copied().map_or(0, u64::from);
+    let whole: u64 = data.iter().copied().map(u64::from).sum();
+    let expected: u64 = (0..64).map(|n| whole + 7000 + byte(n)).sum();
+    let shown = format!("{expected} {} 3\n", byte(0));
+    let threads = ["1", "4", "16"];
+    let mut first_made = None;
+    for count in threads {
+        let ran = Command::new(&executable)
+            .env("FENNEC_THREADS", count)
+            .env("FENNEC_COUNTS", "1")
+            .output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let made: u64 = said
+            .split_whitespace()
+            .skip_while(|word| *word != "allocations")
+            .nth(1)
+            .and_then(|made| made.parse().ok())
+            .unwrap_or_else(|| panic!("no counts at {count} threads: {said}"));
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), shown, "at {count} threads");
+        assert_eq!(made, *first_made.get_or_insert(made), "blocks made at {count} threads against 1");
+    }
+    for recorded_at in threads {
+        let log = dir.join(format!("at{recorded_at}.log"));
+        let recorded = crate::executables::fennec_command()
+            .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .current_dir(&dir)
+            .env("FENNEC_THREADS", recorded_at)
+            .output_within()?;
+        assert!(recorded.status.success(), "{}", String::from_utf8_lossy(&recorded.stderr));
+        for replayed_at in threads {
+            let replayed = crate::executables::fennec_command()
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .env("FENNEC_THREADS", replayed_at)
+                .output_within()?;
+            assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+            assert_eq!(
+                replayed.stdout, recorded.stdout,
+                "recorded at {recorded_at} threads, replayed at {replayed_at}"
+            );
+        }
+        assert_eq!(String::from_utf8_lossy(&recorded.stdout), shown, "recorded at {recorded_at}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// In a program with `parallel`, `main` works out each constant before any worker starts, and
 /// throws the value away there: one of a struct type, like a `Duration`, still has its type in
 /// `main`'s module.

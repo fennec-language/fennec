@@ -2542,24 +2542,40 @@ fn same_here(state: &State, a: u64, b: u64, later: &mut Vec<(u64, u64)>) -> bool
     if let Element::Struct { name, fields } = shape.as_ref()
         && named::is_id_map(name)
     {
-        return same_tables(fields, left, right, later);
+        return same_tables(state, fields, (left, right), later);
     }
     same_words_here(state, &shape, left, right, later)
 }
 
-/// Whether two `Table`s are equal: the same items in the same slots. The tags their slots keep,
-/// and where a search for a free slot starts, don't count.
+/// Whether two `Table`s are equal: the same slots in use, holding the same items (#2424). A free
+/// slot's item is zero, so which slots are in use is compared too, or an item all zero, as
+/// `Point(x=0)`, would be the same as no item. The tags each slot's `Id` has, and where a search
+/// for a free slot starts, don't count.
 fn same_tables(
+    state: &State,
     fields: &[(Rc<str>, Element)],
-    left: &[u64],
-    right: &[u64],
+    (left, right): (&[u64], &[u64]),
     later: &mut Vec<(u64, u64)>,
 ) -> bool {
     let mut at = 0;
     for (field, element) in fields {
-        if field.as_ref() == "items" {
-            let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
-            compare_later(later, *x, *y);
+        let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
+        match field.as_ref() {
+            "items" => {
+                compare_later(later, *x, *y);
+            }
+            // Each slot's tag, 0 where it's free: only whether each is in use is compared.
+            "slots" => {
+                let in_use = |list: u64| {
+                    state.heap.block(list).map(|block| {
+                        super::lists::items(block, 1).iter().map(|tag| *tag != 0).collect::<Vec<bool>>()
+                    })
+                };
+                if in_use(*x) != in_use(*y) {
+                    return false;
+                }
+            }
+            _ => {}
         }
         at += element.words();
     }

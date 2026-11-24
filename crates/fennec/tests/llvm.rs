@@ -36553,7 +36553,7 @@ def main(stdout: Stdout):
     add_value2 = add("1", b="two") except InvalidValue(): -1
     stdout.print(add_value, add_value2)
     for pattern in ["[0-9]+", "[0-9+"]:
-        regex = Regex(pattern) except error:
+        regex = Regex.parse(pattern) except error:
             stdout.print(error.message)
             continue
         stdout.print(regex.pattern)

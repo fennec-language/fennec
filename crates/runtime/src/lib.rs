@@ -118,6 +118,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_str_char_at",
     "fennec_str_repr",
     "fennec_int_text",
+    // It swaps which table is current, and nothing else.
+    "fennec_tables_outside",
     "fennec_u64_text",
     "fennec_f32_text",
     "fennec_float_text",
@@ -473,6 +475,7 @@ export! {
     fennec_shared_leave(a0: i64, a1: i64) -> i64 => guarded::shared_leave(a0, a1);
     fennec_shared_in(a0: i64) -> i64 => guarded::shared_in(a0);
     fennec_shared_out(a0: i64, a1: i64) -> i64 => guarded::shared_out(a0, a1);
+    fennec_tables_outside(a0: i64) => guarded::tables_outside(a0);
     fennec_shared_settle(a0: i64) => guarded::shared_settle(a0);
     fennec_shared_wait() => guarded::shared_wait();
     fennec_cell_new(a0: i64) -> i64 => heap::cell_new(a0);

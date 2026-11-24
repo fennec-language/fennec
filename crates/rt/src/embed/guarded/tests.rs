@@ -485,3 +485,40 @@ fn a_copy_of_many_blocks_remembers_each_and_goes_through_them_last_first() {
         "what's been gone through is still remembered"
     );
 }
+
+/// A list from before a write lock, grown under it between two `fennec_tables_outside` calls, gets
+/// its grown block in its own table, not the `shared` value's (#2456): it's this thread's after the
+/// lock, and nothing of it is left in the value's table. Under two locks, the table behind both.
+#[test]
+fn a_list_from_outside_a_lock_grown_under_it_stays_in_its_own_table() {
+    begin();
+    let log = log_of(&[]);
+    shared_new(log);
+    let before = with(|state| state.heap.live());
+    let mine = with(|state| lists::list_of_strings(state, LINES, &["before"]));
+    shared_enter(log, 1);
+    tables_outside(1);
+    let grown = appended(mine, "under the lock");
+    tables_outside(1);
+    assert_eq!(word(grown, 1) >> OWNER_SHIFT, 0, "it's this thread's");
+    shared_leave(log, 1);
+    assert_eq!(lines(grown), ["before", "under the lock"]);
+    assert!(with(|state| Some(state.heap.blocks.get(usize::try_from(grown).ok()?).is_some())).unwrap());
+    heap::free(grown);
+    assert_eq!(with(|state| state.heap.live()), before);
+    // Under two locks, it's the table behind both.
+    let (outer, inner) = (log_of(&[]), log_of(&[]));
+    shared_new(outer);
+    shared_new(inner);
+    let mine = with(|state| lists::list_of_strings(state, LINES, &["before"]));
+    shared_enter(outer, 1);
+    shared_enter(inner, 1);
+    tables_outside(2);
+    let grown = appended(mine, "under both");
+    tables_outside(2);
+    assert_eq!(word(grown, 1) >> OWNER_SHIFT, 0, "it's this thread's, not the outer value's");
+    shared_leave(inner, 1);
+    shared_leave(outer, 1);
+    assert_eq!(lines(grown), ["before", "under both"]);
+    finish();
+}

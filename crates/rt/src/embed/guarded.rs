@@ -532,6 +532,19 @@ pub extern "C" fn shared_out(block: i64, held: i64) -> i64 {
     })
 }
 
+/// `fennec_tables_outside(held)`, called on either side of a change made under `held` write locks to
+/// something that lives outside them, as `made.append(...)` for a `made` list from before the lock:
+/// what's made between the two calls, a list's grown block say, goes in the table behind those
+/// locks, which is its owner's, and not in the `shared` value's (#2456). The first call makes that
+/// table current, and the second puts the lock's back. Native code makes both, around nothing but
+/// the change, and looks at whether the change failed only after the second.
+pub extern "C" fn tables_outside(held: i64) {
+    super::with(|state| {
+        state.heap.swap_behind(usize::try_from(held).unwrap_or(0));
+        Some(())
+    });
+}
+
 /// `fennec_shared_settle(cell)`, for each of the `shared` values a `with` holds two or more of to
 /// write, before it leaves any: what's made under such a lock goes in whichever table is on top, and
 /// one value can be given what's in another's. So each is walked, and given its own copy of anything

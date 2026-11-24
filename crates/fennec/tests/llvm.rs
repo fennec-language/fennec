@@ -7410,6 +7410,40 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `std.math`'s `sqrt`, `sin`, `cos` and `acos` of an `f32` give an `f32`, worked out in `f32`, and
+/// `abs` of one is one. `f32.parse` reads text straight to the nearest `f32`, rounded once, where
+/// reading a `float` first rounds twice, and text that isn't a number fails as `float`'s does.
+/// What it prints is what the reference evaluator prints.
+#[test]
+fn an_f32s_math_and_parse_work_out_in_f32() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "f32_math_and_parse",
+        "from std import math
+
+def main(stdout: Stdout):
+    two = f32(2)
+    stdout.print(math.sqrt(two), math.sin(f32(0.5)), math.cos(f32(0.5)), math.acos(f32(0.5)), abs(f32(-1.5)))
+    once = f32.parse(\"1.00000005960464477539062501\") except InvalidValue(): f32(0)
+    wide = float.parse(\"1.00000005960464477539062501\") except InvalidValue(): 0.0
+    twice = f32(wide)
+    bad = f32.parse(\"1,5\") except why:
+        stdout.print(why)
+        f32(0)
+    spaced = f32.parse(\" -2e3 \") except InvalidValue(): f32(0)
+    stdout.print(once, twice, once == twice, bad, spaced)
+",
+    )?;
+    assert_eq!(
+        printed,
+        "1.4142135 0.47942555 0.87758255 1.0471976 1.5\n\"1,5\" isn't a float\n\
+         1.0000001 1.0 False 0.0 -2000.0\n"
+    );
+    Ok(())
+}
+
 /// `**` on `u64`s, worked out by squaring and checked: `0 ** 0` is 1, `2 ** 63` is past `int`'s top,
 /// `3 ** 40` takes most of the 64 bits, and `2 ** 64` doesn't fit, which stops the program.
 #[test]

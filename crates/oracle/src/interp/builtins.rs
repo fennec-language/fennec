@@ -124,6 +124,12 @@ impl Interp {
                 Value::Float(x) => Ok(Value::F32(super::expr::as_f32(x))),
                 Value::F32(x) => Ok(Value::F32(x)),
                 Value::Sized(num, n) if !num.is_float() => Ok(Value::F32(int128_as_f32(n))),
+                // std's `f32.parse`: text read straight to the nearest `f32`, rounded once.
+                Value::Str(text) => match text.trim().parse::<f32>() {
+                    Ok(x) => Ok(Value::F32(x)),
+                    // Text that isn't one says so as `float`'s does, as `u8.parse` says `int`'s.
+                    Err(_) => Err(not_a_number(&text, "a float", span)),
+                },
                 other => unsupported(format!("`f32` of a {}", other.kind())),
             },
             "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" => {

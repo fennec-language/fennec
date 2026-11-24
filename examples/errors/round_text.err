@@ -4,4 +4,4 @@ error: `round` takes a number, but this is a str
 3 |     stdout.print(round(price))
   |                  ^^^^^^^^^^^^
   |
-  = help: read the text as a number first, as `round(float(text)?)`
+  = help: read the text as a number with `float.parse`, as `round(float.parse(text)?)`

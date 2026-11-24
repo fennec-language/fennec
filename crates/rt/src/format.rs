@@ -157,6 +157,8 @@ pub(crate) fn with_spec(value: &Value, spec: &str) -> Result<String, String> {
     let text = match (value, kind, precision) {
         (Value::Int(n), "" | "d", None) => n.to_string(),
         (Value::Int(n), "" | "f", Some(places)) => format!("{:.places$}", crate::ops::to_float(*n)),
+        // A NaN or an infinity prints as it does without a spec, so a NaN is `nan`, not Rust's `NaN`.
+        (Value::Float(x), "" | "f", Some(_)) if !x.is_finite() => float(*x),
         (Value::Float(x), "" | "f", Some(places)) => format!("{x:.places$}"),
         (Value::Float(x), "" | "f", None) => float(*x),
         (other, _, _) if spec.is_empty() => display(other),

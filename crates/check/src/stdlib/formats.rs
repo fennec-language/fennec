@@ -199,6 +199,12 @@ impl FnCx<'_> {
             // A union is saved tagged with its member, which a type's name alone has to say.
             Type::Union(members) if !members.iter().all(crate::saving::tested_by_name) => Err(cannot(ty)),
             Type::Dict(key, _) if crate::saving::holds_union(key) => Err(cannot(ty)),
+            // `null` can't tell `None` from an optional holding `None`.
+            Type::Optional(item) if matches!(**item, Type::Optional(_)) => Err(Diagnostic::new(
+                cant_hold(format, field, "an optional of an optional"),
+                span,
+            )
+            .with_help("`null` can't tell `None` from an optional holding `None`: save a struct or an enum that says which it is")),
             Type::List(item) | Type::Optional(item) | Type::Table(item) => {
                 self.holds(format, item, (span, field, loading), seen)
             }

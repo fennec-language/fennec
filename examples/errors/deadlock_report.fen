@@ -1,0 +1,15 @@
+# Two tasks each waiting for the other to speak first. Nothing can ever arrive, so the program
+# stops with a report saying who waits for what, rather than hang.
+from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+# Answers each question with the number after it.
+def answer(questions: Inbox[int], answers: Sender[int]) fails Closed:
+    for question in questions:
+        answers.send(question + 1)?
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with channel[int](size=1) as questions, channel[int](size=1) as answers:
+        with launch(() => answer(questions.inbox(), answers.sender())?)?:
+            # Waits for an answer before asking anything.
+            got = answers.receive() else 0
+            stdout.print(got)

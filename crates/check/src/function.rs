@@ -140,8 +140,6 @@ pub(crate) struct FnCx<'c> {
     /// when they were read: each name, its type, where, and whether it's an arrow's own
     /// parameter. They're looked at again once the function's types are.
     pub(crate) pending_generators: Vec<(String, Type, Span, bool)>,
-    /// What each channel made and each task's inbox takes, with where: none can be optional.
-    pub(crate) pending_messages: Vec<(Type, Span)>,
     /// Every expression's type and every declared name's, as they're found.
     exprs: Vec<(Span, Type)>,
     pub(crate) names: Vec<(Span, String, Type)>,
@@ -237,7 +235,6 @@ impl<'c> FnCx<'c> {
             pending_bounds: Vec::new(),
             pending_sums: Vec::new(),
             pending_generators: Vec::new(),
-            pending_messages: Vec::new(),
             reported: 0,
             exprs: Vec::new(),
             names: Vec::new(),
@@ -274,7 +271,6 @@ impl<'c> FnCx<'c> {
         self.check_pending_bounds();
         self.check_pending_sums();
         self.check_pending_generators();
-        self.check_pending_messages();
         // An expression looked at twice, like an argument peeked at first, keeps the type
         // it got last.
         let exprs: std::collections::BTreeMap<(u32, u32), Type> =

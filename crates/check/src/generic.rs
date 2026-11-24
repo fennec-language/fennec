@@ -195,6 +195,16 @@ impl FnCx<'_> {
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
         if matches!(interface, "Serializable" | "Deserializable") {
             self.checker.saved_types.insert(ty.clone());
+            if let Type::Optional(inner) = ty
+                && matches!(**inner, Type::Optional(_))
+            {
+                return Err((
+                    format!(
+                        "`{ty}` is an optional of an optional, which can't be saved: `null` can't tell `None` from an optional holding `None`"
+                    ),
+                    "save a struct or an enum that says which it is".to_owned(),
+                ));
+            }
         }
         // A tuple saves and loads as an array of its items, when each of them does (see
         // `tuple_lowering`).

@@ -76,12 +76,6 @@ impl FnCx<'_> {
         if lent(gives).is_none() {
             return;
         }
-        if key == "concurrent.channel"
-            && let Some(Type::Generic(_, items)) = lent(gives)
-            && let [message] = items.as_slice()
-        {
-            self.note_channel_message(message.clone(), span);
-        }
         if let Some(entry) = self.checker.program.functions.get(key) {
             // A method's type parameters start with its type's: `T` in `Pool[T].lent`.
             let owner = entry.owner.as_deref().and_then(|owner| self.checker.program.type_info(owner));

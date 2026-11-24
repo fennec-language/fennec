@@ -286,6 +286,7 @@ fn all_loaded(checker: &mut Checker, def: &TypeDef, loadable: &BTreeSet<String>)
 /// holds, and a type whose own `deserialize` was made for it, without a `serialize`, loads too.
 fn loaded(checker: &Checker, ty: &Type, loadable: &BTreeSet<String>) -> bool {
     match ty {
+        Type::Optional(inner) if matches!(**inner, Type::Optional(_)) => false,
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner)
             if !matches!(ty, Type::Set(_) | Type::Table(_)) || !holds_union(inner) =>
         {
@@ -318,6 +319,8 @@ pub(crate) fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) 
         // can't be changed to and from.
         Type::Set(inner) | Type::Table(inner) if holds_union(inner) => false,
         Type::Dict(key, _) if holds_union(key) => false,
+        // `null` can't tell `None` from an optional holding `None`.
+        Type::Optional(inner) if matches!(**inner, Type::Optional(_)) => false,
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
             saved(checker, inner, generated)
         }
@@ -645,7 +648,7 @@ fn reads<'f>(
             held.source()?;
             let optional = matches!(held, Type::Optional(_));
             let union = unions.change(written, &held);
-            let or_none = written.ty(&Type::optional(held.clone()));
+            let or_none = written.ty(&Type::or_none(held.clone()));
             let ty = written.ty(&held);
             let local = written.field(&field.name);
             saved.push(Read { field, local, ty, or_none, optional, union });
@@ -1062,6 +1065,10 @@ fn field_stops(
         | Type::Id(_) => None,
         Type::Set(inner) | Type::Table(inner) if holds_union(inner) => stop(crate::types::a(ty)),
         Type::Dict(key, _) if holds_union(key) => stop(crate::types::a(ty)),
+        Type::Optional(inner) if matches!(**inner, Type::Optional(_)) => stop(format!(
+            "{}, an optional of an optional, which `null` can't tell from `None`",
+            crate::types::a(ty)
+        )),
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner) => {
             field_stops(checker, inner, place, (field, owner), open)
         }

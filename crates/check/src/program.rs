@@ -548,6 +548,17 @@ impl Program {
         }
     }
 
+    /// `int??`: an optional of the optional it's written around, kept apart from it.
+    fn optional_of_optional(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        let [held] = written.args.as_slice() else { return Err(unknown_type(&written.name, written.span)) };
+        Ok(Type::Optional(Box::new(self.resolve_within(held, generics, depth)?)))
+    }
+
     fn resolve_within(
         &self,
         written: &TypeExpr,
@@ -561,6 +572,7 @@ impl Program {
         match name {
             "|" => return self.errors_named(written, generics, depth),
             "fails" => return self.fallible_returns(written, generics, depth),
+            fennec_syntax::OPTIONAL => return self.optional_of_optional(written, generics, depth),
             "Result" if crate::gone::written_by_hand(written.span) => {
                 return Err(crate::gone::result_type(written.span));
             }

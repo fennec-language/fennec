@@ -860,6 +860,10 @@ impl Interp {
             }
             frame.types = types;
         }
+        let returns = def.ret.as_ref().map_or(0, |ret| self.levels_written(ret));
+        if let Some(frame) = self.frames.get_mut(self.cur) {
+            frame.returns = returns;
+        }
         let ran = (|| {
             for (name, default) in defaults {
                 let value = self.eval(default)?;

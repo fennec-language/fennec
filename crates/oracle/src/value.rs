@@ -20,6 +20,11 @@ pub(crate) enum Value {
     /// What a function that gives back nothing gives.
     Unit,
     None,
+    /// An optional of an optional holding the `None`, or the optional holding one, it's around:
+    /// `Some(None)` is a `T??` that found an `int?` holding `None`, kept apart from `None`, nothing
+    /// found. A value that isn't `None` needs no `Some` around it, as no `None` can be mistaken for
+    /// it, so only a `None` or another `Some` is ever held in one (see `found`).
+    Some(Box<Value>),
     Bool(bool),
     /// An `int`, which is an `i64`.
     Int(i64),
@@ -152,6 +157,7 @@ impl Value {
         match self {
             Value::Unit => "nothing",
             Value::None => "None",
+            Value::Some(_) => "optional of an optional",
             Value::Bool(_) => "bool",
             Value::Int(_) => "int",
             Value::Sized(..) => "sized number",
@@ -173,6 +179,40 @@ impl Value {
             Value::Channel(_) => "channel",
             Value::Room(_) => "buffer's room",
             Value::Unknown(_) => "value the oracle can't know",
+        }
+    }
+
+    /// What a `T?` gives when it's found something, where `T` may be optional itself, as a list's
+    /// `pop()` of a `list[int?]` gives an `int??`: a `None` found, or a `Some`, is held in a `Some`
+    /// so it's kept apart from nothing found. Anything else is itself.
+    pub(crate) fn found(item: Value) -> Value {
+        match item {
+            Value::None | Value::Some(_) => Value::Some(Box::new(item)),
+            other => other,
+        }
+    }
+
+    /// What a `T?` gives: `None` when nothing's found, and what was found as `found` holds it.
+    pub(crate) fn found_or_none(item: Option<Value>) -> Value {
+        item.map_or(Value::None, Value::found)
+    }
+
+    /// One level of an optional taken off, as `else` does once the value's there, or as narrowing
+    /// it does: what a `Some` holds, and anything else as it is.
+    pub(crate) fn unwrapped(self) -> Value {
+        match self {
+            Value::Some(inner) => *inner,
+            other => other,
+        }
+    }
+
+    /// How many levels of `Some` are around the `None` this is, when it's one: 0 for `None`, 1
+    /// for `Some(None)`, and `None` for anything else.
+    pub(crate) fn levels(&self) -> Option<usize> {
+        match self {
+            Value::None => Some(0),
+            Value::Some(inner) => inner.levels().map(|levels| levels + 1),
+            _ => None,
         }
     }
 
@@ -304,6 +344,7 @@ pub(crate) fn same(left: &Value, right: &Value) -> bool {
     let all_same = |a: &[Value], b: &[Value]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same(x, y));
     match (left, right) {
         (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
+        (Value::Some(a), Value::Some(b)) => same(a, b),
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Int(a), Value::Int(b)) => a == b,
         (Value::Sized(x, a), Value::Sized(y, b)) => x == y && a == b,

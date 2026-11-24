@@ -276,6 +276,10 @@ pub(crate) struct Frame {
     pub(crate) owner: Option<String>,
     /// What the type parameters of the function it runs stand for in this call.
     pub(crate) types: typed::Bound,
+    /// How many levels of optional the function it runs gives back, in this call: 2 for an
+    /// `int??`, or for a `T?` with `T` an `int?`. A `None` returned from fewer is held in that many
+    /// more `Some`s, as returning an `int?` holding `None` as an `int??` gives `Some(None)`.
+    pub(crate) returns: usize,
 }
 
 /// A `lend ... except:` cleanup running for a block that failed: the frame it runs in, and once a
@@ -458,7 +462,7 @@ impl Interp {
         let owner = parent
             .and_then(|parent| self.frames.iter().rfind(|frame| frame.id == parent))
             .and_then(|frame| frame.owner.clone());
-        self.frames.push(Frame { id, vars, parent, owner, types: typed::Bound::new() });
+        self.frames.push(Frame { id, vars, parent, owner, types: typed::Bound::new(), returns: 0 });
         let previous = self.cur;
         self.cur = self.frames.len() - 1;
         Ok(previous)
@@ -874,7 +878,10 @@ impl Interp {
             }
             StmtKind::Return(value) => {
                 let value = match value {
-                    Some(value) => self.eval(value)?,
+                    Some(value) => {
+                        let given = self.eval(value)?;
+                        self.returned(given, value.span)
+                    }
                     None => Value::Unit,
                 };
                 Err(Flow::Return(value))

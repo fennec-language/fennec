@@ -489,7 +489,7 @@ fn read_only(
                 if *at >= size || *at < -size {
                     return Some(Ok(Value::None));
                 }
-                Some(position(*at, items.len(), span).map(|at| items.get(at).cloned().unwrap_or(Value::None)))
+                Some(position(*at, items.len(), span).map(|at| Value::found_or_none(items.get(at).cloned())))
             }
             _ => None,
         },
@@ -691,7 +691,7 @@ impl Interp {
                     return Ok(Value::None);
                 }
                 let at = position(*at, items.len(), span)?;
-                Ok(items.into_iter().nth(at).unwrap_or(Value::None))
+                Ok(Value::found_or_none(items.into_iter().nth(at)))
             }
             ("count", [item]) => {
                 let mut found = 0;
@@ -726,7 +726,7 @@ impl Interp {
                 };
                 let removed = items.remove(at);
                 self.put_back(receiver, Value::List(Held::new(items)), span)?;
-                Ok(if name == "remove" { removed } else { Value::Unit })
+                Ok(if name == "remove" { Value::found(removed) } else { Value::Unit })
             }
             _ => unsupported(format!("the list method `{name}`")),
         }
@@ -820,7 +820,9 @@ fn list_change(items: &mut Vec<Value>, name: &str, args: &mut Vec<Value>, span: 
             items.push(std::mem::replace(item, Value::Unit));
             grown(items)
         }
-        ("pop", []) => Ok(items.pop().unwrap_or(Value::None)),
+        // `pop()` gives a `T?`, which for a `list[int?]` is an `int??`: a `None` popped is kept
+        // apart from the list being empty.
+        ("pop", []) => Ok(Value::found_or_none(items.pop())),
         ("pop", [Value::Int(at)]) => position(*at, items.len(), span).map(|at| items.remove(at)),
         ("insert", [Value::Int(at), item]) => match usize::try_from(*at).ok().filter(|at| *at <= items.len())
         {
@@ -868,7 +870,7 @@ fn dict_change(
             Err(flow) => Err(flow),
         },
         ("remove", [key]) => match found(pairs, key) {
-            Ok(Some(at)) => Ok(pairs.remove(at).1),
+            Ok(Some(at)) => Ok(Value::found(pairs.remove(at).1)),
             Ok(None) => Ok(Value::None),
             Err(flow) => Err(flow),
         },
@@ -922,7 +924,7 @@ fn set_change(items: &mut Vec<Value>, name: &str, args: &mut [Value]) -> Option<
             Value::Unit
         }),
         ("remove", [item]) => match at(items, item) {
-            Ok(Some(found)) => Ok(items.remove(found)),
+            Ok(Some(found)) => Ok(Value::found(items.remove(found))),
             Ok(None) => Ok(Value::None),
             Err(flow) => Err(flow),
         },
@@ -947,12 +949,13 @@ fn set_change(items: &mut Vec<Value>, name: &str, args: &mut [Value]) -> Option<
 fn dict_method(pairs: &[(Value, Value)], name: &str, args: &[Value], span: Span) -> Run<Value> {
     match (name, args) {
         ("get", [key]) => match super::find_key(pairs, key)? {
-            Some(at) => Ok(pairs.get(at).map_or(Value::None, |(_, value)| value.clone())),
+            Some(at) => Ok(Value::found_or_none(pairs.get(at).map(|(_, value)| value.clone()))),
             None => Ok(Value::None),
         },
+        // It's typed as a `V?` still, so a `None` given back is held as found, whichever it is.
         ("get", [key, default]) => match super::find_key(pairs, key)? {
-            Some(at) => Ok(pairs.get(at).map_or(Value::None, |(_, value)| value.clone())),
-            None => Ok(default.clone()),
+            Some(at) => Ok(Value::found_or_none(pairs.get(at).map(|(_, value)| value.clone()))),
+            None => Ok(Value::found(default.clone())),
         },
         ("keys", []) => Ok(Value::List(pairs.iter().map(|(key, _)| key.clone()).collect())),
         ("values", []) => Ok(Value::List(pairs.iter().map(|(_, value)| value.clone()).collect())),

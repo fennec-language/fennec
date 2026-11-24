@@ -1,0 +1,10 @@
+# A listener of a channel to `.Every` that nothing more is sent to waits for good, which the
+# program stops with a report of, rather than hanging with nothing said.
+from std.concurrent import Closed, channel
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=4, to=.Every) as hits:
+        hits.send(7)?
+        listening = hits.inbox()
+        heard = listening.receive() else -1
+        stdout.print(heard)

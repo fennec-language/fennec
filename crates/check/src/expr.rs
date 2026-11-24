@@ -971,19 +971,21 @@ impl FnCx<'_> {
         self.field_of(&ty, name, optional, span)
     }
 
-    /// A field or method of something that can fail, read in the chain before an `else`, which
-    /// stops at the first failing step too. It's read as what's inside it or `None`, as it's written
-    /// in: `(value else None).step`.
+    /// A field or method of something that can fail, read in the chain before an `else`: refused,
+    /// as `else` doesn't handle a failure. The chain goes on as if the step might be missing, so
+    /// nothing after it is reported too.
     pub(crate) fn failing_step(&mut self, ty: Type, object: Span, step: Span) -> Type {
-        let Type::Result(inner, _) = &ty else { return ty };
+        // A call that can fail after a step that might be missing gives one or the other.
+        let inner = match &ty {
+            Type::Result(inner, _) => inner,
+            Type::Optional(held) if let Type::Result(inner, _) = held.as_ref() => inner,
+            _ => return ty,
+        };
         if !self.else_chain.contains(&(step.start, step.end)) {
             return ty;
         }
-        let read_as = Type::optional(inner.as_ref().clone());
-        self.checker.failing_steps.insert((step.start, step.end));
-        // Expressions are told apart by span, and nothing's written here, so it's empty.
-        self.record(Span { start: object.end, end: object.end }, &read_as);
-        read_as
+        self.error(crate::messages::else_through_failure(object));
+        Type::optional(inner.as_ref().clone())
     }
 
     /// Whether a field or method of a value that might be missing is read in the chain before
@@ -1313,10 +1315,7 @@ impl FnCx<'_> {
         };
         match value {
             Type::Optional(inner) if matches!(*inner, Type::Result(..)) => {
-                self.error(
-                    Diagnostic::new("two steps of this chain can fail, and `else` stops at one", span)
-                        .with_help("get the first step's value out with its own `else` or `?` first"),
-                );
+                self.error(crate::messages::else_through_failure(written));
                 Type::Unknown
             }
             Type::Optional(inner) | Type::Result(inner, _) if leaves => *inner,

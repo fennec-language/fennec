@@ -498,9 +498,10 @@ def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
 
 /// The programs the targets that read an input natively run it through, each reading the file
 /// it's given. A program here may fail, but never crash or get stuck.
-const READERS: [(&str, &str); 13] = [
+const READERS: [(&str, &str); 14] = [
     ("postgres", crate::postgres_rules::READER),
     ("http-client", crate::http_rules::CLIENT),
+    ("http-client-scripts", crate::http_client_scripts::SCRIPTED_CLIENT),
     ("http-server", crate::http_rules::SERVER),
     ("http-sessions", crate::http_rules::SESSIONS_SERVER),
     ("url", crate::url_rules::READER),

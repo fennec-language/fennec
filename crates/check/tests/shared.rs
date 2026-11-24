@@ -808,7 +808,7 @@ fn a_with_source_lends_once_to_a_with_block() {
         found(
             "def one() -> with int:\n    lend 1\n\ndef f(b: bool) -> int fails Oops:\n    with one() as n:\n        return n if b else risky()?\n"
         ),
-        ["this `?` might not run, and in a source's block that isn't built yet"]
+        ["a `?` that might not run isn't built yet in a source's block"]
     );
 }
 

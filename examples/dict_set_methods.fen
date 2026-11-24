@@ -1,4 +1,4 @@
-# `dict` and `set` have methods written in Fennec, on what the engines provide.
+# `dict` and `set` have methods written in Fennec, on what the compiler gives.
 
 struct Tile:
     x: int
@@ -10,7 +10,7 @@ def main(stdout: Stdout):
     stdout.print(stock)
     stock.update({})
     stdout.print(stock.setdefault("bolt", 100), stock.setdefault("cog", 2), stock)
-    # `remove` takes a key that may not be there, where `pop` fails like `stock[key]`.
+    # `remove` takes a key that may not be there, where `pop` stops the program like `stock[key]`.
     stdout.print(stock.remove("cog"), stock.remove("cog"), stock.remove("wheel") else 0, stock)
 
     mut groups: dict[int, list[str]] = {}

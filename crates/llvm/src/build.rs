@@ -948,6 +948,141 @@ mod tests {
         Ok(crate::emit(&fennec_ir::lower(&module, &checked))?.0)
     }
 
+    /// A function, written as IR, that holds an optional of an optional of `inner`, `inner??`:
+    /// `None`, or what `value` is when `empty` isn't set, which is `Some(None)` when `value` is
+    /// `None`. It's copied, asked whether it's `None`, and what's inside is read out as the
+    /// `inner?` it gives back, or `None`. Both `inner??` locals are let go of as it ends.
+    fn nested_optional(name: &str, inner: &fennec_check::Type) -> fennec_ir::Function {
+        use fennec_check::Type;
+        use fennec_ir::{Block, BlockId, Inst, InstKind, Local, LocalId, Operand, Terminator};
+        let optional = |ty: &Type| Type::Optional(Box::new(ty.clone()));
+        let local = |name: &str, ty: Type| Local { name: Some(name.to_owned()), ty, copied: false };
+        let (value, empty, nested, copied, none, peeled) =
+            (LocalId(0), LocalId(1), LocalId(2), LocalId(3), LocalId(4), LocalId(5));
+        let inst = |kind: InstKind| Inst { kind, span: fennec_syntax::Span::default() };
+        let block = |insts: Vec<InstKind>, end: Terminator| Block {
+            insts: insts.into_iter().map(inst).collect(),
+            end,
+        };
+        fennec_ir::Function {
+            name: name.to_owned(),
+            params: 2,
+            mut_params: Vec::new(),
+            returns: optional(inner),
+            locals: vec![
+                local("value", optional(inner)),
+                local("empty", Type::Bool),
+                local("nested", optional(&optional(inner))),
+                local("copied", optional(&optional(inner))),
+                local("none", Type::Bool),
+                local("peeled", optional(inner)),
+            ],
+            blocks: vec![
+                block(
+                    vec![InstKind::Copy { dest: nested, value: Operand::None }],
+                    Terminator::Branch {
+                        cond: Operand::Local(empty),
+                        then: BlockId(2),
+                        otherwise: BlockId(1),
+                    },
+                ),
+                block(
+                    vec![InstKind::MakeSome { dest: nested, value: Operand::Local(value) }],
+                    Terminator::Jump(BlockId(2)),
+                ),
+                block(
+                    vec![
+                        InstKind::Copy { dest: copied, value: Operand::Local(nested) },
+                        InstKind::IsNone { dest: none, value: Operand::Local(copied) },
+                    ],
+                    Terminator::Branch {
+                        cond: Operand::Local(none),
+                        then: BlockId(4),
+                        otherwise: BlockId(3),
+                    },
+                ),
+                block(
+                    vec![InstKind::GetSome { dest: peeled, value: Operand::Local(copied) }],
+                    Terminator::Jump(BlockId(5)),
+                ),
+                block(
+                    vec![InstKind::Copy { dest: peeled, value: Operand::None }],
+                    Terminator::Jump(BlockId(5)),
+                ),
+                block(Vec::new(), Terminator::Return(Some(Operand::Local(peeled)))),
+            ],
+            counts: Vec::new(),
+            places: Vec::new(),
+        }
+    }
+
+    /// An optional of an optional, `T??`, is held as an `Option[T?]` enum for every way a `T?` is
+    /// held: an enum of its own for an int, a bool or a struct kept in place, a block's address or
+    /// null for a boxed struct or a list, and a string's header. Making one, copying it, asking
+    /// whether it's `None` and reading what's inside make sound LLVM for each. The checker folds
+    /// `T??` into `T?` until #2413, so only IR written here holds one. Reading what's inside was
+    /// taken as making one, since both sides are optional: `int?` from an `int??` stored the
+    /// inner optional as an `int`, which LLVM refused.
+    #[test]
+    fn an_optional_of_an_optional_is_made_copied_and_read_out_for_every_inner_kind() -> Result<(), String> {
+        use fennec_check::Type;
+        let Ok(tools) = Tools::find() else {
+            return Ok(());
+        };
+        let source = "struct Point:\n    x: int\n    y: int\n\nstruct Node:\n    x: int\n    next: Node?\n\ndef main(stdout: Stdout):\n    point = Point(x=1, y=2)\n    node = Node(x=3, next=None)\n    stdout.print(point.x, node.x)\n";
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let mut program = fennec_ir::lower(&module, &checked);
+        let inners = [
+            ("nested_int", Type::Int),
+            ("nested_bool", Type::Bool),
+            ("nested_point", Type::Named("Point".to_owned())),
+            ("nested_node", Type::Named("Node".to_owned())),
+            ("nested_text", Type::Str),
+            ("nested_list", Type::List(Box::new(Type::Int))),
+        ];
+        for (name, inner) in &inners {
+            program.functions.push(nested_optional(name, inner));
+        }
+        fennec_ir::validate(&program).map_err(|problems| problems.join("; "))?;
+        let (units, _, layouts) = crate::emit(&program)?;
+        // Each is an enum whose `Some` holds the inner optional, whichever way that's held.
+        for (_, inner) in &inners {
+            let named = format!("Option[{}]", Type::Optional(Box::new(inner.clone())));
+            assert!(layouts.id(&named).is_some(), "no layout for `{named}`");
+        }
+        let work = std::env::temp_dir().join(format!("fennec-nested-optionals-{}", std::process::id()));
+        std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
+        let checked_all = (|| -> Result<(), String> {
+            for (name, _) in &inners {
+                let unit = units
+                    .iter()
+                    .find(|unit| unit.function == *name)
+                    .ok_or_else(|| format!("no unit for `{name}`"))?;
+                assert!(unit.text.contains(&format!("@\"f_{name}\"")), "{}", unit.text);
+                // What an `int??` holds is read out whole, as the `int?` a word past its case.
+                if *name == "nested_int" {
+                    let lines: Vec<&str> = unit.text.lines().map(str::trim).collect();
+                    let read_out = lines.windows(2).any(|pair| {
+                        pair[0].ends_with("= getelementptr inbounds i8, ptr %l3, i64 8")
+                            && pair[1].contains("= load [2 x i64], ptr %t")
+                    });
+                    assert!(read_out, "{}", unit.text);
+                }
+                let input = work.join(format!("{name}.ll"));
+                std::fs::write(&input, marked(&unit.text).as_bytes()).map_err(|err| err.to_string())?;
+                run(
+                    Command::new(&tools.opt).args(["-passes=verify", "-disable-output"]).arg(&input),
+                    &format!("opt on `{name}`"),
+                )
+                .map_err(|why| format!("{why}\n{}", unit.text))?;
+            }
+            Ok(())
+        })();
+        let _ = std::fs::remove_dir_all(&work);
+        checked_all
+    }
+
     /// A function past [`HUGE`] is huge; a shorter one, and the copies of others a unit has
     /// for inlining, aren't.
     #[test]

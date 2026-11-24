@@ -60,4 +60,4 @@ New dependencies need a reason, and new versions must be at least 7 days old.
 
 ## Language design
 
-Design discussion happens in issues. The [website](https://fennec-lang.dev/) describes the current design, and the [roadmap](https://fennec-lang.dev/roadmap/) lists the open questions.
+Design discussion happens in issues. [`docs/language.md`](docs/language.md) is the language as designed, and says what isn't built yet; [`docs/decisions.md`](docs/decisions.md) keeps the reasons behind each decision. A change to the language changes `language.md` in the same pull request.

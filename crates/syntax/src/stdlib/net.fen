@@ -392,13 +392,12 @@ NOT_FOUND = Response(status=404, body="there's nothing here".encode())
 ##
 ## `server.serve(router)` answers each request a server gets with it.
 ##
-## A route's `{name}` matches one segment of the path, which its handler reads from `Captured` by
-## its place among the route's parameters. A handler gives `Response.not_found()` for a segment
-## that isn't what it takes, like `abc` for an `int`, the 404 a path no route has gets too.
-## `router.get(path, handler)`, with the compiler checking each route's names against its
-## handler's parameters, comes next. A path a route has with a method it doesn't take is a 405,
-## saying the ones it takes in `Allow`, and a `HEAD` is answered by a route's `GET` when it has no
-## `HEAD`. A segment written out matches before a parameter does, and a `/` at a path's end is
+## A route's `{name}` matches one segment of the path. `router.get(path, handler)`, and `post`,
+## `put`, `patch` and `delete`, add a route checked where it's written: the handler takes each
+## parameter by name, as a `str`, an `int` or a sized int, and a segment that doesn't read as its
+## type, like `abc` for an `int`, answers 404, as a path no route has. A path a route has with a
+## method it doesn't take is a 405, saying the ones it takes in `Allow`, and a `HEAD` is answered
+## by a route's `GET` when it has no `HEAD`. A segment written out matches before a parameter does, and a `/` at a path's end is
 ## passed over. Routes go into a tree as they're added, so finding one walks the path once.
 export struct Router:
     _nodes = [RouteNode()]
@@ -598,7 +597,7 @@ LONG_REQUEST_LINE = "the request line is too long"
 
 ## The next request, its head read in one call with its limits, and a line ended by a bare line
 ## feed answered with a 400 rather than dropped: a proxy that takes one and a server that doesn't
-## would read where a request ends differently. A request line longer than a whole head may be gets
+## would read where a request ends differently. A request line longer than a whole head gets
 ## a 414, and a head too big in all a 431, before either is taken apart.
 def next_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
     # The whole request, its head and body, has to come within `timeout`, not each read of it, so
@@ -643,12 +642,7 @@ def read_request(
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
     # A target is ASCII, as HTTP has it: a byte past 127 reaches the program as something a proxy
     # in front didn't see, once it's read as text.
-    if (
-        not is_token(parts[0])
-        or parts[1] == ""
-        or has_control(parts[1], False)
-        or not is_ascii(parts[1])
-    ):
+    if not is_token(parts[0]) or parts[1] == "" or not is_plain_target(parts[1]):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
     # A target is a path, `*` for an `OPTIONS` of the server as a whole, or a whole `http` or
     # `https` URL, as a proxy sends one, whose host then stands for the `host` header, as HTTP/1.1
@@ -663,27 +657,33 @@ def read_request(
         target = whole.rest
         host = whole.host
     mut headers: dict[str, str] = {}
+    # The headers that frame the request are kept as they're read, so none is looked up after.
+    mut sent_length: str? = None
+    mut coding: str? = None
+    mut asked = ""
     for at in range(1, len(lines)):
         line = lines[at]
-        # A line that starts with a space would continue the last header, which some read as a
-        # new one, and a control character is read differently by different servers.
-        if text_byte(line, 0) == 32 or text_byte(line, 0) == 9 or has_control(line, True):
-            return .Bad(status=400, reason="a header has a character it can't have")
-        colon = line.find(":") else return .Bad(status=400, reason="a header has no `:`")
+        colon = header_colon(line)
+        if colon < 0: return .Bad(status=400, reason=header_fault(line))
         # The name and the value are read where they are in the line, each cut out once.
-        if not is_token_part(line, start=0, end=colon):
-            return .Bad(status=400, reason="a header's name isn't one")
         name = lowered_part(line, colon)
+        value = value_after(line, colon)
         # Two of these would let two servers read two different requests from the same bytes. Only
         # they're looked for before they're set, so any other header is looked up once.
-        if (
-            (name == "content-length" or name == "transfer-encoding" or name == "host")
-            and name in headers
-        ):
-            return .Bad(status=400, reason=f"there's more than one `{name}` header")
-        headers[name] = value_after(line, colon)
-    sent_length = headers.get("content-length")
-    coding = headers.get("transfer-encoding")
+        match name:
+            case "content-length":
+                if sent_length is not None: return twice(name)
+                sent_length = value
+            case "transfer-encoding":
+                if coding is not None: return twice(name)
+                coding = value
+            case "host":
+                if name in headers: return twice(name)
+            case "connection":
+                asked = value.lower()
+            case _:
+                pass
+        headers[name] = value
     if coding is not None:
         # Both, or a coding that isn't plainly `chunked`, is where two servers in a row disagree on
         # where the body ends: one goes by the length and one by the chunks, and a request hides
@@ -703,7 +703,6 @@ def read_request(
     if host is not None:
         headers["host"] = host
     version = parts[2]
-    asked = (headers.get("connection") else "").lower()
     keep = asked != "close" if version == "HTTP/1.1" else asked == "keep-alive"
     mut path = target
     mut query: dict[str, str] = {}
@@ -729,6 +728,10 @@ def read_request(
         ),
         keep=keep,
     )
+
+## The refusal of a request with more than one header `name`, which is one of those that frame it.
+def twice(name: str) -> RequestRead:
+    return .Bad(status=400, reason=f"there's more than one `{name}` header")
 
 ## A request's target written as a whole URL: its host, and the rest from its path on.
 struct WholeTarget:
@@ -759,6 +762,35 @@ def whole_target(target: str) -> WholeTarget?:
     rest = text_part(target, end, size)
     return WholeTarget(host=host, rest=rest if rest.startswith("/") else f"/{rest}")
 
+## Where the `:` is in `line`, a header line taken whole: its name a token before the `:`, and
+## no control character but a tab after it. -1 when the line is anything else, which
+## `header_fault` then says, so a header that's well made is read over once.
+def header_colon(line: str) -> int:
+    size = text_size(line)
+    mut colon = -1
+    for at in range(size):
+        byte = text_byte(line, at)
+        if byte == 58:
+            colon = at
+            break
+        if not is_token_byte(byte): return -1
+    if colon <= 0: return -1
+    for at in range(colon + 1, size):
+        byte = text_byte(line, at)
+        if (byte < 32 and byte != 9) or byte == 127: return -1
+    return colon
+
+## Why `line` isn't a header line `header_colon` takes, its checks in the order they're said.
+def header_fault(line: str) -> str:
+    # A line that starts with a space would continue the last header, which some read as a new
+    # one, and a control character is read differently by different servers.
+    if text_byte(line, 0) == 32 or text_byte(line, 0) == 9 or has_control(line, True):
+        return "a header has a character it can't have"
+    colon = line.find(":") else return "a header has no `:`"
+    if not is_token_part(line, start=0, end=colon): return "a header's name isn't one"
+    # `header_colon` refuses only what's above.
+    return "a header has a character it can't have"
+
 ## Whether `text` is what HTTP calls a token, as a method or a header's name has to be.
 def is_token(text: str) -> bool:
     return is_token_part(text, start=0, end=text_size(text))
@@ -767,30 +799,30 @@ def is_token(text: str) -> bool:
 def is_token_part(text: str, start: int, end: int) -> bool:
     if end <= start: return False
     for at in range(start, end):
-        b = text_byte(text, at)
-        letter = (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57)
-        if (
-            not letter
-            and not (
-                b == 45
-                or b == 95
-                or b == 46
-                or b == 33
-                or b == 35
-                or b == 36
-                or b == 37
-                or b == 38
-                or b == 39
-                or b == 42
-                or b == 43
-                or b == 94
-                or b == 96
-                or b == 124
-                or b == 126
-            )
-        ):
-            return False
+        if not is_token_byte(text_byte(text, at)): return False
     return True
+
+## Whether `byte` may be in a token.
+def is_token_byte(byte: int) -> bool:
+    if (byte >= 97 and byte <= 122) or (byte >= 65 and byte <= 90) or (byte >= 48 and byte <= 57):
+        return True
+    return (
+        byte == 45
+        or byte == 95
+        or byte == 46
+        or byte == 33
+        or byte == 35
+        or byte == 36
+        or byte == 37
+        or byte == 38
+        or byte == 39
+        or byte == 42
+        or byte == 43
+        or byte == 94
+        or byte == 96
+        or byte == 124
+        or byte == 126
+    )
 
 ## The first `end` bytes of `line`, a header's name, in lower case: cut out once, and made lower
 ## only when it has a capital, as a name already lower, like one HTTP/2 sends, needs nothing more.
@@ -818,10 +850,11 @@ def has_control(text: str, tab: bool) -> bool:
         if (b < 32 and not (tab and b == 9)) or b == 127: return True
     return False
 
-## Whether every byte of `text` is ASCII.
-def is_ascii(text: str) -> bool:
+## Whether `text` can be a request's target: ASCII with no control character, read over once.
+def is_plain_target(text: str) -> bool:
     for at in range(text_size(text)):
-        if text_byte(text, at) > 127: return False
+        byte = text_byte(text, at)
+        if byte < 32 or byte >= 127: return False
     return True
 
 ## Whether `text` is one or more digits and nothing else.
@@ -848,22 +881,29 @@ def write_response(
             refused = Response(status=500, body="a response header can't be written".encode())
             write_response(connection, refused, keep, head_only)?
             return
-        lower = name.lower()
         # The server writes how the body's sent and whether the connection stays itself. A
         # `transfer-encoding` beside its `content-length` would have a client read the body as
         # chunks, which it isn't, and take what follows for the next response.
-        if lower != "content-length" and lower != "connection" and lower != "transfer-encoding":
+        if not is_framing(name):
             head += f"{name}: {value}\r\n"
-    head += f"content-length: {len(response.body)}\r\n"
-    if not keep:
-        head += "connection: close\r\n"
-    head += "\r\n"
+    if keep:
+        head += f"content-length: {len(response.body)}\r\n\r\n"
+    else:
+        head += f"content-length: {len(response.body)}\r\nconnection: close\r\n\r\n"
     # The head and the body in one write, so a small response goes in one packet: written apart,
     # the body waits for the client to acknowledge the head, which it may hold back for 40 ms.
     if len(response.body) > 0 and not head_only:
         connection.write(head.encode() + response.body)?
     else:
         connection.write(head)?
+
+## Whether `name` is a header the server writes itself, in any case: `content-length`,
+## `connection` or `transfer-encoding`. Only a name as long as one of them is made lower to see.
+def is_framing(name: str) -> bool:
+    size = text_size(name)
+    if size != 14 and size != 10 and size != 17: return False
+    lower = name.lower()
+    return lower == "content-length" or lower == "connection" or lower == "transfer-encoding"
 
 ## The words that go with a status.
 def reason_phrase(status: int) -> str:

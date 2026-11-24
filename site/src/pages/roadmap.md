@@ -21,34 +21,35 @@ description: What Fennec does today, what's being built next, and the design que
 **The language**
 
 - Names and `mut`, functions with written return types, defaults passed by name, nested functions and arrow functions.
-- `ref` for loops, parameters and `self`. Compile errors for changing a copy nobody reads, changing a list while looping over it, and a copy made on every round of a loop.
+- `ref` for loops, parameters, `self` and a local name, `ref target = units[i]`. Compile errors for changing a copy nobody reads and changing a list while looping over it.
 - Structs with defaults, methods, named constructors and `where` rules, checked on every write. `copy(x, field=...)` for a changed copy.
 - Fixed-size arrays, `array[T, N]`, held inline.
-- Enums and `match`, with or-patterns and guards, and `case .Button(ref clicks):` to change a field inside one. Unions, `Circle | Square`, narrowed with `is` and `match`. Interfaces and generics. `extend` for a type's methods in another file.
-- Failures with `error`, `fail`, `?`, `else` and `match`, `fails Name` in signatures, and `fails A | B`. An `else:` block must leave. Optional values with `None` and `else`.
+- Enums and `match`, with or-patterns and guards, and `case .Button(ref clicks):` to change a field inside one. Unions, `Circle | Square`, narrowed with `is` and `match`. Interfaces and generics, and a generic function's loop over a type's fields, `for field in fields(T):`. `extend` for a type's methods in another file.
+- Failures with `error` and `fail`, passed up with `?` or handled with `except`, `fails Name` in signatures, and `fails A | B`. No `Ok`, `Err` or `Result`: every failure is handled at the call. Optional values with `None` and `else`, which is only for a missing value.
 - Lists, dicts, sets, tuples, `bytes`, comprehensions and slices. Structs work as dict keys with nothing to write.
 - Lazy generators, used once.
 - Errors for positional calls that are easy to get backwards.
-- `export` on top-level things, and `_name` hiding a field or method from everything but its type.
-- Durations like `30s` and `200ms`, raw strings, constants worked out at compile time, and `embed`.
+- `export` on top-level things, and `_name` keeping a field or method private to the file that declares its type.
+- Durations like `30s` and `200ms`, raw strings, constants worked out at compile time, and `embed_file` and `embed_folder`.
 - `@hot`, which proves a function allocates nothing, copies nothing and keeps no checks it can't prove away, or doesn't compile.
 - One equality, order and hash for floats, with NaN sorted last, and the same bits on every platform.
-- A compile error for ignoring a returned value, with `_ = call()` to mean it. `xs.get(i)` for an index that might not be there. `main` returning an exit code.
+- A compile error for ignoring a returned value, with `_ = call()` to mean it, and for `_ = f()` on a call that can fail. `xs.get(i)` for an index that might not be there. `main` returning an exit code.
 - t-strings, `t"..."`, which keep the text apart from the values, and `LiteralStr`, text written in the source.
 - `parallel` over collections, streams and a server's connections, on every core, with reductions that combine in a fixed order. Each server round closes its connection when it ends, a failure passing up stops the server, and a crash ends only its own round.
-- `shared T` and `lock`, with a crash inside `lock x as ref` rolled back so nobody sees a half-change.
-- `with launch(...)`, a task beside you until its block ends, and bounded channels, `Channel`, `Inbox` and `Sender`, natively.
-- Sized numbers from `i8` to `u64` and `f32`, natively, each operation checked against its size, with `wrapping_` and `saturating_` add, sub and mul up to 32 bits, with literals taking the size they go into and `u8.from(x)?` and `u8.parse(text)?` for numbers from outside.
+- `shared T` and `lock`, with lock order checked across the whole program and no waiting inside a lock. A crash, `fail` or `?` inside `lock x as ref` rolls back, so nobody sees a half-change.
+- `with launch(...)`, a task beside you until its block ends, and bounded channels, `Channel`, `Inbox` and `Sender`, natively. Pools, `pool[T]` in `std.concurrent`, which lend each item to one block at a time, as `postgres.connect` does with its connections.
+- Sized numbers from `i8` to `u64` and `f32`, natively, each operation checked against its size, with `wrapping_` and `saturating_` add, sub and mul on every integer size, with literals taking the size they go into and `u8.from(x)?` and `u8.parse(text)?` for numbers from outside.
 - Notes on errors, so a cleanup that fails after a failure hides neither one.
-- A function that can fail says `fails` in its signature, a failure passes up only with `?`, and a `match` over what can fail handles both sides. `fennec fix` writes the first two.
+- A function that can fail says `fails` in its signature, a failure passes up only with `?`, and what can fail is read only through `?` and `except`. `fennec fix` writes the first two.
 - `with` and `lend`, for sources of your own and for files: `fs.create` puts a file in place only when its block ends, synced to the disk, and `fs.open` reads in lines or chunks.
 - Capabilities: `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net`.
 - Float sums and `math.dot` that add in one fixed pattern, the same bits everywhere. `xs.swap(i, j)`.
+- Operators chosen by their right-hand type, so units of measure are plain structs, with no new syntax.
 
 **The standard library**
 
 - `collections`: `Table` and `Id`, `Tree`, `Graph`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Deque`, `Heap`, `PriorityQueue` and `Counter`.
-- `json`, `toml` and `pack`, which save any type whose fields can be saved. `pack` loads data from an earlier version of a type by its names, with new fields taking their defaults. `csv`, `base64` and `compress`.
+- `json`, `toml` and `pack`, which save any type whose fields can be saved, through one `serialize` and `deserialize`. `pack` loads data from an earlier version of a type by its names, with new fields taking their defaults. `csv`, `base64` and `compress`.
 - `net`: TCP, UDP, an HTTP client with TLS, and an HTTP server.
 - `math`, with `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4` for games. `layout`, `path`, `fs`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `url`, `process`, `crypto` and `uuid`.
 - `crypto`'s `Secret`, which can't be printed, logged or saved, and hashes over a file a chunk at a time.
@@ -61,10 +62,9 @@ description: What Fennec does today, what's being built next, and the design que
 - **More game math.** 32-bit math types, and `Simd` for when a loop must use vectors.
 - **Wrapped C libraries for games.** Windows, input, audio and graphics, wrapped by the Fennec project behind safe APIs. Your own code never needs `unsafe`, because there isn't any.
 - **Debug info and stack traces,** so a failure shows the calls that led to it.
-- **The rest of the sized numbers:** `wrapping_` and `saturating_` on a `u64`.
+- **The rest of the sized numbers:** a `u64` literal above the largest `int`, and packed layout.
 - **Kit dependencies and [the Den](/den/),** Fennec's registry for kits. Kits from git or a path are already pinned in `kit.lock` by `fennec update`, and importing from them is next.
 - **Cross-compiling and WebAssembly.**
-- **The rest of the concurrency design:** Database pools, and lock order checked across the whole program. The [tour](/tour/#sharing-resources-and-tasks) describes it.
 
 ## Next: speed and builds
 
@@ -78,19 +78,13 @@ description: What Fennec does today, what's being built next, and the design que
 
 Each of these is decided and not built.
 
-- A lint for a copy that can go stale, suggesting `ref`, and a local `ref name = place`.
-- No `Ok`, `Err` or `Result`, and an `else as` block that gives a value. Every failure is handled at the call.
-- `{x=}` in f-strings.
-- `x.approx(y, within=...)`.
-- `embed_file` in place of `embed`, and `embed_folder`, a read-only map of a folder's files baked into the program.
-- `else as name:`, which binds the failure in that block, and a compile error for `_ = f()` on a call that can fail, with `ignore` removed.
-- Units of measure, as structs whose operators are chosen by their right-hand type, with no new syntax.
+- `embed_file` and `embed_folder` held in the program's read-only data, with nothing loaded at startup.
 - Annotations a kit defines for fields, read by generic code.
 
 ## After that
 
 - **Hot reload,** so a running game or server picks up a change. It's deferred, and its design is in progress.
-- The rest of compile-time loops over a type, and `Serializer` and `Deserializer` for every format built on them. A generic function's loop over a type's fields already works. `where` ranges, delta encoding and quantization in `std.pack`.
+- `where` ranges, delta encoding and quantization in `std.pack`.
 - WebSocket in `std.net`.
 - GPU kernels written as plain functions.
 - `fennec context`, a kit's whole API sized for a prompt, and an MCP server for agents.

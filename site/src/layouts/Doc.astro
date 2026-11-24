@@ -2,38 +2,87 @@
 import Base from './Base.astro';
 
 const { frontmatter } = Astro.props;
+const base = import.meta.env.BASE_URL;
+
+// Scout heads each page in the outfit that fits it. The art is in public/brand/scout.
+const outfits: Record<string, { art: string; alt: string }> = {
+  '/tour/': { art: 'explorer', alt: 'Scout the explorer, in goggles and a scarf' },
+  '/ai/': { art: 'agents', alt: 'Scout and a small robot reading a scroll together' },
+  '/speed/': { art: 'racer', alt: 'Scout in a racing suit' },
+  '/den/': { art: 'courier', alt: 'Scout the courier, with a satchel and a parcel' },
+  '/roadmap/': { art: 'compiling', alt: 'Scout sitting calmly, a gear above one paw' },
+  '/why/': { art: 'base', alt: 'Scout, Fennec’s fennec fox' },
+  '/library/': { art: 'inspector', alt: 'Scout in a hard hat with a clipboard' },
+};
+const path = Astro.url.pathname.replace(base, '/');
+const outfit = outfits[path];
 ---
 
 <Base title={frontmatter.title} description={frontmatter.description}>
   <article class="wrap prose">
+    {
+      outfit && (
+        <img class="scout" src={`${base}brand/scout/scout-${outfit.art}.webp`} alt={outfit.alt} width="220" height="220" />
+      )
+    }
     <slot />
   </article>
 </Base>
 
 <style>
   .prose {
+    position: relative;
     max-width: calc(var(--prose) + 56px);
-    padding-top: 3rem;
+    padding-top: 3.5rem;
+  }
+
+  .scout {
+    float: right;
+    width: 168px;
+    height: auto;
+    margin: -0.5rem -1rem 0.5rem 1.5rem;
+    shape-outside: circle(50%);
+  }
+
+  @media (min-width: 1340px) {
+    .scout {
+      float: none;
+      position: absolute;
+      right: -220px;
+      top: 2.5rem;
+      width: 200px;
+      margin: 0;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .scout {
+      width: 110px;
+      margin: -0.5rem 0 0.5rem 0.75rem;
+    }
   }
 
   .prose :global(h1) {
-    font-size: clamp(2.1rem, 5vw, 2.8rem);
-    line-height: 1.15;
-    letter-spacing: -0.025em;
-    margin: 0 0 1rem;
+    font-size: clamp(2.2rem, 5vw, 3rem);
+    line-height: 1.08;
+    letter-spacing: -0.035em;
+    font-weight: 650;
+    margin: 0 0 1.1rem;
   }
 
   .prose :global(h2) {
-    font-size: 1.55rem;
-    letter-spacing: -0.015em;
-    line-height: 1.25;
-    margin: 3rem 0 0.75rem;
-    padding-top: 1.5rem;
+    font-size: 1.6rem;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    font-weight: 620;
+    margin: 3.2rem 0 0.8rem;
+    padding-top: 1.6rem;
     border-top: 1px solid var(--border);
   }
 
   .prose :global(h3) {
     font-size: 1.15rem;
+    font-weight: 620;
     margin: 2rem 0 0.5rem;
   }
 
@@ -58,7 +107,7 @@ const { frontmatter } = Astro.props;
   .prose :global(blockquote) {
     margin: 1.5rem 0;
     padding: 0.9rem 1.2rem;
-    border-left: 4px solid var(--accent-bright);
+    border-left: 3px solid var(--accent);
     background: var(--surface);
     border-radius: 0 var(--radius) var(--radius) 0;
     color: var(--text);
@@ -69,7 +118,7 @@ const { frontmatter } = Astro.props;
   }
 
   .prose :global(.lede) {
-    font-size: 1.2rem;
+    font-size: 1.15rem;
     color: var(--muted);
   }
 </style>

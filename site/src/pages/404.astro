@@ -4,33 +4,99 @@ import Base from '../layouts/Base.astro';
 const base = import.meta.env.BASE_URL;
 ---
 
-<Base title="Not found" description="This page doesn't exist.">
-  <section class="wrap missing">
-    <img src={`${base}brand/fennec-logo-480.webp`} alt="" width="120" height="120" />
-    <h1>Nothing here</h1>
-    <p>The fox listened carefully with its very large ears, and heard no page at this address.</p>
-    <a class="button primary" href={base}>Back to the start</a>
+<Base title="Not found" description="Nothing is at this path.">
+  <section class="lost">
+    <img src={`${base}brand/scout/scout-404.webp`} alt="Scout lost on a desert dune at night, holding his map upside down, his footprints going in a circle" width="1536" height="864" />
+    <div class="wrap copy">
+      <span class="code">404</span>
+      <h1>Nothing is at this path.</h1>
+      <p>Scout checked the map. The page may have moved, or the link may be wrong.</p>
+      <div class="actions">
+        <a class="button primary" href={base}>Back home</a>
+        <a class="button" href={`${base}tour/`}>Take the tour</a>
+        <a class="button" href={`${base}reference/`}>The language</a>
+      </div>
+    </div>
   </section>
 </Base>
 
 <style>
-  .missing {
+  .lost {
+    position: relative;
+    min-height: min(82vh, 720px);
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding-top: 5rem;
+    align-items: flex-start;
+    overflow: hidden;
+    background: #14132b;
+    color: #fff6ea;
+    border-bottom: 1px solid var(--border);
   }
 
-  .missing h1 {
-    font-size: 2.2rem;
-    letter-spacing: -0.02em;
-    margin: 1rem 0 0.5rem;
+  .lost img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 60% 50%;
   }
 
-  .missing p {
-    color: var(--muted);
-    max-width: 420px;
-    margin: 0 0 1.75rem;
+  .copy {
+    position: relative;
+    width: 100%;
+    padding-block: 5rem 4rem;
+    display: grid;
+    gap: 1rem;
+    max-width: var(--max);
+  }
+
+  .copy > * {
+    max-width: min(30rem, 40vw);
+  }
+
+  @media (max-width: 700px) {
+    .copy > * {
+      max-width: none;
+    }
+  }
+
+  .code {
+    font: 600 0.8rem var(--font-mono);
+    letter-spacing: 0.1em;
+    color: #f59a3e;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(2.2rem, 5vw, 3.6rem);
+    line-height: 1.02;
+    letter-spacing: -0.035em;
+    font-weight: 650;
+  }
+
+  p {
+    margin: 0;
+    color: #d9d3e3;
+    font-size: 1.05rem;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    max-width: none;
+  }
+
+  .actions .button:not(.primary) {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #fff6ea;
+  }
+
+  @media (max-width: 700px) {
+    .lost img {
+      object-position: 62% 50%;
+      opacity: 0.55;
+    }
   }
 </style>

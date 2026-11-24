@@ -1,0 +1,20 @@
+{
+  "source": "the scoreboard of the eight real programs, measured by instructions on an Apple M5, main at 6d1cd147a",
+  "date": "2026-11-18",
+  "note": "Rust's instruction count over Fennec's: 100% is level, and higher means Fennec ran fewer instructions. Every program prints the same output as its Rust twin.",
+  "programs": [
+    { "name": "pathfind", "instructions": 139.6 },
+    { "name": "grep_tool", "instructions": 137.4 },
+    { "name": "log_crunch", "instructions": 116.0 },
+    { "name": "data_pipeline", "instructions": 112.2 },
+    { "name": "api_handler", "instructions": 95.1 },
+    { "name": "game_tick", "detail": "1 thread", "instructions": 90.5 },
+    { "name": "physics", "instructions": 82.6 },
+    { "name": "chat_server", "detail": "1 thread", "instructions": 77.2 }
+  ],
+  "ci": {
+    "commit": "13295eefe",
+    "suite": { "linux_arm": 106.2, "linux_x86": 91.1, "macos": 97.2 },
+    "api_handler_linux": 61
+  }
+}

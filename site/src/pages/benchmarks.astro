@@ -1,6 +1,9 @@
 ---
 import Base from '../layouts/Base.astro';
 import data from '../data/benchmarks.json';
+import score from '../data/scoreboard.json';
+
+const programs = [...score.programs].sort((a, b) => b.instructions - a.instructions);
 
 const base = import.meta.env.BASE_URL;
 const { suite, tests, targets } = data;
@@ -20,6 +23,35 @@ const ms = (value: number) => value.toLocaleString('en-US', { minimumFractionDig
     <h1>Benchmarks</h1>
     <p class="lede">
       Every kernel is built as a native program and raced against a hand-written twin in a fast, C-class systems language. These are real numbers from CI, from commit <code>{suite.commit}</code> on {suite.date}.
+    </p>
+  </section>
+
+  <section class="wrap">
+    <h2>Real programs</h2>
+    <p class="note">
+      Eight programs of the kind Fennec is for, each with a Rust twin that prints the same output. {score.note} From {score.source}, on {score.date}.
+    </p>
+    <div class="table">
+      <div class="tr th two">
+        <span>Program</span><span>By instructions</span>
+      </div>
+      {
+        programs.map((program) => (
+          <div class="tr two">
+            <span class="name">{program.name}{program.detail && <small> · {program.detail}</small>}</span>
+            <span class="bar-cell">
+              <span class="track">
+                <span class="fill" style={`width: ${at(program.instructions)}`} />
+                <span class="mark" style={`left: ${at(100)}`} title="Level with Rust" />
+              </span>
+              <strong>{program.instructions.toFixed(1)}%</strong>
+            </span>
+          </div>
+        ))
+      }
+    </div>
+    <p class="note">
+      Physics trails because its bounds and overflow checks stay on: speed never comes from dropping a check. An HTTP handler, api_handler, runs at about half Rust's speed per request on Linux by clock ({score.ci.api_handler_linux}%), and the runtime's allocation and copies are being worked on.
     </p>
   </section>
 
@@ -75,6 +107,14 @@ const ms = (value: number) => value.toLocaleString('en-US', { minimumFractionDig
 </Base>
 
 <style>
+  .tr.two {
+    grid-template-columns: 1fr 4fr !important;
+  }
+
+  .name small {
+    color: var(--muted);
+  }
+
   section {
     margin-top: 3.5rem;
   }

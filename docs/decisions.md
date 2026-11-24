@@ -535,7 +535,7 @@ target = units.get(target_id) else continue
 unit = units.get(unit_id) else return 0
 unit = units.get(unit_id) else fail ApiError.NotFound
 ```
-- Fields, calls and `[]` on an optional are allowed only in a chain that ends in `else`. The chain stops at the first missing or failing step and gives the default.
+- Fields, calls and `[]` on an optional are allowed only in a chain that ends in `else`. The chain stops at the first missing step and gives the default. It stopped at a failing step too until 2026-11-23. That was replaced by the 2026-11-11 lock (#2433): a chain through a call that can fail is a compile error, and the call gets its own line with `except`.
 - `else` covers only the chain right before it. A larger expression needs brackets.
 - `else` gives a value or leaves, with `else continue`, `else return` or `else fail why`. It doesn't cover actions. Calling a method for its effect on something that might be missing needs `if x is not None:`.
 - Without `else`, it's a compile error whose fix adds one or a check.
@@ -1460,7 +1460,7 @@ match tok:
 **Taking from an empty `list`, `Deque`, `Heap` or `PriorityQueue` gives `None`.** `pop`, `popleft` and `peek` return optionals, so the checker makes the empty case visible: `next = todo.pop() else break`. A list's `pop(at)` still fails on a position that isn't there, as `items[at]` does. Built.
 *Why:* Draining a list or a queue until it's empty is the normal way to use one, so the empty case is expected, not a mistake.
 
-**Regular expressions take linear time.** `std.re` runs patterns on a Pike VM, which follows every way a pattern could match at once, so no pattern can make matching blow up. There are no backreferences or lookarounds, which need backtracking. A pattern written in the program is checked before it runs; `Regex(text)` with a pattern built while it runs gives a result, like any struct with a `where` rule.
+**Regular expressions take linear time.** `std.re` runs patterns on a Pike VM, which follows every way a pattern could match at once, so no pattern can make matching blow up. There are no backreferences or lookarounds, which need backtracking. A pattern written in the program is checked before it runs; `Regex(text)` with a pattern built while it runs gives a result, like any struct with a `where` rule. `Regex.parse(text)` builds one from a pattern from outside, failing with `InvalidValue` that says what's wrong, as `int.parse` does.
 *Why:* A pattern from a mod, a config file or a player can't hang a game or a server.
 
 ## Toolchain
@@ -1485,6 +1485,7 @@ match tok:
 - `fennec toolchain link dev <path>` is for whoever works on Fennec itself: it runs the `fennec` in a folder of their own, like a checkout's `target/release`, with whatever LLVM that build finds, and fetches nothing. A kit asks for it with `fennec = "dev"`, which is never pinned, and `+dev` runs it once. `fennec toolchain remove dev` unlinks it and leaves the build.
 - `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest, and CI builds each platform twice and compares them.
+- The launcher hands a command over in one program's start (2026-11-23): it reads the kit's files and execs the toolchain as `fennec`, and on Windows lets Ctrl-C through to it and exits as it does. It reaches the network only through `fennec-fetch`, beside it, started only when something has to be fetched, since on macOS linking HTTPS's certificate checks loads frameworks that cost every start about 10 million instructions.
 - Built, as `fennec-launcher` for now: running a kit's pinned toolchain, `kit.lock` holding its signed manifest's hash, fetching only what's missing, `--offline`, `fennec update`, and `fennec toolchain`. Releases built the same twice is built too, on macOS, Linux and Windows. Not built yet: the release keys, which Chris makes (`docs/releases.md`), so nothing verifies today; the launcher updating itself; and `fennec doctor`.
 
 *Why:* Every project gets its own Fennec version without anyone thinking about it, and teammates, CI and AI agents all build with exactly the same toolchain. It's also what makes lints pinned to a kit's Fennec version work. Keeping the part that updates tiny means it rarely has to change, and two keys mean one stolen key can't push an update.

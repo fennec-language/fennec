@@ -136,6 +136,7 @@ mod launcher {
             offline: false,
             trusted: vec![trusted.clone()],
             target: TARGET.to_owned(),
+            web: Box::new(fennec_launcher::Helper(PathBuf::from(env!("CARGO_BIN_EXE_fennec-fetch")))),
         }
     }
 
@@ -504,25 +505,50 @@ mod launcher {
     }
 
     /// `toolchain install --latest` asks what's newest, and installs only what the keys built in
-    /// signed: none yet.
+    /// signed: none yet. From a mirror's address, the launcher fetches through `fennec-fetch`,
+    /// beside it, which gets every file the asking needs, and says why one couldn't be fetched.
     #[test]
     fn toolchain_install_latest_installs_only_a_signed_newest() {
         let dir = scratch("install-latest");
         let (pair, _) = key();
         release(&dir.join("dist"), "0.4.3", &pair);
         std::fs::write(dir.join("dist/latest"), "0.4.3\n").unwrap();
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_fennec-launcher"))
-            .args(["toolchain", "install", "--latest"])
-            .current_dir(&dir)
-            .env("FENNEC_HOME", dir.join("home"))
-            .env("FENNEC_DIST", dir.join("dist"))
-            .env_remove("FENNEC_OFFLINE")
-            .output()
-            .unwrap();
-        let said = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success() && said.contains("signed by 0 of the 0 keys"), "{said}");
+        let install = |dist: &str| {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_fennec-launcher"))
+                .args(["toolchain", "install", "--latest"])
+                .current_dir(&dir)
+                .env("FENNEC_HOME", dir.join("home"))
+                .env("FENNEC_DIST", dist)
+                .env_remove("FENNEC_OFFLINE")
+                .output()
+                .unwrap();
+            (output.status.success(), String::from_utf8_lossy(&output.stderr).into_owned())
+        };
+        let (installed, said) = install(&dir.join("dist").display().to_string());
+        assert!(!installed && said.contains("signed by 0 of the 0 keys"), "{said}");
+        let mirror = serve(dir.join("dist"));
+        let (installed, said) = install(&mirror);
+        assert!(!installed && said.contains("signed by 0 of the 0 keys"), "{said}");
+        let (installed, said) = install(&format!("{mirror}/nothing-here"));
+        assert!(!installed && said.contains("404"), "{said}");
         assert!(!dir.join("home/toolchains/0.4.3").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The launcher starts as fast as a program can: on macOS it loads no framework, since the
+    /// Security framework that checking certificates needs costs every start milliseconds. Only
+    /// `fennec-fetch` loads it, when something is fetched.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_launcher_loads_nothing_for_https() {
+        let linked = |program: &str| {
+            let listed = std::process::Command::new("otool").args(["-L", program]).output().unwrap();
+            assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
+            String::from_utf8_lossy(&listed.stdout).into_owned()
+        };
+        let launcher = linked(env!("CARGO_BIN_EXE_fennec-launcher"));
+        assert!(!launcher.contains(".framework/"), "{launcher}");
+        assert!(linked(env!("CARGO_BIN_EXE_fennec-fetch")).contains("Security.framework"));
     }
 
     /// A build of your own, linked as `dev`, runs for a kit asking for it, and for `+dev`, with

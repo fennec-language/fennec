@@ -63,6 +63,8 @@ fn installed() -> Result<PathBuf, String> {
         offline: false,
         trusted: vec![public],
         target: target.to_owned(),
+        // Its releases are in a folder, so nothing is fetched over the network.
+        web: Box::new(fennec_launcher::Helper::beside_this()?),
     };
     launcher.exactly(version)
 }

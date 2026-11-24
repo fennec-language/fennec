@@ -99,6 +99,18 @@ pub(crate) fn missing_step(span: Span) -> Diagnostic {
         .with_help("end the chain with `else` and a default, like `x.name else \"\"`, or check with `if x is None:` first")
 }
 
+/// A chain ending in `else` that goes through a call that can fail, at that call: `else` is for a
+/// value that's missing, and a failure is handled with `except`, on a line of its own.
+pub(crate) fn else_through_failure(call: Span) -> Diagnostic {
+    Diagnostic::new(
+        "this can fail, and `else` doesn't handle a failure: `else` is for a value that's missing",
+        call,
+    )
+    .with_help(
+        "give the call its own line with `except`, as `found = find(id) except why:` or `found = find(id) except Lost(): None`, then go on from it: `found.name else \"?\"`",
+    )
+}
+
 /// What to do with a failure nothing handles, in the forms of 2026-11-11.
 const HANDLE_IT: &str = "handle the failure with `except why:`, give a value for the cases it fails with, as `x = f() except Missing(): 0`, or pass it up with `?` from a function that says `fails`";
 
@@ -326,4 +338,19 @@ pub(crate) fn bad_spec(spec: &str, ty: &Type, span: Span) -> Option<Diagnostic> 
         _ => "only an int or a float takes a format: turn it into one first, or drop the format",
     };
     Some(Diagnostic::new(format!("the format `{spec}` doesn't apply to {}", a(ty)), span).with_help(help))
+}
+
+/// `.NotFound` where more than one of the errors it could be has that case, matched or built: it
+/// names each and shows each written out.
+pub(crate) fn shared_case(owners: &[String], case: &str, span: Span) -> Diagnostic {
+    let shown: Vec<String> = owners.iter().map(|owner| format!("`{owner}`")).collect();
+    let named = match shown.split_last() {
+        Some((last, [only])) => format!("both {only} and {last}"),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    let written: Vec<String> = owners.iter().map(|owner| format!("`{owner}.{case}(...)`")).collect();
+    let message = format!("`.{case}` is a case of {named}, so say which");
+    let help = format!("write which: {}", written.join(" or "));
+    Diagnostic::new(message, span).with_help(help)
 }

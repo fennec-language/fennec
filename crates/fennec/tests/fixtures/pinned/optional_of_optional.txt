@@ -1,7 +1,7 @@
 source 227cf3713f243b85c3d0bdc416a2f4534c7a0be84d9aa18c920b0de302d252f2
 code 0
-stdout 39
-kit True True
-True kit True
-kit True 0
+stdout 43
+kit False False
+False kit True
+kit False 0
 stderr 0

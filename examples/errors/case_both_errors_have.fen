@@ -1,0 +1,24 @@
+# When more than one of the errors a call can fail with has a case by that name, a leading dot
+# can't say which: it's written with its type.
+
+error DiskError:
+    NotFound(path: str)
+    Full
+
+error NetError:
+    NotFound(path: str)
+    Refused
+
+def load(path: str) -> str fails DiskError | NetError:
+    if path == "": fail DiskError.Full()
+    return path
+
+def main(stdout: Stdout):
+    text = load("notes.txt") except why:
+        case .NotFound(path):
+            stdout.print("missing", path)
+            return
+        case _:
+            stdout.print("couldn't load:", why)
+            return
+    stdout.print(text)

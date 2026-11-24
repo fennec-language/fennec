@@ -2439,6 +2439,9 @@ mod calls;
 pub(crate) use calls::close_served;
 pub(super) use calls::served_call;
 pub use calls::{ConnBody, net_serve, net_serve_failure, stop_servers};
+pub(in crate::embed) use calls::{
+    served_body, served_draining, served_head, served_reads_within, served_room_for_body, served_write,
+};
 
 #[cfg(test)]
 mod tests;

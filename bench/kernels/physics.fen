@@ -1,12 +1,12 @@
 # A particle simulation, as a game's physics step runs one: balls of a few sizes in a box, under
 # gravity, bouncing off the walls and off each other. Positions and velocities are lists of
-# `std.math`'s `Vec3`, and the radii a list of floats. Each step moves everything, then files
+# `std.math`'s `DVec3`, and the radii a list of floats. Each step moves everything, then files
 # every ball in a grid of cells by a counting sort, and checks each ball only against those in
 # the cells around its own: the broad phase. Balls that overlap are pushed apart and bounce. The
 # checksum covers the energy left, where everything ended up, and how many times balls touched.
 
 from std import math
-from std.math import Vec3
+from std.math import DVec3
 
 BALLS = 5_000
 STEPS = 50
@@ -25,7 +25,7 @@ def fraction(seed: int) -> float:
     return float(seed // 64 % 1_000_000) / 1_000_000.0
 
 # Which cell of the grid a point is in.
-def cell_of(at: Vec3) -> int:
+def cell_of(at: DVec3) -> int:
     x = min(int(at.x), SIDE - 1)
     y = min(int(at.y), SIDE - 1)
     z = min(int(at.z), SIDE - 1)
@@ -38,8 +38,8 @@ def kept(at: float, speed: float, radius: float) -> (float, float):
     return (at, speed)
 
 # Moves every ball for one step, under gravity, and keeps it in the box.
-def integrate(ref positions: list[Vec3], ref velocities: list[Vec3], radii: list[float]):
-    pull = Vec3(x=0.0, y=0.0, z=-PULL * STEP)
+def integrate(ref positions: list[DVec3], ref velocities: list[DVec3], radii: list[float]):
+    pull = DVec3(x=0.0, y=0.0, z=-PULL * STEP)
     for ball in range(len(positions)):
         velocity = velocities[ball] + pull
         at = positions[ball] + velocity * STEP
@@ -47,8 +47,8 @@ def integrate(ref positions: list[Vec3], ref velocities: list[Vec3], radii: list
         x, vx = kept(at.x, speed=velocity.x, radius=radius)
         y, vy = kept(at.y, speed=velocity.y, radius=radius)
         z, vz = kept(at.z, speed=velocity.z, radius=radius)
-        positions[ball] = Vec3(x=x, y=y, z=z)
-        velocities[ball] = Vec3(x=vx, y=vy, z=vz)
+        positions[ball] = DVec3(x=x, y=y, z=z)
+        velocities[ball] = DVec3(x=vx, y=vy, z=vz)
     return
 
 # Files every ball by its cell: `order` holds the balls cell by cell, and the balls of cell `c`
@@ -69,8 +69,8 @@ def file(cells: list[int], ref starts: list[int], ref order: list[int]):
 # Pushes apart and bounces every pair of balls that overlap, each pair once, and gives how many
 # pairs touched.
 def collide(
-    ref positions: list[Vec3],
-    ref velocities: list[Vec3],
+    ref positions: list[DVec3],
+    ref velocities: list[DVec3],
     radii: list[float],
     cells: list[int],
     starts: list[int],
@@ -107,8 +107,8 @@ def collide(
     return touched
 
 def main(stdout: Stdout):
-    mut positions = list[Vec3]()
-    mut velocities = list[Vec3]()
+    mut positions = list[DVec3]()
+    mut velocities = list[DVec3]()
     mut radii = list[float]()
     mut state = 5
     for ball in range(BALLS):
@@ -125,8 +125,8 @@ def main(stdout: Stdout):
         vy = fraction(state) * 4.0 - 2.0
         state = next(state)
         vz = fraction(state) * 4.0 - 2.0
-        positions.append(Vec3(x=x, y=y, z=z))
-        velocities.append(Vec3(x=vx, y=vy, z=vz))
+        positions.append(DVec3(x=x, y=y, z=z))
+        velocities.append(DVec3(x=vx, y=vy, z=vz))
         radii.append(radius)
     mut starts = [0 for _ in range(SIDE * SIDE * SIDE + 1)]
     mut order = [0 for _ in range(BALLS)]

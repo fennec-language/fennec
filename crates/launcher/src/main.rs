@@ -15,17 +15,24 @@
 //! fennec update [--latest]              pins the kit to the version kit.toml asks for, or the newest,
 //!                                       then has that toolchain pin the kit's dependencies
 //! fennec --latest                       the newest release, the only thing that asks
+//! fennec self update                    replaces this launcher with the newest launcher release,
+//!                                       which two of the release keys have to have signed
 //! ```
 //!
+//! It hands a command over in about the time a program takes to start: it reads the kit's files and
+//! runs the toolchain, and reaches the network only through `fennec-fetch`, beside it, when
+//! something has to be fetched (see `fennec_launcher::Helper`).
+//!
 //! `--offline`, or `FENNEC_OFFLINE`, never fetches, and the toolchain is told so too. `FENNEC_DIST` is where releases come from, a
-//! mirror's address or a folder, and `FENNEC_HOME` where they go.
+//! mirror's address or a folder, `FENNEC_LAUNCHER_DIST` where launcher releases come from, and
+//! `FENNEC_HOME` where they go.
 #![expect(clippy::print_stdout, reason = "the launcher lists toolchains")]
 #![expect(clippy::print_stderr, reason = "and says why it couldn't run one")]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fennec_launcher::{Asked, Launcher, Pick, RELEASES, TARGET};
+use fennec_launcher::{Asked, Helper, LAUNCHER_RELEASES, Launcher, Pick, RELEASES, TARGET};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -53,6 +60,7 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
         offline,
         trusted: fennec_dist::release_keys()?,
         target: TARGET.to_owned(),
+        web: Box::new(Helper::beside_this()?),
     };
     let here = || std::env::current_dir().map_err(|err| format!("couldn't tell which folder this is: {err}"));
     match asked.pick {
@@ -65,25 +73,7 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["toolchain", "list"] => {
-            // Which runs for scripts, set or the newest installed, and which this kit asks for.
-            let (default, scripts, this_kit) =
-                (launcher.default_version(), launcher.for_scripts(), launcher.kit_version(&here()?));
-            let mark = |name: &str| {
-                let mut marks = Vec::new();
-                if scripts.as_deref() == Some(name) {
-                    marks.push(if default.is_some() { "default" } else { "for scripts" });
-                }
-                if this_kit.as_deref() == Some(name) {
-                    marks.push("this kit");
-                }
-                if marks.is_empty() { String::new() } else { format!(" ({})", marks.join(", ")) }
-            };
-            for version in launcher.installed() {
-                println!("{version}{}", mark(&version));
-            }
-            for (name, folder) in launcher.links() {
-                println!("{name} → {}{}", folder.display(), mark(&name));
-            }
+            list(&launcher, &here()?);
             Ok(ExitCode::SUCCESS)
         }
         ["toolchain", "link", name, path] => launcher.link(name, Path::new(path)).map(|()| ExitCode::SUCCESS),
@@ -115,6 +105,15 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
             print!("{}", launcher.update(&here, words.len() == 2)?);
             hand_off(&launcher.toolchain_for(&here)?, &["update".to_owned()], offline)
         }
+        ["self", "update"] => {
+            let launchers =
+                std::env::var("FENNEC_LAUNCHER_DIST").unwrap_or_else(|_| LAUNCHER_RELEASES.to_owned());
+            let running =
+                std::env::current_exe().map_err(|err| format!("couldn't find the launcher: {err}"))?;
+            print!("{}", launcher.self_update(&launchers, &running, env!("CARGO_PKG_VERSION"))?);
+            Ok(ExitCode::SUCCESS)
+        }
+        ["self", ..] => Err("`fennec self` takes `update`".to_owned()),
         ["toolchain", ..] => {
             Err("`fennec toolchain` takes `list`, `install <version>`, `install --latest`, `remove <version>` or `link <name> <path>`"
                 .to_owned())
@@ -123,17 +122,45 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
     }
 }
 
-/// Runs the toolchain's `fennec` in place of this process, with the same arguments.
+/// Says the toolchains installed, and links, marking the one for scripts, set or the newest
+/// installed, and the one the kit around `here` asks for.
+fn list(launcher: &Launcher, here: &Path) {
+    let (default, scripts, this_kit) =
+        (launcher.default_version(), launcher.for_scripts(), launcher.kit_version(here));
+    let mark = |name: &str| {
+        let mut marks = Vec::new();
+        if scripts.as_deref() == Some(name) {
+            marks.push(if default.is_some() { "default" } else { "for scripts" });
+        }
+        if this_kit.as_deref() == Some(name) {
+            marks.push("this kit");
+        }
+        if marks.is_empty() { String::new() } else { format!(" ({})", marks.join(", ")) }
+    };
+    for version in launcher.installed() {
+        println!("{version}{}", mark(&version));
+    }
+    for (name, folder) in launcher.links() {
+        println!("{name} → {}{}", folder.display(), mark(&name));
+    }
+}
+
+/// Runs the toolchain's `fennec` in place of this process, with the same arguments, called `fennec`
+/// as the launcher was: signals, the exit code and every stream go straight to it.
 #[cfg(unix)]
 fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
     use std::os::unix::process::CommandExt as _;
-    let err = toolchain(command, args, offline).exec();
+    let err = toolchain(command, args, offline).arg0("fennec").exec();
     Err(format!("couldn't run {}: {err}", command.display()))
 }
 
-/// Runs the toolchain's `fennec`, with the same arguments, and exits as it does.
+/// Runs the toolchain's `fennec`, with the same arguments, and exits as it does. Ctrl-C reaches
+/// every program in the console, so the launcher lets it go by and waits: the toolchain decides
+/// what it means, and the launcher exits as it does, rather than leaving it running behind a prompt.
 #[cfg(not(unix))]
 fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<ExitCode, String> {
+    ctrlc::set_handler(|| {})
+        .map_err(|err| format!("couldn't let Ctrl-C through to the toolchain: {err}"))?;
     let status = toolchain(command, args, offline)
         .status()
         .map_err(|err| format!("couldn't run {}: {err}", command.display()))?;

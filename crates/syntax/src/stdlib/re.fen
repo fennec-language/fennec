@@ -1,4 +1,4 @@
-from std.re import is_regex
+from std.re import is_regex, pattern_problem
 
 ## A regular expression. Nothing backtracks, so a pattern like `(a+)+$`, which can take a
 ## backtracking engine years, takes time that grows with the text alone. What each character of
@@ -6,7 +6,8 @@ from std.re import is_regex
 ## a pattern past that is refused before it's built, saying how big it is. In a release build,
 ## `[a-z]+@[a-z]+\.com` runs through a megabyte in about 0.1 s, and the costliest pattern that
 ## fits, `(?:(?:a?){1000}){4}b`, in about 107 s, 0.1 ms a character. So when a pattern comes from
-## outside, as a search box's does, bound its length, or the length of what it runs over.
+## outside, as a search box's does, bound its length, or the length of what it runs over, and build
+## it with `Regex.parse(pattern)`, which fails saying what's wrong.
 ## Patterns follow Python's `re`: `.`, classes like `[a-z]` and `\d`, anchors `^ $ \b`, repeats
 ## `* + ? {m,n}` (lazy with a `?` after), groups, `(?:...)` and `|`. Write them as raw strings,
 ## like `Regex(r"\d+")`.
@@ -23,6 +24,21 @@ from std.re import is_regex
 ## ```
 export struct Regex:
     pattern: str where is_regex(pattern)
+
+    ## A `Regex` of `pattern`, or `InvalidValue` saying what's wrong with it: for a pattern from
+    ## outside, as a search box's, which the program reports rather than stopping on.
+    ##
+    ## ```fennec
+    ## from std.re import Regex
+    ## words = Regex.parse(r"\w+") except InvalidValue(): return
+    ## assert len(words.find_all("two words")) == 2
+    ## failed = Regex.parse("[a-") except why:
+    ##     assert why.message.startswith("this pattern isn't valid")
+    ##     return
+    ## ```
+    def parse(pattern: str) -> Regex fails InvalidValue:
+        if not is_regex(pattern): fail InvalidValue(message=pattern_problem(pattern))
+        return Regex(pattern=pattern)?
 
 ## Where a `Regex` matched, and what its groups caught.
 ##

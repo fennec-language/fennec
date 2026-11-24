@@ -4,8 +4,9 @@
 //! these calls only copy, and nothing calls them yet.
 //!
 //! - **Flat** is what [`Element::is_flat_message`] says, the one place it's decided: numbers,
-//!   bools, strings, bytes, optional strings, and structs of those. Each block such a message names
-//!   holds only bytes, so a copy is the block's words with a count of its own.
+//!   bools, strings, bytes, optional strings, and structs and enums of those. Each block such a
+//!   message names holds only bytes, so a copy is the block's words with a count of its own. An
+//!   enum's first word is its case's number, and only that case's fields name blocks.
 //! - **The buffer** is the one a dict's value held in place crosses by (`fennec_dict_value_words`),
 //!   as long as the run's widest kind. A send takes the words out of it before anything else, as
 //!   another task on this worker may fill it once this one makes way, as a replay's turn does. A
@@ -110,7 +111,7 @@ pub extern "C" fn channel_receive_words(channel: i64, kind: i64, width: i64, tim
 /// The kind numbered `kind`, checked as flat and `width` words wide: anything else is a bug in the
 /// code that asked, which stops the program. A kind the runtime numbered itself, past those the
 /// program described, is numbered on each thread, so it means nothing to the receiver: refused.
-fn flat_kind(state: &State, kind: i64, width: i64) -> (usize, Element) {
+fn flat_kind(state: &State, kind: i64, width: i64) -> (usize, std::rc::Rc<Element>) {
     let found = usize::try_from(kind).ok().and_then(|at| Some((at, state.tables.elements.get(at)?)));
     let Some((kind, element)) = found else {
         heap::runtime_bug("a message's kind isn't one the program described");
@@ -121,7 +122,7 @@ fn flat_kind(state: &State, kind: i64, width: i64) -> (usize, Element) {
     if usize::try_from(width).ok() != Some(element.words()) {
         heap::runtime_bug("a message's width isn't its kind's");
     }
-    (kind, (**element).clone())
+    (kind, std::rc::Rc::clone(element))
 }
 
 /// The first `count` words of this thread's buffer.
@@ -198,6 +199,19 @@ fn block_places(element: &Element, at: usize, words: &[u64], places: &mut Vec<us
                 && super::super::text::block_of(&header).is_some_and(|block| block != 0)
             {
                 places.push(at);
+            }
+        }
+        // Its first word is its case's number, and its case's fields follow; the words past them,
+        // up to the widest case's, are zero.
+        Element::Enum { cases, .. } => {
+            let case = words.get(at).and_then(|number| usize::try_from(*number).ok());
+            let Some((_, fields)) = case.and_then(|case| cases.get(case)) else {
+                heap::runtime_bug("a message's case isn't one its enum has");
+            };
+            let mut field_at = at + 1;
+            for (_, field) in fields {
+                block_places(field, field_at, words, places);
+                field_at += field.words();
             }
         }
         // All three words zero is `None`, which `block_of` reads as no block too.

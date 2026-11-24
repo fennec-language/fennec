@@ -2,7 +2,7 @@
 #
 # `sum` of floats keeps 8 running totals, item `at` going into total `at % 8`, and adds them
 # pairwise at the end, then the start. A list's sum and the same items summed one at a time come
-# out the same, bit for bit, on every engine and every machine: this file's `.out` holds them.
+# out the same, bit for bit, on every machine: this file's `.out` holds them.
 from std import math
 
 ## A float from a seed, the same everywhere: a ratio of ints, which every platform rounds alike.

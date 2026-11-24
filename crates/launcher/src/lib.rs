@@ -1,7 +1,7 @@
 //! The `fennec` people install. It runs the version of Fennec a kit asks for, `fennec = "0.4.2"`
 //! in its `kit.toml`, from `~/.fennec/toolchains/0.4.2`, and hands the command to it. Outside a
-//! kit, it runs the version `--version` names, or else the one `fennec default` set. `+0.4.2` runs
-//! that version anywhere, once, and changes no pin.
+//! kit, it runs the version `--version` names, or else the one `fennec default` set, or else the
+//! newest stable version installed. `+0.4.2` runs that version anywhere, once, and changes no pin.
 //!
 //! It goes to the network only when the version asked for isn't installed, and never with
 //! `--offline`. It fetches from the release page, or from `FENNEC_DIST`, a mirror. What it fetches
@@ -13,7 +13,6 @@
 
 mod kit;
 mod unpack;
-mod web;
 
 use std::path::{Path, PathBuf};
 
@@ -26,8 +25,27 @@ pub const TARGET: &str = env!("FENNEC_TARGET");
 /// `<dist>/v<version>/`.
 pub const RELEASES: &str = "https://github.com/fennec-language/fennec/releases/download";
 
-/// What to say when a script outside a kit has no version to run with.
-pub const NO_DEFAULT: &str = "this isn't in a kit, and no version of Fennec is set for scripts outside one: `fennec default 0.4.2` sets one, with the version you want, or `fennec --version 0.4.2 <command>` runs one for this command";
+/// What `fennec default` says when none is set.
+pub const NO_DEFAULT: &str = "no version of Fennec is set for scripts outside a kit, so the newest stable one installed runs: `fennec default 0.4.2` sets one, with the version you want";
+
+/// What to say when a script outside a kit has no version to run with: none set, and no stable one
+/// installed. Nothing is fetched unless asked.
+pub const NO_TOOLCHAIN: &str = "this isn't in a kit, and no stable version of Fennec is installed for scripts outside one: `fennec toolchain install --latest` installs the newest, `fennec default 0.4.2` sets one, with the version you want, or `fennec --version 0.4.2 <command>` runs one for this command";
+
+/// A version's place among others: its numbers first, as numbers, so `0.10.0` comes after `0.9.1`,
+/// then a stable release after any prerelease of it, like `0.5.0-rc.1`, and the text last, so the
+/// order is total. What's past a `+` is build metadata, which orders nothing but the text.
+fn version_order(version: &str) -> (Vec<u64>, bool, &str) {
+    let core = version.split('+').next().unwrap_or(version);
+    let (numbers, prerelease) = core.split_once('-').map_or((core, false), |(numbers, _)| (numbers, true));
+    let numbers = numbers.split('.').map(|part| part.parse().unwrap_or(0)).collect();
+    (numbers, !prerelease, version)
+}
+
+/// Whether a version is a stable release: no prerelease part, like `-rc.1`.
+fn stable(version: &str) -> bool {
+    !version.split('+').next().unwrap_or(version).contains('-')
+}
 
 /// A version named on the command line, ahead of the command.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +106,74 @@ fn names_one(word: &str) -> bool {
     kit::plain_version(word) || kit::linked_name(word)
 }
 
+/// How a launcher reaches the network, for the few commands that fetch.
+pub trait Web {
+    /// The bytes at `url`, of which there are at most `most`.
+    ///
+    /// # Errors
+    ///
+    /// When they can't be fetched, or there are more, saying why.
+    fn fetch(&self, url: &str, most: u64) -> Result<Vec<u8>, String>;
+
+    /// Where `url` redirects to, without following it.
+    ///
+    /// # Errors
+    ///
+    /// When it can't be asked, or doesn't redirect.
+    fn redirect(&self, url: &str) -> Result<String, String>;
+}
+
+/// The most a fetch with no size to go by takes in: a manifest, its signatures, a `latest`. An
+/// archive's size comes from its signed manifest, and is all its fetch takes in.
+pub const MOST_BYTES: u64 = 1 << 20;
+
+/// Fetching through `fennec-fetch`, the program beside the launcher that does the network's
+/// work, over HTTPS checked against what the operating system trusts, started only when something
+/// has to be fetched. What it fetches comes back on its output. The launcher links nothing for
+/// HTTPS: on macOS that alone costs every command milliseconds to start.
+pub struct Helper(pub PathBuf);
+
+impl Helper {
+    /// `fennec-fetch` beside the program running.
+    ///
+    /// # Errors
+    ///
+    /// When the program running can't be found.
+    pub fn beside_this() -> Result<Self, String> {
+        let this = std::env::current_exe().map_err(|err| format!("couldn't find the launcher: {err}"))?;
+        Ok(Helper(this.with_file_name(format!("fennec-fetch{}", std::env::consts::EXE_SUFFIX))))
+    }
+
+    fn run(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let ran = std::process::Command::new(&self.0)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|err| format!("couldn't run {} to fetch: {err}", self.0.display()))?;
+        if !ran.status.success() {
+            let said = String::from_utf8_lossy(&ran.stderr);
+            let said = said.trim().strip_prefix("error: ").unwrap_or(said.trim());
+            return Err(if said.is_empty() {
+                format!("{} failed", self.0.display())
+            } else {
+                said.to_owned()
+            });
+        }
+        Ok(ran.stdout)
+    }
+}
+
+impl Web for Helper {
+    fn fetch(&self, url: &str, most: u64) -> Result<Vec<u8>, String> {
+        self.run(&["fetch", url, &most.to_string()])
+    }
+
+    fn redirect(&self, url: &str) -> Result<String, String> {
+        let said = self.run(&["redirect", url])?;
+        Ok(String::from_utf8_lossy(&said).trim().to_owned())
+    }
+}
+
 /// What a launcher knows: where toolchains go, where releases come from, and whom it trusts.
 pub struct Launcher {
     /// Fennec's folder, `~/.fennec` unless `FENNEC_HOME` says otherwise.
@@ -100,6 +186,8 @@ pub struct Launcher {
     pub trusted: Vec<PublicKey>,
     /// The platform whose archive it installs.
     pub target: String,
+    /// How it fetches what it has to.
+    pub web: Box<dyn Web>,
 }
 
 impl Launcher {
@@ -200,8 +288,23 @@ impl Launcher {
             .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
             .filter(|version| kit::plain_version(version))
             .collect();
-        found.sort();
+        found.sort_by(|a, b| version_order(a).cmp(&version_order(b)));
         found
+    }
+
+    /// The version a script outside a kit runs with: the one `fennec default` set, or else the
+    /// newest stable one installed. `None` when there's neither; nothing is fetched to find one.
+    #[must_use]
+    pub fn for_scripts(&self) -> Option<String> {
+        self.default_version().or_else(|| self.installed().into_iter().rfind(|version| stable(version)))
+    }
+
+    /// The version the kit around the folder `from` asks for, if it's in one that says. Only for
+    /// showing: running in a kit reads it again, with every check.
+    #[must_use]
+    pub fn kit_version(&self, from: &Path) -> Option<String> {
+        let root = kit::root(from).ok()??;
+        kit::version(&std::fs::read_to_string(root.join("kit.toml")).ok()?).ok()
     }
 
     /// The toolchain run outside a kit, if one's been chosen.
@@ -241,7 +344,7 @@ impl Launcher {
     }
 
     /// The `fennec` to hand a command to, run from the folder `from`: the toolchain the kit around
-    /// it asks for, or the default one outside a kit. It's installed first if it has to be and may
+    /// it asks for, or outside a kit the one for scripts (see `for_scripts`). It's installed first if it has to be and may
     /// be, and a kit's `kit.lock` pins it the first time.
     ///
     /// # Errors
@@ -249,7 +352,7 @@ impl Launcher {
     /// When there's no toolchain to run, or the one there is isn't the one pinned.
     pub fn toolchain_for(&self, from: &Path) -> Result<PathBuf, String> {
         let Some(root) = kit::root(from)? else {
-            let version = self.default_version().ok_or(NO_DEFAULT)?;
+            let version = self.for_scripts().ok_or(NO_TOOLCHAIN)?;
             return self.exactly(&version);
         };
         let read = |name: &str| std::fs::read_to_string(root.join(name));
@@ -360,13 +463,13 @@ impl Launcher {
         }
         let version = if self.dist == RELEASES {
             let page = RELEASES.trim_end_matches("/download");
-            let tag = web::redirect(&format!("{page}/latest"))?;
+            let tag = self.web.redirect(&format!("{page}/latest"))?;
             let (_, version) = tag.rsplit_once("/tag/v").ok_or("the release page has no release yet")?;
             version.to_owned()
         } else {
             let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist).trim_end_matches('/');
             let latest = if dist.starts_with("https://") || dist.starts_with("http://") {
-                web::fetch(&format!("{dist}/latest"))?
+                self.web.fetch(&format!("{dist}/latest"), MOST_BYTES)?
             } else {
                 std::fs::read(Path::new(dist).join("latest"))
                     .map_err(|err| format!("couldn't read {dist}/latest: {err}"))?
@@ -433,7 +536,7 @@ impl Launcher {
     fn fetch_at_most(&self, version: &str, file: &str, most: u64) -> Result<Vec<u8>, String> {
         let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);
         if dist.starts_with("https://") || dist.starts_with("http://") {
-            return web::fetch_at_most(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), most);
+            return self.web.fetch(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), most);
         }
         let path = Path::new(dist).join(format!("v{version}")).join(file);
         let size =
@@ -456,7 +559,7 @@ impl Launcher {
     fn fetch(&self, version: &str, file: &str) -> Result<Vec<u8>, String> {
         let dist = self.dist.strip_prefix("file://").unwrap_or(&self.dist);
         if dist.starts_with("https://") || dist.starts_with("http://") {
-            return web::fetch(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')));
+            return self.web.fetch(&format!("{}/v{version}/{file}", dist.trim_end_matches('/')), MOST_BYTES);
         }
         let path = Path::new(dist).join(format!("v{version}")).join(file);
         std::fs::read(&path).map_err(|err| format!("couldn't read {}: {err}", path.display()))

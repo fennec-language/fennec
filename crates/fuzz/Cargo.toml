@@ -22,6 +22,8 @@ fennec-lint.workspace = true
 fennec-parked.workspace = true
 fennec-re.workspace = true
 fennec-syntax.workspace = true
+# Only to reset a test connection rather than close it, which std can't yet.
+socket2.workspace = true
 
 [lints]
 workspace = true

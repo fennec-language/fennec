@@ -123,7 +123,8 @@ static BUILT_WHILE_KEEPING: Mutex<std::collections::BTreeSet<TakenBack>> =
 /// Notes what the daemon made, to take back if an analysis kept for builds turns out wrong.
 #[cfg(unix)]
 pub(crate) fn built_while_keeping(built: TakenBack) {
-    if !fennec_llvm::keeps_between_builds() {
+    // A daemon whose builds go to processes of their own keeps their analyses there.
+    if !fennec_llvm::keeps_between_builds() && !crate::child::wanted() {
         return;
     }
     BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner).insert(built);
@@ -159,10 +160,19 @@ pub(crate) fn analyses_found_wrong() -> u64 {
 /// Gives back the report written, if one was.
 #[cfg(unix)]
 pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::AnalysesCheck) -> Option<PathBuf> {
-    static REPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     // The check counts as running till what it found is written down: a daemon that's ending, or
     // a build that's starting, waits for all of it.
     let differ = check.run();
+    let written = report_wrong_analyses(home, &differ);
+    drop(check);
+    written
+}
+
+/// What `verify_analyses` does once the functions whose analyses differ are known, as a build in a
+/// process of its own finds them and tells the daemon (`crate::child`). Nothing when none differ.
+#[cfg(unix)]
+pub(crate) fn report_wrong_analyses(home: &std::path::Path, differ: &[String]) -> Option<PathBuf> {
+    static REPORTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if differ.is_empty() {
         return None;
     }
@@ -212,7 +222,6 @@ pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::Analys
         "note: the build daemon analyzed again what builds used the analyses of, and it disagreed{said}: the programs they made may be wrong, so {taken}, and the next build analyzes every function\n"
     );
     let _ = std::fs::write(&note_at, note);
-    drop(check);
     Some(report)
 }
 
@@ -220,6 +229,8 @@ pub(crate) fn verify_analyses(home: &std::path::Path, check: fennec_llvm::Analys
 /// that's running, as the daemon ends: what's checked after the answer is checked before it goes.
 #[cfg(unix)]
 pub(crate) fn finish_analyses_check(home: &std::path::Path) {
+    // Builds made in processes of their own are checked there: what they found is taken back now.
+    crate::child::after_builds();
     if let Some(check) = fennec_llvm::AnalysesCheck::take() {
         let _ = verify_analyses(home, check);
     }

@@ -746,6 +746,8 @@ mod unix {
 
     /// Serves requests until stopped or idle for too long.
     pub(super) fn serve(home: &Path) -> ExitCode {
+        // Its builds go to processes of their own, whose memory goes when they end.
+        crate::child::serving(home);
         // Its owner is whom the socket's folder has to belong to.
         let _ = std::fs::create_dir_all(home);
         let Some(socket) = socket_path(home, true) else { return ExitCode::FAILURE };
@@ -788,8 +790,12 @@ mod unix {
         // Each build keeps what it loaded for the next.
         *crate::aot::KEPT_LOAD.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(fennec_kit::KeptLoad::default());
-        // And each function's analysis.
-        fennec_llvm::keep_analyses_between_builds();
+        // And each function's analysis: here, or in each build's own process, which hands what it
+        // kept back for the next (see `crate::child`). A build made here when a child gives no
+        // answer then works out its own.
+        if !crate::child::wanted() {
+            fennec_llvm::keep_analyses_between_builds();
+        }
         let state = Arc::new(Mutex::new(State {
             home: home.to_path_buf(),
             snapshots: HashMap::new(),
@@ -1062,6 +1068,12 @@ mod unix {
             let _ = std::thread::Builder::new()
                 .stack_size(crate::STACK_BYTES)
                 .spawn(move || crate::kept::verify_pending(&home));
+        }
+        // A build made in a process of its own checks there what it used again of the analyses
+        // the builds before kept: once it has, what it found wrong is taken back, now that the
+        // command's tests are counted.
+        if crate::child::wanted() {
+            let _ = std::thread::Builder::new().spawn(crate::child::after_builds);
         }
         // So are the analyses its builds used again of the ones the builds before kept: taken now,
         // so the next build waits for the check rather than using what it may let go of.

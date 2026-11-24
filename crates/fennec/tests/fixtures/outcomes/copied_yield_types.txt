@@ -1,0 +1,7 @@
+source c68052c47a1b5205b38a3708aa0b6aac7fb0fff0c271cde14026eebd53d79ca8
+code 0
+stdout 59
+[1, None, 3]
+[1, None, 3] ["a", None]
+[1, 0, 3] ["a", "-"]
+stderr 0

@@ -1754,6 +1754,15 @@ impl Emit<'_, '_, '_> {
         self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Option["))
     }
 
+    /// What an optional held as an enum holds when it isn't `None`.
+    pub(crate) fn some_kind(&self, kind: &Kind) -> Option<Kind> {
+        if !self.is_optional(kind) {
+            return None;
+        }
+        let (_, fields) = self.case_of(kind, "Some").ok()?;
+        fields.into_iter().find(|(name, ..)| name == "value")?.2
+    }
+
     /// One owner fewer for a value of this kind.
     pub(crate) fn release_kind(&mut self, value: &str, kind: &Kind) {
         if (*kind == Kind::Str && self.headers()) || *kind == Kind::MaybeText {
@@ -2791,7 +2800,7 @@ impl Emit<'_, '_, '_> {
 
     /// A word cut to a size's bits, as that size holds them: kept unsigned, or with the sign of its
     /// top bit.
-    fn within_width(&mut self, value: &str, num: fennec_check::Num) -> String {
+    pub(crate) fn within_width(&mut self, value: &str, num: fennec_check::Num) -> String {
         let bits = num.bits();
         if bits >= 64 {
             return value.to_owned();
@@ -3378,6 +3387,11 @@ impl Emit<'_, '_, '_> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
         }
+        if let (Some(dest), [a, b]) = (dest, args)
+            && let Some(done) = self.sized_arithmetic(dest, name, (a, b))
+        {
+            return done;
+        }
         if dest.is_none()
             && let Some(done) = self.moving_list_method(name, args, span)
         {
@@ -3832,7 +3846,10 @@ impl Emit<'_, '_, '_> {
                 }
                 return self.assign(dest, &made);
             }
-            if self.is_optional(&wanted) {
+            // An optional of an optional is optional both ways, so what it holds says which: read
+            // out of `from` when that's what it holds, else made from what `wanted` holds.
+            let unwraps = self.some_kind(&from).as_ref() == Some(&wanted);
+            if self.is_optional(&wanted) && !unwraps {
                 return self.make_case(dest, "Some", std::slice::from_ref(value));
             }
             if self.is_optional(&from) {
@@ -4754,6 +4771,27 @@ mod tests {
         }
         let text = text_of(source, "names")?;
         assert!(text.contains("call void @fennec_list_clear("), "{text}");
+        Ok(())
+    }
+
+    /// An enum whose every case is flat crosses a channel as its words, sent and taken through
+    /// this thread's buffer, as a flat struct does. One with a case holding a list still goes as a
+    /// block.
+    #[test]
+    fn a_flat_enum_goes_as_its_words_and_one_holding_a_list_as_a_block() -> Result<(), String> {
+        let source = "from std.concurrent import Closed, Crashed, Inbox\n\nenum Event:\n    Join(user: int, room: int)\n    Say(user: int, text: str)\n    Quiet\n\nenum Listing:\n    Empty\n    Items(items: list[str])\n\ndef events(inbox: Inbox[Event], stdout: Stdout):\n    for got in inbox:\n        stdout.print(got)\n\ndef listings(inbox: Inbox[Listing], stdout: Stdout):\n    for got in inbox:\n        stdout.print(got)\n\ndef sent(stdout: Stdout) fails Closed | Crashed:\n    with launch((inbox) => events(inbox, stdout))? as sends:\n        sends.send(.Say(user=1, text=\"hello\"))?\n    with launch((inbox) => listings(inbox, stdout))? as sends:\n        sends.send(.Empty())?\n    return\n\ndef main(stdout: Stdout):\n    sent(stdout) except why:\n        stdout.print(\"failed\", why)\n    return\n";
+        let (units, _, _) = emit(&lowered(source)?)?;
+        let calls = |of: &str, call: &str| {
+            units.iter().filter(|unit| unit.function.contains(of) && unit.text.contains(call)).count()
+        };
+        // Sent and taken as words, never as a block.
+        assert!(calls("[Event]", "call i64 @fennec_channel_send_words(") > 0, "no words sent");
+        assert!(calls("[Event]", "call i64 @fennec_channel_receive_words(") > 0, "no words taken");
+        assert_eq!(calls("[Event]", "call i64 @fennec_channel_send("), 0);
+        assert_eq!(calls("[Event]", "call i64 @fennec_channel_receive("), 0);
+        // A case holding a list isn't flat.
+        assert!(calls("[Listing]", "call i64 @fennec_channel_send(") > 0, "no block sent");
+        assert_eq!(calls("[Listing]", "call i64 @fennec_channel_send_words("), 0);
         Ok(())
     }
 

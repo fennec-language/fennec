@@ -147,9 +147,9 @@ const OPENED_HANDLES: bool = true;
 /// it. Map row 10: only `u8`, `i32` and `u64` were written before, and `<<` never.
 const SIZED_NUMBERS: bool = true;
 
-/// Whether `int` has `wrapping_` and `saturating_` methods, which every other size has. Not yet
-/// (#2307): an `i64` statement writes a checked one in their place.
-const INT_WRAPPING_METHODS: bool = false;
+/// Whether `int` has `wrapping_` and `saturating_` methods, as every other size does (#2394, since
+/// #2405). Without them, an `i64` statement writes a checked one in their place.
+const INT_WRAPPING_METHODS: bool = true;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled

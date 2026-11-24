@@ -1,0 +1,66 @@
+# Locals from before a write lock, changed under it, are let go of as they would be outside it
+# (#2456). Under the lock, the thread holding it is the lock's owner, so each of this thread's own
+# blocks counted there went through the counts kept for other threads, which lost them. Ids made
+# under a lock and kept in a list from outside, as Fable 5.2's p3 keeps one, whether the lock ends
+# normally or fails; a string made under a lock kept the same way; a set index, a reassign, a dict
+# and a read beside a change; appends in a loop of locks and under a read lock. With the threads
+# runtime linked, each change left a block behind when the program ended.
+from std.collections import Id, Table
+from std.concurrent import Crashed
+
+error Undone:
+    why: str
+
+struct Unit:
+    health: int
+
+struct World:
+    units: Table[Unit]
+
+def idle():
+    pass
+
+# Adds an item to the shared Table and keeps its Id in `made`.
+def added(world: shared World, ref made: list[Id[Unit]], health: int):
+    lock world as ref held:
+        made.append(held.units.add(Unit(health=health)))
+
+# The same, then fails, which puts the Table back as it was and leaves `made` as it is.
+def added_and_undone(world: shared World, ref made: list[Id[Unit]]) fails Undone:
+    lock world as ref held:
+        made.append(held.units.add(Unit(health=111)))
+        fail Undone(why="undone")
+
+def main(stdout: Stdout) fails Crashed:
+    # A task, so the program runs with the threads runtime.
+    with launch(() => idle())?:
+        pass
+    shared world = World(units=Table[Unit]())
+    mut made = list[Id[Unit]]()
+    for health in range(3):
+        added(world, ref made, health=health)
+    added_and_undone(world, ref made) except Undone():
+        pass
+    mut notes = list[str]()
+    lock world as ref held:
+        notes.append(f"{len(held.units)} units, the first with {held.units[made[0]].health}")
+        held.units[made[0]].health += 10
+    mut marks = [5, 6]
+    mut names = ["a"]
+    mut seen = {"a": 1}
+    firsts = [5, 7]
+    mut sums = [1]
+    lock world as ref held:
+        marks[0] = len(held.units)
+        names = [f"{len(held.units)} units", "b"]
+        seen["b"] = len(held.units)
+        sums.append(firsts[0] + len(held.units))
+    mut counts = list[int]()
+    for each in range(3):
+        lock world as ref held:
+            counts.append(each + len(held.units))
+    lock world as held:
+        counts.append(len(held.units))
+    stdout.print(marks, names, seen, firsts, sums, counts)
+    lock world as held:
+        stdout.print(len(made), notes, held.units[made[0]].health, held.units.get(made[3]) is None)

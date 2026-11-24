@@ -384,6 +384,10 @@ mod unix {
     /// Waits for the last child to end, if it's working on after its answer, and takes back what
     /// was made with an analysis a child's check found wrong, as the daemon's own check of a build
     /// made in it does once the command's done: before the next build, and as the daemon ends.
+    ///
+    /// What was found is held till it's reported, so a call that finds another one reporting waits
+    /// for it: the daemon ending right after a build, while the thread its session left is
+    /// reporting, goes only once the report is written.
     pub(crate) fn after_builds() {
         let last = LAST.lock().unwrap_or_else(PoisonError::into_inner).clone();
         if let Some(ending) = last {
@@ -392,7 +396,8 @@ mod unix {
                 done = ending.ended.wait(done).unwrap_or_else(PoisonError::into_inner);
             }
         }
-        let found = std::mem::take(&mut *FOUND.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut held = FOUND.lock().unwrap_or_else(PoisonError::into_inner);
+        let found = std::mem::take(&mut *held);
         if found.is_empty() {
             return;
         }
@@ -402,6 +407,7 @@ mod unix {
             }
             None => eprintln!("error: a build's check found these analyses wrong: {}", found.join(", ")),
         }
+        drop(held);
     }
 
     /// Reads what a child sends after its answer, and waits for it to end: what the check of what

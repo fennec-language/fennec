@@ -45,6 +45,7 @@ pub(crate) mod live {
         }
     }
 }
+pub mod conn_calls;
 pub mod notes;
 pub mod numbers;
 pub mod objects;
@@ -59,7 +60,12 @@ pub mod serve;
 /// at a time, as looping over it does.
 #[cfg(not(any(test, feature = "threads")))]
 pub mod serve {
+    use std::time::Duration;
+
     use fennec_syntax::{Diagnostic, Span};
+
+    use crate::stdlib::net::Failure;
+    use crate::stdlib::net::head::{Head, Limits};
 
     /// Without threads there are no blocking threads, so none is ever busy (see the `threads`
     /// version, for the deadlock check).
@@ -150,9 +156,47 @@ pub mod serve {
         _handle: i64,
         _method: &str,
         _args: &[Value],
-        _timeout: Option<std::time::Duration>,
+        _timeout: Option<Duration>,
         _at: Span,
     ) -> Option<Result<Value, Diagnostic>> {
+        None
+    }
+
+    // Without threads no worker serves a connection: each is a real one, which the typed calls
+    // (`embed::conn_calls`) reach by value, as `served_call` sends it.
+    pub(in crate::embed) fn served_write(
+        _: i64,
+        _: &[u8],
+        _: Option<Duration>,
+    ) -> Option<Result<(), Failure>> {
+        None
+    }
+
+    pub(in crate::embed) fn served_reads_within(_: i64, _: Duration) -> Option<()> {
+        None
+    }
+
+    pub(in crate::embed) fn served_draining(_: i64) -> Option<bool> {
+        None
+    }
+
+    pub(in crate::embed) fn served_room_for_body(_: i64, _: usize) -> Option<bool> {
+        None
+    }
+
+    pub(in crate::embed) fn served_body(
+        _: i64,
+        _: usize,
+        _: Option<Duration>,
+    ) -> Option<Result<Vec<u8>, Failure>> {
+        None
+    }
+
+    pub(in crate::embed) fn served_head(
+        _: i64,
+        _: Limits,
+        _: Option<Duration>,
+    ) -> Option<Result<Head, Failure>> {
         None
     }
 }

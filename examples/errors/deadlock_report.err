@@ -1,0 +1,3 @@
+error: a deadlock: every task is waiting for another, and nothing can wake them
+  main is waiting to receive on a channel that's empty
+  task 1 is waiting to receive on a channel that's empty

@@ -192,6 +192,26 @@ fn a_field_the_format_cant_hold_is_named() {
     );
 }
 
+/// An optional of an optional can't be saved: `null` can't tell `None` from an optional holding
+/// `None`. That's so as a value and as a field.
+#[test]
+fn an_optional_of_an_optional_cant_be_saved() {
+    let declarations = "from std.json import dumps\n\nstruct Kept:\n    held: int??\n\n\
+                        def shown(value: int??) -> str:\n    return dumps(value)\n";
+    let program = "
+        inner: int? = None
+        a = dumps(Kept(held=inner))
+        b = shown(inner)
+    ";
+    assert_eq!(
+        with_imports(declarations, program),
+        [
+            "JSON can't hold an optional of an optional @ dumps(value)",
+            "JSON can't hold `Kept.held`, which is an optional of an optional @ dumps(Kept(held=inner))",
+        ]
+    );
+}
+
 /// A type parameter bounded by `Serializable` is written as JSON in the generic body, and one
 /// bounded by `Deserializable` read, as is a list of one: each call's own type is checked against the
 /// format where the call is, a call made with the caller's own type parameter at the caller's calls.
@@ -681,35 +701,16 @@ fn with_launch_takes_an_arrow_its_inbox_and_its_own_options() {
     );
 }
 
-/// A channel's message can't be optional: a closed channel answers `None`, so a `None` sent would
-/// read as the channel closing. A struct holding the optional crosses as any struct does.
+/// A channel's message may be optional: `receive()` gives a `T??`, so a `None` that was sent is
+/// kept apart from the channel closing, and a task's inbox may take one too.
 #[test]
-fn a_channel_message_cant_be_optional() {
-    let program = |body: &str| {
-        problems(&format!(
-            "from std.concurrent import Crashed, Inbox, channel\n\nstruct Maybe:\n    value: int?\n\n\
-             def work(inbox: Inbox[int?]):\n    pass\n\n\
-             def held(inbox: Inbox[Maybe]):\n    pass\n\ndef main():\n{body}"
-        ))
-    };
-    let refused = "a channel's message can't be optional, since `None` is how a closed channel answers, \
-                   and this one is `int?`";
-    assert_eq!(
-        program("    with channel[int?](size=4) as numbers:\n        _ = numbers.receive()\n"),
-        [format!("{refused} @ channel[int?](size=4)")]
-    );
-    assert_eq!(
-        program("    with launch((inbox) => work(inbox))? as to:\n        _ = to\n"),
-        [format!("{refused} @ (inbox) => work(inbox)")]
-    );
-    let crossing: [&str; 0] = [];
-    assert_eq!(
-        program(
-            "    with channel[Maybe](size=4) as numbers:\n        _ = numbers.receive()\n    \
-             with launch((inbox) => held(inbox))? as to:\n        _ = to\n"
-        ),
-        crossing
-    );
+fn a_channel_message_may_be_optional() {
+    let program = "from std.concurrent import Closed, Crashed, Inbox, channel\n\n\
+                   def gather(inbox: Inbox[int?]):\n    for got in inbox:\n        _ = got\n\n\
+                   def main() fails Crashed:\n    with channel[int?](size=4) as numbers:\n        \
+                   held: int?? = numbers.receive()\n        _ = held\n    \
+                   with launch((inbox) => gather(inbox))? as to:\n        _ = to\n";
+    assert_eq!(problems(program), Vec::<String>::new());
 }
 
 /// `tls=` is a yes or no on `connect` and the `Certificate` a server shows on `listen`, and a plain

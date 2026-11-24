@@ -5867,6 +5867,41 @@ fn an_optional_of_an_optional_keeps_a_none_inside_apart() {
     );
 }
 
+/// A `T?` that's `None`, passed to a `T??` parameter or put in a `T??` field, is held there
+/// apart from nothing, as native code holds it and as a `return` does: a `T??` never collapses
+/// into a `T?` (#2465). A `None` written out is nothing at every level, and a `T??` given to a
+/// `T??` is kept as it is. A `T??` local the checker narrows to the `T?` it was given is read as
+/// that `T?`, natively too, until the checker keeps its levels.
+#[test]
+fn a_none_put_in_an_optional_of_an_optional_is_held_apart() {
+    prints(
+        r#"
+        struct Holder:
+            value: int??
+
+        def shown(value: int??) -> bool:
+            return value is None
+
+        def given_back(inner: int?) -> int??:
+            return inner
+
+        def probe(inner: int?, stdout: Stdout):
+            stdout.print(shown(inner), shown(None), shown(given_back(inner)))
+            held = Holder(value=inner)
+            stdout.print(held.value is None, (held.value else 1) is None)
+            mut box = Holder(value=None)
+            stdout.print(box.value is None)
+            box.value = inner
+            stdout.print(box.value is None)
+
+        def main(stdout: Stdout):
+            probe(None, stdout)
+            probe(3, stdout)
+        "#,
+        "False True False\nFalse True\nTrue\nFalse\nFalse True False\nFalse False\nTrue\nFalse\n",
+    );
+}
+
 /// An optional `shared` value that's there is equal to the cell it holds and never to one that's
 /// missing, either way round.
 #[test]

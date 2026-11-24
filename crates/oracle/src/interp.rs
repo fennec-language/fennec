@@ -836,7 +836,7 @@ impl Interp {
         self.tick()?;
         match &stmt.kind {
             StmtKind::Expr(expr) => self.eval(expr).map(drop),
-            StmtKind::Assign { target, op, value, .. } => {
+            StmtKind::Assign { target, op, value, ty, .. } => {
                 if let Some((name, place)) = stmt.kind.local_ref() {
                     let Some(place) = self.place_of(place)? else {
                         return unsupported("a local `ref` to something that isn't a place");
@@ -845,7 +845,15 @@ impl Interp {
                 }
                 match shared_declared(&stmt.kind) {
                     Some(name) => self.declare_shared(name, value, stmt.span),
-                    None => self.assign(target, *op, value, stmt.span),
+                    None => {
+                        // A `T?` put in a `T??` is held in a `Some`: how many levels the place
+                        // it goes in has, as written or as the checker typed it.
+                        let wanted = match ty {
+                            Some(written) => self.levels_written(written),
+                            None => self.static_type(target.span).map_or(0, |ty| typed::levels(&ty)),
+                        };
+                        self.assign(target, *op, (value, wanted), stmt.span)
+                    }
                 }
             }
             StmtKind::If { branches, otherwise } => {
@@ -918,13 +926,14 @@ impl Interp {
         &mut self,
         target: &'static Expr,
         op: Option<BinOp>,
-        value: &'static Expr,
+        (value, wanted): (&'static Expr, usize),
         span: Span,
     ) -> Run<()> {
         match (&target.kind, op) {
             (ExprKind::Name(name), None) => {
-                let value = self.eval(value)?;
-                self.set_name(name, value, span)
+                let given = self.eval(value)?;
+                let given = self.put_in(given, value.span, wanted);
+                self.set_name(name, given, span)
             }
             (ExprKind::Tuple(targets), None) => {
                 let value = self.eval(value)?;
@@ -943,7 +952,10 @@ impl Interp {
                             let right = self.eval(value)?;
                             self.binary_values(op, old, right, target.span)?
                         }
-                        None => self.eval(value)?,
+                        None => {
+                            let given = self.eval(value)?;
+                            self.put_in(given, value.span, wanted)
+                        }
                     };
                     self.write_place(&place, new, span)
                 })();

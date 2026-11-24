@@ -3,7 +3,7 @@
 //! arguments.
 
 use fennec_check::Type;
-use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span};
+use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span, TypeExpr};
 
 use super::typed::Bound;
 use super::{Binding, Flow, Interp, MOST_ITEMS, Place, Run, crash, unsupported};
@@ -15,6 +15,9 @@ use crate::value::{Func, Held, Text, Value};
 #[derive(Debug)]
 pub(crate) enum ArgVal {
     Value(Option<String>, Value),
+    /// A `None`, or one held in `Some`s, that the checker typed as this many levels of optional,
+    /// so a parameter or field written with more holds it in a `Some` for each.
+    Optional(Option<String>, Value, usize),
     Ref(Option<String>, Place),
     Lazy(Option<String>, &'static Expr),
 }
@@ -22,7 +25,10 @@ pub(crate) enum ArgVal {
 impl ArgVal {
     pub(crate) fn name(&self) -> Option<&str> {
         match self {
-            ArgVal::Value(name, _) | ArgVal::Ref(name, _) | ArgVal::Lazy(name, _) => name.as_deref(),
+            ArgVal::Value(name, _)
+            | ArgVal::Optional(name, _, _)
+            | ArgVal::Ref(name, _)
+            | ArgVal::Lazy(name, _) => name.as_deref(),
         }
     }
 }
@@ -453,7 +459,11 @@ impl Interp {
         if lazy && matches!(arg.value.kind, ExprKind::Comprehension { kind: CompKind::Generator, .. }) {
             return Ok(ArgVal::Lazy(arg.name.clone(), &arg.value));
         }
-        Ok(ArgVal::Value(arg.name.clone(), self.eval(&arg.value)?))
+        let value = self.eval(&arg.value)?;
+        Ok(match self.optional_levels(&value, arg.value.span) {
+            Some(levels) => ArgVal::Optional(arg.name.clone(), value, levels),
+            None => ArgVal::Value(arg.name.clone(), value),
+        })
     }
 
     fn named_target(&mut self, name: &str, span: Span) -> Run<Target> {
@@ -775,7 +785,7 @@ impl Interp {
     /// An argument's value, reading the place a `ref` one names.
     pub(crate) fn arg_as_value(&mut self, arg: ArgVal) -> Run<Value> {
         match arg {
-            ArgVal::Value(_, value) => Ok(value),
+            ArgVal::Value(_, value) | ArgVal::Optional(_, value, _) => Ok(value),
             ArgVal::Ref(_, place) => self.read_place(&place, Span::default()),
             ArgVal::Lazy(_, expr) => self.eval(expr),
         }
@@ -819,6 +829,9 @@ impl Interp {
         }
         let params: Vec<&fennec_syntax::Param> = params.collect();
         let mut slots: Vec<Option<Binding>> = params.iter().map(|_| None).collect();
+        // The parameters given a `None` the checker typed as an optional, with its levels, for
+        // those written with more to hold it in a `Some` once their types are known, below.
+        let mut optionals: Vec<(&'static str, usize, &'static TypeExpr)> = Vec::new();
         let mut next = 0;
         for arg in given {
             let at = if let Some(name) = arg.name() {
@@ -830,6 +843,11 @@ impl Interp {
             let Some(slot) = at.and_then(|at| slots.get_mut(at)) else {
                 return unsupported("an argument no parameter takes");
             };
+            if let (ArgVal::Optional(_, _, levels), Some(param)) = (&arg, at.and_then(|at| params.get(at)))
+                && let Some(written) = &param.ty
+            {
+                optionals.push((param.name.as_str(), *levels, written));
+            }
             *slot = Some(match arg {
                 ArgVal::Ref(_, place) => Binding::Ref(place.lent_alone()),
                 other => Binding::Value(self.arg_as_value(other)?),
@@ -863,6 +881,14 @@ impl Interp {
         let returns = def.ret.as_ref().map_or(0, |ret| self.levels_written(ret));
         if let Some(frame) = self.frames.get_mut(self.cur) {
             frame.returns = returns;
+        }
+        for (name, given, written) in optionals {
+            let wanted = self.levels_written(written);
+            let Some(frame) = self.frames.get_mut(self.cur) else { break };
+            if let Some((_, Binding::Value(value))) = frame.vars.iter_mut().rfind(|(bound, _)| bound == name)
+            {
+                *value = super::typed::held_in(std::mem::replace(value, Value::Unit), Some(given), wanted);
+            }
         }
         let ran = (|| {
             for (name, default) in defaults {
@@ -963,7 +989,15 @@ impl Interp {
                 next += 1;
                 positional.get(next - 1).copied()
             };
+            let given = match &arg {
+                ArgVal::Optional(_, _, levels) => Some(*levels),
+                _ => None,
+            };
+            let wanted = at.and_then(|at| fields.get(at)).and_then(|field| field.ty.as_ref());
             let value = self.arg_as_value(arg)?;
+            // A field written as a `T??` holds a `T?`'s `None` in a `Some`. A type parameter's
+            // levels aren't counted, as what it stands for isn't known here.
+            let value = super::typed::held_in(value, given, wanted.map_or(0, super::typed::levels_spelled));
             match at.and_then(|at| values.get_mut(at)) {
                 Some(slot) => *slot = Some(value),
                 None => return unsupported("a value no field takes"),

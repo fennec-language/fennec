@@ -10,8 +10,9 @@ const scout = (name: string) => `${base}brand/scout/scout-${name}.webp`;
 
 // Every sample and every line of output below was run with fennec on main; see the PR that added
 // this page for the run. A change here needs the same check.
-const samples = {
-  hero: `struct Player:
+// The test the_sites_front_page_program_and_every_pages_sample_compile reads `program` and
+// checks it compiles as shown.
+const program = `struct Player:
     name: str
     health = 100 where health >= 0
 
@@ -20,7 +21,10 @@ def main(stdout: Stdout):
     for ref player in players:
         player.health -= 25
     alive = [player.name for player in players if player.health > 50]
-    stdout.print(alive)`,
+    stdout.print(alive)`;
+
+const samples = {
+  hero: program,
   fix: `def port_of(text: str) -> int fails InvalidValue:
     return int.parse(text)`,
   caps: `from metrics import average, report

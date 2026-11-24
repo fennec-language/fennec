@@ -1020,11 +1020,11 @@ struct JsonReader:
     ## nearest `f32`, so it's rounded once, as `f32.parse` rounds it.
     def f32(ref self) -> f32 fails ParseError:
         mut start = self._at
-        mut b = text_byte(self._source, start)
-        while b == 32 or b == 10 or b == 13 or b == 9:
+        mut byte = text_byte(self._source, start)
+        while byte == 32 or byte == 10 or byte == 13 or byte == 9:
             start += 1
-            b = text_byte(self._source, start)
-        if b != 45 and (b < 48 or b > 57):
+            byte = text_byte(self._source, start)
+        if byte != 45 and (byte < 48 or byte > 57):
             self._at = start
             fail self._misfit("f32")
         _ = self.float()?

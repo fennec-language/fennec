@@ -240,6 +240,12 @@ pub(crate) struct Id {
     pub(crate) tag: u64,
 }
 
+/// What stops a program that reaches into a `Table` with an `Id` that finds nothing: since each
+/// item's `Id` has a tag of its own, an item taken out and one from another `Table` can't be told
+/// apart.
+pub(crate) const MISSING: &str =
+    "this Id finds nothing in this Table: its item was taken out, or it's from another Table";
+
 impl Table {
     pub(crate) fn new(tag: u64) -> Table {
         Table { slots: Vec::new(), tag }
@@ -250,15 +256,6 @@ impl Table {
     pub(crate) fn find(&self, id: Id) -> Option<usize> {
         let slot = self.slots.get(id.slot)?;
         (slot.generation == id.generation && slot.tag == id.tag && slot.item.is_some()).then_some(id.slot)
-    }
-
-    /// What stops a program that reaches into the `Table` with an `Id` that finds nothing.
-    pub(crate) fn missing(&self, id: Id) -> &'static str {
-        if id.tag == self.tag {
-            "this Id refers to something that's been removed"
-        } else {
-            "this Id is from another Table"
-        }
     }
 
     /// Adds an item under `tag`, a new one for each item but those a load puts in, in the lowest

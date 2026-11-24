@@ -138,7 +138,6 @@ impl Interp {
         span: Span,
     ) -> Run<()> {
         let kind = Value::Str(Text::from(type_name(item)));
-        let tag = Value::Int(tag_int(table.tag)?);
         let items: Vec<Value> = table.live().map(|(_, held)| held.clone()).collect();
         let exact = matches!(self.ask(out, "exact", Vec::new(), Vec::new(), span)?, Value::Bool(true));
         if exact {
@@ -151,11 +150,22 @@ impl Interp {
                     Value::Int(if slot.item.is_some() { generation } else { -1 - generation })
                 })
                 .collect();
-            let given = vec![kind, tag, Value::List(Held::new(slots)), Value::List(Held::new(items))];
+            // Each slot's tag, which says which `Id`s can be saved as their slot and generation.
+            let tags = table
+                .slots
+                .iter()
+                .map(|slot| tag_int(slot.tag).map(Value::Int))
+                .collect::<Run<Vec<Value>>>()?;
+            let given = vec![
+                kind,
+                Value::List(Held::new(tags)),
+                Value::List(Held::new(slots)),
+                Value::List(Held::new(items)),
+            ];
             return self.tell(out, "slots", given, vec![item.clone()], span);
         }
         let ids = table.live().map(|(id, _)| Value::Id(id)).collect();
-        let given = vec![kind, tag, Value::List(Held::new(ids)), Value::List(Held::new(items))];
+        let given = vec![kind, Value::List(Held::new(ids)), Value::List(Held::new(items))];
         self.tell(out, "table", given, vec![item.clone()], span)
     }
 

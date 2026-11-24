@@ -211,7 +211,8 @@ struct JsonKey:
 NO_PARTS = list[str]()
 NO_FIELDS = list[(str, str)]()
 NO_COUNTS = list[int]()
-NO_SEEN = list[(str, str, int)]()
+NO_IDS_SEEN = list[(str, str, int, int)]()
+NO_TABLES_SEEN = list[(str, str, int, list[int])]()
 NO_TAGS = dict[str, int]()
 NO_TUPLES = list[(str, int, int, int)]()
 NO_TABLES = dict[str, dict[(int, int), int]]()
@@ -557,33 +558,40 @@ def quoted(text: str) -> str:
 struct IdsSeen:
     ## What a message calls everything read: "the text", or "the data".
     _whole = "the text"
-    _ids = NO_SEEN
-    _tables = NO_SEEN
+    _ids = NO_IDS_SEEN
+    _tables = NO_TABLES_SEEN
 
     ## A record of nothing read yet, whose messages call everything read `whole`, as "the data".
     def called(whole: str) -> IdsSeen:
         return IdsSeen(_whole=whole)
 
-    def id(ref self, kind: str, at: str, position: int):
-        self._ids.append((kind, at, position))
+    ## An `Id` read: where its item is in its `Table`, and, saved slot for slot, its generation, or
+    ## -1.
+    def id(ref self, kind: str, at: str, position: int, generation: int):
+        self._ids.append((kind, at, position, generation))
 
-    def table(ref self, kind: str, at: str, count: int):
-        self._tables.append((kind, at, count))
+    ## A `Table` read: how many items it has, and, saved slot for slot, each slot's word.
+    def table(ref self, kind: str, at: str, count: int, words: list[int]):
+        self._tables.append((kind, at, count, words))
 
     ## What's wrong with the `Id`s and `Table`s read, or "" when nothing is.
     def problem(self) -> str:
         # Nearly always: nothing read was an `Id` or a `Table`, so there's nothing to check.
         if len(self._ids) == 0 and len(self._tables) == 0: return ""
         mut seen = dict[str, str]()
-        for kind, at, _ in self._tables:
+        for kind, at, _, _ in self._tables:
             if kind in seen:
                 return f"{seen[kind]} and {at} are both a `Table[{kind}]`, so an Id can't say which it's in"
             seen[kind] = at
-        for kind, at, position in self._ids:
+        for kind, at, position, generation in self._ids:
             mut found = False
-            for table_kind, table_at, count in self._tables:
+            for table_kind, table_at, count, words in self._tables:
                 if table_kind != kind: continue
                 found = True
+                # Saved slot for slot, an `Id` loads only where its slot holds its generation: the
+                # loaded `Table` keeps none, so one whose item had gone would find what's there.
+                if generation >= 0 and position < len(words) and words[position] != generation:
+                    return f"{at} is an Id of something taken out of {table_at} before it was saved"
                 if position >= count:
                     items = "nothing" if count == 0 else (
                         f"only {count}" if count > 1 else "only 1"
@@ -599,9 +607,8 @@ struct TableFinder:
     _positions = dict[str, dict[(int, int), int]]()
     _where = dict[str, str]()
     _ids = list[(str, int, int, bool, str)]()
-    ## Each slot's tag and word in a `Table` saved slot for slot, by the name of its items' type.
+    ## Each slot's tag in a `Table` saved slot for slot, by the name of its items' type.
     _slot_tags = dict[str, list[int]]()
-    _slot_words = dict[str, list[int]]()
     _path = list[str]()
     _problem = ""
     _optional = False
@@ -620,11 +627,6 @@ struct TableFinder:
     ## Each slot's tag in a `Table` saved slot for slot, by the name of its items' type.
     def slot_tags(self) -> dict[str, list[int]]:
         return self._slot_tags
-
-    ## Each slot's word, its generation or `-1` less one taken out, in a `Table` saved slot for
-    ## slot, by the name of its items' type.
-    def slot_words(self) -> dict[str, list[int]]:
-        return self._slot_words
 
     def int(ref self, value: int):
         pass
@@ -734,7 +736,6 @@ struct TableFinder:
         else:
             self._where[kind] = here
             self._slot_tags[kind] = tags
-            self._slot_words[kind] = slots
             self._positions[kind] = dict[(int, int), int]()
         self.sequence(items)
 
@@ -755,37 +756,25 @@ struct TableFinder:
                 return f"{at} is an Id, but nothing saved with it is a `Table[{kind}]`"
             if optional: continue
             where = self._where.get(kind) else "its Table"
-            # Saved slot for slot, an `Id` is saved as it is where it can only find its own item
-            # after the load, or nothing.
-            if self._exact:
-                if not saved_exactly(self._slot_tags, self._slot_words, (kind, key, tag)):
-                    return f"{at} is an Id that finds nothing in {where}, and could find another item once it's loaded"
-                continue
+            # Saved slot for slot, an `Id` is saved only where it finds its item: a load gives the
+            # `Table` and every `Id` one tag, so one whose item had gone would find what's there.
             positions = self._positions.get(kind) else dict[(int, int), int]()
-            if (key, tag) not in positions:
+            found = saved_exactly(self._slot_tags, (kind, key, tag)) if self._exact else (
+                key,
+                tag,
+            ) in positions
+            if not found:
                 return f"{at} is an Id that finds nothing in {where}: its item was taken out, or it's from another `Table[{kind}]`"
         return ""
 
-## Whether an `Id` of `kind`, by its `id_key` and tag, can be saved as its slot and generation with
-## the `Table` of that kind saved slot for slot, given each slot's tag and word as `table_slot_tags`
-## and `table_slots` give them. A load gives every slot one tag, and every `Id` saved with them, so
-## one is saved only where it can't find another item after: its slot holds its item, its tag the
-## slot's, or its slot has used its generation up, so nothing there will have it again.
-def saved_exactly(
-    slot_tags: dict[str, list[int]],
-    slot_words: dict[str, list[int]],
-    id: (str, int, int),
-) -> bool:
+## Whether an `Id` of `kind`, by its `id_key` and tag, finds its item in the `Table` of that kind
+## saved slot for slot, given each slot's tag as `table_slot_tags` gives them: so it can be saved
+## as its slot, and finds the same item after the load.
+def saved_exactly(slot_tags: dict[str, list[int]], id: (str, int, int)) -> bool:
     (kind, key, tag) = id
-    (slot, generation) = (key >> 32, key & 4294967295)
+    slot = key >> 32
     tags = slot_tags.get(kind) else list[int]()
-    words = slot_words.get(kind) else list[int]()
-    if slot >= len(tags) or slot >= len(words): return False
-    word = words[slot]
-    if word >= 0 and word == generation: return tags[slot] == tag
-    # Taken out at a generation, the next `add` there has one past it.
-    reached = word if word >= 0 else -1 - word
-    return reached >= generation
+    return slot < len(tags) and tag != 0 and tags[slot] == tag
 
 ## Where a path through a value is, as messages say it: "`units[0].target`", or "the value".
 def place_text(path: list[str]) -> str:
@@ -1499,16 +1488,16 @@ struct JsonReader:
         if not self._explain: return no_reason()
         return ParseError(message=f"{self._where()} {message}", line=0, column=0)
 
-    def saw_id(ref self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int, generation: int):
         at = self._where() if self._explain else ""
         mut rare = self._take()
-        rare.ids.id(kind, at, position)
+        rare.ids.id(kind, at, position, generation)
         self._rare = rare
 
-    def saw_table(ref self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
         at = self._where() if self._explain else ""
         mut rare = self._take()
-        rare.ids.table(kind, at, count)
+        rare.ids.table(kind, at, count, words)
         self._rare = rare
 
     def tag(ref self, kind: str) -> int:

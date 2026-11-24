@@ -1325,11 +1325,11 @@ extend Id[T]:
             generation = src.value[int]()?
             if slot < 0 or generation < 0 or generation > 4294967295:
                 fail src.here("is out of range")
-            src.saw_id(kind, slot)
+            src.saw_id(kind, slot, generation)
             return id_of_key[T]((slot << 32) | generation, src.tag(kind))
         position = src.value[int]()?
         if position < 0: fail src.here("is out of range")
-        src.saw_id(kind, position)
+        src.saw_id(kind, position, -1)
         return id_at[T](position, src.tag(kind))
 
 extend Table[T]:
@@ -1369,10 +1369,10 @@ extend Table[T: Deserializable]:
             if live != len(items):
                 used = "1 slot" if live == 1 else f"{live} slots"
                 fail src.here(f"has {used} in use but {len(items)} items")
-            src.saw_table(kind, len(slots))
+            src.saw_table(kind, len(slots), slots)
             return table_of_slots[T](src.tag(kind), slots, items)
         items = src.value[list[T]]()?
-        src.saw_table(kind, len(items))
+        src.saw_table(kind, len(items), list[int]())
         # Each item in a slot of its own at generation 0, under the load's tag, which every `Id`
         # loaded with it has.
         firsts = [0 for _ in items]

@@ -60,7 +60,6 @@ export def dumps[T: Serializable](value: T, exact = False) -> bytes:
         _exact=exact,
         _tables=found.positions(),
         _slot_tags=found.slot_tags(),
-        _slot_words=found.slot_words(),
         _found=True,
     )
     again._header(shape_hash[T](), layout_unless_locked[T]())
@@ -321,7 +320,6 @@ def packed[T: Serializable](value: T, exact: bool) -> bytes:
         _exact=exact,
         _tables=found.positions(),
         _slot_tags=found.slot_tags(),
-        _slot_words=found.slot_words(),
         _found=True,
     )
     value.serialize(ref again)
@@ -406,7 +404,6 @@ struct PackWriter:
     ## for them.
     _tables = dict[str, dict[(int, int), int]]()
     _slot_tags = dict[str, list[int]]()
-    _slot_words = dict[str, list[int]]()
     _found = False
     _wants_tables = False
     ## Whether what's being written is in an optional, and where its byte that says it's there is,
@@ -544,7 +541,7 @@ struct PackWriter:
             self._wants_tables = True
             return
         if self._exact:
-            if saved_exactly(self._slot_tags, self._slot_words, (kind, key, tag)):
+            if saved_exactly(self._slot_tags, (kind, key, tag)):
                 self.int(key >> 32)
                 self.int(key & 4294967295)
                 return
@@ -820,11 +817,11 @@ struct PackReader:
     def here(self, message: str) -> ParseError:
         return self._fail(f"{self._where()} {message}")
 
-    def saw_id(ref self, kind: str, position: int):
-        self._ids.id(kind, self._where() if self._explain else "", position)
+    def saw_id(ref self, kind: str, position: int, generation: int):
+        self._ids.id(kind, self._where() if self._explain else "", position, generation)
 
-    def saw_table(ref self, kind: str, count: int):
-        self._ids.table(kind, self._where() if self._explain else "", count)
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
+        self._ids.table(kind, self._where() if self._explain else "", count, words)
 
     def tag(ref self, kind: str) -> int:
         found = self._tags.get(kind) else 0
@@ -1279,11 +1276,11 @@ struct PackByName:
     def here(self, message: str) -> ParseError:
         return self._raw._fail(f"{self._where()} {message}")
 
-    def saw_id(ref self, kind: str, position: int):
-        self._raw._ids.id(kind, self._where(), position)
+    def saw_id(ref self, kind: str, position: int, generation: int):
+        self._raw._ids.id(kind, self._where(), position, generation)
 
-    def saw_table(ref self, kind: str, count: int):
-        self._raw._ids.table(kind, self._where(), count)
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
+        self._raw._ids.table(kind, self._where(), count, words)
 
     def tag(ref self, kind: str) -> int:
         return self._raw.tag(kind)

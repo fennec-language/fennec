@@ -128,12 +128,14 @@ export interface Deserializer:
     ## The error for what was just read, saying `message` about it, like an `Id` that's negative.
     def here(self, message: str) -> ParseError
 
-    ## Takes note of an `Id` read, by the name of the type it's for and where its item is in the
-    ## `Table`, so it can be checked once everything's been read.
-    def saw_id(ref self, kind: str, position: int)
+    ## Takes note of an `Id` read, by the name of the type it's for, where its item is in the
+    ## `Table`, and, saved slot for slot, its generation, or -1, so it can be checked once
+    ## everything's been read.
+    def saw_id(ref self, kind: str, position: int, generation: int)
 
-    ## Takes note of a `Table` read, by the name of its items' type and how many it has.
-    def saw_table(ref self, kind: str, count: int)
+    ## Takes note of a `Table` read, by the name of its items' type, how many it has, and, saved
+    ## slot for slot, each slot as `table_slots` gives it.
+    def saw_table(ref self, kind: str, count: int, words: list[int])
 
     ## The tag this read gives the `Table` of `kind` it makes, and every `Id` into it: new for
     ## each read, so they find their items there and in no other `Table`.

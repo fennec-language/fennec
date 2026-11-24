@@ -39,6 +39,8 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use fennec_blake3::Hash;
+
 /// This Fennec's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -158,6 +160,19 @@ impl Cache {
     /// miss, said once a command: it was torn or changed since it was written. So is one that's
     /// there but can't be read: only one that isn't there is a miss without a word.
     pub fn read(&self, kind: &str, name: &str) -> Option<Vec<u8>> {
+        self.read_checked(kind, name).map(|(bytes, _)| bytes)
+    }
+
+    /// [`Self::read`], with the hash its bytes were checked against: for an entry written with
+    /// [`Self::write`], their BLAKE3 hash, so whoever wants one needn't hash them again. None for a
+    /// kept program, which is checked another way.
+    pub fn read_hashed(&self, kind: &str, name: &str) -> Option<(Vec<u8>, Hash)> {
+        let (bytes, hash) = self.read_checked(kind, name)?;
+        Some((bytes, hash?))
+    }
+
+    /// [`Self::read`], with the hash of the bytes when it's the one their entry is checked against.
+    fn read_checked(&self, kind: &str, name: &str) -> Option<(Vec<u8>, Option<Hash>)> {
         if !self.usable() {
             return None;
         }
@@ -172,11 +187,14 @@ impl Cache {
                 return None;
             }
         };
+        let mut checked = None;
         let whole = match &sum {
             Some(sum) => sum_of(&bytes) == *sum,
             None => match bytes.len().checked_sub(HASH_LEN).and_then(|end| bytes.split_at_checked(end)) {
                 Some((text, hash)) => {
-                    let whole = hash == fennec_blake3::hash(text).as_bytes();
+                    let found = fennec_blake3::hash(text);
+                    let whole = hash == found.as_bytes();
+                    checked = Some(found);
                     let end = text.len();
                     bytes.truncate(end);
                     whole
@@ -193,7 +211,7 @@ impl Cache {
         if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY) {
             mark_used(&path);
         }
-        Some(bytes)
+        Some((bytes, checked))
     }
 
     /// Where the object kept under `name` is, if it's there: the file itself, for the linker to

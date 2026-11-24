@@ -32,9 +32,9 @@ pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
     if !crate::verdict::same_files(&state, &files) {
         return None;
     }
-    let bytes = cache.read("run-image", &image_name(path))?;
+    let (bytes, image) = cache.read_hashed("run-image", &image_name(path))?;
     let module = Module::decode(&mut Reader::new(&bytes))?;
-    let kept = kept_hash(path, &files, &bytes);
+    let kept = kept_hash(path, &files, image);
     let program = Program {
         module,
         sources: Sources::new(),
@@ -62,8 +62,11 @@ fn kept_files(path: &str, state: &KitState) -> Option<Vec<KitFile>> {
 /// failure's message, and each file's text, which a failure quotes. The same program text from
 /// another folder, or a comment changed to one as long, is then another program, built again,
 /// rather than one that names the other folder or quotes the old comment.
-fn kept_hash(path: &str, files: &[KitFile], bytes: &[u8]) -> String {
-    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec kept image 2026-11-14");
+///
+/// The image goes in by its BLAKE3 hash, which reading it checked already, rather than hashed
+/// again: on a big kit that's 6 million instructions a run.
+fn kept_hash(path: &str, files: &[KitFile], image: fennec_blake3::Hash) -> String {
+    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec kept image 2026-11-24");
     hasher.update(format!("{path}\0{}\0", crate::run::absolute(path)).as_bytes());
     let mut each: Vec<(&str, String)> =
         files.iter().map(|file| (file.module.as_str(), file.text.to_hex())).collect();
@@ -71,7 +74,7 @@ fn kept_hash(path: &str, files: &[KitFile], bytes: &[u8]) -> String {
     for (module, text) in each {
         hasher.update(format!("{module}\0{text}\n").as_bytes());
     }
-    hasher.update(bytes);
+    hasher.update(image.as_bytes());
     hasher.finalize().to_hex()
 }
 
@@ -90,7 +93,7 @@ pub(crate) fn store(path: &str, cache: &Cache, files: &[KitFile], program: &Prog
     let noted = crate::verdict::with_embedded(files, program);
     fennec_build::kept("keep the kit's state", cache.store_kit_state(&name_of(path), BUILD, &noted))?;
     let state = cache.kit_state(&name_of(path), BUILD)?;
-    Some(kept_hash(path, &kept_files(path, &state)?, &bytes))
+    Some(kept_hash(path, &kept_files(path, &state)?, fennec_blake3::hash(&bytes)))
 }
 
 /// What a kit's files are now, with what was last noted to save reading them.

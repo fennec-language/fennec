@@ -149,6 +149,26 @@ fn a_kit_noted_by_one_build_of_fennec_is_unknown_to_another() {
     std::fs::remove_dir_all(&home).unwrap();
 }
 
+/// An entry read with its hash gives the hash its bytes were checked against, which is theirs,
+/// so a run that wants one, as a kept image's, needn't hash them again. A torn entry gives none.
+#[test]
+fn an_entry_read_with_its_hash_gives_the_hash_it_was_checked_against() {
+    let home = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-build-test-hashed-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    let cache = fennec_build::Cache::new(&home);
+    cache.write("run-image", "game.image", b"an image").unwrap();
+    let (bytes, hash) = cache.read_hashed("run-image", "game.image").unwrap();
+    assert_eq!((bytes.as_slice(), hash), (&b"an image"[..], fennec_blake3::hash(b"an image")));
+    let path = cache.path("run-image", "game.image");
+    let mut torn = std::fs::read(&path).unwrap();
+    torn[0] ^= 1;
+    std::fs::write(&path, torn).unwrap();
+    assert!(cache.read_hashed("run-image", "game.image").is_none());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
 #[test]
 fn snapshots_are_stored_and_read_back() {
     let home =

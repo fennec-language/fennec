@@ -836,18 +836,7 @@ impl Interp {
         self.tick()?;
         match &stmt.kind {
             StmtKind::Expr(expr) => self.eval(expr).map(drop),
-            StmtKind::Assign { target, op, value, .. } => {
-                if let Some((name, place)) = stmt.kind.local_ref() {
-                    let Some(place) = self.place_of(place)? else {
-                        return unsupported("a local `ref` to something that isn't a place");
-                    };
-                    return self.bind_ref(name, place);
-                }
-                match shared_declared(&stmt.kind) {
-                    Some(name) => self.declare_shared(name, value, stmt.span),
-                    None => self.assign(target, *op, value, stmt.span),
-                }
-            }
+            StmtKind::Assign { .. } => self.assign_ran(stmt),
             StmtKind::If { branches, otherwise } => {
                 for (cond, body) in branches {
                     if self.truth(cond)? {
@@ -914,17 +903,39 @@ impl Interp {
         }
     }
 
+    /// An assignment, a declaration, a `shared` one, or a local `ref`.
+    fn assign_ran(&mut self, stmt: &'static Stmt) -> Run<()> {
+        let StmtKind::Assign { target, op, value, ty, .. } = &stmt.kind else { return Ok(()) };
+        if let Some((name, place)) = stmt.kind.local_ref() {
+            let Some(place) = self.place_of(place)? else {
+                return unsupported("a local `ref` to something that isn't a place");
+            };
+            return self.bind_ref(name, place);
+        }
+        if let Some(name) = shared_declared(&stmt.kind) {
+            return self.declare_shared(name, value, stmt.span);
+        }
+        // A `T?` put in a `T??` is held in a `Some`: how many levels the place it goes in has,
+        // as written or as the checker typed it.
+        let wanted = match ty {
+            Some(written) => self.levels_written(written),
+            None => self.static_type(target.span).map_or(0, |ty| typed::levels(&ty)),
+        };
+        self.assign(target, *op, (value, wanted), stmt.span)
+    }
+
     fn assign(
         &mut self,
         target: &'static Expr,
         op: Option<BinOp>,
-        value: &'static Expr,
+        (value, wanted): (&'static Expr, usize),
         span: Span,
     ) -> Run<()> {
         match (&target.kind, op) {
             (ExprKind::Name(name), None) => {
-                let value = self.eval(value)?;
-                self.set_name(name, value, span)
+                let given = self.eval(value)?;
+                let given = self.put_in(given, value.span, wanted);
+                self.set_name(name, given, span)
             }
             (ExprKind::Tuple(targets), None) => {
                 let value = self.eval(value)?;
@@ -937,13 +948,13 @@ impl Interp {
                     let Some(place) = self.place_for_change(target)? else {
                         return unsupported("assigning to something that isn't a place");
                     };
-                    let new = match op {
-                        Some(op) => {
-                            let old = self.read_place(&place, target.span)?;
-                            let right = self.eval(value)?;
-                            self.binary_values(op, old, right, target.span)?
-                        }
-                        None => self.eval(value)?,
+                    let new = if let Some(op) = op {
+                        let old = self.read_place(&place, target.span)?;
+                        let right = self.eval(value)?;
+                        self.binary_values(op, old, right, target.span)?
+                    } else {
+                        let given = self.eval(value)?;
+                        self.put_in(given, value.span, wanted)
                     };
                     self.write_place(&place, new, span)
                 })();

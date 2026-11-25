@@ -1,34 +1,52 @@
+/*
+ * Fennec's site: direction A, "Instrument". Dark first, quiet and precise, with one warm accent;
+ * Scout brings the warmth on the 404, the docs and the home page's closing band.
+ * The token names are the ones every page already uses.
+ */
 :root {
-  --bg: #fffbf5;
-  --surface: #fff4e4;
-  --surface-strong: #fbe8cc;
-  --text: #1b1a2e;
-  --muted: #5d5869;
-  --border: #ecdcc4;
-  --accent: #b9590a;
-  --accent-bright: #f08a24;
-  --accent-text: #1b1a2e;
-  --code-bg: #fffaf2;
-  --radius: 14px;
-  --max: 1080px;
+  --bg: #0c0b10;
+  --surface: #131219;
+  --surface-strong: #1b1a24;
+  --text: #eceaf2;
+  --muted: #9a96a8;
+  --faint: #66627a;
+  --border: #24222e;
+  --border-strong: #34313f;
+  --accent: #f59a3e;
+  --accent-bright: #f59a3e;
+  --accent-soft: rgba(245, 154, 62, 0.12);
+  --accent-text: #1a1206;
+  --pass: #6fd3a0;
+  --fail: #f27a6d;
+  --help: #c9b8ff;
+  --code-bg: #111017;
+  --radius: 12px;
+  --max: 1200px;
   --prose: 740px;
   --font-sans: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
-  color-scheme: light dark;
+  color-scheme: dark;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #13121f;
-    --surface: #1b1a2c;
-    --surface-strong: #25233a;
-    --text: #f4eee6;
-    --muted: #aaa4b8;
-    --border: #2f2d47;
-    --accent: #f5a04a;
+    --bg: #fafaf8;
+    --surface: #ffffff;
+    --surface-strong: #f3f1ec;
+    --text: #15131c;
+    --muted: #5d596a;
+    --faint: #8f8a99;
+    --border: #e6e3dc;
+    --border-strong: #d6d2c9;
+    --accent: #b4560a;
     --accent-bright: #f08a24;
-    --accent-text: #13121f;
-    --code-bg: #181727;
+    --accent-soft: rgba(194, 98, 11, 0.09);
+    --accent-text: #1a1206;
+    --pass: #1d8a57;
+    --fail: #c4412f;
+    --help: #5b46c4;
+    --code-bg: #fbfaf7;
+    color-scheme: light;
   }
 }
 
@@ -47,9 +65,16 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 17px;
+  font-size: 16.5px;
   line-height: 1.65;
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
 }
 
 a {
@@ -59,6 +84,12 @@ a {
 
 a:hover {
   text-decoration-thickness: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 img {
@@ -75,12 +106,13 @@ pre {
 }
 
 :not(pre) > code {
-  background: var(--surface);
+  background: var(--surface-strong);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.1em 0.35em;
 }
 
+/* Code is highlighted with both themes as variables, dark by default. */
 pre.astro-code {
   background-color: var(--code-bg) !important;
   border: 1px solid var(--border);
@@ -91,48 +123,74 @@ pre.astro-code {
   font-size: 0.85rem;
 }
 
-@media (prefers-color-scheme: dark) {
+.astro-code,
+.astro-code span {
+  color: var(--shiki-dark);
+  font-style: var(--shiki-dark-font-style);
+  font-weight: var(--shiki-dark-font-weight);
+}
+
+@media (prefers-color-scheme: light) {
   .astro-code,
   .astro-code span {
-    color: var(--shiki-dark) !important;
-    font-style: var(--shiki-dark-font-style) !important;
-    font-weight: var(--shiki-dark-font-weight) !important;
+    color: var(--shiki-light);
+    font-style: var(--shiki-light-font-style);
+    font-weight: var(--shiki-light-font-weight);
   }
 }
 
 .wrap {
   max-width: var(--max);
   margin: 0 auto;
-  padding: 0 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
 
 @media (min-width: 720px) {
   .wrap {
-    padding: 0 28px;
+    padding-left: 28px;
+    padding-right: 28px;
   }
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.src {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--faint);
 }
 
 .button {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.7rem 1.2rem;
-  border-radius: 999px;
+  height: 2.6rem;
+  padding: 0 1.05rem;
+  border-radius: 8px;
   font-weight: 600;
+  font-size: 0.92rem;
   text-decoration: none;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   color: var(--text);
   background: var(--surface);
+  white-space: nowrap;
 }
 
 .button.primary {
   background: var(--accent-bright);
   border-color: var(--accent-bright);
-  color: #1b1a2e;
+  color: var(--accent-text);
 }
 
 .button:hover {
-  filter: brightness(1.05);
+  filter: brightness(1.06);
   text-decoration: none;
 }
 
@@ -140,21 +198,23 @@ pre.astro-code {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.3rem 0.8rem;
+  padding: 0.25rem 0.75rem;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--muted);
-  font-size: 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
   font-weight: 500;
 }
 
 .pill::before {
   content: '';
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--accent-bright);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 table {
@@ -171,9 +231,58 @@ td {
   padding: 0.6rem 0.8rem;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+  font-variant-numeric: tabular-nums;
 }
 
 th {
   font-weight: 600;
   background: var(--surface);
+}
+
+/* Terminal output inside a page: the compiler's words, coloured the way it colours them. */
+.term {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--muted);
+  background: var(--code-bg);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.term .p {
+  color: var(--faint);
+}
+
+.term .c {
+  color: var(--text);
+}
+
+.term .err {
+  color: var(--fail);
+  font-weight: 500;
+}
+
+.term .help {
+  color: var(--help);
+}
+
+.term .hl {
+  color: var(--accent);
+}
+
+.term.wrapjson {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

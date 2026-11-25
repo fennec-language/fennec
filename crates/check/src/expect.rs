@@ -8,7 +8,7 @@
 //!         case .Int(value): .Int(value)   # the return type makes it ExprKind.Int
 //! ```
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, Span};
+use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, Span};
 
 use crate::function::FnCx;
 use crate::program::TypeKind;
@@ -208,6 +208,35 @@ impl FnCx<'_> {
         (left, right)
     }
 
+    /// The two sides of an operator that may be a type's own, like a struct's `def *`. A number
+    /// literal on the right of one whose definition takes a sized number takes that size, as
+    /// `velocity * 2.0` does where `def *(self, scale: f32)`. Any other pair is `operands`'.
+    pub(crate) fn operator_operands(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> (Type, Type) {
+        if number_literal(lhs) || !number_literal(rhs) {
+            return self.operands(lhs, rhs);
+        }
+        let left = self.expr(lhs);
+        let right = match self.operator_takes_sized(op, &left) {
+            Some(sized) => self.expr_as(rhs, &sized),
+            None if matches!(left, Type::Sized(_)) => self.expr_as(rhs, &left),
+            None => self.expr(rhs),
+        };
+        (left, right)
+    }
+
+    /// The sized number a struct's own operator takes on its right, if its first definition is
+    /// written to take one: `f32` for `def *(self, scale: f32)`. It reads only what's written, so
+    /// it asks for no signature, which would note a call the operator's own check notes later.
+    pub(crate) fn operator_takes_sized(&mut self, op: BinOp, left: &Type) -> Option<Type> {
+        let Type::Named(owner) = self.checker.settled(left) else { return None };
+        let (_, entry) = self.checker.program.method(&owner, op.method_name()?)?;
+        let written = entry.def.params.get(1)?.ty.as_ref()?;
+        if !written.args.is_empty() || written.optional {
+            return None;
+        }
+        crate::types::Num::named(&written.name).map(Type::Sized)
+    }
+
     pub(crate) fn operands(&mut self, lhs: &Expr, rhs: &Expr) -> (Type, Type) {
         if number_literal(lhs) && !number_literal(rhs) {
             let right = self.expr(rhs);
@@ -230,7 +259,7 @@ impl FnCx<'_> {
     fn literal_str(&mut self, expr: &Expr) -> Option<Type> {
         match &expr.kind {
             ExprKind::Str(_) => Some(Type::LiteralStr),
-            ExprKind::Binary { op: op @ fennec_syntax::BinOp::Add, lhs, rhs } => {
+            ExprKind::Binary { op: op @ BinOp::Add, lhs, rhs } => {
                 let left = self.expr_as(lhs, &Type::LiteralStr);
                 let right = self.expr_as(rhs, &Type::LiteralStr);
                 if matches!((&left, &right), (Type::LiteralStr, Type::LiteralStr)) {

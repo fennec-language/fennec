@@ -411,7 +411,11 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>, ta
             });
             return;
         }
-        Entries::InPlace => {}
+        Entries::InPlace(layout) => {
+            if release_in_place_entries(state, layout, block, direct, pending, taken) {
+                return;
+            }
+        }
         Entries::NotADict => {
             if release_planned_items(state, block, direct, pending, taken) {
                 return;
@@ -493,6 +497,48 @@ fn release_planned_items(
                 walk_item(&mut letting_go, number, item);
             }
         }
+    }
+    state.heap.item_plans = plans;
+    true
+}
+
+/// Lets go of what each entry of a dict whose values are held in place holds, as it's read: its
+/// key's block, then what its value holds by the plan of the value's kind, as a list's items are
+/// let go of. Gathering them into a list by a walk of the kind first was most of what freeing
+/// `api_handler`'s dict of headers cost, each request. False, having done nothing, when the kind
+/// has no plan to read.
+fn release_in_place_entries(
+    state: &mut State,
+    layout: crate::embed::dicts::Layout,
+    block: &[u64],
+    direct: bool,
+    pending: &mut Vec<u64>,
+    taken: &mut Vec<Box<[u64]>>,
+) -> bool {
+    let Some(number) = crate::embed::dicts::in_place_kind(layout) else { return false };
+    let Some(planned) = state.heap.item_plans.get(number) else { return false };
+    if matches!(planned.plan, Plan::Walk) {
+        return false;
+    }
+    let holds_nothing = planned.plan.holds_nothing();
+    // Numbers as keys, and values that hold no blocks, as structs of numbers are, leave nothing to
+    // look through: a path search's dict of visits is freed whole.
+    if holds_nothing && !crate::embed::dicts::keys_held_in_blocks(layout) {
+        return true;
+    }
+    // Letting go of a child changes the table, never the plans, so they're set aside meanwhile.
+    let plans = std::mem::take(&mut state.heap.item_plans);
+    if let Some(planned) = plans.get(number) {
+        let mut letting_go =
+            LettingGo { state: &mut *state, direct, pending: &mut *pending, taken: &mut *taken };
+        crate::embed::dicts::each_in_place(layout, block, |key, value| {
+            letting_go.extend(key);
+            if !holds_nothing
+                && crate::embed::plans::addresses(&planned.plan, value, &mut letting_go).is_none()
+            {
+                walk_item(&mut letting_go, number, value);
+            }
+        });
     }
     state.heap.item_plans = plans;
     true

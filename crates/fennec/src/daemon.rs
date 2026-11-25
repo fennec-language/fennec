@@ -59,8 +59,16 @@ pub(crate) use fennec_daemon::Outcome;
 #[cfg(unix)]
 const THIS: fennec_daemon::Build<'static> = fennec_daemon::Build { version: VERSION, build: BUILD };
 
-/// `fennec daemon status`, `stop` and `serve`.
+/// `fennec daemon status`, `stop`, `serve` and `protocol`.
 pub(crate) fn command(action: &str) -> ExitCode {
+    // What a release's folder says of its `fennec`, so the launcher can ask its daemon itself
+    // (`fennec_daemon::PROTOCOL_FILE`). It's written when a release is packed, with no Fennec
+    // folder needed.
+    #[cfg(unix)]
+    if action == "protocol" {
+        print!("{}", THIS.protocol_line());
+        return ExitCode::SUCCESS;
+    }
     let Some(home) = fennec_build::fennec_home() else {
         eprintln!("error: couldn't find a home folder; set FENNEC_HOME");
         return ExitCode::FAILURE;
@@ -464,17 +472,13 @@ mod unix {
         let folder = folder.to_str()?;
         let request = fennec_daemon::work_request(super::THIS, kind.word(), folder, arguments, one_stream())?;
         let socket = socket_path(home, false)?;
-        let mut stream = if let Some(stream) = connect(&socket, home) {
+        let stream = if let Some(stream) = connect(&socket, home) {
             stream
         } else {
             start(home)?;
             connect(&socket, home)?
         };
-        // The connection stays open while the daemon works: closing it stops the work.
-        let mut reply = String::new();
-        let answered =
-            stream.write_all(request.as_bytes()).is_ok() && stream.read_to_string(&mut reply).is_ok();
-        let outcome = Outcome::decode(&reply).filter(|_| answered);
+        let outcome = fennec_daemon::answer(stream, &request);
         if outcome.is_none() {
             eprintln!("note: the build daemon gave no answer, so {}", kind.done_here());
         }

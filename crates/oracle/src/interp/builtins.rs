@@ -577,7 +577,7 @@ impl ArgVal {
     fn is_lazy(&self) -> bool {
         match self {
             ArgVal::Lazy(..) => true,
-            ArgVal::Value(_, value) => Interp::is_stream(value),
+            ArgVal::Value(_, value) | ArgVal::Optional(_, value, _) => Interp::is_stream(value),
             ArgVal::Ref(..) => false,
         }
     }

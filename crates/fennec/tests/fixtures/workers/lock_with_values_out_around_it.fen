@@ -1,0 +1,52 @@
+# Values taken out of a dict or a list stay out while a lock is taken and left, and go back after
+# it: a value read from a dict to change and set back, the item a `for ref` loop changes, and the
+# same with a lock inside that fails and puts its value back. Built checking proofs, a lock's end
+# and a failure's rollback find nothing of their own value out of its place, and nothing else is
+# theirs to check (#2516).
+
+struct Bag:
+    items: list[int]
+
+struct Count:
+    seen: int
+
+error Refused:
+    code: int
+
+def bump(box: shared Count, bags: dict[str, Bag], key: str) -> dict[str, Bag]:
+    mut kept = bags
+    mut bag = kept[key]
+    lock box as ref held:
+        held.seen += 1
+    bag.items.append(len(bag.items))
+    kept[key] = bag
+    return kept
+
+def bump_each(box: shared Count, ref bags: list[Bag]):
+    for ref bag in bags:
+        lock box as ref held:
+            held.seen += 1
+        bag.items.append(len(bag.items))
+
+def refuse_each(box: shared Count, ref bags: list[Bag]) fails Refused:
+    for ref bag in bags:
+        lock box as ref held:
+            held.seen += 10
+            if len(bag.items) > 1:
+                fail Refused(code=len(bag.items))
+        bag.items.append(0)
+
+def main(stdout: Stdout):
+    shared box = Count(seen=0)
+    mut bags = {"a": Bag(items=[1]), "b": Bag(items=list[int]())}
+    bags = bump(box, bags, key="a")
+    stdout.print(bags)
+    mut listed = [Bag(items=[7]), Bag(items=list[int]())]
+    bump_each(box, ref listed)
+    stdout.print(listed)
+    refuse_each(box, ref listed) except why:
+        stdout.print("refused", why.code)
+    stdout.print(listed)
+    lock box as held:
+        stdout.print(held.seen)
+    return

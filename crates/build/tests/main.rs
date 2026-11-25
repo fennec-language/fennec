@@ -169,6 +169,31 @@ fn an_entry_read_with_its_hash_gives_the_hash_it_was_checked_against() {
     std::fs::remove_dir_all(&home).unwrap();
 }
 
+/// An entry's hash read without its bytes is the one a read checks them against. It's read alone,
+/// so bytes torn since don't change it, and the read that needs them still finds them torn. An
+/// entry too short to end with a hash, or none, has no hash to read.
+#[test]
+fn an_entrys_hash_is_read_without_its_bytes() {
+    let home = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-build-test-written-hash-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    let cache = fennec_build::Cache::new(&home);
+    assert!(cache.written_hash("run-image", "game.image").is_none());
+    cache.write("run-image", "game.image", b"an image").unwrap();
+    let (_, read) = cache.read_hashed("run-image", "game.image").unwrap();
+    assert_eq!(cache.written_hash("run-image", "game.image"), Some(read));
+    let path = cache.path("run-image", "game.image");
+    let mut torn = std::fs::read(&path).unwrap();
+    torn[0] ^= 1;
+    std::fs::write(&path, torn).unwrap();
+    assert_eq!(cache.written_hash("run-image", "game.image"), Some(read));
+    assert!(cache.read_hashed("run-image", "game.image").is_none());
+    std::fs::write(&path, b"short").unwrap();
+    assert!(cache.written_hash("run-image", "game.image").is_none());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
 #[test]
 fn snapshots_are_stored_and_read_back() {
     let home =

@@ -12,8 +12,10 @@ use fennec_syntax::{BinOp, Span};
 use crate::emit::{Emit, ITEM_ACCESS};
 
 impl Emit<'_, '_, '_> {
-    /// A literal's block, made the first time it's read, then kept by a global, which owns it for
-    /// the whole run. Each thread makes its own, since blocks belong to the thread making them.
+    /// A literal's block, `embed_file`'s and `embed_folder`'s bytes among them: made the first
+    /// time any thread reads it, then kept by a global for the whole run, and every thread reads
+    /// that one. The runtime makes it, and gives it to the thread that asked first to copy the
+    /// bytes in, marked by its lowest bit; another asking meanwhile waits until it's filled in.
     pub(crate) fn bytes_literal(&mut self, data: &[u8]) -> String {
         let hash = fennec_blake3::hash(data).to_hex();
         let (held, kept) = (format!("bd_{hash}"), format!("bc_{hash}"));
@@ -23,26 +25,40 @@ impl Emit<'_, '_, '_> {
         }
         let length = data.len();
         self.declare(&format!("@\"{held}\" = linkonce_odr constant [{length} x i8] c\"{shown}\""));
-        let local = if self.module.threads { "thread_local(initialexec) " } else { "" };
-        self.declare(&format!("@\"{kept}\" = linkonce_odr {local}global ptr null"));
-        self.declare("declare ptr @fennec_bytes_constant(i64) nounwind");
+        self.declare(&format!("@\"{kept}\" = linkonce_odr global ptr null, align 8"));
+        self.declare("declare i64 @fennec_bytes_embedded(ptr, i64) nounwind");
+        self.declare("declare void @fennec_bytes_embedded_filled(ptr) nounwind");
         self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
-        let (found, missing, block, value) = (self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{found} = load ptr, ptr @\"{kept}\""));
+        let (found, missing, value) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{found} = load atomic ptr, ptr @\"{kept}\" acquire, align 8"));
         self.line(&format!("{missing} = icmp eq ptr {found}, null"));
         let came_from = self.current.clone();
-        let (make, joined) = (self.label("make_bytes"), self.label("have_bytes"));
-        self.line(&format!("br i1 {missing}, label %{make}, label %{joined}, !prof !0"));
-        self.start_block(&make);
-        self.line(&format!("{block} = call ptr @fennec_bytes_constant(i64 {length})"));
+        let (ask, fill, keep, joined) = (
+            self.label("ask_bytes"),
+            self.label("fill_bytes"),
+            self.label("keep_bytes"),
+            self.label("have_bytes"),
+        );
+        self.line(&format!("br i1 {missing}, label %{ask}, label %{joined}, !prof !0"));
+        self.start_block(&ask);
+        let (given, first, address, block) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{given} = call i64 @fennec_bytes_embedded(ptr @\"{kept}\", i64 {length})"));
+        self.line(&format!("{first} = trunc i64 {given} to i1"));
+        self.line(&format!("{address} = and i64 {given}, -2"));
+        self.line(&format!("{block} = inttoptr i64 {address} to ptr"));
+        self.line(&format!("br i1 {first}, label %{fill}, label %{keep}"));
+        self.start_block(&fill);
         let into = self.offset(&block, DATA_OFFSET);
         self.line(&format!(
             "call void @llvm.memcpy.p0.p0.i64(ptr {into}, ptr @\"{held}\", i64 {length}, i1 false)"
         ));
-        self.line(&format!("store ptr {block}, ptr @\"{kept}\""));
+        self.line(&format!("call void @fennec_bytes_embedded_filled(ptr @\"{kept}\")"));
+        self.line(&format!("br label %{keep}"));
+        self.start_block(&keep);
+        self.line(&format!("store atomic ptr {block}, ptr @\"{kept}\" release, align 8"));
         self.line(&format!("br label %{joined}"));
         self.start_block(&joined);
-        self.line(&format!("{value} = phi ptr [ {found}, %{came_from} ], [ {block}, %{make} ]"));
+        self.line(&format!("{value} = phi ptr [ {found}, %{came_from} ], [ {block}, %{keep} ]"));
         value
     }
 

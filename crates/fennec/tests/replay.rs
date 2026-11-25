@@ -1318,6 +1318,60 @@ fn a_hub_writing_to_connections_on_other_workers_replays_its_writes() -> std::io
     Ok(())
 }
 
+/// Asks `localhost` on the port it's given, with a short timeout, and prints the answer.
+const ASKS_LOCALHOST: &str = "from std.net import NetError
+
+def main(net: Net, args: Args, stdout: Stdout) fails NetError:
+    got = net.get(f\"http://localhost:{args[0]}/one\", timeout=1s)?
+    stdout.print(got.status, got.text())
+";
+
+/// A request of `localhost`, to a server listening only on `127.0.0.1`, is recorded as what it
+/// came to, so a replay prints the same with no server there. How long connecting took, trying
+/// `::1` first where the system looks it up so, is in no recording: a replay never connects.
+#[test]
+fn a_request_of_localhost_replays_as_what_it_came_to() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("localhost")?;
+    let program = dir.join("asks.fen");
+    std::fs::write(&program, ASKS_LOCALHOST)?;
+    let log = dir.join("asks.log");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    let serving = std::thread::spawn(move || -> std::io::Result<()> {
+        let (mut connection, _) = listener.accept()?;
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") && connection.read(&mut byte)? == 1 {
+            head.extend_from_slice(&byte);
+        }
+        connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+    });
+    let recorded = fennec_command()
+        .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+        .arg(&program)
+        .arg(port.to_string())
+        .current_dir(&dir)
+        .output_before(DEADLINE)?;
+    // A run that never connected leaves the server waiting: one connection lets it go.
+    if !serving.is_finished() {
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+    }
+    let _ = serving.join();
+    let recorded = without_build_hints(outcome(&recorded));
+    assert_eq!(recorded.0, "200 hello\n", "{recorded:?}");
+    let replayed = fennec_command()
+        .args(["replay", &log.to_string_lossy()])
+        .current_dir(&dir)
+        .output_before(DEADLINE)?;
+    assert_eq!(without_build_hints(outcome(&replayed)), recorded);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task serves, `main` makes one request of it and closes the server: no stop comes into it.
 const SERVED_IN_A_TASK: &str = "from std.concurrent import Crashed
 from std.net import NetError, Request, Response, Server

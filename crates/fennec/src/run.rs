@@ -71,10 +71,10 @@ pub(crate) fn prepared(path: &str, tested: bool, executable: &std::path::Path) -
     // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
     // standard error. It's found while the program is built, which takes as long or longer.
     crate::lint::find_errors_beside(path);
-    let (program, checked, kept) = reached(path).inspect_err(|_| crate::lint::show_errors_found())?;
+    let (program, kept) = reached(path).inspect_err(|_| crate::lint::show_errors_found())?;
     // What LLVM can't take yet, or a tool or library that isn't there, is said as `fennec build`
     // says it.
-    match built((program, checked, kept.as_deref()), path, executable) {
+    match built((program, kept.as_deref()), path, executable) {
         Ok(None) => {
             crate::lint::show_errors_found();
             Ok(())
@@ -88,20 +88,20 @@ pub(crate) fn prepared(path: &str, tested: bool, executable: &std::path::Path) -
     }
 }
 
-/// What a run knows of its program's check.
-enum Checked {
-    /// Checked and resolved for a build, with what the check found, when that's known.
-    Resolved(Option<Box<fennec_check::Signatures>>),
-    /// A kept image, the program as it was checked when it was kept: its files are the ones it was
-    /// kept from, so it checks the same. It's checked again, which resolves it, only if it has to
-    /// be built.
-    Kept,
+/// The program a run starts from.
+enum Reached {
+    /// Loaded, checked and resolved for a build, with what the check found, when that's known.
+    Loaded(Box<fennec_kit::Program>, Option<Box<fennec_check::Signatures>>),
+    /// A kept image, by the hash it was written with: the program as it was checked when it was
+    /// kept, from the files it was kept from, so it checks the same. It's read, decoded and
+    /// checked again, which resolves it, only if it has to be built.
+    Kept(fennec_blake3::Hash),
 }
 
 /// Builds the program to `executable` through LLVM's cached dev build. Some code when it's to stop
 /// instead, having said why.
 fn built(
-    (mut program, checked, kept): (fennec_kit::Program, Checked, Option<&str>),
+    (reached, kept): (Reached, Option<&str>),
     path: &str,
     executable: &std::path::Path,
 ) -> Result<Option<ExitCode>, String> {
@@ -109,22 +109,7 @@ fn built(
     // A program the same as a run before had, kept as an image, starts from what that run built,
     // with nothing lowered or compiled to find it again: never one built before the build daemon
     // last found an analysis it kept wrong (`kept::analyses_found_wrong`).
-    let started_from = kept.zip(cache()).map(|(kept, cache)| {
-        let name = format!(
-            "{}.root",
-            fennec_blake3::hash(
-                format!(
-                    "{kept} {} {} {}",
-                    env!("FENNEC_BUILD"),
-                    crate::aot::dev_build_settings(),
-                    crate::kept::analyses_found_wrong()
-                )
-                .as_bytes()
-            )
-            .to_hex()
-        );
-        (cache, name)
-    });
+    let mut started_from = kept.zip(cache()).map(|(kept, cache)| (cache, root_name(kept)));
     // A count of analyses found wrong that can't be read names nothing that can be trusted.
     let trusted = crate::kept::analyses_found_wrong() != u64::MAX;
     let ready = trusted
@@ -135,20 +120,27 @@ fn built(
                 .is_some_and(|root| crate::aot::stored_executable(cache, &root, executable).is_some())
         });
     if !ready {
-        let checked = match checked {
-            Checked::Resolved(signatures) => signatures.map(|signatures| *signatures),
-            Checked::Kept => match fennec_check::check_to_build(&mut program.module) {
-                Ok(signatures) => signatures,
-                // A kept image that doesn't check as it did is passed over for the files.
-                Err(_) => match cache().map(|cache| loaded(path, &cache)) {
-                    Some(Ok((loaded, Checked::Resolved(signatures), _))) => {
-                        program = loaded;
-                        signatures.map(|signatures| *signatures)
-                    }
-                    Some(Err(code)) => return Ok(Some(code)),
-                    _ => return Err("its kept image couldn't be checked again".to_owned()),
-                },
-            },
+        let (program, checked) = match reached {
+            Reached::Loaded(program, signatures) => (*program, signatures.map(|signatures| *signatures)),
+            Reached::Kept(image) => {
+                let read = cache().and_then(|cache| crate::image::program(path, &cache, image));
+                let checked =
+                    read.map(|mut program| (fennec_check::check_to_build(&mut program.module), program));
+                match checked {
+                    Some((Ok(signatures), program)) => (program, signatures),
+                    // A kept image that's gone, changed or doesn't check as it did is passed over
+                    // for the files, kept again as they're loaded, and what's built is noted for
+                    // that image.
+                    _ => match cache().map(|cache| loaded(path, &cache)) {
+                        Some(Ok((Reached::Loaded(program, signatures), kept))) => {
+                            started_from = kept.zip(cache()).map(|(kept, cache)| (cache, root_name(&kept)));
+                            (*program, signatures.map(|signatures| *signatures))
+                        }
+                        Some(Err(code)) => return Ok(Some(code)),
+                        _ => return Err("its kept image couldn't be checked again".to_owned()),
+                    },
+                }
+            }
         };
         let built = build_for_run((&program, checked), path, executable)?;
         if let (Some((cache, name)), Some(root)) = (&started_from, &built.root) {
@@ -160,6 +152,19 @@ fn built(
         }
     }
     Ok(None)
+}
+
+/// The name the root of what a kept image built is kept by, in `RUN_ROOTS`: the image, as
+/// `image::kept` hashes it, and this build of Fennec, its settings, and how many analyses the build
+/// daemon found wrong.
+fn root_name(kept: &str) -> String {
+    let named = format!(
+        "{kept} {} {} {}",
+        env!("FENNEC_BUILD"),
+        crate::aot::dev_build_settings(),
+        crate::kept::analyses_found_wrong()
+    );
+    format!("{}.root", fennec_blake3::hash(named.as_bytes()).to_hex())
 }
 
 /// Where the root of what a kept image built is kept, by the image and what else the build read.
@@ -390,25 +395,22 @@ fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), 
 /// its text changes; the cache remembers the text that passed. The cut-down program is what
 /// always runs, so its machine code is reused from the very first run.
 /// With the program, the signatures a build of it would work out, when its check gave them.
-fn reached(path: &str) -> Result<(fennec_kit::Program, Checked, Option<String>), ExitCode> {
+fn reached(path: &str) -> Result<(Reached, Option<String>), ExitCode> {
     let Some(cache) = cache() else {
-        return whole(path).map(|(program, _)| (program, Checked::Resolved(None), None));
+        return whole(path).map(|(program, _)| (Reached::Loaded(Box::new(program), None), None));
     };
-    // A kept image is checked again only when the run has to build it: a program the store has,
-    // by a key that holds the image's own, needs nothing more from it.
-    if let Some((program, kept)) = crate::image::load(path, &cache) {
+    // A kept image is read and checked again only when the run has to build it: a program the
+    // store has, by a key that holds the image's own, needs nothing more from it.
+    if let Some((image, kept)) = crate::image::kept(path, &cache) {
         crate::lint::lend_loaded(None, path);
-        return Ok((program, Checked::Kept, Some(kept)));
+        return Ok((Reached::Kept(image), Some(kept)));
     }
     loaded(path, &cache)
 }
 
 /// The program at `path` loaded from its files, checked when its text is new, cut down to what
 /// `main` reaches and kept as an image.
-fn loaded(
-    path: &str,
-    cache: &fennec_build::Cache,
-) -> Result<(fennec_kit::Program, Checked, Option<String>), ExitCode> {
+fn loaded(path: &str, cache: &fennec_build::Cache) -> Result<(Reached, Option<String>), ExitCode> {
     let cache = cache.clone();
     let files = crate::image::files_now(path, &cache);
     let loaded = crate::load(path, fennec_kit::Entry::Main).map(std::sync::Arc::new);
@@ -461,9 +463,9 @@ fn loaded(
         None
     };
     match fennec_check::check_to_build(&mut program.module) {
-        Ok(signatures) => Ok((program, Checked::Resolved(signatures.map(Box::new)), kept)),
+        Ok(signatures) => Ok((Reached::Loaded(Box::new(program), signatures.map(Box::new)), kept)),
         // Cutting it down missed something the whole program has.
-        Err(_) => whole(path).map(|(program, _)| (program, Checked::Resolved(None), None)),
+        Err(_) => whole(path).map(|(program, _)| (Reached::Loaded(Box::new(program), None), None)),
     }
 }
 

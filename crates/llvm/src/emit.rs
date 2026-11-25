@@ -1085,6 +1085,7 @@ impl<'p> Module<'_, 'p> {
             check_kind: None,
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
+            ranged_flags: HashMap::new(),
             pair_slots: HashMap::new(),
             taken_places: HashMap::new(),
             walks: HashMap::new(),
@@ -1326,6 +1327,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) inside_items: Vec<FieldPath>,
     /// Where the position each was found at is kept, negative indexes counted from the end.
     pub(crate) inside_slots: HashMap<FieldPath, String>,
+    /// For each check of item ranges (`range_scans`), the flag saying it held when last made
+    /// (`check_item_ranges`): clear until it's made.
+    pub(crate) ranged_flags: HashMap<usize, String>,
     /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
     pub(crate) pair_slots: HashMap<usize, String>,
     /// The slot holding where each item taken out of a `Table` to be put back is, by the local it
@@ -1509,6 +1513,11 @@ impl Emit<'_, '_, '_> {
         for at in steady {
             let _ = writeln!(self.allocas, "  %sl{at} = alloca i64");
             self.keep_length(LocalId(at));
+        }
+        // Each check of item ranges (`find_ranged_reads`) has its flag, clear until it's made.
+        for id in 0..self.known.range_scans.len() {
+            let flag = self.flag_slot();
+            self.ranged_flags.insert(id, flag);
         }
         // What every call gives a parameter, which what's proven from it leans on.
         if self.checks_proofs() && !self.known.param_ranges.is_empty() {
@@ -1704,6 +1713,7 @@ impl Emit<'_, '_, '_> {
             for local in self.alone_before_loops.get(&at).cloned().unwrap_or_default() {
                 self.alone_for_loop(local)?;
             }
+            self.check_item_ranges(at)?;
             self.terminator(&block.end)?;
         }
         // What follows runs on a crash from anywhere in the function, in no loop.

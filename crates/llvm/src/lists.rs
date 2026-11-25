@@ -1646,7 +1646,10 @@ impl Emit<'_, '_, '_> {
             Some((low, own)) if matches!(index_operand, Operand::Local(read_at) if *read_at == own) => {
                 self.adjacent_position((list, &length), low, index, span)
             }
-            _ => self.position_checked(&length, index, span),
+            _ => match self.ranged_flag(from) {
+                Some(flag) => self.ranged_position((list, &length), &flag, index, span),
+                None => self.position_checked(&length, index, span),
+            },
         };
         if let Some(fact) = fact {
             let slot = if let Some(slot) = self.inside_slots.get(&fact) {
@@ -1698,6 +1701,107 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{joined}"));
         self.start_block(&inside);
         self.proof_inside(list, index, "both of two reads next to each other inside their list", span);
+        self.line(&format!("br label %{joined}"));
+        let inside_in = self.current.clone();
+        self.start_block(&joined);
+        let position = self.temp();
+        self.line(&format!("{position} = phi i64 [ {index}, %{inside_in} ], [ {checked}, %{checked_in} ]"));
+        position
+    }
+
+    /// The flag of the check of item ranges that covers the read being written from `from`, if
+    /// one does (`find_ranged_reads`).
+    fn ranged_flag(&self, from: Option<LocalId>) -> Option<String> {
+        let (id, scan) = self.known.ranged_read(self.at)?;
+        if from != Some(LocalId(scan.read)) {
+            return None;
+        }
+        self.ranged_flags.get(&id).cloned()
+    }
+
+    /// At the end of the block going into a loop, the checks of item ranges reads in the loop
+    /// lean on (`find_ranged_reads`): whether every item of a list bounding their index is from 0
+    /// to the read list's length. Neither list can change in the function, so a check that held
+    /// holds at every read after it. The greatest item is found as unsigned, where a negative item
+    /// is greater than any length. A check costs a step an item, so it's made only for a list of
+    /// at most 64 items or at most 4 for each turn the loop is to take, and its flag is left clear
+    /// otherwise: it never costs much more than the loop would.
+    pub(crate) fn check_item_ranges(&mut self, before: usize) -> Result<(), String> {
+        let scans: Vec<(usize, crate::analysis::RangeScan)> = self
+            .known
+            .range_scans
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, scan)| scan.before == before)
+            .collect();
+        for (id, scan) in scans {
+            let flag = self.ranged_flags.get(&id).cloned().ok_or("a check of item ranges with no flag")?;
+            let (list, slot) = (self.temp(), self.slot(LocalId(scan.bounds)));
+            self.line(&format!("{list} = load ptr, ptr {slot}"));
+            let count = self.list_length(&list);
+            let (first, _) = self.operand(&Operand::Local(LocalId(scan.count)))?;
+            let (stop, _) = self.operand(&Operand::Local(LocalId(scan.stop)))?;
+            let (turns, quarter, enough, small, worth) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{turns} = sub i64 {stop}, {first}"));
+            self.line(&format!("{quarter} = lshr i64 {count}, 2"));
+            self.line(&format!("{enough} = icmp sle i64 {quarter}, {turns}"));
+            self.line(&format!("{small} = icmp ule i64 {count}, 64"));
+            self.line(&format!("{worth} = or i1 {small}, {enough}"));
+            let (checking, walk, done) = (self.label("range_check"), self.label("range_walk"), self.label("range_walked"));
+            let skipped = self.current.clone();
+            self.line(&format!("br i1 {worth}, label %{checking}, label %{done}"));
+            self.start_block(&checking);
+            let (other, other_slot) = (self.temp(), self.slot(LocalId(scan.read)));
+            self.line(&format!("{other} = load ptr, ptr {other_slot}"));
+            let limit = self.length_of_list(Some(LocalId(scan.read)), &other);
+            let (items, empty) = (self.temp(), self.temp());
+            self.line(&format!("{items} = getelementptr inbounds i8, ptr {list}, i64 {LIST_ITEMS}"));
+            self.line(&format!("{empty} = icmp eq i64 {count}, 0"));
+            let (summed, walked) = (self.label("range_measured"), self.label("range_none"));
+            self.line(&format!("br i1 {empty}, label %{walked}, label %{walk}"));
+            self.start_block(&walk);
+            let (at, most, place, item, greater, next, end) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{at} = phi i64 [ 0, %{checking} ], [ {next}, %{walk} ]"));
+            self.line(&format!("{most} = phi i64 [ 0, %{checking} ], [ {greater}, %{walk} ]"));
+            self.line(&format!("{place} = getelementptr inbounds i64, ptr {items}, i64 {at}"));
+            self.line(&format!("{item} = load i64, ptr {place}"));
+            self.declare("declare i64 @llvm.umax.i64(i64, i64)");
+            self.line(&format!("{greater} = call i64 @llvm.umax.i64(i64 {most}, i64 {item})"));
+            self.line(&format!("{next} = add nuw i64 {at}, 1"));
+            self.line(&format!("{end} = icmp eq i64 {next}, {count}"));
+            self.line(&format!("br i1 {end}, label %{summed}, label %{walk}"));
+            self.start_block(&walked);
+            self.line(&format!("br label %{summed}"));
+            self.start_block(&summed);
+            let (greatest, ok) = (self.temp(), self.temp());
+            self.line(&format!("{greatest} = phi i64 [ 0, %{walked} ], [ {greater}, %{walk} ]"));
+            self.line(&format!("{ok} = icmp ule i64 {greatest}, {limit}"));
+            self.line(&format!("br label %{done}"));
+            self.start_block(&done);
+            let held = self.temp();
+            self.line(&format!("{held} = phi i1 [ false, %{skipped} ], [ {ok}, %{summed} ]"));
+            self.line(&format!("store i1 {held}, ptr {flag}"));
+        }
+        Ok(())
+    }
+
+    /// Where a read `find_ranged_reads` found points: where the function's check of the items
+    /// bounding its index held, the index itself, and otherwise checked as any read is, to fail
+    /// where it always did.
+    fn ranged_position(&mut self, (list, length): (&str, &str), flag: &str, index: &str, span: Span) -> String {
+        let held = self.temp();
+        self.line(&format!("{held} = load i1, ptr {flag}"));
+        let (inside, alone, joined) = (self.label("ranged"), self.label("unranged"), self.label("placed"));
+        self.line(&format!("br i1 {held}, label %{inside}, label %{alone}, !prof !8"));
+        self.start_block(&alone);
+        let checked = self.position_checked(length, index, span);
+        let checked_in = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&inside);
+        self.proof_inside(list, index, "a count between two items checked to be inside the list", span);
         self.line(&format!("br label %{joined}"));
         let inside_in = self.current.clone();
         self.start_block(&joined);

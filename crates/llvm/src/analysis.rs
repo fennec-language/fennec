@@ -158,6 +158,14 @@ pub(crate) struct Analysis {
     /// Reads of a list's item, by block and place in it, that a guard proves in range: see
     /// `find_guarded_reads`.
     guarded_reads: HashSet<(usize, usize)>,
+    /// Reads of a list's item, by block and place in it, whose index counts from one item of
+    /// another list up to before another of its items: in range wherever every item of that list
+    /// is from 0 to the read list's length, which the function checks once on its way in. Each
+    /// is the check, by its place in `range_scans`. See `find_ranged_reads`.
+    pub(crate) ranged_reads: HashMap<(usize, usize), usize>,
+    /// The checks of item ranges those reads lean on, each made at the end of the block going into
+    /// the outermost loop the reads are in.
+    pub(crate) range_scans: Vec<RangeScan>,
     /// The int parameters every call gives a known range, with it (see `param_ranges`). A build
     /// that checks proofs checks each on the way in.
     pub(crate) param_ranges: Vec<(usize, Range)>,
@@ -217,6 +225,8 @@ impl Analysis {
             walk_keys,
             pairs,
             guarded_reads,
+            ranged_reads,
+            range_scans,
             param_ranges,
         } = self;
         hash_set(safe, state);
@@ -266,6 +276,8 @@ impl Analysis {
         hash_set(walk_keys, state);
         hash_map(pairs, state);
         hash_set(guarded_reads, state);
+        hash_map(ranged_reads, state);
+        range_scans.hash(state);
         param_ranges.hash(state);
     }
 }
@@ -766,6 +778,7 @@ fn analyze(
     });
     known.steady_lengths = steady_lengths(function, &grown, &known);
     find_guarded_reads(function, (&facts, &multi), &mut known);
+    find_ranged_reads(function, &mut known);
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
     find_slice_keys(function, in_entries, &mut known);
@@ -1192,6 +1205,166 @@ fn find_guarded_reads(
             }
         }
     }
+}
+
+/// Reads `order[at]` whose index counts up a `for` loop over `range(starts[a], starts[b])`, where
+/// `starts` is a list parameter nothing here changes and `order` a list whose length nothing here
+/// changes, as a counting sort's buckets are read. Where every item of `starts` is from 0 to
+/// `len(order)`, which the function checks once on its way in (`Emit::check_item_ranges`), the
+/// count starts at 0 or more, steps up by one, and stays below an item, so the read is inside
+/// `order`. Where the check didn't hold, the read is checked as it always was.
+fn find_ranged_reads(function: &Function, known: &mut Analysis) {
+    let once = |local: usize| known.writes.get(local) == Some(&1) && !known.given_mut.contains(&local);
+    // What writes each local written once.
+    let mut made: HashMap<usize, &InstKind> = HashMap::new();
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        visit(
+            &inst.kind,
+            |_| {},
+            |local| {
+                made.insert(local.0, &inst.kind);
+            },
+        );
+    }
+    // A list parameter nothing here changes or gives another value, holding ints.
+    let steady_items = |list: usize| {
+        list < function.params
+            && !function.mut_params.contains(&list)
+            && known.writes.get(list) == Some(&0)
+            && !known.changed.contains(&list)
+            && !known.given_mut.contains(&list)
+            && matches!(function.locals.get(list).map(|local| &local.ty), Some(Type::List(item)) if **item == Type::Int)
+    };
+    // The list a local's value was read out of as an item, through copies, if it's one that keeps
+    // its items.
+    let item_of = |mut local: usize| -> Option<usize> {
+        for _ in 0..8 {
+            if !once(local) {
+                return None;
+            }
+            match made.get(&local)? {
+                InstKind::Copy { value: Operand::Local(from), .. } => local = from.0,
+                InstKind::GetIndex { object: Operand::Local(list), .. } if steady_items(list.0) => {
+                    return Some(list.0);
+                }
+                _ => return None,
+            }
+        }
+        None
+    };
+    let mut found: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+    for count in function.counts.iter().filter(|count| !count.down) {
+        let Some(bounds) = item_of(count.stop.0) else { continue };
+        // The count's first value, the one write of it that isn't its step.
+        let mut starts = function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
+            InstKind::Copy { dest, value } if *dest == count.count => Some(value.clone()),
+            InstKind::Binary { dest, op: BinOp::Add, lhs: Operand::Local(from), rhs: Operand::Int(1) }
+                if *dest == count.count && *from == count.count =>
+            {
+                None
+            }
+            _ => {
+                let mut writes = false;
+                visit(&inst.kind, |_| {}, |local| writes |= local == count.count);
+                writes.then_some(Operand::None)
+            }
+        });
+        let (Some(first), None) = (starts.next(), starts.next()) else { continue };
+        let from_bounds = match first {
+            Operand::Int(start) => start >= 0,
+            Operand::Local(start) => item_of(start.0) == Some(bounds),
+            _ => false,
+        };
+        if !from_bounds {
+            continue;
+        }
+        for (at, block) in function.blocks.iter().enumerate() {
+            for (index, inst) in block.insts.iter().enumerate() {
+                let InstKind::GetIndex { object: Operand::Local(read), index: Operand::Local(position), .. } =
+                    &inst.kind
+                else {
+                    continue;
+                };
+                let counted = *position == count.count || known.below.get(&position.0) == Some(&count.stop);
+                if counted
+                    && known.below.get(&position.0) == Some(&count.stop)
+                    && known.steady_lengths.contains(&read.0)
+                {
+                    found.insert((at, index), (bounds, read.0));
+                }
+            }
+        }
+    }
+    // Each counted loop's blocks, its start among them, and the one block going into it.
+    let mut ways_in: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (from, block) in function.blocks.iter().enumerate() {
+        for to in block.end.targets() {
+            ways_in.entry(to.0).or_default().push(from);
+        }
+    }
+    let mut loops = Vec::new();
+    for count in function.counts.iter().filter(|count| !count.down) {
+        let held = Operand::Local(count.count);
+        let header = function.blocks.iter().position(|block| {
+            let Terminator::Branch { cond: Operand::Local(cond), .. } = &block.end else { return false };
+            block.insts.iter().any(|inst| {
+                matches!(&inst.kind, InstKind::Binary { dest, op: BinOp::Lt, lhs, rhs: Operand::Local(stop) }
+                    if dest == cond && *lhs == held && *stop == count.stop)
+            })
+        });
+        let Some(header) = header else { continue };
+        let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|block| &block.end) else {
+            continue;
+        };
+        let mut blocks = loop_blocks(function, header, then.0);
+        blocks.insert(header);
+        let outside: Vec<usize> = ways_in
+            .get(&header)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .copied()
+            .filter(|from| !blocks.contains(from))
+            .collect();
+        let [before] = outside.as_slice() else { continue };
+        if function.blocks.get(*before).is_some_and(|block| matches!(block.end, Terminator::Jump(to) if to.0 == header)) {
+            loops.push((blocks, *before, *count));
+        }
+    }
+    // A read's check is made before the outermost loop it's in, where the loop's count says how
+    // many turns it takes, so a check that costs more than they could is left out.
+    let mut scans: Vec<RangeScan> = Vec::new();
+    let mut reads = HashMap::new();
+    let mut places: Vec<_> = found.into_iter().collect();
+    places.sort_unstable();
+    for ((at, index), (bounds, read)) in places {
+        let Some((_, before, count)) = loops
+            .iter()
+            .filter(|(blocks, _, _)| blocks.contains(&at))
+            .max_by_key(|(blocks, before, _)| (blocks.len(), usize::MAX - before))
+        else {
+            continue;
+        };
+        let scan = RangeScan { bounds, read, before: *before, count: count.count.0, stop: count.stop.0 };
+        let id = scans.iter().position(|known| *known == scan).unwrap_or_else(|| {
+            scans.push(scan);
+            scans.len() - 1
+        });
+        reads.insert((at, index), id);
+    }
+    known.ranged_reads = reads;
+    known.range_scans = scans;
+}
+
+/// A check, at the end of the block `before`, that every item of the list `bounds` is from 0 to
+/// the length of `read`, made only when the loop that block goes into, counting `count` up to
+/// `stop`, takes enough turns to pay for it (`find_ranged_reads`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RangeScan {
+    pub(crate) bounds: usize,
+    pub(crate) read: usize,
+    pub(crate) before: usize,
+    pub(crate) count: usize,
+    pub(crate) stop: usize,
 }
 
 /// Whether a local is never below 0: each write gives it a number from 0 up, or adds one to what
@@ -3979,6 +4152,8 @@ impl Analysis {
             walk_items: HashMap::new(),
             pairs: HashMap::new(),
             guarded_reads: HashSet::new(),
+            ranged_reads: HashMap::new(),
+            range_scans: Vec::new(),
             param_ranges: Vec::new(),
         }
     }
@@ -3999,6 +4174,13 @@ impl Analysis {
     /// the guard before it says.
     pub(crate) fn guarded_read(&self, at: (usize, usize)) -> bool {
         self.guarded_reads.contains(&at)
+    }
+
+    /// The list whose items bound the index of the read at this block and place in it, and the
+    /// list read, if the read is inside wherever the function's check of those items held.
+    pub(crate) fn ranged_read(&self, at: (usize, usize)) -> Option<(usize, RangeScan)> {
+        let id = *self.ranged_reads.get(&at)?;
+        Some((id, *self.range_scans.get(id)?))
     }
 
     /// Whether `list[index]` can't be out of range. A copy standing for the list a loop goes
@@ -5828,8 +6010,11 @@ fennec_syntax::codec_fields!(Analysis {
     walk_keys,
     pairs,
     guarded_reads,
+    ranged_reads,
+    range_scans,
     param_ranges,
     slice_ranges,
 });
+fennec_syntax::codec_fields!(RangeScan { bounds, read, before, count, stop });
 fennec_syntax::codec_fields!(AloneInLoop { entry, blocks, locals });
 fennec_syntax::codec_fields!(Reserved { list, limit, copied_from });

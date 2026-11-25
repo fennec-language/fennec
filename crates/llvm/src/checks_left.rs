@@ -231,6 +231,24 @@ mod tests {
             .collect())
     }
 
+    /// A read whose index counts between two items of a list nothing changes, as a counting sort's
+    /// buckets are read, has those items checked once on the way in: where every item is from 0
+    /// to the read list's length the read takes no check, and otherwise it's checked as before. A
+    /// list the function can change, through `ref`, isn't checked once, and keeps every check.
+    #[test]
+    fn a_read_between_two_items_of_a_list_checked_once_keeps_no_check() -> Result<(), String> {
+        let body = "def go(xs: list[float], cells: list[int], starts: list[int], order: list[int]) -> int:\n    mut touched = 0\n    for ball in range(len(xs)):\n        cell = cells[ball]\n        for near in range(cell, cell + 3):\n            for at in range(starts[near], starts[near + 1]):\n                other = order[at]\n                if other <= ball: continue\n                if xs[other] > xs[ball]:\n                    touched += 1\n    return touched\n";
+        let (units, _, _) = crate::emit(&lowered(body)?)?;
+        let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+        assert_eq!(text.matches("call i64 @llvm.umax.i64(").count(), 1, "{text}");
+        assert_eq!(text.matches(", label %ranged").count(), 1, "{text}");
+        let changed = body.replace("starts: list[int]", "ref starts: list[int]").replace("    mut touched = 0\n", "    mut touched = 0\n    starts[0] = 0\n");
+        let (units, _, _) = crate::emit(&lowered(&changed)?)?;
+        let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+        assert_eq!(text.matches("@llvm.umax.i64(").count(), 0, "{text}");
+        Ok(())
+    }
+
     /// The overflow checks emit writes for `+`, `-` and `*` are the ones reported, for programs with
     /// no other kind of overflow check.
     #[test]

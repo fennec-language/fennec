@@ -2,6 +2,8 @@
 import '@fontsource-variable/inter';
 import '@fontsource-variable/jetbrains-mono';
 import '../styles/global.css';
+import Mark from '../components/Mark.astro';
+import Wordmark from '../components/Wordmark.astro';
 
 interface Props {
   title: string;
@@ -10,97 +12,135 @@ interface Props {
 
 const { title, description } = Astro.props;
 const base = import.meta.env.BASE_URL;
-const pageTitle = title === 'Fennec' ? 'Fennec: fast to write, fast to build, fast to run' : `${title} · Fennec`;
-const learn = [
+const pageTitle = title === 'Fennec' ? 'Fennec: fast enough for games, strict enough for agents' : `${title} · Fennec`;
+const nav = [
   { href: 'tour/', label: 'Tour' },
   { href: 'reference/', label: 'Language' },
-  { href: 'library/', label: 'Reference' },
-];
-const nav = [
+  { href: 'library/', label: 'Library' },
   { href: 'benchmarks/', label: 'Benchmarks' },
-  { href: 'ai/', label: 'For AI' },
-  { href: 'den/', label: 'Den' },
-  { href: 'why/', label: 'Why' },
+  { href: 'ai/', label: 'For agents' },
   { href: 'roadmap/', label: 'Roadmap' },
 ];
+const footer = [
+  {
+    title: 'Learn',
+    links: [
+      { href: 'tour/', label: 'Tour' },
+      { href: 'reference/', label: 'Language' },
+      { href: 'library/', label: 'Library' },
+      { href: 'why/', label: 'Why Fennec' },
+    ],
+  },
+  {
+    title: 'Measure',
+    links: [
+      { href: 'benchmarks/', label: 'Benchmarks' },
+      { href: 'speed/', label: 'How it gets fast' },
+      { href: 'ai/', label: 'For agents' },
+    ],
+  },
+  {
+    title: 'Project',
+    links: [
+      { href: 'roadmap/', label: 'Roadmap' },
+      { href: 'den/', label: 'The Den' },
+      { href: 'brand/', label: 'Brand' },
+      { href: 'https://github.com/fennec-language/fennec', label: 'GitHub' },
+    ],
+  },
+];
 const current = Astro.url.pathname;
+const href = (link: string) => (link.startsWith('http') ? link : `${base}${link}`);
 ---
 
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>{pageTitle}</title>
     <meta name="description" content={description} />
+    <meta name="theme-color" content="#0c0b10" />
     <meta property="og:title" content={pageTitle} />
     <meta property="og:description" content={description} />
-    <meta property="og:image" content={new URL(`${base}brand/fennec-logo-512.png`, Astro.site)} />
-    <link rel="icon" type="image/png" sizes="32x32" href={`${base}brand/favicon-32.png`} />
-    <link rel="icon" type="image/png" sizes="64x64" href={`${base}brand/favicon-64.png`} />
+    <meta property="og:image" content={new URL(`${base}brand/og-image.png`, Astro.site)} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href={`${base}brand/favicon.ico`} sizes="48x48" />
+    <link rel="icon" href={`${base}brand/favicon.svg`} type="image/svg+xml" />
     <link rel="apple-touch-icon" href={`${base}brand/apple-touch-icon.png`} />
   </head>
   <body>
     <header class="site-header">
       <div class="wrap header-inner">
-        <a class="brand" href={base}>
-          <img src={`${base}brand/fennec-logo-96.webp`} alt="" width="32" height="32" />
-          <span>fennec</span>
+        <a class="brand" href={base} aria-label="Fennec, home">
+          <Mark size={30} class="brand-mark alive" />
+          <Wordmark height={19} />
+          <span class="cursor" aria-hidden="true"></span>
         </a>
         <nav aria-label="Main">
-          <details class="learn">
-            <summary>Learn</summary>
-            <div class="learn-menu">
-              {
-                learn.map((item) => (
-                  <a href={`${base}${item.href}`} aria-current={current === `${base}${item.href}` ? 'page' : undefined}>
-                    {item.label}
-                  </a>
-                ))
-              }
-            </div>
-          </details>
           {
             nav.map((item) => (
-              <a href={`${base}${item.href}`} aria-current={current === `${base}${item.href}` ? 'page' : undefined}>
+              <a href={href(item.href)} aria-current={current === href(item.href) ? 'page' : undefined}>
                 {item.label}
               </a>
             ))
           }
-          <a href="https://github.com/fennec-language/fennec">GitHub</a>
         </nav>
+        <div class="header-end">
+          <span class="status">pre-release</span>
+          <a class="button small" href="https://github.com/fennec-language/fennec">GitHub</a>
+        </div>
       </div>
     </header>
     <main>
       <slot />
     </main>
     <footer class="site-footer">
-      <div class="wrap footer-inner">
-        <div class="footer-brand">
-          <img src={`${base}brand/fennec-logo-96.webp`} alt="" width="28" height="28" />
-          <span>Fennec is in progress and not released yet. Nothing here is stable.</span>
+      <div class="wrap">
+        <div class="footer-cols">
+          <div class="footer-brand">
+            <a class="brand" href={base} aria-label="Fennec, home"><Mark size={28} /><Wordmark height={17} /></a>
+            <p>A compiled language, built in the open. It isn't released yet, and nothing here is stable.</p>
+          </div>
+          {
+            footer.map((col) => (
+              <div>
+                <h4>{col.title}</h4>
+                <ul>
+                  {col.links.map((link) => (
+                    <li>
+                      <a href={href(link.href)}>{link.label}</a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
+          }
         </div>
-        <div class="footer-links">
-          <a href="https://github.com/fennec-language/fennec">GitHub</a>
-          <span>MIT or Apache-2.0</span>
+        <div class="signoff">
+          <span>Apache-2.0 or MIT · pre-release</span>
+          <span>Built by <b>Glave</b></span>
         </div>
       </div>
     </footer>
-    <script>
-      const learn = document.querySelector('details.learn');
-      document.addEventListener('click', (event) => {
-        if (learn && !learn.contains(event.target as Node)) learn.removeAttribute('open');
-      });
-    </script>
   </body>
 </html>
 
 <style>
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0 0 auto;
+    height: env(safe-area-inset-top, 0px);
+    z-index: 11;
+    background: var(--bg);
+  }
+
   .site-header {
     position: sticky;
-    top: 0;
+    top: env(safe-area-inset-top, 0px);
     z-index: 10;
-    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--border);
   }
@@ -108,82 +148,80 @@ const current = Astro.url.pathname;
   .header-inner {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    min-height: 60px;
-    flex-wrap: wrap;
+    gap: 1.75rem;
+    min-height: 62px;
   }
 
   .brand {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    font-weight: 700;
-    font-size: 1.15rem;
-    letter-spacing: -0.01em;
+    gap: 0.55rem;
     color: var(--text);
     text-decoration: none;
+    flex: none;
+  }
+
+  /* Motion: the right ear twitches and the eyes blink now and then; the cursor blinks on hover. */
+  .cursor {
+    width: 0.62rem;
+    height: 0.2rem;
+    margin-left: -0.1rem;
+    align-self: flex-end;
+    margin-bottom: 0.28rem;
+    border-radius: 1px;
+    background: var(--accent);
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .brand :global(.alive .ear-r) {
+      transform-box: fill-box;
+      transform-origin: 20% 95%;
+      animation: twitch 6.5s ease-in-out infinite;
+    }
+    .brand :global(.alive .eyes) {
+      transform-box: fill-box;
+      transform-origin: 50% 50%;
+      animation: blink 7.3s infinite;
+    }
+    .brand:hover .cursor {
+      animation: cursor 1.05s steps(1) infinite;
+    }
+  }
+
+  @keyframes twitch {
+    0%, 90%, 100% { transform: rotate(0); }
+    92% { transform: rotate(-9deg); }
+    94% { transform: rotate(3deg); }
+    96% { transform: rotate(-4deg); }
+  }
+
+  @keyframes blink {
+    0%, 95%, 100% { transform: scaleY(1); }
+    96.5% { transform: scaleY(0.1); }
+  }
+
+  @keyframes cursor {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
   }
 
   nav {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 0.25rem;
-    max-width: 100%;
-  }
-
-  .learn {
-    position: relative;
-  }
-
-  .learn summary {
-    list-style: none;
-    cursor: pointer;
-    color: var(--muted);
-    font-size: 0.95rem;
-    font-weight: 500;
-    padding: 0.35rem 0.6rem;
-    border-radius: 8px;
-  }
-
-  .learn summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .learn summary::after {
-    content: ' ▾';
-    font-size: 0.75em;
-  }
-
-  .learn summary:hover,
-  .learn[open] summary {
-    color: var(--text);
-    background: var(--surface);
-  }
-
-  .learn-menu {
-    position: absolute;
-    z-index: 20;
-    top: calc(100% + 0.35rem);
-    left: 0;
-    min-width: 10rem;
-    display: flex;
-    flex-direction: column;
-    padding: 0.35rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 16px 40px -20px rgb(0 0 0 / 0.4);
+    gap: 0.15rem;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
   nav a {
     color: var(--muted);
     text-decoration: none;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     font-weight: 500;
     padding: 0.35rem 0.6rem;
-    border-radius: 8px;
+    border-radius: 7px;
     white-space: nowrap;
   }
 
@@ -193,40 +231,123 @@ const current = Astro.url.pathname;
     background: var(--surface);
   }
 
-  @media (max-width: 640px) {
+  .header-end {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    flex: none;
+  }
+
+  .status {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .status::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .button.small {
+    height: 2.1rem;
+    padding: 0 0.8rem;
+    font-size: 0.85rem;
+  }
+
+  @media (max-width: 960px) {
     .header-inner {
-      padding-top: 0.5rem;
-      padding-bottom: 0.4rem;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      padding-block: 0.6rem;
     }
     nav {
+      order: 3;
       width: 100%;
       margin: 0 -0.6rem;
+    }
+    .status {
+      display: none;
     }
   }
 
   .site-footer {
-    margin-top: 5rem;
+    margin-top: 6rem;
     border-top: 1px solid var(--border);
-    padding: 2rem 0 3rem;
-    color: var(--muted);
+    padding-block: 3.5rem 2.5rem;
     font-size: 0.9rem;
-  }
-
-  .footer-inner {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    flex-wrap: wrap;
-  }
-
-  .footer-brand,
-  .footer-links {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .footer-links a {
     color: var(--muted);
+  }
+
+  .footer-cols {
+    display: grid;
+    grid-template-columns: 1.6fr repeat(3, 1fr);
+    gap: 2rem;
+  }
+
+  .footer-brand p {
+    margin: 0.9rem 0 0;
+    max-width: 26rem;
+  }
+
+  .site-footer h4 {
+    margin: 0 0 0.7rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  .site-footer ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .site-footer ul a {
+    color: var(--muted);
+    text-decoration: none;
+  }
+
+  .site-footer ul a:hover {
+    color: var(--text);
+  }
+
+  .signoff {
+    margin-top: 2.75rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.82rem;
+    color: var(--faint);
+  }
+
+  .signoff b {
+    color: var(--muted);
+    font-weight: 600;
+  }
+
+  @media (max-width: 760px) {
+    .footer-cols {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .footer-brand {
+      grid-column: 1 / -1;
+    }
   }
 </style>

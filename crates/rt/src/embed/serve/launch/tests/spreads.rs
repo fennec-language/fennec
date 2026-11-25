@@ -606,12 +606,24 @@ const SUMMED: i64 = 4096;
 static SUM: AtomicI64 = AtomicI64::new(0);
 static LEAVES_AT_ONCE: AtomicI64 = AtomicI64::new(0);
 static LEAVES_RUNNING: AtomicI64 = AtomicI64::new(0);
+/// How many leaves the reduction has, and how many have begun.
+const LEAVES: i64 = 4;
+static LEAVES_BEGUN: AtomicI64 = AtomicI64::new(0);
 
-/// The sum of a range's positions, after a wait in which the other leaves get their turns.
+/// The sum of a range's positions, after a wait in which the other leaves get their turns: it waits
+/// until every leaf has begun, so all are running at once however slowly they start, as under
+/// `ThreadSanitizer` (#2519). A leaf that only runs once another has ended waits ten seconds for
+/// it, a millisecond at a time, and gives up, and fewer were running at once.
 extern "C" fn sums_positions(_env: i64, from: i64, to: i64, _thread: i64, partial: &mut i64) -> i64 {
     let running = LEAVES_RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
     LEAVES_AT_ONCE.fetch_max(running, Ordering::SeqCst);
-    clock_sleep(SECONDS / 100);
+    LEAVES_BEGUN.fetch_add(1, Ordering::SeqCst);
+    for _ in 0..10_000 {
+        if LEAVES_BEGUN.load(Ordering::SeqCst) >= LEAVES {
+            break;
+        }
+        clock_sleep(SECONDS / 1000);
+    }
     LEAVES_RUNNING.fetch_sub(1, Ordering::SeqCst);
     *partial = (from..to).sum();
     0
@@ -639,7 +651,7 @@ fn a_task_s_reduction_whose_body_may_wait_runs_its_leaves_at_once() {
     assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
     assert_eq!(SUM.load(Ordering::SeqCst), (0..SUMMED).sum::<i64>());
     // Each leaf is a task that parks while it waits, so they all wait at once, on two workers.
-    assert_eq!(LEAVES_AT_ONCE.load(Ordering::SeqCst), 4, "the leaves waited one after another");
+    assert_eq!(LEAVES_AT_ONCE.load(Ordering::SeqCst), LEAVES, "the leaves waited one after another");
     finish();
 }
 

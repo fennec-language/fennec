@@ -28,7 +28,7 @@ def main(net: Net, args: Args, stdout: Stdout, clock: Clock, entropy: Entropy):
         )
         stdout.print(listed.status, listed.headers.get("content-type") else "")
         return
-    port = int(args[0]) except InvalidValue(): 8080
+    port = int.parse(args[0]) except InvalidValue(): 8080
     with net.listen(port)? as server:
         stdout.print(f"serving notes on http://localhost:{server.port}")
         server.serve(request => respond(notes, clock, entropy, request))

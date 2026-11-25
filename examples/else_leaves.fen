@@ -25,14 +25,14 @@ def parse_all(texts: list[str]) -> list[int]:
     mut found = []
     for text in texts:
         # A failure counts as missing too.
-        number = int(text) except InvalidValue(): continue
+        number = int.parse(text) except InvalidValue(): continue
         found.append(number)
     return found
 
 def first_small(rows: list[list[str]]) -> str:
     for row in rows:
         for word in row:
-            size = int(word) except InvalidValue(): continue
+            size = int.parse(word) except InvalidValue(): continue
             if size < 3: return word
     return "none"
 

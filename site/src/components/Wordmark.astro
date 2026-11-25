@@ -1,0 +1,21 @@
+---
+// The "fennec" wordmark: rounded monoline strokes whose two n's peak like ears. It takes the
+// text colour. The source of truth is public/brand/fennec-wordmark.svg.
+interface Props {
+  height?: number;
+  class?: string;
+}
+const { height = 20, class: cls } = Astro.props;
+const width = (height * 385.5) / 100;
+---
+
+<svg class={cls} width={width} height={height} viewBox="-8 8 385.5 100" role="img" aria-label="fennec">
+  <path
+    fill="none"
+    stroke="currentColor"
+    stroke-width="11"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    d="M5.5 100 V31 Q5.5 15 20.5 15 L28.5 15 M-0.5 50 H25.5 M42 75 H92 A25 25 0 1 0 84.7 92.7 M110.5 100 V67 C110.5 53 123.5 44 135.5 32 C147.5 44 160.5 53 160.5 67 V100 M179 100 V67 C179 53 192 44 204 32 C216 44 229 53 229 67 V100 M247.5 75 H297.5 A25 25 0 1 0 290.2 92.7 M360.2 59 A25 25 0 1 0 360.2 91"
+  ></path>
+</svg>

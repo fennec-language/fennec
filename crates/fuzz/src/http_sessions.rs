@@ -337,10 +337,10 @@ fn reset(port: u16, (first, rest): (&[u8], &[u8]), heads: &[bool]) -> Result<Vec
 const EVERY_BYTE_UP_TO: usize = 4096;
 const FEW_SPLITS: usize = 16;
 
-/// Where `http-splits` splits an input `length` bytes long: after each of its bytes but the last,
-/// or, past `EVERY_BYTE_UP_TO`, at a few places from its start, its end and between.
-fn split_points(length: usize) -> Vec<usize> {
-    if length <= EVERY_BYTE_UP_TO {
+/// Where `length` bytes are split: after each of them but the last, or, past `every_byte_up_to`,
+/// at a few places from their start, their end and between.
+pub(crate) fn split_points(length: usize, every_byte_up_to: usize) -> Vec<usize> {
+    if length <= every_byte_up_to.max(3 * FEW_SPLITS) {
         return (1..length).collect();
     }
     let mut points: Vec<usize> = (1..=FEW_SPLITS).collect();
@@ -358,7 +358,7 @@ pub(crate) fn http_splits(input: &[u8]) -> Result<(), String> {
     let Some(executable) = crate::llvm::built_reader("http-server")? else { return Ok(()) };
     let (mut server, port) = started(&executable, None)?;
     let heads = answers_before_end(input);
-    for (nth, at) in split_points(input.len()).into_iter().enumerate() {
+    for (nth, at) in split_points(input.len(), EVERY_BYTE_UP_TO).into_iter().enumerate() {
         let (first, rest) = input.split_at(at);
         let shown = || format!("split after byte {at} of {}", input.len());
         // An input's end is the same however it's split, so the first split closes its side to

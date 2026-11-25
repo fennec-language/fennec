@@ -13,7 +13,6 @@
 use std::io::{ErrorKind, Read};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
-#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 #[cfg(unix)]
@@ -44,6 +43,36 @@ impl Build<'_> {
     pub fn socket_start(&self) -> String {
         format!("{}-{}-", self.version, self.build.get(..16).unwrap_or(self.build))
     }
+
+    /// What a toolchain's `PROTOCOL_FILE` holds for this build: the protocol it speaks, its
+    /// version and its build, on a line.
+    #[must_use]
+    pub fn protocol_line(&self) -> String {
+        format!("{PROTOCOL} {} {}\n", self.version, self.build)
+    }
+}
+
+/// The file in a released toolchain's folder that says which protocol its `fennec` speaks, and as
+/// what version and build, so the launcher can find and ask its daemon without starting it. It's
+/// written when the release is packed (`fennec daemon protocol`), and the archive, which the
+/// launcher checks against the release's signed manifest, brings it.
+pub const PROTOCOL_FILE: &str = "daemon-protocol";
+
+/// The version and build a toolchain's `PROTOCOL_FILE` names, when it speaks this `PROTOCOL`.
+/// None for any other protocol, or a file that isn't the one line, so the launcher hands its
+/// commands to the toolchain.
+#[must_use]
+pub fn spoken(text: &str) -> Option<(&str, &str)> {
+    let mut words = text.strip_suffix('\n')?.split(' ');
+    let (protocol, version, build) = (words.next()?, words.next()?, words.next()?);
+    let plain = |word: &str, also: &[char]| {
+        !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || also.contains(&c))
+    };
+    let ours = words.next().is_none()
+        && protocol.parse::<u32>().ok() == Some(PROTOCOL)
+        && plain(version, &['.', '-', '+'])
+        && plain(build, &[]);
+    ours.then_some((version, build))
 }
 
 /// What a command prints, and how it exits.
@@ -127,6 +156,83 @@ pub fn one_stream() -> bool {
         return false;
     };
     (out.dev(), out.ino()) == (err.dev(), err.ino())
+}
+
+/// A path in `work`, Fennec's folder for scratch work, for a command's own: `fennec-<what>-` and
+/// the process's id, when it asked, and a count, so nothing else can have it. The folder is shared
+/// by every command, and one killed before it tidied up can leave a tool it started still writing
+/// to a folder named by an id the system has given out again. The daemon removes what such a
+/// command leaves, once no process of that id is running: the launcher names the program a run
+/// starts this way too, which keeps its id when it becomes the program.
+#[must_use]
+pub fn own_temp_in(work: &Path, what: &str) -> PathBuf {
+    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let count = ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    work.join(format!("fennec-{what}-{}-{at:x}-{count}", std::process::id()))
+}
+
+/// How old what an earlier `fennec run` built has to be before a run sweeps it up: far longer than
+/// a run takes from building its program to starting it, so another run's is never taken from it
+/// in between. One still running can go: on Unix a running program keeps its file until it ends.
+#[cfg(unix)]
+const SWEPT_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// How long after one sweep the next waits: a sweep looks at every file beside the program, which
+/// costs each run about 50 thousand instructions a file, and an agent running a program in a loop,
+/// or a machine running many tests, leaves a thousand there. Each run then only looks at when the
+/// last sweep was, and a file is never left there much past `SWEPT_AFTER`.
+#[cfg(unix)]
+const SWEPT_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The file whose time says when the last sweep was, beside the programs runs built. It isn't a
+/// `fennec-run-` file, so no sweep takes it.
+#[cfg(unix)]
+const LAST_SWEPT: &str = "fennec-swept";
+
+/// Sweeps what earlier runs built, beside `executable`, unless that was done in the last
+/// `SWEPT_EVERY`. A run does it just before it becomes its program, by `fennec` or the launcher.
+#[cfg(unix)]
+pub fn sweep_now_and_then(executable: &Path) {
+    let Some(folder) = executable.parent() else { return };
+    let marker = folder.join(LAST_SWEPT);
+    let recent = std::fs::metadata(&marker)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|swept| swept.elapsed().ok())
+        .is_some_and(|since| since < SWEPT_EVERY);
+    if recent {
+        return;
+    }
+    // Noted before sweeping, so runs that start meanwhile leave it to this one. A marker that
+    // can't be written only means the next run sweeps too.
+    let _ = std::fs::write(&marker, b"");
+    sweep_old_runs(executable);
+}
+
+/// Removes what earlier runs built and started, beside `executable`, once they're old enough.
+#[cfg(unix)]
+pub fn sweep_old_runs(executable: &Path) {
+    let Some(folder) = executable.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ours = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("fennec-run-"));
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > SWEPT_AFTER);
+        if ours && old && path != executable {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// How long a socket's path may be: a little under the 104 bytes macOS takes, and the 108 Linux
@@ -309,6 +415,19 @@ pub fn connect(socket: &Path, home: &Path) -> Option<UnixStream> {
     socket_owned_by(socket, owner).then(|| UnixStream::connect(socket).ok()).flatten()
 }
 
+/// Sends `request` over `stream` and reads the daemon's whole answer, which it gives once the work
+/// is done: the connection stays open meanwhile, and closing it stops the work. None when it can't
+/// be sent, or the answer isn't whole.
+#[cfg(unix)]
+#[must_use]
+pub fn answer(mut stream: UnixStream, request: &str) -> Option<Outcome> {
+    use std::io::Write as _;
+    let mut reply = String::new();
+    stream.write_all(request.as_bytes()).ok()?;
+    stream.read_to_string(&mut reply).ok()?;
+    Outcome::decode(&reply)
+}
+
 /// Whether `socket` is a socket, not followed if it's a link, that `owner` bound.
 #[cfg(unix)]
 #[must_use]
@@ -348,7 +467,7 @@ impl Read for Within {
 
 #[cfg(test)]
 mod tests {
-    use super::{Build, Outcome, PROTOCOL, work_request};
+    use super::{Build, Outcome, PROTOCOL, spoken, work_request};
 
     const BUILD: Build<'static> = Build { version: "0.4.2", build: "0123456789abcdef0123456789abcdef" };
 
@@ -383,6 +502,60 @@ mod tests {
         assert_eq!(outcome.encode(), "3\n4 2\nout\né");
         assert_eq!(Outcome::decode(&outcome.encode()), Some(outcome));
         assert_eq!(Outcome::decode("0\n9 0\nshort"), None);
+    }
+
+    /// A released toolchain says on a line which protocol its `fennec` speaks, as what version and
+    /// build. Any other protocol, or anything but the one line, is no answer.
+    #[test]
+    fn a_toolchain_says_its_protocol_on_a_line() {
+        let line = BUILD.protocol_line();
+        assert_eq!(line, "1 0.4.2 0123456789abcdef0123456789abcdef\n");
+        assert_eq!(spoken(&line), Some(("0.4.2", "0123456789abcdef0123456789abcdef")));
+        assert_eq!(spoken("1 0.5.0-rc.1+x abc\n"), Some(("0.5.0-rc.1+x", "abc")));
+        for other in [
+            "2 0.4.2 abc\n",
+            "1 0.4.2 abc",
+            "1 0.4.2 abc def\n",
+            "1 0.4.2\n",
+            "1 0.4.2 ab/c\n",
+            "1 ../x abc\n",
+            "1 0.4.2 abc\n\n",
+            " 1 0.4.2 abc\n",
+        ] {
+            assert_eq!(spoken(other), None, "{other:?}");
+        }
+    }
+
+    /// A run sweeps only when the last sweep was a while ago, so with a thousand programs left
+    /// beside it, it looks at one file, not a thousand; once it's a while, it sweeps them all.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_sweeps_only_now_and_then() {
+        let dir =
+            fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-sweeps-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&dir);
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let hours_ago = std::time::SystemTime::now() - std::time::Duration::from_hours(4);
+        let old = |name: &str| {
+            let path = work.join(name);
+            std::fs::write(&path, b"a program").unwrap();
+            std::fs::File::open(&path).unwrap().set_modified(hours_ago).unwrap();
+            path
+        };
+        let first = old("fennec-run-1-a-0");
+        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
+        assert!(!first.exists(), "the first run sweeps");
+        let second = old("fennec-run-2-b-0");
+        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
+        assert!(second.exists(), "a run just after one that swept doesn't");
+        let marker = work.join(super::LAST_SWEPT);
+        let a_while_ago =
+            std::time::SystemTime::now() - super::SWEPT_EVERY - std::time::Duration::from_secs(1);
+        std::fs::File::options().write(true).open(&marker).unwrap().set_modified(a_while_ago).unwrap();
+        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
+        assert!(!second.exists() && marker.exists(), "a run a while after one that swept does");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The environment's hash leaves out what differs from terminal to terminal and the

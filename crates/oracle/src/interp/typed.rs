@@ -51,15 +51,27 @@ impl Interp {
     /// `value`, returned as what's written at `span`, as the running call gives it back: a
     /// `None` returned as a `T?` where the call gives a `T??` is held in a `Some`.
     pub(crate) fn returned(&self, value: Value, span: Span) -> Value {
-        let Some(returns) = self.frames.get(self.cur).map(|frame| frame.returns) else { return value };
-        if returns < 2 || value.levels().is_none() {
-            return value;
+        let returns = self.frames.get(self.cur).map_or(0, |frame| frame.returns);
+        self.put_in(value, span, returns)
+    }
+
+    /// `value`, worked out from what's written at `span`, as a local, parameter, field or return
+    /// written as `wanted` levels of optional holds it: a `None` the checker typed as a `T?`, put
+    /// in a `T??`, is held in a `Some`, since a `T??` never collapses into a `T?`.
+    pub(crate) fn put_in(&self, value: Value, span: Span, wanted: usize) -> Value {
+        let given = self.optional_levels(&value, span);
+        held_in(value, given, wanted)
+    }
+
+    /// How many levels of optional the checker typed what's written at `span` as, when `value`,
+    /// worked out from it, is a `None` or one held in `Some`s. Otherwise there's nothing a level
+    /// more could tell apart, and it's `None`.
+    pub(crate) fn optional_levels(&self, value: &Value, span: Span) -> Option<usize> {
+        value.levels()?;
+        match self.static_type(span) {
+            Some(ty @ Type::Optional(_)) => Some(levels(&ty)),
+            _ => None,
         }
-        let given = match self.static_type(span) {
-            Some(ty @ Type::Optional(_)) => levels(&ty),
-            _ => return value,
-        };
-        (given..returns).fold(value, |value, _| Value::Some(Box::new(value)))
     }
 
     /// `value`, read by name at `span`, as the type it has there: a `T??` that's been narrowed to
@@ -194,6 +206,23 @@ fn unify(written: &TypeExpr, ty: &Type, generics: &[&str], bound: &mut Bound) {
         }
         _ => {}
     }
+}
+
+/// `value`, typed as `given` levels of optional where it's a `None` or one held in `Some`s, as
+/// a place written as `wanted` levels holds it: in a `Some` for each level more.
+pub(crate) fn held_in(value: Value, given: Option<usize>, wanted: usize) -> Value {
+    let Some(given) = given else { return value };
+    (given..wanted).fold(value, |value, _| Value::Some(Box::new(value)))
+}
+
+/// How many levels of optional a type is written as, with no type parameter filled in: 2 for
+/// `int??`, and 1 for `T?`, whatever `T` stands for.
+pub(crate) fn levels_spelled(written: &TypeExpr) -> usize {
+    let within = match (written.name.as_str(), written.args.as_slice()) {
+        (fennec_syntax::OPTIONAL, [held]) => 1 + levels_spelled(held),
+        _ => 0,
+    };
+    within + usize::from(written.optional)
 }
 
 /// How many levels of optional a type is: 0 for `int`, 1 for `int?`, 2 for `int??`.

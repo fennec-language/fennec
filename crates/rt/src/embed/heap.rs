@@ -286,6 +286,24 @@ pub(super) fn shared_static(address: u64) -> bool {
     usize::try_from(address).is_ok_and(|at| shared_block(at).is_some())
 }
 
+/// The process's blocks of bytes written into the program, by their addresses: each made once, by
+/// whichever thread reached it first, and read by every thread after (`bytes::embedded`). They're
+/// in no thread's table, so no thread counts or audits them, and which thread made one shows
+/// nowhere.
+static EMBEDDED: std::sync::RwLock<HashMap<usize, &'static [u64], BuildHasherDefault<AddressHasher>>> =
+    std::sync::RwLock::new(HashMap::with_hasher(BuildHasherDefault::new()));
+
+/// Makes a block of embedded bytes, filled in, one every thread can read.
+pub(super) fn add_embedded(block: &'static [u64]) {
+    let mut embedded = EMBEDDED.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    embedded.insert(block.as_ptr().addr(), block);
+}
+
+/// The block of embedded bytes at `at`, if it's one.
+fn embedded_block(at: usize) -> Option<&'static [u64]> {
+    EMBEDDED.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(&at).copied()
+}
+
 /// `fennec_constant_kept(block)`: a constant's value, worked out once, lives for the whole run, and
 /// so does every block it holds. Marked so, a task on another thread can read it, and nothing frees
 /// or changes it in place.
@@ -1422,6 +1440,7 @@ impl Heap {
             .or_else(|| self.reading.iter().rev().find_map(|table| table.get(at)))
             .or_else(|| self.lent.as_ref()?.get(at))
             .or_else(|| shared_block(at))
+            .or_else(|| embedded_block(at))
     }
 
     /// Makes a `shared` value's table the current one, with what's made in it owned as `owner_bits`

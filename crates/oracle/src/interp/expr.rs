@@ -42,6 +42,22 @@ impl Interp {
                 Ok(Value::Instance(Held::new(duration)))
             }
             ExprKind::Duration(_) => unsupported("durations"),
+            // The files an `embed_folder` reads as the program loads are std's `EmbeddedFolder`,
+            // their paths in order beside their bytes.
+            ExprKind::Folder(files) if self.program.core_type("EmbeddedFolder") => {
+                let paths = files.iter().map(|(path, _)| Value::Str(Text::from(path.clone()))).collect();
+                let held = files.iter().map(|(_, data)| Value::Bytes(data.0.to_vec())).collect();
+                let folder = crate::value::Instance {
+                    ty: "EmbeddedFolder".to_owned(),
+                    case: None,
+                    fields: vec![
+                        ("_paths".to_owned(), Value::List(Held::new(paths))),
+                        ("_files".to_owned(), Value::List(Held::new(held))),
+                    ],
+                    notes: Vec::new(),
+                };
+                Ok(Value::Instance(Held::new(folder)))
+            }
             ExprKind::Bytes(_) | ExprKind::Folder(_) => unsupported("embedded files"),
             ExprKind::Str(text) => Ok(Value::Str(Text::from(text.clone()))),
             ExprKind::FStr(parts) => self.fstring(parts),

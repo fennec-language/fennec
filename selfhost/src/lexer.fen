@@ -206,11 +206,11 @@ struct Lexer:
             self.push(.Duration(nanos), start)
             return
         if is_float:
-            value = float(text) except InvalidValue():
+            value = float.parse(text) except InvalidValue():
                 fail Diagnostic(message="this isn't a valid number", span=self.span(start))
             self.push(.Float(value), start)
         else:
-            value = int(text) except InvalidValue():
+            value = int.parse(text) except InvalidValue():
                 fail Diagnostic(
                     message="this number is too big for an int",
                     span=self.span(start),
@@ -722,7 +722,7 @@ def part_nanos(written: str, number: str, per: int, span: Span) -> int fails Dia
                 places += 1
     mut shift = 0 - places
     if exponent != "":
-        value = int(exponent) except InvalidValue():
+        value = int.parse(exponent) except InvalidValue():
             fail Diagnostic(
                 message=f"`{written}` is too long for a duration",
                 span=span,

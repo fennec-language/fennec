@@ -860,6 +860,17 @@ struct JsonReader:
         _ = rare.path.pop()
         self._rare = rare
 
+    ## For an explained read, a field's move along a struct's `fields`, in one taking of `_rare`:
+    ## lets go of the field before's part of the path, if `after_one`, and adds `part`, if any.
+    def _explained_field(ref self, fields: list[(str, str)], after_one: bool, part: str):
+        mut rare = self._take()
+        rare.fields = fields
+        if after_one:
+            _ = rare.path.pop()
+        if part != "":
+            rare.path.append(part)
+        self._rare = rare
+
     ## Where the reader is, as messages say it.
     def _where(self) -> str:
         if len(self._seen_rare().path) == 0: return "the text"
@@ -1309,10 +1320,7 @@ struct JsonReader:
             self._hint = 0
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
-        if self._explain:
-            mut rare = self._take()
-            rare.fields = fields
-            self._rare = rare
+        if self._explain: return self._next_explained(fields)?
         b = self._space()
         if self._first:
             self._first = False
@@ -1320,24 +1328,59 @@ struct JsonReader:
                 self._at += 1
                 self._left()
                 return False
-            if self._explain and self._extra == .Error:
-                self._unknown_first(fields)?
         else:
-            if self._explain:
-                self._pop_path()
             if b == 125:
                 self._at += 1
                 self._left()
                 return False
             if b != 44: fail no_reason()
             self._at += 1
-        if not self._explain and self._names == .SnakeCase:
+        if self._names == .SnakeCase:
             at = self._key_in_place(fields)
             if at >= 0:
                 self._place = at
                 self._hint = at + 1
                 if self._seen_again(at): fail self._twice(at, fields)
                 return True
+        key = self.text()?
+        if self._space() != 58: fail no_reason()
+        self._at += 1
+        return self._named(key, fields)?
+
+    ## `next_field` for an explained read, which keeps track of where it is for what a failure
+    ## says. A key that's a field's saved name, byte for byte, is matched where it is and the
+    ## path takes that name, in one taking of `_rare`. Only any other key is read as a `str`.
+    def _next_explained(ref self, fields: list[(str, str)]) -> bool fails ParseError:
+        byte = self._space()
+        after_one = not self._first
+        if self._first:
+            self._first = False
+            if byte == 125:
+                self._at += 1
+                self._left()
+                self._explained_field(fields, after_one=False, part="")
+                return False
+            if self._extra == .Error:
+                self._unknown_first(fields)?
+        else:
+            if byte == 125:
+                self._at += 1
+                self._left()
+                self._explained_field(fields, after_one=True, part="")
+                return False
+            if byte != 44: fail no_reason()
+            self._at += 1
+        if self._names == .SnakeCase:
+            at = self._explained_key(fields)
+            if at >= 0:
+                self._place = at
+                self._hint = at + 1
+                if self._seen_again(at):
+                    self._explained_field(fields, after_one=after_one, part="")
+                    fail self._twice(at, fields)
+                self._explained_field(fields, after_one=after_one, part=fields[at][0])
+                return True
+        self._explained_field(fields, after_one=after_one, part="")
         key = self.text()?
         if self._space() != 58: fail no_reason()
         self._at += 1
@@ -1369,6 +1412,37 @@ struct JsonReader:
                     at += 1
                     c = text_byte(self._source, at)
                 if c != 58: return -1
+                self._at = at + 1
+                return place
+            place += 1
+            tries += 1
+        return -1
+
+    ## `_key_in_place` for an explained read. It's a copy, not a second call, so that the plain
+    ## read's `next_field`, the one other place that matches keys in place, keeps it inlined: a
+    ## second caller costs every field of every plain read a call.
+    def _explained_key(ref self, fields: list[(str, str)]) -> int:
+        if self._space() != 34: return -1
+        start = self._at + 1
+        count = len(fields)
+        mut place = self._hint
+        mut tries = 0
+        while tries < count:
+            if place >= count:
+                place = 0
+            saved = fields[place][0]
+            size = text_size(saved)
+            if (
+                size > 0
+                and text_byte(self._source, start + size) == 34
+                and text_same_at(self._source, start, saved)
+            ):
+                mut at = start + size + 1
+                mut byte = text_byte(self._source, at)
+                while byte == 32 or byte == 10 or byte == 13 or byte == 9:
+                    at += 1
+                    byte = text_byte(self._source, at)
+                if byte != 58: return -1
                 self._at = at + 1
                 return place
             place += 1
@@ -1435,10 +1509,12 @@ struct JsonReader:
     def _unknown_first(ref self, fields: list[(str, str)]) fails ParseError:
         start = self._at
         while True:
-            key = self.text()?
-            if self._place_of(key, fields) < 0: fail self._unknown(key, fields)
-            _ = self._space()
-            self._at += 1
+            # A key that's a field's saved name is matched where it is; any other is read.
+            if self._names != .SnakeCase or self._explained_key(fields) < 0:
+                key = self.text()?
+                if self._place_of(key, fields) < 0: fail self._unknown(key, fields)
+                _ = self._space()
+                self._at += 1
             self._skip(self._depth)?
             b = self._space()
             self._at += 1

@@ -240,6 +240,58 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A run whose program is stored already doesn't read the image its kit was kept as, only the hash
+/// it ends with: an image torn since is left as it is, and the stored program runs. Once the
+/// program has to be built again, the torn image is passed over for the files, which are kept
+/// again, so the run after starts from them.
+#[test]
+fn a_kits_image_is_read_only_when_its_program_is_built() {
+    let dir = scratch("image-read").unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit.toml"), manifest).unwrap();
+    std::fs::write(dir.join("src/lib.fen"), "def value() -> int:\n    return 7\n").unwrap();
+    let main = "from lib import value\n\ndef main(stdout: Stdout):\n    stdout.print(value())\n";
+    std::fs::write(dir.join("src/main.fen"), main).unwrap();
+    let home = dir.join("home");
+    let ran = |why: &str| {
+        let output = run(&home, &dir).unwrap();
+        assert_eq!(stdout(&output), "7\n", "{why}: {}", String::from_utf8_lossy(&output.stderr));
+    };
+    ran("first");
+    // A file's time can be told from when it was noted once it's older than the clock's grain.
+    aged(&dir).unwrap();
+    ran("noted");
+    ran("started from what it kept");
+    let images = entries(&home, "run-image").unwrap();
+    let [image] = images.as_slice() else { panic!("one image: {images:?}") };
+    let kept = std::fs::read(image).unwrap();
+    let mut torn = kept.clone();
+    torn[0] ^= 1;
+    std::fs::write(image, &torn).unwrap();
+    ran("stored, with its image torn");
+    assert_eq!(std::fs::read(image).unwrap(), torn, "the image wasn't read, so it wasn't kept again");
+    for root in entries(&home, "run-roots").unwrap() {
+        std::fs::remove_file(root).unwrap();
+    }
+    ran("built again, from the files");
+    assert_eq!(std::fs::read(image).unwrap(), kept, "kept again as the files were loaded");
+    ran("stored again");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The entries of `kind` in the cache in `home`.
+fn entries(home: &Path, kind: &str) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let mut found = Vec::new();
+    for build in std::fs::read_dir(home.join("cache"))?.flatten() {
+        if let Ok(kept) = std::fs::read_dir(build.path().join(kind)) {
+            found.extend(kept.flatten().map(|entry| entry.path()));
+        }
+    }
+    Ok(found)
+}
+
 /// Sets the time of every file of the kit in `dir`, `kit.toml` and what's under `src`, ten seconds
 /// back, so a run can tell each from when it was noted, which it otherwise couldn't until the
 /// clock's grain had passed: what a test once slept 2.1 seconds for.

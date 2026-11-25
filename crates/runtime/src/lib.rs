@@ -86,6 +86,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_unshare",
     "fennec_block_text",
     "fennec_bytes_builder",
+    "fennec_bytes_embedded",
+    "fennec_bytes_embedded_filled",
     "fennec_bytes_grow",
     "fennec_str_encode",
     "fennec_bytes_decode_problem",
@@ -441,7 +443,8 @@ export! {
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_proof_broken(a0: i64, a1: i64, a2: i64) => checks::proof_broken(a0, a1, a2);
     fennec_bytes_new(a0: i64) -> i64 => bytes::new(a0);
-    fennec_bytes_constant(a0: i64) -> i64 => bytes::constant(a0);
+    fennec_bytes_embedded(a0: i64, a1: i64) -> i64 => bytes::embedded(a0, a1);
+    fennec_bytes_embedded_filled(a0: i64) => bytes::embedded_filled(a0);
     fennec_bytes_builder() -> i64 => bytes::builder();
     fennec_bytes_grow(a0: i64, a1: i64) -> i64 => bytes::grow(a0, a1);
     fennec_bytes_of_list(a0: i64, a1: i64, a2: i64) -> i64 => bytes::of_list(a0, a1, a2);

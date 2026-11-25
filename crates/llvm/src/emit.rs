@@ -1195,16 +1195,17 @@ enum Places {
     Numbered,
 }
 
+/// What's known at the start of a block, kept from its first copy for the second of a loop written
+/// twice: the lists alone in it, the locals holding, the fields seen to, the items known inside,
+/// and the dict entries found.
+type BlockStart =
+    (HashSet<String>, BTreeSet<usize>, Vec<FieldPath>, Vec<FieldPath>, Vec<(LocalId, Operand, String)>);
+
 /// One function being written.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each says something of its own about the function being written"
 )]
-/// What's known at the start of a block, kept from its first copy for the second of a loop written
-/// twice: the lists alone in it, the locals holding, the fields seen to, the items known inside,
-/// and the dict entries found.
-type BlockStart = (HashSet<String>, BTreeSet<usize>, Vec<FieldPath>, Vec<FieldPath>, Vec<(LocalId, Operand, String)>);
-
 pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) module: &'e mut Module<'w, 'p>,
     pub(crate) function: &'p Function,
@@ -1628,7 +1629,8 @@ impl Emit<'_, '_, '_> {
         // (`find_versioned_loops`), each starting from what was known when its first was written.
         let order = written_order(function);
         let mut passes: Vec<(usize, bool)> = order.iter().map(|at| (*at, false)).collect();
-        passes.extend(order.iter().filter(|at| self.known.versioned_at(**at).is_some()).map(|at| (*at, true)));
+        passes
+            .extend(order.iter().filter(|at| self.known.versioned_at(**at).is_some()).map(|at| (*at, true)));
         let mut started: HashMap<usize, BlockStart> = HashMap::new();
         for (at, again) in passes {
             let Some(block) = function.blocks.get(at) else { continue };
@@ -1637,43 +1639,48 @@ impl Emit<'_, '_, '_> {
             self.start_block(&label);
             if again {
                 let start = started.remove(&at).ok_or("a loop written twice with no first copy")?;
-                (self.alone_in_block, self.holding_now, self.alone_fields, self.inside_items, self.found_entries) =
-                    start;
+                (
+                    self.alone_in_block,
+                    self.holding_now,
+                    self.alone_fields,
+                    self.inside_items,
+                    self.found_entries,
+                ) = start;
                 self.filling.clear();
                 self.write_kept_lengths(at);
             } else {
-            self.alone_in_block = self.alone_by_block.get(&at).cloned().unwrap_or_default();
-            self.holding_now = self.holding.coming_in(at);
-            self.filling.clear();
-            self.write_kept_lengths(at);
-            let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
-            self.alone_fields =
-                coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
-            self.inside_items =
-                coming_in(function, self.known, lengths, (at, &before, &done), (&[], &inside_left));
-            self.found_entries = match ways_in.split_first() {
-                Some((first, rest)) if ways_in.iter().all(|from| done.contains(from)) => {
-                    let mut kept = left_with.get(first).cloned().unwrap_or_default();
-                    for from in rest {
-                        let theirs = left_with.get(from).map_or(&[][..], Vec::as_slice);
-                        kept.retain(|entry| theirs.contains(entry));
+                self.alone_in_block = self.alone_by_block.get(&at).cloned().unwrap_or_default();
+                self.holding_now = self.holding.coming_in(at);
+                self.filling.clear();
+                self.write_kept_lengths(at);
+                let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
+                self.alone_fields =
+                    coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
+                self.inside_items =
+                    coming_in(function, self.known, lengths, (at, &before, &done), (&[], &inside_left));
+                self.found_entries = match ways_in.split_first() {
+                    Some((first, rest)) if ways_in.iter().all(|from| done.contains(from)) => {
+                        let mut kept = left_with.get(first).cloned().unwrap_or_default();
+                        for from in rest {
+                            let theirs = left_with.get(from).map_or(&[][..], Vec::as_slice);
+                            kept.retain(|entry| theirs.contains(entry));
+                        }
+                        kept
                     }
-                    kept
+                    _ => Vec::new(),
+                };
+                if self.known.versioned_at(at).is_some() {
+                    started.insert(
+                        at,
+                        (
+                            self.alone_in_block.clone(),
+                            self.holding_now.clone(),
+                            self.alone_fields.clone(),
+                            self.inside_items.clone(),
+                            self.found_entries.clone(),
+                        ),
+                    );
                 }
-                _ => Vec::new(),
-            };
-            if self.known.versioned_at(at).is_some() {
-                started.insert(
-                    at,
-                    (
-                        self.alone_in_block.clone(),
-                        self.holding_now.clone(),
-                        self.alone_fields.clone(),
-                        self.inside_items.clone(),
-                        self.found_entries.clone(),
-                    ),
-                );
-            }
             }
             let mut appended = false;
             for (index, inst) in block.insts.iter().enumerate() {
@@ -4786,7 +4793,11 @@ impl Emit<'_, '_, '_> {
 
     /// A block's label: its second copy's, while a loop written twice is written again.
     pub(crate) fn block_label(&self, at: usize) -> String {
-        if self.again && self.known.versioned_at(at).is_some() { format!("bb{at}v") } else { format!("bb{at}") }
+        if self.again && self.known.versioned_at(at).is_some() {
+            format!("bb{at}v")
+        } else {
+            format!("bb{at}")
+        }
     }
 
     fn terminator(&mut self, end: &Terminator) -> Result<(), String> {
@@ -4802,7 +4813,8 @@ impl Emit<'_, '_, '_> {
                         .find(|loop_| loop_.header == target.0 && loop_.before == self.at.0)
                         .map(|loop_| loop_.scan) =>
             {
-                let flag = self.ranged_flags.get(&scan).cloned().ok_or("a loop written twice with no flag")?;
+                let flag =
+                    self.ranged_flags.get(&scan).cloned().ok_or("a loop written twice with no flag")?;
                 let held = self.temp();
                 self.line(&format!("{held} = load i1, ptr {flag}"));
                 self.line(&format!("br i1 {held}, label %bb{}v, label %bb{}, !prof !8", target.0, target.0));

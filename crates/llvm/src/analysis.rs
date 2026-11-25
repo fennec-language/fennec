@@ -1262,7 +1262,9 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
     for count in function.counts.iter().filter(|count| !count.down) {
         let Some(bounds) = item_of(count.stop.0) else { continue };
         // The count's first value, the one write of it that isn't its step.
-        let mut starts = function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
+        let mut starts = function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst
+            .kind
+        {
             InstKind::Copy { dest, value } if *dest == count.count => Some(value.clone()),
             InstKind::Binary { dest, op: BinOp::Add, lhs: Operand::Local(from), rhs: Operand::Int(1) }
                 if *dest == count.count && *from == count.count =>
@@ -1286,8 +1288,9 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         }
         for (at, block) in function.blocks.iter().enumerate() {
             for (index, inst) in block.insts.iter().enumerate() {
-                let InstKind::GetIndex { object: Operand::Local(read), index: Operand::Local(position), .. } =
-                    &inst.kind
+                let InstKind::GetIndex {
+                    object: Operand::Local(read), index: Operand::Local(position), ..
+                } = &inst.kind
                 else {
                     continue;
                 };
@@ -1320,7 +1323,8 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
             })
         });
         let Some(header) = header else { continue };
-        let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|block| &block.end) else {
+        let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|block| &block.end)
+        else {
             continue;
         };
         let mut blocks = loop_blocks(function, header, then.0);
@@ -1333,7 +1337,11 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
             .filter(|from| !blocks.contains(from))
             .collect();
         let [before] = outside.as_slice() else { continue };
-        if function.blocks.get(*before).is_some_and(|block| matches!(block.end, Terminator::Jump(to) if to.0 == header)) {
+        if function
+            .blocks
+            .get(*before)
+            .is_some_and(|block| matches!(block.end, Terminator::Jump(to) if to.0 == header))
+        {
             loops.push((blocks, *before, *count));
         }
     }
@@ -1379,7 +1387,9 @@ fn find_versioned_loops(
     ways_in: &HashMap<usize, Vec<usize>>,
 ) -> Vec<Versioned> {
     let mut by_count: BTreeMap<usize, (fennec_ir::Count, BTreeSet<usize>)> = BTreeMap::new();
-    for (place, id) in reads {
+    let mut places: Vec<(&(usize, usize), &usize)> = reads.iter().collect();
+    places.sort_unstable();
+    for (place, id) in places {
         let Some(count) = counted_by.get(place) else { continue };
         by_count.entry(count.count.0).or_insert_with(|| (*count, BTreeSet::new())).1.insert(*id);
     }
@@ -1395,7 +1405,8 @@ fn find_versioned_loops(
             })
         });
         let Some(header) = header else { continue };
-        let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|block| &block.end) else {
+        let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|block| &block.end)
+        else {
             continue;
         };
         // The blocks reached from the body that go back to the start without passing through it.
@@ -1405,7 +1416,14 @@ fn find_versioned_loops(
         let mut waiting: Vec<usize> = into.iter().copied().filter(|from| reached.contains(from)).collect();
         while let Some(at) = waiting.pop() {
             if blocks.insert(at) {
-                waiting.extend(ways_in.get(&at).map_or(&[][..], Vec::as_slice).iter().copied().filter(|from| reached.contains(from)));
+                waiting.extend(
+                    ways_in
+                        .get(&at)
+                        .map_or(&[][..], Vec::as_slice)
+                        .iter()
+                        .copied()
+                        .filter(|from| reached.contains(from)),
+                );
             }
         }
         let outside: Vec<usize> = into.iter().copied().filter(|from| !blocks.contains(from)).collect();
@@ -1414,10 +1432,12 @@ fn find_versioned_loops(
             .blocks
             .get(before)
             .is_some_and(|block| matches!(block.end, Terminator::Jump(to) if to.0 == header));
-        let insts: usize = blocks.iter().filter_map(|at| function.blocks.get(*at)).map(|block| block.insts.len()).sum();
+        let insts: usize =
+            blocks.iter().filter_map(|at| function.blocks.get(*at)).map(|block| block.insts.len()).sum();
         // Every read it leans on is inside, and nothing inside goes in from elsewhere.
         let closed = blocks.iter().all(|at| {
-            *at == header || ways_in.get(at).map_or(&[][..], Vec::as_slice).iter().all(|from| blocks.contains(from))
+            *at == header
+                || ways_in.get(at).map_or(&[][..], Vec::as_slice).iter().all(|from| blocks.contains(from))
         });
         if plain_way_in
             && closed

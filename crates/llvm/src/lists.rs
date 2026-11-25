@@ -1649,11 +1649,18 @@ impl Emit<'_, '_, '_> {
             _ => match self.ranged_flag(from) {
                 // In the copy of a loop written twice that its check chose, no check at all.
                 Some(_) if self.again && self.known.versioned_at(self.at.0).is_some() => {
-                    self.proof_inside(list, index, "a count between two items checked to be inside the list", span);
+                    self.proof_inside(
+                        list,
+                        index,
+                        "a count between two items checked to be inside the list",
+                        span,
+                    );
                     index.to_owned()
                 }
                 // In the other copy, or a loop not written twice that the check covers.
-                Some(_) if self.known.versioned_at(self.at.0).is_some() => self.position_checked(&length, index, span),
+                Some(_) if self.known.versioned_at(self.at.0).is_some() => {
+                    self.position_checked(&length, index, span)
+                }
                 Some(flag) => self.ranged_position((list, &length), &flag, index, span),
                 None => self.position_checked(&length, index, span),
             },
@@ -1756,7 +1763,8 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{enough} = icmp sle i64 {quarter}, {turns}"));
             self.line(&format!("{small} = icmp ule i64 {count}, 64"));
             self.line(&format!("{worth} = or i1 {small}, {enough}"));
-            let (checking, walk, done) = (self.label("range_check"), self.label("range_walk"), self.label("range_walked"));
+            let (checking, walk, done) =
+                (self.label("range_check"), self.label("range_walk"), self.label("range_walked"));
             let skipped = self.current.clone();
             self.line(&format!("br i1 {worth}, label %{checking}, label %{done}"));
             self.start_block(&checking);
@@ -1798,7 +1806,13 @@ impl Emit<'_, '_, '_> {
     /// Where a read `find_ranged_reads` found points: where the function's check of the items
     /// bounding its index held, the index itself, and otherwise checked as any read is, to fail
     /// where it always did.
-    fn ranged_position(&mut self, (list, length): (&str, &str), flag: &str, index: &str, span: Span) -> String {
+    fn ranged_position(
+        &mut self,
+        (list, length): (&str, &str),
+        flag: &str,
+        index: &str,
+        span: Span,
+    ) -> String {
         let held = self.temp();
         self.line(&format!("{held} = load i1, ptr {flag}"));
         let (inside, alone, joined) = (self.label("ranged"), self.label("unranged"), self.label("placed"));

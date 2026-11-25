@@ -4988,6 +4988,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A read between two items of a list nothing changes, as a counting sort's buckets are read, has
+/// those items checked once before its loop, and the loop is written twice: with no check on the
+/// read where every item was from 0 to the read list's length, and as before otherwise. A bucket
+/// list with an item below 0, or one too long to check for the turns the loop takes, has every read
+/// checked; one with an item past the end fails at the first read outside, with the message and
+/// place it always had, after what the buckets before it printed. Built plain and checking proofs.
+#[test]
+fn a_read_between_two_bucket_items_checked_once_fails_where_it_always_did() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        for proofs in ["0", "1"] {
+            let dir = folder("bucket_reads")?;
+            let (program, executable) = (dir.join("bucket_reads.fen"), dir.join("bucket_reads"));
+            std::fs::write(&program, include_str!("fixtures/bucket_reads.fen"))?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                include_str!("fixtures/bucket_reads.out"),
+                "{how:?} {proofs}: {err}"
+            );
+            assert!(!ran.status.success(), "{how:?} {proofs}");
+            assert!(err.contains("error: index 6 is out of range for length 6\n"), "{how:?} {proofs}: {err}");
+            assert!(err.contains("bucket_reads.fen:9:22"), "{how:?} {proofs}: {err}");
+        }
+    }
+    Ok(())
+}
+
 /// What every call gives a helper is known in it: `go`'s sums are proven from positions and a
 /// count stepped once a turn, and a build checking proofs checks what it's given on the way in.
 /// `shifted` is given both ends of int across its calls, so its sum keeps its check, and fails.

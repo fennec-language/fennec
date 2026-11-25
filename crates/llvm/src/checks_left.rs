@@ -246,7 +246,9 @@ mod tests {
             .lines()
             .filter(|line| {
                 line.rsplit_once(", label %bb").is_some_and(|(first, second)| {
-                    first.rsplit_once("label %bb").is_some_and(|(_, copy)| copy.strip_suffix('v') == second.split(',').next())
+                    first
+                        .rsplit_once("label %bb")
+                        .is_some_and(|(_, copy)| copy.strip_suffix('v') == second.split(',').next())
                 })
             })
             .count();
@@ -257,10 +259,27 @@ mod tests {
         // known inside already): one more out-of-range call than the reads that keep checks.
         let reads = kept(body)?.iter().filter(|(what, _)| *what == CheckKind::Bounds).count();
         assert_eq!(text.matches("call void @fennec_out_of_range(").count(), reads + 1, "{text}");
-        let changed = body.replace("starts: list[int]", "ref starts: list[int]").replace("    mut touched = 0\n", "    mut touched = 0\n    starts[0] = 0\n");
-        let (units, _, _) = crate::emit(&lowered(&changed)?)?;
-        let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
-        assert_eq!(text.matches("@llvm.umax.i64(").count(), 0, "{text}");
+        // Each of these leaves the read with nothing to check once: the bucket list can change;
+        // the count starts at a number that may be below 0, or ends at an item of another list; or
+        // the read list's length can change.
+        let ref_order =
+            "def go(xs: list[float], cells: list[int], starts: list[int], ref order: list[int]) -> int:";
+        let unchecked = [
+            body.replace("starts: list[int]", "ref starts: list[int]")
+                .replace("    mut touched = 0\n", "    mut touched = 0\n    starts[0] = 0\n"),
+            body.replace("range(starts[near], starts[near + 1])", "range(near - 3, starts[near + 1])"),
+            body.replace("range(starts[near], starts[near + 1])", "range(starts[near], cells[near + 1])"),
+            body.replace(
+                "def go(xs: list[float], cells: list[int], starts: list[int], order: list[int]) -> int:",
+                ref_order,
+            )
+            .replace("    return touched", "    order.append(1)\n    return touched"),
+        ];
+        for changed in unchecked {
+            let (units, _, _) = crate::emit(&lowered(&changed)?)?;
+            let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+            assert_eq!(text.matches("@llvm.umax.i64(").count(), 0, "{changed}\n{text}");
+        }
         Ok(())
     }
 

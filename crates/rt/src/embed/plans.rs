@@ -180,6 +180,11 @@ fn case_of<T>(cases: &[T], fields: &[u64]) -> Option<usize> {
 
 /// The non-zero addresses in a block's fields, if the plan says where they are without
 /// walking. `None` means walk it.
+#[expect(
+    clippy::inline_always,
+    reason = "with a dict's values freed by their plan as well as a list's items, a hint alone left it out of line, which cost `log_crunch` 1.4% by callgrind"
+)]
+#[inline(always)]
 pub(super) fn addresses(plan: &Plan, fields: &[u64], found: &mut impl Extend<u64>) -> Option<()> {
     let words = match plan {
         Plan::Fixed(words) => words,

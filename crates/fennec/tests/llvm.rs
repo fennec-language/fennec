@@ -4498,7 +4498,7 @@ fn a_put_where_a_lookup_found_the_key_holds_nothing_more_kept_or_undone() -> std
     if !ready() {
         return Ok(());
     }
-    let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int(args[0]) except InvalidValue(): 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) except Boom():\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
+    let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int.parse(args[0]) except InvalidValue(): 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) except Boom():\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
     for boxed in [true, false] {
         let dir = folder("lock_found_counts")?;
         let program = dir.join("found.fen");
@@ -13449,7 +13449,7 @@ fn keys_made_to_collide_dont_slow_a_dict_down() -> std::io::Result<()> {
 def main(stdout: Stdout, stdin: Stdin):
     mut seen: dict[int, int] = {}
     mut order = 0
-    keys = [int(line).expect("a number") for line in stdin.lines()]
+    keys = [int.parse(line).expect("a number") for line in stdin.lines()]
     for key in keys:
         seen[key] = order
         order += 1
@@ -13717,7 +13717,7 @@ def main(stdout: Stdout, stdin: Stdin):
             key = line[1:]
             texts[key] = len(key)
         else:
-            pairs[Pair(first=1, second=int(line[1:]).expect("a number"))] = 1
+            pairs[Pair(first=1, second=int.parse(line[1:]).expect("a number"))] = 1
     mut whole = 0
     mut sliced = 0
     mut paired = 0
@@ -13727,7 +13727,7 @@ def main(stdout: Stdout, stdin: Stdin):
             whole += texts[key]
             sliced += texts.get(line[1:]) else 0
         else:
-            paired += pairs[Pair(first=1, second=int(line[1:]).expect("a number"))]
+            paired += pairs[Pair(first=1, second=int.parse(line[1:]).expect("a number"))]
     missing = "not one of them" in texts
     mut copied = texts
     copied["added to the copy"] = 1
@@ -20519,7 +20519,7 @@ def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
     who = address.split("@")[0]
     place = address.split("@")[1]
     rest = place.split(":")[1]
-    port = int(rest.split("/")[0]) except InvalidValue(): 5432
+    port = int.parse(rest.split("/")[0]) except InvalidValue(): 5432
     server = Server(
         host=place.split(":")[0],
         port=port,
@@ -21445,7 +21445,7 @@ fn a_request_goes_out_in_one_write() -> std::io::Result<()> {
         r#"from std.net import NetError
 
 def main(net: Net, args: Args, stdout: Stdout) fails NetError:
-    port = int(args[0]) except InvalidValue(): 0
+    port = int.parse(args[0]) except InvalidValue(): 0
     for path in ["/a", "/b"]:
         answer = net.post(f"http://127.0.0.1:{port}{path}", body="data", timeout=10s)?
         stdout.print(answer.status, answer.text())
@@ -25901,7 +25901,7 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let written = path.replace('\\', "\\\\");
     let source = format!(
-        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") except InvalidValue(): 0.0\n        _ = db.execute(t\"insert into m values ({{nan}})\") except refused:\n            stdout.print(refused.message())\n            0\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float.parse(\"nan\") except InvalidValue(): 0.0\n        _ = db.execute(t\"insert into m values ({{nan}})\") except refused:\n            stdout.print(refused.message())\n            0\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
     );
     let printed = printed_by("sqlite_nan", &source)?;
     for ending in ["", "-wal", "-shm"] {
@@ -34061,12 +34061,12 @@ fn a_parallel_comprehension_whose_item_can_fail_matches_what_was_pinned() -> std
     same_as_expected_in_both_builds(
         "parallel_tries",
         r#"def doubled(text: str) -> int fails InvalidValue:
-    return int(text)? * 2
+    return int.parse(text)? * 2
 
 def main(stdout: Stdout) fails InvalidValue:
     texts = ["1", "2", "3"]
-    stdout.print([doubled(t)? for t in parallel(texts)], sum(int(t)? for t in parallel(texts)))
-    stdout.print([int(t)? for t in parallel(["4", "x"])])
+    stdout.print([doubled(t)? for t in parallel(texts)], sum(int.parse(t)? for t in parallel(texts)))
+    stdout.print([int.parse(t)? for t in parallel(["4", "x"])])
 "#,
     )
 }
@@ -34981,7 +34981,7 @@ def excepted(spots: list[Spot]) -> list[Spot]:
     mut kept = spots
     for ref spot in parallel(kept):
         spot.x = 9
-        _ = int("no") except InvalidValue():
+        _ = int.parse("no") except InvalidValue():
             return kept
     return kept
 
@@ -36043,7 +36043,7 @@ fn a_main_giving_back_a_result_matches_what_was_pinned() -> std::io::Result<()> 
     same_as_pinned(
         "main_gives_back",
         r#"def number(text: str) -> int fails InvalidValue:
-    return int(text)?
+    return int.parse(text)?
 
 def main(stdout: Stdout):
     stdout.print(number("12")?)
@@ -36174,7 +36174,7 @@ fn a_main_giving_back_an_error_fails_as_pinned() -> std::io::Result<()> {
     same_message_as_pinned(
         "main_gives_back_an_error",
         r#"def number(text: str) -> int fails InvalidValue:
-    return int(text)?
+    return int.parse(text)?
 
 def main(stdout: Stdout):
     stdout.print("first")
@@ -36230,13 +36230,13 @@ struct Words:
 
     def int(ref self) -> int fails ParseError:
         word = self.next()?
-        n = int(word) except InvalidValue():
+        n = int.parse(word) except InvalidValue():
             fail ParseError(message=f"`{word}` should be an int", line=0, column=self.at)
         return n
 
     def float(ref self) -> float fails ParseError:
         word = self.next()?
-        x = float(word) except InvalidValue():
+        x = float.parse(word) except InvalidValue():
             fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
         return x
 
@@ -36769,23 +36769,23 @@ fn numbers_and_sets_from_text_match_what_was_pinned() -> std::io::Result<()> {
         r#"from std.re import Regex
 
 def add(a: str, b: str) -> int fails InvalidValue:
-    return int(a)? + int(b)?
+    return int.parse(a)? + int.parse(b)?
 
 def main(stdout: Stdout):
     for text in ["42", " -7 ", "4x2", "", "99999999999999999999"]:
-        n = int(text) except error:
+        n = int.parse(text) except error:
             stdout.print(error.message)
             continue
         stdout.print(n)
     for text in ["2.5", " 1e3 ", "nope", "a \"quoted\" value long enough for a block"]:
-        x = float(text) except error:
+        x = float.parse(text) except error:
             stdout.print(error.message)
             continue
         stdout.print(x)
-    int_value = int("12") except InvalidValue(): 0
-    int_value2 = int("x") except InvalidValue(): -1
-    float_value = float("0.5") except InvalidValue(): 0.0
-    float_value2 = float("y") except InvalidValue(): -1.5
+    int_value = int.parse("12") except InvalidValue(): 0
+    int_value2 = int.parse("x") except InvalidValue(): -1
+    float_value = float.parse("0.5") except InvalidValue(): 0.0
+    float_value2 = float.parse("y") except InvalidValue(): -1.5
     stdout.print(int_value, int_value2, float_value, float_value2)
     add_value = add("1", b="2") except InvalidValue(): -1
     add_value2 = add("1", b="two") except InvalidValue(): -1
@@ -36937,7 +36937,7 @@ struct Point:
     y: int
 
 def parsed(text: str) -> int fails InvalidValue:
-    return int(text)?
+    return int.parse(text)?
 
 test \"floats stay small\" for x: float:
     assert x < 3.5

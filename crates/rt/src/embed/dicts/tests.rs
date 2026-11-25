@@ -432,7 +432,7 @@ fn a_freed_dict_of_values_in_place_lets_go_of_what_each_entry_holds() {
     let before = live();
     let key = |at: i64| Value::str(&format!("{LONG}, key {at}"));
     let pair = |at: i64, text: &str| Value::Tuple(Rc::new(vec![Value::Int(at), Value::str(text)]));
-    let kinds: [(Word, u32, Vec<(Value, Value)>); 5] = [
+    let kinds = [
         (Word::Int, 0, vec![(Value::Int(1), a_point(1, LONG, &[2])), (Value::Int(2), a_point(2, "n", &[]))]),
         (Word::Text, 0, vec![(key(1), a_point(1, LONG, &[2, 3])), (Value::str("k"), a_point(2, "n", &[4]))]),
         (Word::Text, 1, vec![(key(1), pair(1, LONG)), (Value::str("k"), pair(2, "n"))]),

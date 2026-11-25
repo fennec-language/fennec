@@ -505,8 +505,8 @@ fn release_planned_items(
 /// Lets go of what each entry of a dict whose values are held in place holds, as it's read: its
 /// key's block, then what its value holds by the plan of the value's kind, as a list's items are
 /// let go of. Gathering them into a list by a walk of the kind first was most of what freeing
-/// api_handler's dict of headers cost, each request (#NNNN). False, having done nothing, when the
-/// kind has no plan to read.
+/// `api_handler`'s dict of headers cost, each request. False, having done nothing, when the kind
+/// has no plan to read.
 fn release_in_place_entries(
     state: &mut State,
     layout: crate::embed::dicts::Layout,

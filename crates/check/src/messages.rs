@@ -268,7 +268,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
         (Type::Int | Type::Float, Type::Str) => {
             let number = if *expected == Type::Int { "int" } else { "float" };
             diagnostic
-                .with_help(format!("read the text as a number, as `{number}(text)?`, or write a number"))
+                .with_help(format!("read the text as a number, as `{number}.parse(text)?`, or write a number"))
         }
         (Type::Str, Type::Int | Type::Float | Type::Bool) => {
             diagnostic.with_help("turn it into text with an f-string, as `f\"{count}\"`, or `str(count)`")

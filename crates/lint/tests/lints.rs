@@ -994,7 +994,7 @@ fn an_unused_index_needs_no_enumerate() {
 
 #[test]
 fn a_loop_that_leaves_with_else_stays_a_loop() {
-    let source = "def f(texts: list[str]) -> list[int]:\n    mut found = []\n    for text in texts:\n        found.append(int(text) else continue)\n    return found\n";
+    let source = "def f(texts: list[str]) -> list[int]:\n    mut found = []\n    for text in texts:\n        found.append(int.parse(text) else continue)\n    return found\n";
     assert_eq!(rules(source), NONE);
 }
 

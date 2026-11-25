@@ -190,6 +190,39 @@ fn strings_have_their_methods() {
     assert!(failure.is_some());
 }
 
+/// A string that's never freed, as a literal is, has its text kept apart from those of strings that
+/// can be, read once and found again after: a free has nothing to forget while only such texts
+/// are held. A string that can be freed has its text forgotten when it is.
+#[test]
+fn a_never_freed_strings_text_is_kept_apart_from_those_a_free_forgets() {
+    let str = Rc::new(Element::Str);
+    let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
+    start(tables, crate::Inputs::default());
+    let string = |text: &str| with(|state| heap::text_address(state, text));
+    let read = |at: i64| with(|state| Some(heap::read_block(state, at.cast_unsigned()))).unwrap();
+    let message = "NewUser.age breaks its `where` rule";
+    let literal = string(message);
+    heap::constant_kept(literal);
+    let (first, again) = (read(literal), read(literal));
+    assert_eq!(first, Value::str(message));
+    let (Value::Str(first), Value::Str(again)) = (first, again) else { panic!("not strings") };
+    assert!(Rc::ptr_eq(&first, &again), "read again, its text is made anew");
+    with(|state| {
+        assert!(state.heap.texts.borrow().is_empty(), "a literal's text is among those a free forgets")
+    });
+    let made = string("a string made as the program runs, long enough for a block of its own");
+    assert_eq!(
+        read(made),
+        Value::str("a string made as the program runs, long enough for a block of its own")
+    );
+    with(|state| assert_eq!(state.heap.texts.borrow().len(), 1));
+    heap::free(made);
+    with(|state| assert!(state.heap.texts.borrow().is_empty(), "a freed string's text is kept"));
+    assert_eq!(read(literal), Value::str(message));
+    let (_, failure, _) = finish();
+    assert!(failure.is_none(), "{failure:?}");
+}
+
 /// A task's mark is its own number's until the marks have come round, which is 16 million tasks on
 /// one thread. After that a task whose number's mark is held by one still alive takes the next
 /// that's free, so two tasks alive on a thread never share a mark: a long task's end finds its

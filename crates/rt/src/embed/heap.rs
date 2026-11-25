@@ -91,8 +91,14 @@ pub(crate) struct Heap {
     pub(super) said_left: std::collections::HashSet<u64, BuildHasherDefault<AddressHasher>>,
     /// Whether this thread's string literals were moved where every thread can read them.
     shared_statics: bool,
-    /// Strings' text as a `Value` holds it, made once per block.
+    /// Strings' text as a `Value` holds it, made once per block, for a string that can be freed:
+    /// its free forgets it, since its address can come back as another string.
     pub(super) texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
+    /// The same, for a string that's never freed, as a literal is: kept apart, so a free has
+    /// nothing to forget while only these are held, and doesn't look. Three `where` rules' messages,
+    /// read once each, kept `texts` from ever being empty, and each of the 395,000 strings
+    /// `api_handler` freed looked its address up there.
+    kept_texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
     /// Where a string that isn't ASCII was last read.
     cursor: Cursor,
     /// Generators let go partway, waiting for what closes what they hold.
@@ -527,7 +533,6 @@ pub(super) fn number_to_mark(task: u64, taken: impl Fn(u64) -> bool) -> u64 {
 pub const NEVER_FREED_OWNER: u64 = 0xFFFD;
 
 /// Whether a block is never freed: by its owner, or by a count no thread's owners can reach.
-#[cfg(any(test, feature = "threads", feature = "audit"))]
 pub(super) fn is_never_freed(block: &[u64]) -> bool {
     block.first().is_some_and(|count| *count >= IMMORTAL)
         || block.get(1).is_some_and(|shape| *shape >> OWNER_SHIFT == NEVER_FREED_OWNER)
@@ -2182,10 +2187,10 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     }
     let at = usize::try_from(address).unwrap_or(0);
     // A string only changes in place by growing, so a text of the same length is current.
-    let length = state.heap.block(address).and_then(|block| block.get(2)).copied();
-    if let Some(text) =
-        state.heap.texts.borrow().get(&at).filter(|text| u64::try_from(text.len()).ok() == length)
-    {
+    let found = state.heap.block(address);
+    let length = found.and_then(|block| block.get(2)).copied();
+    let texts = if found.is_some_and(is_never_freed) { &state.heap.kept_texts } else { &state.heap.texts };
+    if let Some(text) = texts.borrow().get(&at).filter(|text| u64::try_from(text.len()).ok() == length) {
         return Value::Str(Rc::clone(text));
     }
     let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else {
@@ -2203,7 +2208,7 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     }
     if is_text(state, &block) {
         let text: Rc<str> = Rc::from(block_text(&block));
-        state.heap.texts.borrow_mut().insert(at, Rc::clone(&text));
+        texts.borrow_mut().insert(at, Rc::clone(&text));
         return Value::Str(text);
     }
     if super::dicts::is_dict(state, &block) {

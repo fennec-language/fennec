@@ -40,10 +40,25 @@ struct Bytes {
     ascii: bool,
 }
 
-/// Where `text[from:to]` is in `text`'s bytes, `text` given as its header.
-fn byte_range(state: &State, text: &[u64; 3], (from, to): (i64, i64)) -> Bytes {
+/// A text's bytes where they are, how many, and how many characters they make, `text` given as its
+/// header: a block is looked up once for all three, as its own words keep its count.
+fn held<'a>(state: &'a State, text: &'a [u64; 3]) -> (&'a [u64], usize, usize) {
+    let chars = match super::block_of(text) {
+        Some(address) => {
+            let ((words, length), ascii) = strings::ascii_bytes_in_block(state, address.cast_signed());
+            if ascii {
+                return (words, length, length);
+            }
+            state.heap.block(address).and_then(|block| block.get(3)).copied().unwrap_or(0)
+        }
+        None => super::chars_of(state, text),
+    };
     let (words, length) = bytes_of(state, text);
-    let chars = usize::try_from(super::chars_of(state, text)).unwrap_or(0);
+    (words, length, usize::try_from(chars).unwrap_or(0))
+}
+
+/// Where `text[from:to]` is in a text's bytes, given as [`held`] gives them.
+fn byte_range((words, length, chars): (&[u64], usize, usize), (from, to): (i64, i64)) -> Bytes {
     let ascii = chars == length;
     let count = i64::try_from(chars).unwrap_or(i64::MAX);
     let bound = |at: i64, missing: i64| {
@@ -86,8 +101,9 @@ fn byte_of_char(words: &[u64], length: usize, wanted: usize) -> usize {
 
 /// The bytes of `text[from:to]`, `text` given as its header, into `into`: only the range's.
 fn sliced(state: &State, text: &[u64; 3], range: (i64, i64), into: &mut Vec<u8>) {
-    let Bytes { first, last, .. } = byte_range(state, text, range);
-    let (words, _) = bytes_of(state, text);
+    let held = held(state, text);
+    let Bytes { first, last, .. } = byte_range(held, range);
+    let (words, ..) = held;
     let base = first / 8;
     strings::copy_words((words.get(base..).unwrap_or_default(), last - base * 8), into);
     into.drain(..first - base * 8);
@@ -132,15 +148,17 @@ pub extern "C" fn split_range(
         let (between, size) = bytes_of(state, &separator);
         if separated && (1..=strings::WORD_BYTES).contains(&size) && state.tables.text_headers {
             let between = between.first().map_or(0, |word| u64::from_le(*word));
-            let Bytes { first, last, .. } = byte_range(state, &text, (from, to));
             // The range's words are copied out, whole words at a time, so making a long part's
             // block can't move them.
             let mut words = std::mem::take(&mut state.heap.scratch);
             words.clear();
-            let (held, _) = bytes_of(state, &text);
-            words.extend_from_slice(held.get(first / 8..last.div_ceil(8)).unwrap_or_default());
+            let held = held(state, &text);
+            let Bytes { first, last, .. } = byte_range(held, (from, to));
+            words.extend_from_slice(held.0.get(first / 8..last.div_ceil(8)).unwrap_or_default());
             let base = first / 8 * 8;
-            let list = strings::split_words(state, &words, (first - base, last - base), (between, size));
+            let ascii = held.1 == held.2;
+            let list =
+                strings::split_words(state, (&words, ascii), (first - base, last - base), (between, size));
             state.heap.keep_scratch(words);
             return Ok(list);
         }
@@ -173,8 +191,9 @@ pub extern "C" fn find_range(
 ) -> i64 {
     with(|state| {
         let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
-        let range = byte_range(state, &text, (from, to));
-        let (words, _) = bytes_of(state, &text);
+        let held = held(state, &text);
+        let range = byte_range(held, (from, to));
+        let (words, ..) = held;
         let (looked, size) = bytes_of(state, &part);
         if size == 0 {
             return 0;

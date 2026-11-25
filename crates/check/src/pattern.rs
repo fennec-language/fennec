@@ -447,7 +447,12 @@ impl FnCx<'_> {
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Literal(literal) => {
-                let ty = self.expr(literal);
+                // `case 0.5:` over an `f32` is an `f32`, as `small == 0.5` is.
+                let ty = if matches!(value, Type::Sized(_)) && crate::expect::number_literal(literal) {
+                    self.expr_as(literal, &value)
+                } else {
+                    self.expr(literal)
+                };
                 if !self.checker.fits(&value, &ty) && !self.checker.fits(&ty, &value) {
                     let message =
                         format!("this case can't match: the value is {}, and this is {}", a(&value), a(&ty));

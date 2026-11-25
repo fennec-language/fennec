@@ -4,4 +4,4 @@ error: `width` should be an int, but this is a str
 1 | def grid(width: int = "wide") -> int:
   |                       ^^^^^^
   |
-  = help: read the text as a number, as `int(text)?`, or write a number
+  = help: read the text as a number, as `int.parse(text)?`, or write a number

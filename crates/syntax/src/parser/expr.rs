@@ -21,7 +21,7 @@ enum Formed {
 }
 
 /// A one-line `if` and a fallback `else` in one expression, without parentheses saying which
-/// holds which: `int(text) else 80 if given else 8080` reads two ways. The fix writes the
+/// holds which: `int.parse(text) else 80 if given else 8080` reads two ways. The fix writes the
 /// parentheses around `inner`, the way it's read.
 fn mixed_else(inner: &Expr) -> Diagnostic {
     let at_end = Span { start: inner.span.end, end: inner.span.end };

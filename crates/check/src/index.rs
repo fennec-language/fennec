@@ -216,7 +216,7 @@ impl FnCx<'_> {
 fn convert_help(expected: &Type, actual: &Type) -> String {
     match (expected, actual) {
         (Type::Int, Type::Str | Type::LiteralStr) => {
-            "read the text as a number, as `items[int(text)?]`".to_string()
+            "read the text as a number, as `items[int.parse(text)?]`".to_string()
         }
         (Type::Int, Type::Float) => "turn it into an int, as `items[int(position)]`".to_string(),
         (Type::Str, Type::Int | Type::Float | Type::Sized(_)) => {

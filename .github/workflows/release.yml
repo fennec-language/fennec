@@ -207,6 +207,9 @@ jobs:
             cp licenses/mingw-w64-runtime.txt "$name/licenses/"
           else
             cp "$from/fennec" "$name/"
+            # Which protocol its build daemon speaks, as what version and build, so the launcher can
+            # ask that daemon for a plain `fennec run` itself (`fennec_daemon::PROTOCOL_FILE`).
+            "$from/fennec" daemon protocol > "$name/daemon-protocol"
             tools="$TOOLCHAIN/lib/rustlib/$TARGET"
             mkdir -p "$name/llvm/bin" "$name/llvm/lib"
             # LLVM's `ar` takes the runtime's Rust out of its library, so building needs no `ar` from

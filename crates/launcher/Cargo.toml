@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 fennec-blake3.workspace = true
+# What it says to a toolchain's build daemon, for a plain `fennec run`.
+fennec-daemon.workspace = true
 fennec-dist.workspace = true
 miniz_oxide.workspace = true
 rustls.workspace = true

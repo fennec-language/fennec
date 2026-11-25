@@ -1395,10 +1395,23 @@ fn long_part_of_words(
     let count = length.div_ceil(8);
     let mut block = state.heap.fresh_written(TEXT_HEADER_WORDS + count, TEXT_HEADER_WORDS + count);
     if let Some(body) = block.get_mut(TEXT_HEADER_WORDS..) {
-        for (number, word) in body.iter_mut().enumerate() {
-            let left = length - number * 8;
-            let mask = if left >= 8 { u64::MAX } else { (1_u64 << (left * 8)) - 1 };
-            *word = super::text::eight_bytes_at(words, start + number * 8) & mask;
+        // A part starting on a word's first byte, as a line's first part does, is the text's
+        // words as they are; any other is put together from the two words each of its is across.
+        if start.is_multiple_of(8) {
+            for (word, from) in body.iter_mut().zip(words.get(start / 8..).unwrap_or_default()) {
+                *word = *from;
+            }
+        } else {
+            for (number, word) in body.iter_mut().enumerate() {
+                *word = super::text::eight_bytes_at(words, start + number * 8);
+            }
+        }
+        // The text's bytes after the part's last are cleared, as native code compares words whole.
+        let tail = length % 8;
+        if tail > 0
+            && let Some(last) = body.last_mut()
+        {
+            *last &= (1_u64 << (tail * 8)) - 1;
         }
     }
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
@@ -1631,8 +1644,17 @@ mod split_tests {
                 for (part, words) in texts.iter().zip(items.chunks(3)) {
                     let Ok(words) = <[u64; 3]>::try_from(words) else { continue };
                     if let Some(address) = text::block_of(&words) {
-                        let chars = state.heap.block(address).and_then(|block| block.get(3)).copied();
+                        let block = state.heap.block(address).unwrap_or_default();
+                        let chars = block.get(3).copied();
                         assert_eq!(chars, Some(u64::try_from(part.chars().count()).unwrap()), "{part:?}");
+                        // Past its last byte, its words are zero, as native code compares them whole.
+                        let past = block
+                            .get(super::TEXT_HEADER_WORDS..)
+                            .unwrap_or_default()
+                            .iter()
+                            .flat_map(|word| word.to_le_bytes())
+                            .skip(part.len());
+                        assert!(past.into_iter().all(|byte| byte == 0), "{part:?}");
                     }
                 }
                 texts

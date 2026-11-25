@@ -28,7 +28,7 @@ Most of Fennec follows from four rules:
 - A name holds its own value.
 - `mut` lets a name change.
 - To change something in a list, write to it there.
-- `ref` lets a loop or a function change yours.
+- `ref` lets a loop, a function or a local name change yours.
 
 ```fennec
 struct Unit:
@@ -49,7 +49,7 @@ def main(stdout: Stdout):
     stdout.print(target.health + 1)
 ```
 
-A plain name never quietly links to something else. **Planned:** a local `ref target = units[1]`, for several changes to one place in a row. It lasts until its last use, and while it's alive nothing else reaches `units`.
+A plain name never quietly links to something else. A local `ref target = units[1]` links a name to a place, for several changes to it in a row. It lasts until its last use, inside its block. While it's alive, nothing else may change `units` and a second `ref` into it is refused, but reading `units` is fine and sees the change.
 
 ## Names
 
@@ -306,13 +306,6 @@ def main(stdout: Stdout):
     stdout.print(units[0].stats.health, backup.stats.health)
 ```
 
-**Planned:** a lint for a copy that can quietly go stale, asking whether a `ref` was meant:
-
-```fennec planned
-# lint: edits to one won't reach the other; a `ref` changes the original
-world.selected = world.units[i]
-```
-
 ## Mistakes the compiler stops
 
 Each of these is a compile error that says what to write instead:
@@ -333,7 +326,6 @@ for unit in units:
 #        use `for ref`, or loop over indexes
 ```
 
-- A copy made on every round of a loop is an error too, naming the line and why the value is shared. A copy made once, on the first write, is only a hint.
 - `dict[str, int?]` is an error: leave the key out, since not being in a dict already means missing. The same goes for optional keys and set items.
 - One silent mistake remains: changing a `mut` copy and then reading it, believing the list changed. A rule gets added for that only if testing shows real bugs.
 
@@ -534,11 +526,11 @@ def main(stdout: Stdout):
 
 A failure is handled at the call. `?` passes it up, and `except` handles it: one case on the line, `except why:` with a block, or `case` arms under `except why:`, with `case _:` for the rest. `why` must be used on every way out, by reading it or by `fail why`. There's no `Ok`, `Err` or `Result` to store and forget, and `else` is only for a missing value.
 
-An `except why:` block after `x =` can also give `x` a value as its last line, rather than leaving. **Planned:** the old `Ok`, `Err` and `Result` removed.
+An `except why:` block after `x =` can also give `x` a value as its last line, rather than leaving. Writing `Ok`, `Err` or `Result` is a compile error that says what to write instead.
 
 - The value after `except` is only worked out if it's needed. Failing is a plain return, with no stack unwinding.
 - `fails A | B` combines failures from different places, and `?` passes any of them up as it is. A function type can say it too: `(str) -> int fails ParseError | RangeError`.
-- `result.expect("why")` says a call can't fail, and needs a reason. **Planned:** `ignore` goes, and `_ = f()` on a call that can fail is a compile error, so a failure must always be handled.
+- `f().expect("reason")` says a call can't fail here, and crashes with that reason if it does. The reason has to say something. `_ = f()` on a call that can fail is a compile error, so a failure is always handled.
 - A run-time bug is different from a failure. `xs[i]` out of range stops the program with a clear message, because there's nothing sensible to handle.
 
 - Ignoring a returned value is a compile error, and `_ = call()` throws one away on purpose.
@@ -625,7 +617,7 @@ def main(stdout: Stdout):
     stdout.print(first, words, clean)
 ```
 
-`bytes` is a separate type for binary data, and text read from outside is checked once, when it's decoded. **Planned:** `{x=}`, which prints `x=` and the value.
+`bytes` is a separate type for binary data, and text read from outside is checked once, when it's decoded.
 
 A t-string, `t"..."`, makes a `Template`, as in Python 3.14. It keeps the text you wrote apart from the values, so a value can never become part of a query, a page or a command:
 
@@ -718,8 +710,6 @@ def main(net: Net, stdout: Stdout):
 
 Each connection closes when its round ends, however it ends. A failure that passes up out of a round stops the server and cuts the others short, as `?` does in any loop, so handle it in the body, as `except` does here. `break` stops taking connections and lets the running rounds finish, and a crash ends only its own round.
 
-**Planned:** `limit=` on `parallel`.
-
 ## Sharing, resources and tasks
 
 Most programs share nothing. A typical game's main loop owns the world and passes `ref world` down.
@@ -761,11 +751,11 @@ def main(stdout: Stdout):
 ```
 
 - A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability. There's no top-level shared state, so a function's signature says what shared state it touches.
-- Any way out of a `lock` block releases it. Leaving with `return` keeps the changes made so far, and today so does `fail`. **Planned:** a `fail` or `?` leaving `lock ... as ref` rolls back the block's changes, as a crash does, so a write lock either finishes or has no effect.
+- Any way out of a `lock` block releases it. Leaving with `return`, `break` or `continue` keeps the changes made so far. A `fail` or `?` leaving `lock ... as ref` rolls them back, as a crash does, so a write lock either finishes or has no effect.
 - A crash inside `lock x as ref s:` rolls back: every value the block changed is put back before the lock is released, so nobody ever sees a half-change. There's nothing to write, and a lock is never left poisoned.
 - Two values locked at once go in one statement, `lock source, target as ref payer, ref payee:`, and a `lock` inside another is refused for now.
 - A `shared` value never holds one of its own type and never forms a cycle, so a tree uses a `Table` and `Id`s. Its memory is freed when the last holder lets go, with no cleanup code.
-- **Planned:** lock order checked across the whole program, and a compile error for waiting inside a lock, on a channel or the network.
+- Lock order is checked across the whole program, so a deadlock between locks can't compile. Waiting inside a lock, on a channel, the network or `clock.sleep`, is a compile error, however many calls down the wait is.
 
 ### `with` and `lend`
 
@@ -789,7 +779,7 @@ def load(fs: Fs, path: str) -> list[int] fails IoError:
 
 - The end of the block is where the file finishes. The `?` on the `with` line covers both opening it and finishing it, so there's no `close()` to forget.
 - A block that fails leaves the old file as it was, so there's never half a file. `durable=False` skips waiting for the disk, and `file.sync()?` puts what's written there at any point.
-- `fs.open` reads in `lines()` or `chunks(size)`, so a file bigger than memory is fine.
+- A file read with `fs.open` is a buffered `Reader`, with `lines()`, `read_line` and `read_chunk`, so a file bigger than memory is fine.
 - What a `with` lends can't escape the block, and a struct holding something borrowed is borrowed too.
 
 Writing your own takes `-> with T` and one `lend`, with setup above it, cleanup below, and `lend x except:` for when the caller's block fails:
@@ -820,7 +810,7 @@ Code after `lend` runs when the caller's block succeeds, and if it fails, that's
 `launch` runs a function beside you until its `with` block ends, so no task outlives the code that started it. Built natively.
 
 ```fennec
-from std.concurrent import Inbox, Crashed, Closed, Timeout
+from std.concurrent import Inbox
 
 enum Sound:
     Play(name: str, volume: float)
@@ -834,7 +824,7 @@ def audio(inbox: Inbox[Sound], stdout: Stdout):
             case .StopAll:
                 stdout.print("quiet")
 
-def main(stdout: Stdout) fails Crashed | Closed | Timeout:
+def main(stdout: Stdout):
     with launch((inbox) => audio(inbox, stdout), stop_after=5s)? as sounds:
         sounds.send(.Play(name="jump", volume=0.8))?
         sounds.send(.StopAll)?
@@ -842,8 +832,8 @@ def main(stdout: Stdout) fails Crashed | Closed | Timeout:
 
 - A parameter typed `Inbox[T]` makes `launch` create the channel: the task gets the receiving end and you get the sending end. The enum is the protocol, so you can only send real cases and the task must handle each one.
 - The `?` on the `with launch` line covers the task: its own failures, and `Crashed` if it crashes, come out where the block ends. A crash ends only its own task.
-- Channels are always bounded, and `send` waits when one is full. `send` and `receive` take `timeout=`. A channel of your own is `with channel[Job](size=64) as jobs:`, from `std.concurrent`, a plain function as Python's `open()` is. `to=.Every` gives every listener every message.
-- **Planned:** pools, like a database's connections, each lent to one block at a time by its keeper, so nothing can leak or be used twice.
+- Channels are always bounded, and `send` waits when one is full. `send_within(message, d)` and `receive_within(d)` wait at most `d`, then fail with `Timeout`. A channel of your own is `with channel[Job](size=64) as jobs:`, from `std.concurrent`, a plain function as Python's `open()` is. `to=.Every` gives every listener every message.
+- A pool, like a database's connections, has each connection lent to one block at a time by its keeper task, so nothing can leak or be used twice. `postgres.connect` lends one, and `std.concurrent` has `pool[T]` for your own.
 
 Not in the language at all: `del`, destructors, moves, lifetimes, `unsafe` and global state.
 
@@ -854,16 +844,16 @@ Not in the language at all: `del`, destructors, moves, lifetimes, `unsafe` and g
 ```fennec
 export struct Score:
     points = 0
-    # seen only by Score's own methods
+    # seen only by code in this file
     _best = 0
 
 export def best(scores: list[Score]) -> int:
     return max(score.points for score in scores)
 ```
 
-- A `_name` field or method is hidden from everything but its type's own methods. Tests get no special access.
+- A `_name` field or method is private to the file that declares its type: the type's methods, the file's other functions and types, and tests written there. Code in any other file can't reach it. Tests get no special access.
 - A top-level name never starts with `_`, since it's already private to its kit.
-- Other kits match an exported type's fields by name, as in `case Point(x=a, y=_)`, so a kit can add a field with a default to a type it exports without breaking anyone. That's built for the standard library's types so far.
+- Other kits match an exported type's fields by name, as in `case Point(x=a, y=_)`, so a kit can add a field with a default to a type it exports without breaking anyone.
 
 ## Interfaces and generics
 
@@ -924,14 +914,24 @@ def main(stdout: Stdout):
     stdout.print(json.dumps(Account(type="admin", display_name="Ash"), names=.CamelCase))
 ```
 
-**Planned:** compile-time loops over a type, which serialization will be built on, instead of macros or `derive`. `fields(T)` gives a struct's fields and `cases(T)` an enum's cases. There's no I/O at compile time, so a kit can't run anything on your machine while it compiles.
+Saving goes through one `serialize` and `deserialize`, with no macros or `derive`. A generic function writes a `T: Serializable` and reads a `T: Deserializable`, and each call's own type is checked against the format where the call is:
 
-```fennec planned
-def write[T, S: Serializer](x: T, ref out: S):
-    for f in fields(T):
-        out.field(f.name)
-        write(f.get(x), ref out)
+```fennec
+from std import json
+
+def answer[T: Serializable](status: int, value: T) -> str:
+    return f"{status} {json.dumps(value)}"
 ```
+
+A generic function can also loop over a type's fields, `for field in fields(T):`, each with its `name` and its value through `get`:
+
+```fennec
+def describe[T](value: T, stdout: Stdout):
+    for field in fields(T):
+        stdout.print(field.name, field.get(value))
+```
+
+**Planned:** annotations a kit defines for fields, read by generic code through `fields(T)`.
 
 ## Events and callbacks
 
@@ -968,7 +968,7 @@ def parse_save(data: str) -> list[str]:
     return data.split()
 ```
 
-Calling `print`, or using `stdout` in a function that wasn't given it, is an error that says how to pass it in. `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net` work today. `clock.now()` reads a monotonic clock, for measuring, and `clock.time()` reads the wall clock as a `Time` in UTC.
+Calling `print`, or using `stdout` in a function that wasn't given it, is an error that says how to pass it in. `Stdout`, `Stderr`, `Stdin`, `Args`, `Env`, `Fs`, `Clock`, `Entropy`, `Process`, `Signals` and `Net` work today: all eleven. `clock.now()` reads a monotonic clock, for measuring, and `clock.time()` reads the wall clock as a `Time` in UTC.
 
 ## Tests
 
@@ -1017,7 +1017,7 @@ def update(ref particles: list[Particle], dt: float):
         particle.position += particle.velocity * dt
 ```
 
-Floats have one equality, order and hash: NaN equals itself and sorts last, and `0.0` equals `-0.0`. There are no fused operations, and `sin`, `cos`, `exp`, `log` and `**` come from one library on every platform, so a float result is the same bits on every machine. There's no `@fast_math` to opt out, since replays and lockstep games depend on those bits, and speed comes from checks the compiler proves it can remove instead. **Planned:** `a.approx(b, within=...)`, which compares computed values with a tolerance.
+Floats have one equality, order and hash: NaN equals itself and sorts last, and `0.0` equals `-0.0`. There are no fused operations, and `sin`, `cos`, `exp`, `log` and `**` come from one library on every platform, so a float result is the same bits on every machine. There's no `@fast_math` to opt out, since replays and lockstep games depend on those bits, and speed comes from checks the compiler proves it can remove instead.
 
 ## C libraries
 
@@ -1035,4 +1035,4 @@ Floats have one equality, order and hash: NaN equals itself and sorts last, and 
 - **`x / 0.0` stops the program,** as Python's `ZeroDivisionError` does.
 - **A broken `where` rule** stops the program in code, and fails cleanly when data is loaded.
 - **`?` inside `parallel`** passes a failure up out of the loop, as anywhere else.
-- **There's no scoped `ref`.** Write directly, `units[target_id].health -= 1`, or call a method.
+- **There's no scoped `ref`.** A local `ref target = units[target_id]` lasts until its last use, and there's no `with units[target_id] as ref target:`.

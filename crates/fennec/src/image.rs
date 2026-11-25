@@ -24,17 +24,29 @@ fn image_name(path: &str) -> String {
     format!("{}.image", fennec_blake3::hash(name_of(path).as_bytes()).to_hex())
 }
 
-/// A kit's program as it was cut down last time, if none of its files have changed since, and a
-/// hash of it as it was kept, which says it's the same program another run had: see `kept_hash`.
-pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
+/// The image a kit's program was kept as last time, if none of its files have changed since: the
+/// hash it was written with, which `program` reads it by, and a hash of it as it was kept, which
+/// says it's the same program another run had (see `kept_hash`). Nothing of the image is read but
+/// its hash, so a run whose program is stored already never reads or decodes it: on a big kit
+/// that's 16 million instructions a run.
+pub(crate) fn kept(path: &str, cache: &Cache) -> Option<(fennec_blake3::Hash, String)> {
     let state = cache.kit_state(&name_of(path), BUILD)?;
     let files = kept_files(path, &state)?;
     if !crate::verdict::same_files(&state, &files) {
         return None;
     }
-    let (bytes, image) = cache.read_hashed("run-image", &image_name(path))?;
+    let image = cache.written_hash("run-image", &image_name(path))?;
+    Some((image, kept_hash(path, &files, image)))
+}
+
+/// The program a kit's image holds, as `kept` found it: None if it isn't the image `kept` named
+/// any more, as when another run kept it again since, or it doesn't read back whole.
+pub(crate) fn program(path: &str, cache: &Cache, image: fennec_blake3::Hash) -> Option<Program> {
+    let (bytes, read) = cache.read_hashed("run-image", &image_name(path))?;
+    if read != image {
+        return None;
+    }
     let module = Module::decode(&mut Reader::new(&bytes))?;
-    let kept = kept_hash(path, &files, image);
     let program = Program {
         module,
         sources: Sources::new(),
@@ -43,7 +55,7 @@ pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
         kit_src: None,
         dependency_files: std::collections::HashSet::new(),
     };
-    Some((program, kept))
+    Some(program)
 }
 
 /// The files a kept image is held to, by the state it was kept with: a kit's files, or a single

@@ -2089,6 +2089,11 @@ impl Machine {
                     let _ = writeln!(self.out, "{line}");
                 }
             }
+            Stmt::Crewed(crew) => {
+                for line in super::crews::printed(crew) {
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
             Stmt::Messaged(messaging) => {
                 for line in super::messaging::printed(messaging) {
                     let _ = writeln!(self.out, "{line}");

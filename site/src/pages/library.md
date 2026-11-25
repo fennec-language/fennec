@@ -8,7 +8,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 
 <p class="lede">Fennec comes with batteries included, like Python. Where Python has a module for something, Fennec's usually has the same name.</p>
 
-> **Partly built.** `math`, `layout`, `path`, `fs`, `json`, `toml`, `pack`, `csv`, `base64`, `compress`, `collections`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `net`, `url`, `process`, `crypto`, `uuid`, `concurrent`, `sql`, `sqlite` and `postgres` work today, along with the `Stdout`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process` and `Net` capabilities. Anything marked planned below isn't built yet. See the [roadmap](/roadmap/).
+> **Partly built.** `math`, `layout`, `path`, `fs`, `json`, `toml`, `pack`, `csv`, `base64`, `compress`, `collections`, `random`, `time`, `string`, `re`, `unicode`, `log`, `cli`, `net`, `url`, `process`, `crypto`, `uuid`, `concurrent`, `sql`, `sqlite` and `postgres` work today, along with the `Stdout`, `Stderr`, `Stdin`, `Args`, `Fs`, `Clock`, `Env`, `Entropy`, `Process`, `Signals` and `Net` capabilities. Anything marked planned below isn't built yet. See the [roadmap](/roadmap/).
 
 ## What's in it
 
@@ -22,8 +22,8 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC, comparing secrets, and `Secret`, which can't be printed, logged or saved; `uuid`; `Template`, which every t-string makes. Secure random bytes come from the `Entropy` capability |
 | Diagnostics | `log` |
 | Games | `math`: `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3` and `Mat4`, checked bit for bit against a widely used native math library. `layout` for lists stored a field at a time. Planned: `Simd`, and `audio` and `gpu` as kits |
-| Tasks | `concurrent`: `Channel`, its ends `Inbox` and `Sender`, and the errors `Closed`, `Timeout` and `Crashed`, for `with launch`. Planned: pools |
-| Storage | `sql`, one interface for databases. `sqlite`, SQLite compiled in, which takes only t-strings, so SQL injection can't be written. `postgres`, written in Fennec over `net`: sign-in, queries and transactions, over TLS. Planned: connecting from a URL, as a pool |
+| Tasks | `concurrent`: `Channel`, its ends `Inbox` and `Sender`, and the errors `Closed`, `Timeout` and `Crashed`, for `with launch`, and `pool[T]`, which lends what it keeps to one block at a time |
+| Storage | `sql`, one interface for databases. `sqlite`, SQLite compiled in, which takes only t-strings, so SQL injection can't be written. `postgres`, written in Fennec over `net`: sign-in, queries and transactions, over TLS, with `postgres.connect` lending a pool from a URL |
 
 ## Importing what you use
 
@@ -36,7 +36,7 @@ from std.math import Vec3, sqrt
 from std import json
 ```
 
-Using a name without its import is an error that says which import to add. Capabilities like `Stdout`, `Fs` and `Clock` need no import, and nor do the errors standard operations fail with, like `IoError`.
+Using a name from a module, like `Vec3`, without importing it is an error that says which import to add. Capabilities like `Stdout`, `Fs` and `Clock` need no import, and nor do the errors standard operations fail with, like `IoError`.
 
 ## Serialization with nothing to set up
 
@@ -81,17 +81,15 @@ def main(net: Net):
         server.serve(respond)
 ```
 
-Every call that waits takes `timeout=`, and connecting and HTTP requests stop after 30 seconds unless told otherwise.
+Every `std.net` call that waits takes `timeout=`, and connecting and HTTP requests stop after 30 seconds unless told otherwise.
 
 ## Built the same way as your code
 
 - **I/O goes through capabilities.** `fs.read_text(path)` needs an `Fs`, so even the standard library can't reach the outside world unexpectedly. `Net` works the same way, and tests get fakes of each.
 - **Failures are typed,** with the same `error`, `fail` and `?` as everywhere else.
 - **You only pay for what you use.** Only what your program reaches gets compiled.
-- **No special powers.** The standard library uses only what any program can, and it's written in Fennec wherever it can be.
+- **Written in Fennec** wherever it can be. Where it needs C, the binding sits in reviewed runtime code, and a program sees only the safe API.
 
-## Stable and next
+## Kits beside it
 
-**Planned:** new modules start in `std.next`, where they can still change, and graduate once they've settled. That way a module never gets stuck with an early mistake.
-
-Windows, input, audio, image formats, machine learning and database drivers come as first-party kits rather than `std`. Where one needs a C library, the Fennec project wraps it behind a safe API.
+Windows, input, audio, image formats, machine learning and database drivers come as first-party kits rather than `std`. Where one needs a C library, the Fennec project wraps it behind a safe API. Until first-party kits have a home, `postgres` lives in `std`.

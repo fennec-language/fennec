@@ -1079,6 +1079,7 @@ impl<'p> Module<'_, 'p> {
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
             places_out: HashMap::new(),
+            places_back: HashSet::new(),
             out_of_dicts: BTreeSet::new(),
             at: (usize::MAX, usize::MAX),
             check_kind: None,
@@ -1264,6 +1265,11 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// For each place taken out to change, the stack slot saying where it goes back while it's out.
     pub(crate) places_out: HashMap<usize, String>,
+    /// The places that have been put back. One that waited for the call that changes it is taken
+    /// out there; what names it after it's back, as letting go of the local at a lock's end does,
+    /// doesn't take it out again, which would leave its slot saying it's out with nothing to put it
+    /// back (#2516).
+    pub(crate) places_back: HashSet<usize>,
     /// Those of them that are values out of a dict or a list, which go back after the others: a
     /// field out of such a value goes back into it first.
     pub(crate) out_of_dicts: BTreeSet<usize>,
@@ -5153,6 +5159,28 @@ def main(stdout: Stdout):
         let helpers = text.matches("%cursor_wrong = or i1").count();
         assert!(helpers >= 2, "{helpers} helpers check the cursor:\n{text}");
         assert!(shared.literals.values().any(|said| said.contains("a string's cursor is inside it")));
+        Ok(())
+    }
+
+    /// A slice of a block's text that isn't ASCII finds where its ends are only once it's known to
+    /// be short enough to be inline. A longer one goes to the runtime with nothing walked, as
+    /// `api_handler`'s body did. An end that's the text's own end is never looked for: it's where
+    /// the bytes end.
+    #[test]
+    fn a_slice_finds_its_ends_only_when_it_could_be_inline() -> Result<(), String> {
+        let source = "def go(s: str, a: int) -> str:\n    return s[a:]\n\ndef main(stdout: Stdout):\n    stdout.print(go(\"caf\u{e9} na\u{ef}ve\", 2))\n    return\n";
+        let program = lowered(source)?;
+        let (plain, _, _) = emit(&program)?;
+        let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
+        let start = plain.find("@\"f_go\"(").ok_or_else(|| format!("no go:\n{plain}"))?;
+        let go = plain.get(start..).and_then(|rest| rest.split("\n}\n").next()).unwrap_or_default();
+        let short = go.find("\nslice_short").ok_or_else(|| format!("no short check:\n{go}"))?;
+        let placed = go.find("call i64 @fen_char_place(").ok_or_else(|| format!("no place found:\n{go}"))?;
+        assert!(short < placed, "a place is found before the length is checked:\n{go}");
+        // Each place is found in a block of its own, which the text's own end goes around.
+        let guarded =
+            go.lines().filter(|line| line.starts_with("slice_place") && !line.starts_with("slice_placed"));
+        assert_eq!(go.matches("call i64 @fen_char_place(").count(), guarded.count(), "{go}");
         Ok(())
     }
 

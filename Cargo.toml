@@ -46,6 +46,9 @@ print_stderr = "deny"
 [workspace.dependencies]
 # The allocator the runtime gives Fennec programs: fast for many small blocks, under MIT.
 mimalloc = { version = "=0.1.52", default-features = false }
+# Counts what's allocated through mimalloc, for the build daemon's budget for what it keeps. Its
+# own `GlobalAlloc` is the unsafe part, as mimalloc's is. Under MIT or Apache-2.0.
+cap = { version = "=0.1.2", default-features = false }
 # Secure random bytes from the operating system, for `Entropy`, on every platform Fennec runs on.
 # Reading them on Windows takes FFI, which Fennec's own crates forbid. Under MIT or Apache-2.0.
 getrandom = { version = "=0.4.3", default-features = false }

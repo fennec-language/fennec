@@ -5922,6 +5922,65 @@ fn a_held_run_sees_what_an_embedded_folder_holds() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// What a name in an embedded folder is counts, not only the name: what's read through a link is
+/// noted by where it led, so the folder says where each link leads. A link to a file pointed at
+/// another, a link to a folder pointed at another, a link made a file of its own, and an empty
+/// folder made an empty file are each seen, by the cache's own look and so by the daemon's.
+#[cfg(unix)]
+#[test]
+fn a_held_run_sees_a_link_in_an_embedded_folder_changed() {
+    use std::os::unix::fs::symlink;
+    let dir = scratch("daemon_held_links").unwrap();
+    let home = dir.join("home");
+    let _stopped = DaemonsStopped { home: &home };
+    let main = "SITE = embed_folder(\"../site\")\n\ndef main(stdout: Stdout):\n    \
+                for path, data in SITE.items():\n        stdout.print(path, len(data))\n";
+    let kit = dir.join("k");
+    write_kit(&kit, "k", "", &[("main.fen", main)]).unwrap();
+    let (site, data) = (kit.join("site"), kit.join("data"));
+    for folder in [site.join("empty"), data.join("a"), data.join("b")] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    for (file, text) in
+        [("v1.txt", "one\n"), ("v2.txt", "three33\n"), ("a/x.txt", "x\n"), ("b/x.txt", "xyz\n")]
+    {
+        std::fs::write(data.join(file), text).unwrap();
+    }
+    std::fs::write(site.join("app.css"), "body {}\n").unwrap();
+    symlink("../data/v1.txt", site.join("current.txt")).unwrap();
+    symlink("../data/v1.txt", site.join("pinned.txt")).unwrap();
+    symlink("../data/a", site.join("shelf")).unwrap();
+    // Runs until one starts from what's held, at most three, each printing what the site holds.
+    let held_within = |said: &str| {
+        let before = runs_held(&kit, &home).unwrap();
+        for _ in 0..3 {
+            let ran = run_held(&kit, &home, &[]).unwrap();
+            assert_eq!(text(&ran.stdout), said, "{}", text(&ran.stderr));
+            if runs_held(&kit, &home).unwrap() > before {
+                return;
+            }
+        }
+        panic!("none of 3 runs started from what was held");
+    };
+    held_within("app.css 8\ncurrent.txt 4\npinned.txt 4\nshelf/x.txt 2\n");
+    std::fs::remove_file(site.join("current.txt")).unwrap();
+    symlink("../data/v2.txt", site.join("current.txt")).unwrap();
+    held_within("app.css 8\ncurrent.txt 8\npinned.txt 4\nshelf/x.txt 2\n");
+    std::fs::remove_file(site.join("shelf")).unwrap();
+    symlink("../data/b", site.join("shelf")).unwrap();
+    held_within("app.css 8\ncurrent.txt 8\npinned.txt 4\nshelf/x.txt 4\n");
+    std::fs::remove_file(site.join("pinned.txt")).unwrap();
+    std::fs::write(site.join("pinned.txt"), "own file\n").unwrap();
+    held_within("app.css 8\ncurrent.txt 8\npinned.txt 9\nshelf/x.txt 4\n");
+    std::fs::remove_dir(site.join("empty")).unwrap();
+    std::fs::write(site.join("empty"), "").unwrap();
+    held_within("app.css 8\ncurrent.txt 8\nempty 0\npinned.txt 9\nshelf/x.txt 4\n");
+
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec daemon status` and `stop` reach every daemon the user has running, one for each
 /// environment commands ran in: a terminal set up another way still sees and stops them all.
 #[cfg(unix)]

@@ -151,8 +151,7 @@ pub fn embedded_name(path: &Path) -> String {
 /// What starts the name of a file `embed` read.
 pub const EMBEDDED: &str = "embed:";
 
-/// The names in a folder `embed_folder` reads, sorted, leaving out hidden ones. A folder it read
-/// is noted as these, one a line, so the caches look at a folder as it does.
+/// The names in a folder `embed_folder` reads, sorted, leaving out hidden ones.
 ///
 /// # Errors
 /// When the folder can't be read.
@@ -163,6 +162,29 @@ pub fn folder_names(folder: &Path) -> std::io::Result<Vec<String>> {
         .collect();
     names.sort();
     Ok(names)
+}
+
+/// What a folder `embed_folder` read is noted as, so the caches look at it as it does: each name
+/// it reads, one a line, saying what it is. A file is its name, a folder `name/`, and a link
+/// `name -> where it leads`. What's read through a link is noted by where it led, so a link
+/// pointed elsewhere, a link made a file, or a folder made a file, is seen here, in the folder.
+///
+/// # Errors
+/// When the folder, or what a name in it is, can't be read.
+pub fn folder_text(folder: &Path) -> std::io::Result<String> {
+    let mut lines = Vec::new();
+    for name in folder_names(folder)? {
+        let at = folder.join(&name);
+        let kind = std::fs::symlink_metadata(&at)?.file_type();
+        lines.push(if kind.is_symlink() {
+            format!("{name} -> {}", std::fs::read_link(&at)?.display())
+        } else if kind.is_dir() {
+            format!("{name}/")
+        } else {
+            name
+        });
+    }
+    Ok(lines.join("\n"))
 }
 
 /// Where loading starts.

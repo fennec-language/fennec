@@ -239,7 +239,8 @@ impl Walk<'_> {
             .with_help("a link back to a folder would have it read again inside itself without end; take the link out"));
         }
         let names = crate::folder_names(real).map_err(unreadable)?;
-        found.1.push(Embedded { path: real.to_path_buf(), data: Blob::from(names.join("\n").into_bytes()) });
+        let noted = crate::folder_text(real).map_err(unreadable)?;
+        found.1.push(Embedded { path: real.to_path_buf(), data: Blob::from(noted.into_bytes()) });
         for name in names {
             let (inner, shown) = (beside.join(&name), format!("{prefix}{name}"));
             let reached = format!("{written}/{name}");

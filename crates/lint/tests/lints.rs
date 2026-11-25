@@ -297,13 +297,13 @@ fn kit_rules(source: &str) -> Vec<&'static str> {
 
 #[test]
 fn a_kit_gives_failures_back_rather_than_expecting() {
-    let source = "def load(text: str) -> int:\n    return int(text).expect(\"it's a number\")\n\nstruct Save:\n    level: int\n\n    def parsed(self, text: str) -> int:\n        def inner() -> int:\n            return int(text).expect(\"a number\")\n        return inner()\n";
+    let source = "def load(text: str) -> int:\n    return int.parse(text).expect(\"it's a number\")\n\nstruct Save:\n    level: int\n\n    def parsed(self, text: str) -> int:\n        def inner() -> int:\n            return int.parse(text).expect(\"a number\")\n        return inner()\n";
     assert_eq!(
         kit_rules(source),
         ["expect-in-kit", "expect-in-kit"],
         "a function, and one nested in a method"
     );
-    let main = "def main(stdout: Stdout):\n    stdout.print(int(\"1\").expect(\"it's a number\"))\n\ntest \"parses\":\n    assert int(\"2\").expect(\"a number\") == 2\n";
+    let main = "def main(stdout: Stdout):\n    stdout.print(int.parse(\"1\").expect(\"it's a number\"))\n\ntest \"parses\":\n    assert int.parse(\"2\").expect(\"a number\") == 2\n";
     assert_eq!(kit_rules(main), Vec::<&str>::new(), "`main` and tests decide for the program");
     let own = "struct Check:\n    ok: bool\n\n    def expect(self, why: str) -> bool:\n        return self.ok\n\ndef f(check: Check) -> bool:\n    return check.expect(\"fine\")\n";
     assert_eq!(kit_rules(own), Vec::<&str>::new(), "a method of its own named `expect`");

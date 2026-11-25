@@ -11,6 +11,8 @@ export default defineConfig({
   markdown: {
     shikiConfig: {
       themes: { light: 'vitesse-light', dark: 'vitesse-dark' },
+      // Both themes as CSS variables; global.css picks one, dark by default.
+      defaultColor: false,
       langs: [fennec],
     },
   },

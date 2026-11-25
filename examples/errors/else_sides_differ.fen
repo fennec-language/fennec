@@ -1,3 +1,3 @@
 def main(stdout: Stdout):
-    count = int("12") else "none"
+    count = int.parse("12") else "none"
     stdout.print(count)

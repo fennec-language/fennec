@@ -1,6 +1,6 @@
 def main(stdout: Stdout):
     mut total = 0
     for text in ["3", "x", "4", ""]:
-        number = int(text) except InvalidValue(): continue
+        number = int.parse(text) except InvalidValue(): continue
         total += number
     stdout.print(total)

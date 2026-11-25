@@ -1863,6 +1863,30 @@ mod tests {
         done.join().unwrap();
     }
 
+    /// Ten redirects, each connecting to `localhost` again, reach a server listening only on
+    /// `127.0.0.1` within a 1 second timeout. The address that answered is tried first the next
+    /// time, so on Windows only the first connection pays `::1`'s short try.
+    #[test]
+    fn a_chain_of_redirects_to_localhost_keeps_within_a_short_timeout() {
+        let again = "HTTP/1.1 302 Found\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n".to_owned();
+        let mut answers = vec![again; 10];
+        answers.push("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_owned());
+        let (port, done) = serving(answers);
+        let answer = send(&Request {
+            method: "GET".to_owned(),
+            url: format!("http://localhost:{port}/"),
+            params: Vec::new(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            timeout: Duration::from_secs(1),
+            most_body: super::MOST_BODY,
+            hosts: None,
+        });
+        let got = answer.ok().unwrap();
+        assert_eq!((got.status, got.body.as_slice()), (200, &b"hello"[..]));
+        assert_eq!(done.join().unwrap().len(), 11);
+    }
+
     /// Another port on the same host is another site, as far as who's asking goes.
     #[test]
     fn a_redirect_to_another_port_leaves_behind_every_header_but_the_harmless() {

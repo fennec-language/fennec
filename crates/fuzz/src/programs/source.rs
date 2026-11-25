@@ -3884,6 +3884,10 @@ impl Writer {
                 self.line(indent, &format!("stored{}(fs, stdout) except why:", storing.id));
                 self.line(indent + 1, "stdout.print(\"stored failed\", why.message())");
             }
+            Stmt::Crewed(crew) => {
+                let _ = write!(self.helpers, "{}", super::crews::written(crew));
+                self.line(indent, &format!("crewed{}(stdout)", crew.id));
+            }
             Stmt::Messaged(messaging) => {
                 let _ = write!(self.helpers, "{}", super::messaging::written(messaging));
                 self.line(indent, &format!("messaged{}(stdout) except why:", messaging.id));

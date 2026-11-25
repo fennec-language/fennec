@@ -198,9 +198,17 @@ static FINDING: std::sync::Mutex<Option<std::thread::JoinHandle<String>>> = std:
 static LENT: std::sync::Mutex<Option<std::sync::mpsc::Sender<std::sync::Arc<fennec_kit::Program>>>> =
     std::sync::Mutex::new(None);
 
+/// The lint errors of a run's program as the build daemon held them, found with no thread.
+static HELD_FOUND: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// Starts finding the lint errors of the program at `path` beside whatever comes next, for
 /// `show_errors_found` to show.
 pub(crate) fn find_errors_beside(path: &str) {
+    // The build daemon holds what they were with files the same as now.
+    if let Some(shown) = crate::held::linted(path) {
+        *HELD_FOUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(shown);
+        return;
+    }
     let owned = path.to_owned();
     let (sender, receiver) = std::sync::mpsc::channel();
     *LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender);
@@ -232,8 +240,9 @@ pub(crate) fn lend_loaded(program: Option<&std::sync::Arc<fennec_kit::Program>>,
 pub(crate) fn show_errors_found() {
     // A run that ends before it loaded anything lets them load it themselves.
     lend_loaded(None, "");
+    let held = HELD_FOUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     let finding = FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-    if let Some(found) = finding.and_then(|finding| finding.join().ok()) {
+    if let Some(found) = held.or_else(|| finding.and_then(|finding| finding.join().ok())) {
         eprint!("{}", as_a_run_shows(&found));
     }
 }
@@ -245,6 +254,7 @@ pub(crate) fn show_errors_found() {
 #[cfg(unix)]
 pub(crate) fn forget_errors_found() {
     lend_loaded(None, "");
+    HELD_FOUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     let finding = FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     if let Some(finding) = finding {
         let _ = finding.join();
@@ -267,7 +277,9 @@ fn errors_remembered_with(
     if let Some(kept) = cache.read("linted", &name)
         && let Some(shown) = kept.strip_prefix(key.as_bytes()).and_then(|rest| rest.strip_prefix(b"\n"))
     {
-        return String::from_utf8_lossy(shown).into_owned();
+        let shown = String::from_utf8_lossy(shown).into_owned();
+        crate::held::note_linted(path, files.as_deref(), &shown);
+        return shown;
     }
     let shown = match &files {
         Some(files) => of_kit(path, &cache, files, lent),
@@ -278,6 +290,7 @@ fn errors_remembered_with(
         "keep what the lint found",
         cache.write("linted", &name, format!("{key}\n{shown}").as_bytes()),
     );
+    crate::held::note_linted(path, files.as_deref(), &shown);
     shown
 }
 

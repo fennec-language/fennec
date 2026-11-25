@@ -5703,6 +5703,109 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// The build daemon holds what a kit's run found while the kit's files are the same, so the next
+/// run starts from it, and lets go of it when any of them changes: a file of the kit's own, a
+/// dependency's, `kit.toml`, `kit.lock`, and the toolchain `kit.lock` pins. Each such run is
+/// worked out as one with no daemon is, and the run after it is held again.
+#[cfg(unix)]
+#[test]
+fn the_daemon_holds_a_kits_run_till_one_of_its_files_changes() {
+    let dir = scratch("daemon_holds_runs").unwrap();
+    let home = dir.join("home");
+    let _stopped = DaemonsStopped { home: &home };
+    let says = |word: &str| format!("export def word() -> str:\n    return \"{word}\"\n");
+    write_kit(&dir.join("first"), "first", "", &[("lib.fen", &says("first"))]).unwrap();
+    // `f` is a name the lint finds too short, and the test fails once the dependency says "broken".
+    let main = |end: &str| {
+        format!(
+            "from first import word\n\ndef f() -> str:\n    return word()\n\n\
+def main(stdout: Stdout):\n    stdout.print(f() + \"{end}\")\n\n\
+test \"the word isn't broken\":\n    assert word() != \"broken\"\n"
+        )
+    };
+    let app = dir.join("app");
+    let manifest = "[dependencies]\nfirst = { path = \"../first\" }\n";
+    write_kit(&app, "app", manifest, &[("main.fen", &main(""))]).unwrap();
+    let ran = || {
+        crate::executables::fennec_command()
+            .arg("run")
+            .current_dir(&app)
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
+            .env_remove("FENNEC_NO_DAEMON")
+            .env_remove("FENNEC_NO_CACHE")
+            .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
+            .output()
+            .unwrap()
+    };
+    let first = ran();
+    let lint = text(&first.stderr);
+    assert!(lint.contains("short-name"), "{lint}");
+    // Each run that ends well shows the same lint errors, whether it was held or not.
+    let run = || {
+        let ran = ran();
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        assert_eq!(text(&ran.stderr), lint);
+        text(&ran.stdout)
+    };
+    // How many runs the daemon has started from what it held.
+    let held = || {
+        let status = text(&with_daemon(&app, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
+        status
+            .split_once("runs held: ")
+            .and_then(|(_, rest)| rest.split_once(", and "))
+            .and_then(|(_, rest)| rest.split_once(" run"))
+            .map_or(0, |(count, _)| count.parse::<u64>().unwrap())
+    };
+    // Each edit is made a moment later than the files were last looked at, as a person's is.
+    let edit = |file: PathBuf, text: &str| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(file, text).unwrap();
+    };
+
+    // The run after an edit is worked out again and shows it, and the one after that is held.
+    let seen_then_held = |said: &str, held_before: u64| {
+        assert_eq!(run(), said);
+        assert_eq!(held(), held_before);
+        assert_eq!(run(), said);
+        assert_eq!(held(), held_before + 1);
+    };
+    assert_eq!((text(&first.stdout).as_str(), held()), ("first\n", 0));
+    assert_eq!(run(), "first\n");
+    assert_eq!(held(), 1);
+    assert_eq!(run(), "first\n");
+    assert_eq!(held(), 2);
+
+    // The kit's own file.
+    edit(app.join("src/main.fen"), &main("!"));
+    seen_then_held("first!\n", 2);
+    // A dependency's file.
+    edit(dir.join("first/src/lib.fen"), &says("other"));
+    seen_then_held("other!\n", 3);
+    // `kit.toml`, though nothing it says changes what the program does.
+    let manifest = format!("name = \"app\"\nversion = \"0.1.1\"\nfennec = \"0.0.1\"\n{manifest}");
+    edit(app.join("kit.toml"), &manifest);
+    seen_then_held("other!\n", 4);
+    // `kit.lock`, given a toolchain to pin, and then the pin moved to another.
+    let lock = std::fs::read_to_string(app.join("kit.lock")).unwrap_or_default();
+    let pin = |version: &str, byte: &str| format!("{lock}toolchain {version} {}\n", byte.repeat(64));
+    edit(app.join("kit.lock"), &pin("0.0.1", "a"));
+    seen_then_held("other!\n", 5);
+    edit(app.join("kit.lock"), &pin("0.0.2", "b"));
+    seen_then_held("other!\n", 6);
+
+    // Its tests passing is held with the rest: a dependency changed so one fails stops the run.
+    edit(dir.join("first/src/lib.fen"), &says("broken"));
+    let failed = ran();
+    assert!(!failed.status.success() && text(&failed.stdout).is_empty(), "{}", text(&failed.stderr));
+    assert_eq!(held(), 7);
+
+    let stop = with_daemon(&app, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert_eq!(text(&stop.stdout), "stopped\n");
+    assert!(stops(&app, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec daemon status` and `stop` reach every daemon the user has running, one for each
 /// environment commands ran in: a terminal set up another way still sees and stops them all.
 #[cfg(unix)]

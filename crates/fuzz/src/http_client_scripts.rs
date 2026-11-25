@@ -80,7 +80,7 @@ def main(net: Net, args: Args, stdout: Stdout):
     timeout = 3s if args[1] == \"3\" else 1s
     most = 64 if args[2] == \"small\" else 67108864
     reach = net.hosts([\"127.0.0.1\"]) if args[4] == \"narrowed\" else net
-    asks = int(args[5]) except InvalidValue(): 3
+    asks = int.parse(args[5]) except InvalidValue(): 3
     for _ in range(asks):
         asked(reach, method=args[3], url=url, timeout=timeout, most=most, stdout=stdout)
 ";

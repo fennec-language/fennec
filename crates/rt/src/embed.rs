@@ -607,6 +607,9 @@ pub(crate) fn write_kept_output_if_free() {
 struct State {
     output: Output,
     regexes: crate::stdlib::re::Regexes,
+    /// For each kind of list of ints, the empty one a regex search that finds nothing gives back: made
+    /// once a run and never freed.
+    no_places: Vec<(i64, i64)>,
     tables: Tables,
     temps: Vec<Value>,
     /// The inputs of the next expression or statement native code hands over.
@@ -746,6 +749,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
     STATE.set(Some(State {
         output,
         regexes: crate::stdlib::re::Regexes::default(),
+        no_places: Vec::new(),
         temps: Vec::new(),
         inputs: Vec::new(),
         #[cfg(any(test, feature = "threads"))]

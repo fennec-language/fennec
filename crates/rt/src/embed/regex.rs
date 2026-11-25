@@ -6,16 +6,16 @@
 //! groups, -1 for a group that took no part. A pattern with `g` groups has `2 * (g + 1)`
 //! numbers for each match.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use fennec_re::Anchor;
 use fennec_syntax::{Diagnostic, Span};
 
-use super::heap::{TEXT_HEADER_WORDS, text_address};
+use super::heap::{NEVER_FREED_COUNT, TEXT_HEADER_WORDS, mark_never_freed, text_address};
 use super::lists::{list_of_strings, list_of_words};
 use super::{State, attempt, span, with};
-use crate::stdlib::re::{chars, invalid, replaced};
+use crate::stdlib::re::{LONGEST_KEPT, chars, invalid, replaced};
 
 thread_local! {
     /// Where a pattern's text, the text it searches and what it puts in place of a match are
@@ -63,9 +63,72 @@ fn with_text<R>(
     result
 }
 
+/// How many patterns `RECENT` holds.
+const MOST_RECENT: usize = 8;
+
+/// A pattern used lately: the block its text was last read from, that text, and what it compiled to.
+struct Recent {
+    address: u64,
+    text: String,
+    regex: Rc<fennec_re::Regex>,
+}
+
+thread_local! {
+    /// The patterns used most lately, newest last. A loop searching with the same few patterns,
+    /// as one over a file's lines does, finds each here by its block and a comparison of the
+    /// block's words with the text, with no copy, UTF-8 check or hash of it. The text is compared,
+    /// not only the address, so a block freed and made again holding another text isn't taken for
+    /// the pattern that was there.
+    static RECENT: RefCell<Vec<Recent>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether the string block `block` holds exactly `text`.
+fn holds_text(block: &[u64], text: &str) -> bool {
+    let words = block.get(TEXT_HEADER_WORDS..).unwrap_or_default();
+    block.get(2).and_then(|n| usize::try_from(*n).ok()) == Some(text.len())
+        && words.len() >= text.len().div_ceil(8)
+        && words
+            .iter()
+            .zip(text.as_bytes().chunks(8))
+            .all(|(word, part)| word.to_le_bytes().get(..part.len()) == Some(part))
+}
+
 /// The pattern at `pattern`, compiled once and kept.
 fn compiled(state: &mut State, pattern: i64) -> Result<Rc<fennec_re::Regex>, fennec_re::Error> {
-    with_text(state, &PATTERN, pattern, |state, pattern| state.regexes.compiled(pattern))
+    let address = u64::try_from(pattern).ok();
+    if let Some((address, block)) = address.and_then(|at| Some((at, state.heap.block(at)?))) {
+        let found = RECENT.with_borrow(|recent| {
+            let same =
+                recent.iter().rev().find(|kept| kept.address == address && holds_text(block, &kept.text));
+            same.map(|kept| Rc::clone(&kept.regex))
+        });
+        if let Some(regex) = found {
+            return Ok(regex);
+        }
+    }
+    with_text(state, &PATTERN, pattern, |state, text| {
+        // The same text in another block, as a pattern made again for each call is: this block now.
+        let moved = RECENT.with_borrow_mut(|recent| {
+            let same = recent.iter_mut().rev().find(|kept| kept.text == text)?;
+            same.address = address.unwrap_or(0);
+            Some(Rc::clone(&same.regex))
+        });
+        if let Some(regex) = moved {
+            return Ok(regex);
+        }
+        let regex = state.regexes.compiled(text)?;
+        if let Some(address) = address
+            && text.len() <= LONGEST_KEPT
+        {
+            RECENT.with_borrow_mut(|recent| {
+                if recent.len() >= MOST_RECENT {
+                    recent.remove(0);
+                }
+                recent.push(Recent { address, text: text.to_owned(), regex: Rc::clone(&regex) });
+            });
+        }
+        Ok(regex)
+    })
 }
 
 /// `compiled`, its problem said as a failure at `at`.
@@ -135,6 +198,28 @@ fn push_places(
     }
 }
 
+/// A list of ints holding `places`, with the number of its kind of list. Where nothing was found, the
+/// list is one made once a run for that kind and never freed, so the searches that find nothing,
+/// most of those a grep makes, make and free no list. Native code only reads it.
+fn places_list(state: &mut State, ints: i64, places: &[u64]) -> i64 {
+    if !places.is_empty() {
+        return list_of_words(state, ints, places);
+    }
+    if let Some((_, at)) = state.no_places.iter().find(|(kind, _)| *kind == ints) {
+        return *at;
+    }
+    let at = list_of_words(state, ints, &[]);
+    if let Some(block) = u64::try_from(at).ok().and_then(|address| state.heap.block_mut(address))
+        && let Some(count) = block.first_mut()
+    {
+        // Its owners stay far above the mark, as a constant's do, so letting one go never frees it.
+        *count = count.saturating_add(NEVER_FREED_COUNT);
+        mark_never_freed(block);
+        state.no_places.push((ints, at));
+    }
+    at
+}
+
 /// `find_all`: where every match is, as a list of ints. `ints` is the number of the kind of
 /// item that list has.
 pub extern "C" fn find_all(pattern: i64, whole: i64, ints: i64, start: i64, end: i64) -> i64 {
@@ -148,7 +233,7 @@ pub extern "C" fn find_all(pattern: i64, whole: i64, ints: i64, start: i64, end:
             }
             places
         });
-        Ok(list_of_words(state, ints, &places))
+        Ok(places_list(state, ints, &places))
     })
 }
 
@@ -168,7 +253,7 @@ pub extern "C" fn find(pattern: i64, whole: i64, kind: i64, ints: i64, start: i6
             }
             places
         });
-        Ok(list_of_words(state, ints, &places))
+        Ok(places_list(state, ints, &places))
     })
 }
 
@@ -196,7 +281,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::super::{Tables, finish, heap, start, with};
-    use super::{KEPT_BYTES, SEARCHED, with_text};
+    use super::{KEPT_BYTES, SEARCHED, compiled, holds_text, with_text};
     use crate::packed::Element;
 
     /// How much room the searched text's buffer keeps between calls.
@@ -222,6 +307,32 @@ mod tests {
         let read = with(|state| with_text(state, &SEARCHED, big, |_, text| text.len()));
         assert_eq!(read, file.len());
         assert!(kept_room() <= KEPT_BYTES, "{} bytes kept after a {}-byte text", kept_room(), file.len());
+        let (_, failure, _) = finish();
+        assert!(failure.is_none());
+    }
+
+    /// A pattern searched with again is found by its block and text. The same text in another block is
+    /// the same compiled pattern, and a block is taken for a pattern only when it holds that text.
+    #[test]
+    fn a_pattern_used_again_is_found_by_its_block_and_text() {
+        start(Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() }, crate::Inputs::default());
+        let pattern = r"TODO\((\w+)\): (get|put) the";
+        let (first, again, other) = with(|state| {
+            let first = heap::text_address(state, pattern);
+            (first, heap::text_address(state, pattern), heap::text_address(state, "(a)b"))
+        });
+        let found = with(|state| [first, first, again, other, first].map(|at| compiled(state, at).ok()));
+        let found: Vec<_> = found.into_iter().flatten().collect();
+        assert_eq!(found.len(), 5);
+        let [one, two, three, four, five] = found.as_slice() else { return };
+        assert!(Rc::ptr_eq(one, two) && Rc::ptr_eq(one, three) && Rc::ptr_eq(one, five));
+        assert_eq!((one.groups(), four.groups()), (2, 1));
+        let held = with(|state| {
+            let block = u64::try_from(first).ok().and_then(|at| state.heap.block(at)).unwrap_or_default();
+            [pattern, r"TODO\((\w+)\): (get|put) thE", r"TODO\((\w+)\): (get|put) th", ""]
+                .map(|text| holds_text(block, text))
+        });
+        assert_eq!(held, [true, false, false, false]);
         let (_, failure, _) = finish();
         assert!(failure.is_none());
     }

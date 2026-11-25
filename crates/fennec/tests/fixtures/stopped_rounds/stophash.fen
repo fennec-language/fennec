@@ -1,6 +1,9 @@
 # A round's handler is hashing passwords, one after another, on the blocking threads, when the
 # serving task's block ends and stops it, which cancels the round.
-# The round fails as stopped once its hash is done: it went on past all 12 before (#1950).
+# The round fails as stopped once its hash is done: it went on past all its hashes before (#1950).
+# It has hours of them, so only a stop ends it. With 12, about 0.2 s, a loaded machine answered
+# `main` so late that the round had done them all before the stop was sent, and printed its last
+# line as it should (#2571).
 from std.concurrent import Crashed
 from std.crypto import Secret, hash_password
 from std.net import NetError, Request, Response, Server
@@ -9,7 +12,7 @@ def answered(request: Request, entropy: Entropy, stdout: Stdout) -> Response:
     if request.path == "/slow":
         stdout.print("the slow one began")
         mut longest = 0
-        for turn in range(12):
+        for turn in range(1_000_000):
             stored = hash_password(Secret.of(f"password {turn}"), entropy)
             longest = max(longest, len(stored))
         stdout.print("the slow one never said", longest)

@@ -1,0 +1,134 @@
+name: Profile a kernel
+
+# Where a kernel and its Rust twin spend their time on the Linux runners, function by function:
+# for a gap by the clock that counting instructions doesn't explain, as api_handler's is. Each is
+# built as the suite builds it, timed alternately, then sampled by perf on the CPU clock, as the
+# runners' virtual CPUs hide the cycle counters. Run on demand only, so it costs nothing day to
+# day; the reports are the run's artifacts, and the top of each is on its summary page.
+on:
+  workflow_dispatch:
+    inputs:
+      kernel:
+        description: "The kernel in bench/kernels to profile, with its Rust twin"
+        default: api_handler
+        required: true
+      runs:
+        description: "How many runs of each are timed, and sampled together"
+        default: "40"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  profile:
+    name: Profile (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The inputs go into commands below, so they're checked first: a kernel's name, and a count.
+      - name: Check the inputs
+        env:
+          KERNEL: ${{ inputs.kernel }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          [[ "$KERNEL" =~ ^[a-z0-9_]+$ ]] || { echo "::error::not a kernel's name: $KERNEL"; exit 1; }
+          [[ "$RUNS" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "::error::not a count of runs: $RUNS"; exit 1; }
+          [ -f "bench/kernels/$KERNEL.fen" ] && [ -f "bench/kernels/$KERNEL.rs" ] || { echo "::error::no kernel and twin named $KERNEL"; exit 1; }
+      - name: Install perf
+        run: |
+          .github/scripts/apt.sh linux-tools-common "linux-tools-$(uname -r)" || .github/scripts/apt.sh linux-tools-common linux-tools-generic
+          # The runner's default keeps perf from sampling a program as its own user.
+          sudo sysctl -w kernel.perf_event_paranoid=1
+          sudo sysctl -w kernel.kptr_restrict=0
+          perf --version
+      - name: Build fennec and its runtime library
+        run: cargo build --release --locked -p fennec -p fennec-runtime
+      # A release build puts what it uses of the runtime in the program's own unit, from this, as
+      # the suite's builds do.
+      - name: Build the runtime's bitcode
+        run: |
+          cargo rustc --release --locked -p fennec-runtime --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+          cp "$(find target/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime.bc
+      - name: Build the runtime with threads, and its bitcode
+        run: |
+          cargo rustc --release --locked -p fennec-runtime --features threads --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+          cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
+          cp "$(find target/threads/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_threads.bc
+      # The twin is built as the suite builds it (crates/bench/src/measure.rs), with line tables
+      # added, which don't change its code, so perf can name its functions.
+      - name: Build the kernel and its twin
+        env:
+          KERNEL: ${{ inputs.kernel }}
+        run: |
+          mkdir -p profile
+          ./target/release/fennec build --llvm --release "bench/kernels/$KERNEL.fen" -o profile/fennec
+          cpu=()
+          if [ "$(uname -m)" = x86_64 ]; then cpu=(-C target-cpu=x86-64-v3); fi
+          rustc --edition 2024 -C opt-level=3 -C codegen-units=1 -C panic=abort -C debug-assertions=no \
+            "${cpu[@]}" -C debuginfo=line-tables-only -o profile/rust "bench/kernels/$KERNEL.rs"
+      - name: Time each, taking turns
+        env:
+          KERNEL: ${{ inputs.kernel }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          cd profile
+          for program in fennec rust; do : > "times-$program"; done
+          for _ in $(seq "$RUNS"); do
+            for program in fennec rust; do
+              start=$(date +%s%N)
+              FENNEC_THREADS=1 FENNEC_HASH_SEED=7 "./$program" > /dev/null
+              echo $(( ($(date +%s%N) - start) / 1000 )) >> "times-$program"
+            done
+          done
+          {
+            echo "## $KERNEL on $(uname -m), $RUNS runs each, taking turns"
+            echo
+            echo "| program | best µs | median µs |"
+            echo "|---|---:|---:|"
+            for program in fennec rust; do
+              sort -n "times-$program" > "sorted-$program"
+              count=$(wc -l < "sorted-$program")
+              echo "| $program | $(head -1 "sorted-$program") | $(sed -n "$(( (count + 1) / 2 ))p" "sorted-$program") |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Sample each by the CPU clock
+        env:
+          RUNS: ${{ inputs.runs }}
+        run: |
+          cd profile
+          for program in fennec rust; do
+            perf record -q -e cpu-clock -F 10000 -g -o "perf-$program.data" -- \
+              bash -c "for _ in \$(seq $RUNS); do FENNEC_THREADS=1 FENNEC_HASH_SEED=7 ./$program > /dev/null; done"
+            perf report -i "perf-$program.data" --no-children --sort dso,symbol --stdio > "self-$program.txt" 2> /dev/null
+            perf report -i "perf-$program.data" --children --sort symbol --stdio -g none > "children-$program.txt" 2> /dev/null
+            perf report -i "perf-$program.data" --no-children --sort dso --stdio > "dso-$program.txt" 2> /dev/null
+            {
+              echo "### $program: where its samples are, by function"
+              echo
+              echo '```'
+              grep -E '^ +[0-9.]+%' "self-$program.txt" | head -40
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: profile-${{ inputs.kernel }}-${{ matrix.os }}
+          path: |
+            profile/*.txt
+            profile/times-*
+            profile/perf-*.data
+            profile/fennec
+            profile/rust
+          if-no-files-found: ignore

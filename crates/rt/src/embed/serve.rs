@@ -2488,6 +2488,16 @@ pub(super) fn serve_replayed(
 
 mod calls;
 
+/// Closes the server with this handle once it's being served, for a test's client to end the
+/// serving it talked to: only that server, as tests share the process, and [`stop_servers`] would
+/// stop another test's too (#2540). Gives up after 20 seconds, when it was never served.
+#[cfg(test)]
+pub(crate) fn close_when_served(server: i64) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !close_served(server) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
 pub(super) use calls::served_call;
 pub use calls::{ConnBody, net_serve, net_serve_failure, stop_servers};
 pub(crate) use calls::{close_served, serving_soon};

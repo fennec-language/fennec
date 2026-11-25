@@ -44,16 +44,9 @@ mod upkeep;
 mod verdict;
 
 /// A path in Fennec's `work` folder for this command's own scratch work, named so that nothing
-/// else can have it: the process's id and when it asked, as the folder is shared by every command,
-/// and one killed before it tidied up can leave a tool it started still writing to a folder named
-/// by an id the system has given out again. The daemon removes what such a command leaves.
+/// else can have it (`fennec_daemon::own_temp_in`).
 pub(crate) fn own_temp(what: &str) -> std::path::PathBuf {
-    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_nanos());
-    let count = ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    fennec_build::work_folder().join(format!("fennec-{what}-{}-{at:x}-{count}", std::process::id()))
+    fennec_daemon::own_temp_in(&fennec_build::work_folder(), what)
 }
 
 use std::process::ExitCode;

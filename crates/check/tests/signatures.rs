@@ -151,7 +151,7 @@ fn signatures_cover_methods_nested_functions_and_the_standard_library() {
     assert_eq!(signatures.get("outer.inner").unwrap().returns, Type::Int);
     assert_eq!(signatures.get("outer").unwrap().returns, Type::Int);
     assert!(signatures.get("countdown").unwrap().generator);
-    assert_eq!(signatures.get("Vec3.length").unwrap().returns, Type::Float);
+    assert_eq!(signatures.get("Vec3.length").unwrap().returns, Type::Sized(fennec_check::Num::F32));
     assert_eq!(signatures.get("Vec3.zero").unwrap().returns, named("Vec3"));
     assert!(signatures.get("missing").is_none());
     let names: Vec<&str> = signatures.iter().map(|(name, _)| name).collect();

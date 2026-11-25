@@ -2114,8 +2114,9 @@ fn entries_used(block: &[u64]) -> usize {
 pub(super) enum Entries {
     /// It isn't a dict's.
     NotADict,
-    /// A dict's whose values are held in place, which [`children`] walks by their kind.
-    InPlace,
+    /// A dict's whose values are held in place, for [`each_in_place`], by the plan of the kind
+    /// [`in_place_kind`] names.
+    InPlace(Layout),
     /// A dict's whose values are a word each, laid out so, for [`each_child`].
     Words(Layout),
 }
@@ -2125,7 +2126,7 @@ pub(super) enum Entries {
 pub(super) fn held_entries(state: &State, block: &[u64]) -> Entries {
     match layout(state, block) {
         None => Entries::NotADict,
-        Some(layout) if layout.in_place() => Entries::InPlace,
+        Some(layout) if layout.in_place() => Entries::InPlace(layout),
         Some(layout) => Entries::Words(layout),
     }
 }
@@ -2150,6 +2151,31 @@ pub(super) fn each_child(layout: Layout, block: &[u64], mut each: impl FnMut(u64
         if layout.value.owned() {
             each(value_of(entry));
         }
+    }
+}
+
+/// The kind of a dict's values held in place, by its number in the program's table of kinds.
+pub(super) fn in_place_kind(layout: Layout) -> Option<usize> {
+    let Word::InPlace(number) = layout.value else { return None };
+    usize::try_from(number).ok()
+}
+
+/// Whether a dict's keys are held in blocks: a string's, or a one-word key that's a block's.
+pub(super) fn keys_held_in_blocks(layout: Layout) -> bool {
+    layout.key.owned() || layout.key == Word::Text
+}
+
+/// Gives `each` every live entry of a dict whose values are held in place, as it's read: the
+/// block its key is held in, if it's held in one, and its value's words. What [`children`] adds to
+/// its list, with no list made and no walk of the values' kind.
+#[inline]
+pub(super) fn each_in_place(layout: Layout, block: &[u64], mut each: impl FnMut(Option<u64>, &[u64])) {
+    debug_assert!(layout.in_place(), "a dict of one-word values is walked by `each_child`");
+    let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
+    let start = DICT_HEADER_WORDS + slots;
+    let words = block.get(start..start + entries_used(block) * layout.width()).unwrap_or_default();
+    for entry in words.chunks_exact(layout.width()).filter(|entry| entry.first() != Some(&REMOVED)) {
+        each(key_block(layout.key, key_of(layout, entry)), value_words(layout, entry));
     }
 }
 

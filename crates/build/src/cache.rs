@@ -402,8 +402,9 @@ impl Cache {
     /// its hash wasn't. An entry written as bytes, which ends in its hash, is written out whole
     /// without it.
     ///
-    /// On Unix, `to` is a symbolic link to a hard link of the kept program beside it, named by its
-    /// hash, which every run of the same program shares. A hard link for each run was most of a
+    /// On Unix, `to` is a symbolic link to a hard link of the kept program beside it, which every run
+    /// of the same program shares: `fennec-run-kept-` and part of its hash, a name no sweep of a
+    /// command's scratch takes for a process's. A hard link for each run was most of a
     /// no-change run's `link_out`: 5.6M instructions on APFS, against 0.6M for a symbolic link,
     /// and the shared one is made once. Started through either, the program is the kept file
     /// itself, so macOS doesn't check it as a new one. The shared name holds the program as a run's
@@ -693,12 +694,12 @@ fn linked(path: &Path, sum: &str, to: &Path) -> std::io::Result<()> {
     if a_run {
         use std::os::unix::fs::MetadataExt as _;
         let short = sum.get(..32).unwrap_or(sum);
-        let shared = to.with_file_name(format!("{RUN_PREFIX}{short}"));
+        let shared = to.with_file_name(format!("{RUN_PREFIX}kept-{short}"));
         let file = |at: &Path| std::fs::metadata(at).map(|metadata| (metadata.dev(), metadata.ino()));
         if file(&shared).ok() != file(path).ok() {
             // Another program's, or one swept since: put in place by a rename, so a run starting
             // meanwhile finds the one or the other.
-            let fresh = to.with_file_name(format!("{RUN_PREFIX}{short}.{}", std::process::id()));
+            let fresh = to.with_file_name(format!("{RUN_PREFIX}kept-{short}.{}", std::process::id()));
             let _ = std::fs::remove_file(&fresh);
             std::fs::hard_link(path, &fresh)?;
             std::fs::rename(&fresh, &shared)?;

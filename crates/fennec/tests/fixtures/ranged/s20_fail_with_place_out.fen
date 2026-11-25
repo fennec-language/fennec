@@ -1,0 +1,48 @@
+# A failure passed up from inside the second copy while a lock's changes are saved and while a
+# place is out for a call: the function's one way out on a failure puts both back.
+error Small:
+    value: int
+
+struct Ledger:
+    entries: list[int]
+    total: int
+
+struct World:
+    counter: int
+    names: list[str]
+
+def checked(value: int) -> int fails Small:
+    if value < 0: fail Small(value=value)
+    return value * 2
+
+def bump(ref counter: int, value: int) fails Small:
+    counter += value
+    if value == 7: fail Small(value=value)
+    return
+
+def scan(ref world: World, ledger: shared Ledger, starts: list[int], order: list[int]) -> int fails Small:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        lock ledger as ref held:
+            held.total += value
+            held.entries.append(value)
+            total += checked(value - 3)?
+        bump(ref world.counter, value=value)?
+        world.names.append(f"n{value}")
+    return total
+
+def shown(ref world: World, ledger: shared Ledger, starts: list[int], order: list[int]) -> int:
+    total = scan(ref world, ledger=ledger, starts=starts, order=order) except why:
+        return -why.value
+    return total
+
+def main(stdout: Stdout):
+    shared ledger = Ledger(entries=[], total=0)
+    mut world = World(counter=0, names=[])
+    stdout.print(shown(ref world, ledger=ledger, starts=[0, 3], order=[5, 6, 8, 2]))
+    stdout.print(shown(ref world, ledger=ledger, starts=[0, 4], order=[5, 6, 8, 2]))
+    stdout.print(shown(ref world, ledger=ledger, starts=[0, 4], order=[5, 7, 8, 9]))
+    stdout.print(world.counter, world.names)
+    lock ledger as held:
+        stdout.print(held.entries, held.total)

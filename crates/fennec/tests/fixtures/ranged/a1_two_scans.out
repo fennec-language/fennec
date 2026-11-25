@@ -1,3 +1,4 @@
 in range: 13
 exit 1
 error: index 1 is out of range for length 1
+--> a1_two_scans.fen:9:22

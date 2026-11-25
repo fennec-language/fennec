@@ -1,2 +1,3 @@
 exit 1
 error: index 0 is out of range for length 0
+--> b2_10.fen:7:22

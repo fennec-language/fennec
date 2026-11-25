@@ -1,0 +1,11 @@
+# A read of another list that fails inside the second copy.
+def scan(starts: list[int], order: list[int], weights: list[int]) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        total += 1000 // order[at]
+        total += weights[order[at]]
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 3], order=[1, 2, 3], weights=[0, 10, 20, 30]))
+    stdout.print(scan([0, 3], order=[1, 2, 9], weights=[0, 10, 20, 30]))

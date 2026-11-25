@@ -1,2 +1,3 @@
 build fails
 error: `ref rows` and `rows[0]` overlap
+--> a4_item_and_ref.fen:13:40

@@ -1,0 +1,26 @@
+# Two loops written twice in one function, one after the other, each with a call that can fail.
+error Small:
+    value: int
+
+def checked(value: int) -> int fails Small:
+    if value < 0: fail Small(value=value)
+    return value * 2
+
+def both(starts: list[int], order: list[int], other_starts: list[int], other: list[int]) -> int fails Small:
+    mut added = 0
+    for at in range(starts[0], starts[1]):
+        added += checked(order[at])?
+    for inner in range(other_starts[0], other_starts[1]):
+        added += checked(other[inner])?
+    return added
+
+def shown(starts: list[int], order: list[int], other_starts: list[int], other: list[int]) -> int:
+    total = both(starts, order=order, other_starts=other_starts, other=other) except why:
+        return why.value
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(shown([0, 2], order=[1, 2], other_starts=[0, 1], other=[5]))
+    stdout.print(shown([0, 2], order=[1, -2], other_starts=[0, 1], other=[5]))
+    stdout.print(shown([0, 2], order=[1, 2], other_starts=[0, 1], other=[-5]))
+    stdout.print(shown([0, 2], order=[1, 2], other_starts=[0, 3], other=[5]))

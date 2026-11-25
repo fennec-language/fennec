@@ -2,3 +2,4 @@ one 0 210
 one 1 210
 exit 1
 error: index -9223372036854775807 is out of range for length 6
+--> b2_07.fen:7:22

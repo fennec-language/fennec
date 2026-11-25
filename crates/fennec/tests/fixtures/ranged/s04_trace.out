@@ -1,0 +1,4 @@
+2
+exit 1
+error: `main` failed: Small(value=-2)
+--> s04_trace.fen:7:19

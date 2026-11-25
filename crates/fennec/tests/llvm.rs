@@ -5030,16 +5030,19 @@ fn a_read_between_two_bucket_items_checked_once_fails_where_it_always_did() -> s
     Ok(())
 }
 
-/// The programs of #9's review (`fixtures/ranged`), each printing and exiting as main's build did,
-/// whose output is pinned beside it: lists changed every way a function can, reads that fail at
-/// each place, and other features inside a loop written twice. Each is built checking proofs, so
+/// The programs of #9's two reviews (`fixtures/ranged`), each printing and exiting as main's build
+/// did, and failing at the same place, as pinned beside it: lists changed every way a function can,
+/// reads that fail at each place, and other features inside a loop written twice. Each is built checking proofs, so
 /// a read left unchecked wrongly stops it. Those that once read out of range, or didn't build, are
 /// built all four ways: with and without `--release`, each plain and checking proofs.
 #[test]
 fn the_bucket_review_programs_print_what_they_always_did() -> std::io::Result<()> {
-    const EVERY_WAY: [&str; 10] = [
+    const EVERY_WAY: [&str; 13] = [
         "a1_two_scans",
         "a1b_outer_index",
+        "s01_first_bad",
+        "s02_both_bad",
+        "s03_two_loops",
         "b1_dict_entry",
         "c04_take_item",
         "c07_lock",
@@ -5058,7 +5061,7 @@ fn the_bucket_review_programs_print_what_they_always_did() -> std::io::Result<()
         .collect::<std::io::Result<_>>()?;
     programs.retain(|path| path.extension().is_some_and(|extension| extension == "fen"));
     programs.sort();
-    assert_eq!(programs.len(), 45);
+    assert_eq!(programs.len(), 67);
     let dir = folder("bucket_review")?;
     let executable = dir.join("program");
     for program in &programs {
@@ -5084,12 +5087,16 @@ fn the_bucket_review_programs_print_what_they_always_did() -> std::io::Result<()
                 .env("FENNEC_HOME", &dir)
                 .env("FENNEC_CHECK_PROOFS", proofs)
                 .output_before(FENNEC_DEADLINE)?;
+            // The first error said, and the first place pointed at after it, by the file's name.
             let first_error = |said: &[u8]| {
-                String::from_utf8_lossy(said)
-                    .lines()
-                    .find(|line| line.starts_with("error"))
-                    .map(|line| format!("{line}\n"))
-                    .unwrap_or_default()
+                let said = String::from_utf8_lossy(said);
+                let mut lines = said.lines().skip_while(|line| !line.starts_with("error"));
+                let Some(error) = lines.next() else { return String::new() };
+                let place = lines
+                    .find_map(|line| line.trim_start().strip_prefix("--> "))
+                    .map(|place| format!("--> {}\n", place.rsplit('/').next().unwrap_or(place)))
+                    .unwrap_or_default();
+                format!("{error}\n{place}")
             };
             let got = if built.status.success() {
                 let ran = Command::new(&executable).current_dir(&fixtures).output_within()?;

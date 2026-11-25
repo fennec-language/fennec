@@ -34,6 +34,6 @@ def crashes(code: int, stdout: Stdout) fails Refused:
         stdout.print(values[held])
 
 def main(stdout: Stdout, args: Args):
-    code = int(args[0]) except InvalidValue(): 0
+    code = int.parse(args[0]) except InvalidValue(): 0
     crashes(code, stdout) except Refused():
         stdout.print("failed")

@@ -18,8 +18,8 @@ def bump_held_twice(table: shared Table, key: int) -> int:
         return len(also)
 
 def main(stdout: Stdout, args: Args):
-    rounds = int(args[0]) except InvalidValue(): 0
-    twice = int(args[1]) except InvalidValue(): 0
+    rounds = int.parse(args[0]) except InvalidValue(): 0
+    twice = int.parse(args[1]) except InvalidValue(): 0
     shared table = Table(counts={0: 0, 1: 0})
     mut failed = 0
     for step in range(rounds):

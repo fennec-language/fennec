@@ -163,19 +163,67 @@ pub extern "C" fn new(length: i64) -> i64 {
     })
 }
 
-/// `fennec_bytes_constant(length)`: a block for `embed`'s bytes, with room for `length`, which
-/// lives for the whole run on the thread that asks: native code keeps one per thread and never
-/// lets it go, so no task's end may take it away.
-pub extern "C" fn constant(length: i64) -> i64 {
-    with(|state| {
-        let mut block = with_room(state, usize::try_from(length).unwrap_or(0));
-        if let Some(count) = block.first_mut() {
-            *count = NEVER_FREED_COUNT;
+/// A block of bytes written into the program, by the global native code keeps it in: one being
+/// filled in by the thread that asked first, or one filled in.
+enum Embedded {
+    Filling(&'static mut [u64]),
+    Filled(i64),
+}
+
+/// Every block of embedded bytes there is, by its global, and the wait for one being filled in.
+static EMBEDDED: std::sync::Mutex<Vec<(i64, Embedded)>> = std::sync::Mutex::new(Vec::new());
+static FILLED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// `fennec_bytes_embedded(global, length)`: the one block, in the whole process, of a bytes
+/// literal or of `embed_file`'s or `embed_folder`'s bytes, with room for `length`, which native
+/// code keeps in `global` and never lets go of.
+///
+/// The thread that asks first gets it empty, with the lowest bit of its address set: it copies the
+/// bytes in from the program's own, then says so with `fennec_bytes_embedded_filled(global)`. One
+/// asking meanwhile waits for that, which is a copy's while, and gets it filled.
+///
+/// Nothing of the thread that makes it changes: it's made outside its heap, never freed and owned
+/// by no thread (`NEVER_FREED_OWNER`), so it takes no task's mark and isn't in any thread's counts,
+/// accounts or audit. A program, and its replay, see the same whichever thread got there first.
+pub extern "C" fn embedded(global: i64, length: i64) -> i64 {
+    let mut made = EMBEDDED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        match made.iter().find(|(at, _)| *at == global) {
+            None => break,
+            Some((_, Embedded::Filled(block))) => return *block,
+            Some((_, Embedded::Filling(_))) => {
+                made = FILLED.wait(made).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
-        let address = i64::try_from(block.as_ptr().addr()).unwrap_or(0);
-        state.heap.adopt(&mut vec![block]);
-        address
-    })
+    }
+    let length = usize::try_from(length).unwrap_or(0);
+    let words = words_for(length);
+    let mut block = vec![0; words].into_boxed_slice();
+    if let Some(start) = block.get_mut(..HEADER_WORDS) {
+        start.copy_from_slice(&header(length, words - HEADER_WORDS));
+    }
+    if let Some(count) = block.first_mut() {
+        *count = NEVER_FREED_COUNT;
+    }
+    super::heap::mark_never_freed(&mut block);
+    let block = Box::leak(block);
+    let address = i64::try_from(block.as_ptr().addr()).unwrap_or(0);
+    made.push((global, Embedded::Filling(block)));
+    address | 1
+}
+
+/// `fennec_bytes_embedded_filled(global)`: the block `fennec_bytes_embedded` gave this thread to
+/// fill in is filled in, so every thread can read it.
+pub extern "C" fn embedded_filled(global: i64) {
+    let mut made = EMBEDDED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(entry) = made.iter_mut().find(|(at, _)| *at == global) else { return };
+    let Embedded::Filling(_) = entry.1 else { return };
+    let Embedded::Filling(block) = std::mem::replace(&mut entry.1, Embedded::Filled(0)) else { return };
+    let block: &'static [u64] = block;
+    entry.1 = Embedded::Filled(i64::try_from(block.as_ptr().addr()).unwrap_or(0));
+    super::heap::add_embedded(block);
+    drop(made);
+    FILLED.notify_all();
 }
 
 /// `bytes(items)`: each item has to be an int from 0 to 255.
@@ -552,5 +600,52 @@ mod tests {
             heap::free(block);
         }
         finish();
+    }
+
+    /// Eight threads asking for the same embedded bytes at once: one is given the block to fill,
+    /// and the rest wait until it's filled and get that block. Every thread's runtime finds it
+    /// after, reads it and keeps it out of its own counts, and it's never freed (#2429).
+    #[test]
+    fn embedded_bytes_are_made_once_and_every_thread_waits_for_them_filled() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        const GLOBAL: i64 = 0x5EED_2429;
+        let (filled, firsts, ready) =
+            (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)), Arc::new(Barrier::new(8)));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (filled, firsts, ready) = (Arc::clone(&filled), Arc::clone(&firsts), Arc::clone(&ready));
+                std::thread::spawn(move || {
+                    start(Tables::default(), crate::Inputs::default());
+                    ready.wait();
+                    let given = super::embedded(GLOBAL, 20);
+                    let block = given & !1;
+                    if given & 1 == 1 {
+                        firsts.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        filled.store(true, Ordering::SeqCst);
+                        super::embedded_filled(GLOBAL);
+                    } else {
+                        assert!(filled.load(Ordering::SeqCst), "given before it was filled");
+                    }
+                    let (length, never_freed) = with(|state| {
+                        let words = state.heap.block(block.cast_unsigned()).expect("found on every thread");
+                        (words[2], heap::is_never_freed(words))
+                    });
+                    assert_eq!((length, never_freed), (20, true));
+                    let part = slice(block, 2, 5);
+                    assert_eq!(with(|state| data_at(state, part)), vec![0; 3]);
+                    heap::free(part);
+                    // In no thread's table, so no thread's count of its blocks.
+                    assert!(with(|state| state.heap.block_mut(block.cast_unsigned()).is_none()));
+                    finish();
+                    block
+                })
+            })
+            .collect();
+        let blocks: Vec<i64> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+        assert_eq!(firsts.load(Ordering::SeqCst), 1, "one thread fills it in");
+        assert!(blocks.iter().all(|block| *block == blocks[0]), "one block: {blocks:?}");
+        assert_eq!(super::embedded(GLOBAL, 20), blocks[0], "asked again, it's the one filled");
     }
 }

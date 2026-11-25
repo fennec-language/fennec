@@ -259,19 +259,12 @@ jobs:
       # Their test binaries run two at a time: one after another, as `cargo test` runs them, they
       # took 28 minutes of a 30-minute job on Linux, a few holding the run for minutes with a
       # handful of long tests and cores to spare. See `two-at-a-time.sh`.
-      # But on Windows, still one after another: there the fuzzer can't read a process's CPU time,
-      # so a build it watches is "stuck" after 120 seconds on the clock, and two binaries at once
-      # made `every_kept_input_runs_clean` time a build out in 3 runs of 3 (#2533).
       - name: Run every other package's tests
         if: matrix.part == 'others'
         shell: bash
         run: |
           cargo build --locked -p fennec --features std-private
-          if [ "$RUNNER_OS" = Windows ]; then
-            .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast --workspace --exclude fennec
-          else
-            .github/scripts/time-wait.sh 3000 .github/scripts/two-at-a-time.sh --locked --no-fail-fast --workspace --exclude fennec
-          fi
+          .github/scripts/time-wait.sh 3000 .github/scripts/two-at-a-time.sh --locked --no-fail-fast --workspace --exclude fennec
       # A hello world built for release, held to its size here: Windows keeps a program's symbols
       # out of it, so what it links is checked on Linux, in `lean-runtime`, and in the gate on a Mac.
       # Even when a test failed, so the size is always known.

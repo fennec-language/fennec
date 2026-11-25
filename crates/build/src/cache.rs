@@ -175,6 +175,43 @@ impl Cache {
         Some((bytes, hash?))
     }
 
+    /// The BLAKE3 hash an entry written with [`Self::write`] ends with, read without its bytes,
+    /// for whoever may not need them: a run whose program is stored already names it by its
+    /// image and never reads the image. Nothing here checks the bytes against it, which
+    /// [`Self::read_hashed`] does once they're read. The entry is marked as used, as a read
+    /// marks it. None for a kept program, or an entry too short to hold a hash.
+    pub fn written_hash(&self, kind: &str, name: &str) -> Option<Hash> {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        if !self.usable() {
+            return None;
+        }
+        let path = self.path(kind, name);
+        if beside(&path).is_some() {
+            return None;
+        }
+        let read = |file: &mut File| {
+            let end = file.seek(SeekFrom::End(0))?;
+            let start = end.checked_sub(HASH_LEN as u64).ok_or(ErrorKind::UnexpectedEof)?;
+            file.seek(SeekFrom::Start(start))?;
+            let mut hash = [0; HASH_LEN];
+            file.read_exact(&mut hash)?;
+            Ok::<_, std::io::Error>(Hash(hash))
+        };
+        let (hash, age) =
+            match File::open(&path).and_then(|mut file| Ok((read(&mut file)?, file.metadata()?))) {
+                Ok((hash, metadata)) => (hash, metadata.modified().ok()),
+                Err(err) => {
+                    crate::touched("read an entry", Err(err));
+                    return None;
+                }
+            };
+        // Marked as `read_checked` marks what it reads.
+        if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY) {
+            mark_used(&path);
+        }
+        Some(hash)
+    }
+
     /// [`Self::read`], with the hash of the bytes when it's the one their entry is checked against.
     fn read_checked(&self, kind: &str, name: &str) -> Option<(Vec<u8>, Option<Hash>)> {
         if !self.usable() {

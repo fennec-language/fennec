@@ -295,12 +295,29 @@ pub extern "C" fn append_header(text: i64, h0: u64, h1: u64, h2: u64) -> i64 {
 }
 
 /// `fennec_str_find_header(text, part)`: `text.find(part)` for two headers, which character `part`
-/// first starts at, or -1 when it isn't there, looked for where both are, as `find` does.
+/// first starts at, or -1 when it isn't there, looked for where both are, as `find` does. Two
+/// inline headers are read as they are, with no heap to look in; a block is looked up once, for
+/// its bytes and whether they're ASCII.
 pub extern "C" fn find_header(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i64 {
+    let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
+    if block_of(&text).is_none() && block_of(&part).is_none() {
+        let (whole, looked) = ((&text[..], inline_length(&text)), (&part[..], inline_length(&part)));
+        return super::strings::find_in(whole, looked, inline_ascii(&text));
+    }
     with(|state| {
-        let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
-        super::strings::find_in(bytes_of(state, &text), bytes_of(state, &part))
+        let (whole, ascii) = match block_of(&text) {
+            Some(address) => super::strings::ascii_bytes_in_block(state, address.cast_signed()),
+            None => ((&text[..], inline_length(&text)), inline_ascii(&text)),
+        };
+        super::strings::find_in(whole, bytes_of(state, &part), ascii)
     })
+}
+
+/// Whether an inline header's bytes are all ASCII: none has its top bit set. The bytes past its
+/// length are zero, and its tag, in the last byte, isn't one of them.
+pub(super) fn inline_ascii(words: &[u64; 3]) -> bool {
+    let [first, second, last] = *words;
+    (first | second | (last & (u64::MAX >> 8))) & u64::from_ne_bytes([0x80; 8]) == 0
 }
 
 /// `fennec_str_split_at_header(text, separator, at)`: where the next `separator` in `text` starts
@@ -1178,6 +1195,21 @@ mod tests {
         {
             let [p0, p1, p2] = header(part);
             assert_eq!(super::find_header(i0, i1, i2, p0, p1, p2), at, "{part:?}");
+        }
+        // ASCII texts, whose byte is the answer with no characters counted: a block, whose count
+        // says so, and an inline one, whose bytes do; and a part only past the first word.
+        let ascii = header("GET /users/12 HTTP/1.1\r\nHost: a.example\r\n\r\n{}");
+        let [a0, a1, a2] = ascii;
+        let [h0, h1, h2] = header("Content-Length: 12");
+        for (part, at, inline_at) in
+            [("\r\n\r\n", 39, -1), (": ", 28, 14), ("12", 11, 16), ("\u{e9}", -1, -1)]
+        {
+            let [p0, p1, p2] = header(part);
+            assert_eq!(super::find_header(a0, a1, a2, p0, p1, p2), at, "{part:?}");
+            assert_eq!(super::find_header(h0, h1, h2, p0, p1, p2), inline_at, "{part:?}");
+        }
+        if let Some(address) = block_of(&ascii) {
+            heap::free_text(address.cast_signed());
         }
         heap::free_text(text);
         if let Some(address) = block_of(&whole) {

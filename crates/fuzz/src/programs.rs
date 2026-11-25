@@ -1463,10 +1463,10 @@ mod tests {
             usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
         };
         body.extend((6..26).map(|id| Stmt::Pooled(super::pools::picked(id, &mut choose))));
-        let native = crate::llvm::ready().is_ok() && crate::llvm::threads_runtime_here();
         let mut refused = 0;
-        for stmt in body {
-            let program = Program { body: vec![stmt], threadless: false };
+        // The oracle meets each pool alone, as some of them it refuses.
+        for stmt in &body {
+            let program = Program { body: vec![stmt.clone()], threadless: false };
             let source = source::source(&program);
             let module =
                 fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
@@ -1478,10 +1478,12 @@ mod tests {
             };
             // Two keepers opening links bump one `shared` tally from a task and the block it was
             // launched from, which the oracle refuses: it can't see that `main` takes one at a time.
+            // A pool with many tasks may have more orders of their messages than it tries.
             let oracle = fennec_oracle::run_source(&source, "programs.fen");
             match &oracle.ended {
                 fennec_oracle::Ended::Unsupported(why)
-                    if why.contains("a launched task or its `with` block") =>
+                    if why.contains("a launched task or its `with` block")
+                        || why.contains("orders of its tasks' messages") =>
                 {
                     refused += 1;
                 }
@@ -1490,19 +1492,25 @@ mod tests {
                     assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
                 }
             }
-            if !native {
-                continue;
-            }
-            for release in [false, true] {
-                let built = crate::llvm::built_and_run(&source, "programs-pooled", release);
-                let Ok((said, told, _)) = built else { unreachable!("{built:?}\n{source}") };
-                if let Some(wrong) = super::caught(if release { "release" } else { "dev" }, &told) {
-                    unreachable!("{wrong}\n{source}");
-                }
-                assert_eq!(String::from_utf8_lossy(&said), printed, "release {release}\n{source}");
-            }
         }
         assert!(refused <= 10, "the oracle refused {refused} of 25 pools");
+        // The builds meet them all in one program, as two builds take far less than fifty.
+        if !(crate::llvm::ready().is_ok() && crate::llvm::threads_runtime_here()) {
+            return;
+        }
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        for release in [false, true] {
+            let built = crate::llvm::built_and_run(&source, "programs-pooled", release);
+            let Ok((said, told, _)) = built else { unreachable!("{built:?}\n{source}") };
+            if let Some(wrong) = super::caught(if release { "release" } else { "dev" }, &told) {
+                unreachable!("{wrong}\n{source}");
+            }
+            assert_eq!(String::from_utf8_lossy(&said), printed, "release {release}\n{source}");
+        }
     }
 
     /// The crews `locked_crews_check_and_the_evaluator_agrees_with_the_oracle_and_the_builds` starts

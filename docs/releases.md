@@ -12,7 +12,7 @@ aarch64-apple-darwin fennec-v0.4.2-aarch64-apple-darwin.tar.gz 51234567 1f0c…
 x86_64-unknown-linux-gnu fennec-v0.4.2-x86_64-unknown-linux-gnu.tar.gz 50999104 9ab4…
 ```
 
-The release workflow writes it from the archives it built, as `fennec-v0.4.2.manifest` beside them, and publishes the release as a prerelease. There's one way to write a manifest, so only that exact text reads as one. The launcher takes an archive only when its size and hash are the manifest's.
+The release workflow writes it from the archives it built, as `fennec-v0.4.2.manifest` beside them, and publishes the release as a prerelease. It builds the launcher for each platform too, as `fennec-launcher-v0.4.2-<platform>.tar.gz` (`.zip` on Windows), whose one folder holds `fennec`, `fennec-setup` and `fennec-fetch`, and writes their manifest, `fennec-launcher-v0.4.2.manifest`, beside the toolchain's. Each night it installs both through the launcher's own code into an empty Fennec home, from a folder laid out as the bucket is and signed with keys made for the run, and uses them as a person would: `.github/scripts/release-dry-run.sh`. There's one way to write a manifest, so only that exact text reads as one. The launcher takes an archive only when its size and hash are the manifest's.
 
 ## Who signs
 

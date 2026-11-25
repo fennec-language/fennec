@@ -1,7 +1,7 @@
 name: Release
 
-# Pushing a tag like v0.1.0 builds `fennec` for each platform, attests where each archive
-# came from, and publishes them with checksums as a GitHub release. A pull request that changes
+# Pushing a tag like v0.1.0 builds `fennec` and the launcher for each platform, attests where each
+# archive came from, and publishes them with checksums as a GitHub release. A pull request that changes
 # what goes in an archive builds them too, and tries each one with no toolchain around, but only
 # a tag publishes. Each night, and when it's started by hand, it also installs each archive
 # through the launcher and uses it for everything a person would, so a release can't quietly
@@ -150,6 +150,9 @@ jobs:
           path: ${{ matrix.copy == 'rebuild' && 'second-copy/musl' || 'musl' }}
       # `fennec build` links executables against the runtime library, shipped next to `fennec`.
       - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.platform.target }}
+      # The launcher people install as `fennec`, with the two programs it hands work to, built on its
+      # own so it gets none of the toolchain's features.
+      - run: cargo build --release --locked -p fennec-launcher --bins --target ${{ matrix.platform.target }}
       # The runtime with threads, for programs that use `parallel`, also next to `fennec`. Built
       # on its own, in a folder of its own: built with the others, Cargo would give all of them
       # `threads`.
@@ -204,6 +207,9 @@ jobs:
             cp licenses/mingw-w64-runtime.txt "$name/licenses/"
           else
             cp "$from/fennec" "$name/"
+            # Which protocol its build daemon speaks, as what version and build, so the launcher can
+            # ask that daemon for a plain `fennec run` itself (`fennec_daemon::PROTOCOL_FILE`).
+            "$from/fennec" daemon protocol > "$name/daemon-protocol"
             tools="$TOOLCHAIN/lib/rustlib/$TARGET"
             mkdir -p "$name/llvm/bin" "$name/llvm/lib"
             # LLVM's `ar` takes the runtime's Rust out of its library, so building needs no `ar` from
@@ -229,6 +235,18 @@ jobs:
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
           echo "PACKAGED=$name" >> "$GITHUB_ENV"
           ls -l "$archive"
+          # The launcher's archive: its three programs in one folder named as the file is, which
+          # `fennec self update` puts in `~/.fennec/bin`, and the notices they're shipped with.
+          exe=""
+          if [ "$RUNNER_OS" = Windows ]; then exe=".exe"; fi
+          launcher="fennec-launcher-v${version}-${TARGET}"
+          mkdir "$launcher"
+          cp LICENSE-MIT LICENSE-APACHE THIRD-PARTY.md "$launcher/"
+          cp "$from/fennec-launcher$exe" "$launcher/fennec$exe"
+          cp "$from/fennec-setup$exe" "$from/fennec-fetch$exe" "$launcher/"
+          launcher_archive="$(.github/scripts/pack.sh "$launcher")"
+          echo "LAUNCHER_ARCHIVE=$launcher_archive" >> "$GITHUB_ENV"
+          ls -l "$launcher_archive"
       # What a user gets: the archive's own tools, with Rust's toolchain, llvm-mingw and Visual
       # Studio out of reach and a Fennec home with nothing in it. On macOS and Linux, `cc` is still
       # the system's, which links; on Windows, the archive's own LLD links.
@@ -264,14 +282,18 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: startsWith(github.ref, 'refs/tags/v') && matrix.copy == 'release'
         with:
-          subject-path: ${{ env.ARCHIVE }}
+          subject-path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.LAUNCHER_ARCHIVE }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.copy }}-${{ matrix.platform.target }}
-          path: ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.ARCHIVE }}
+          path: |
+            ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.ARCHIVE }}
+            ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.LAUNCHER_ARCHIVE }}
 
-  # The manifest is what gets signed, offline, by hand: see docs/releases.md. Until it's signed,
-  # the launcher won't install the release. A pull request writes one too, so a change to the
+  # The manifests, the toolchain's and the launcher's, are what get signed, offline, by hand: see
+  # docs/releases.md. Until they're signed, the launcher won't install the release. A pull request writes one too, so a change to the
   # archives' names fails there rather than at a release.
   manifest:
     name: Write the release's manifest
@@ -303,15 +325,16 @@ jobs:
       - run: |
           version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
           mkdir manifest
-          cargo run --release --locked -q -p fennec-dist -- manifest toolchain "$version" dist/fennec-* > "manifest/fennec-v$version.manifest"
-          cat "manifest/fennec-v$version.manifest"
+          cargo run --release --locked -q -p fennec-dist -- manifest toolchain "$version" dist/fennec-v* > "manifest/fennec-v$version.manifest"
+          cargo run --release --locked -q -p fennec-dist -- manifest launcher "$version" dist/fennec-launcher-v* > "manifest/fennec-launcher-v$version.manifest"
+          cat manifest/*
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manifest
           path: manifest
 
-  # A dry run of a release, as a person gets one: the archive installed through the launcher into
-  # an empty Fennec home, then every example and example kit built, run and tested from that
+  # A dry run of a release, as a person gets one: the launcher's archive unpacked, and the
+  # toolchain's installed through it into an empty Fennec home, then every example and example kit built, run and tested from that
   # install, and a kit with a dependency built into a program that runs on its own. Nothing it
   # runs can reach this checkout or Rust's toolchain. Nobody signs it: see
   # `.github/scripts/release-dry-run.sh`.
@@ -348,7 +371,7 @@ jobs:
           path: archive
       - name: Install the archive through the launcher and use it
         shell: bash
-        run: .github/scripts/release-dry-run.sh archive/fennec-* ${{ matrix.target }}
+        run: .github/scripts/release-dry-run.sh archive/fennec-v* archive/fennec-launcher-v* ${{ matrix.target }}
 
   # Each archive built twice is the same bytes, so anyone can build a release from its tag and
   # check it's the one that was signed. Where one isn't, this says which files differ.

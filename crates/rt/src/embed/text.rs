@@ -295,37 +295,65 @@ pub extern "C" fn append_header(text: i64, h0: u64, h1: u64, h2: u64) -> i64 {
 }
 
 /// `fennec_str_find_header(text, part)`: `text.find(part)` for two headers, which character `part`
-/// first starts at, or -1 when it isn't there, looked for where both are, as `find` does.
+/// first starts at, or -1 when it isn't there, looked for where both are, as `find` does. Two
+/// inline headers are read as they are, with no heap to look in; a block is looked up once, for
+/// its bytes and whether they're ASCII.
 pub extern "C" fn find_header(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i64 {
+    let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
+    if block_of(&text).is_none() && block_of(&part).is_none() {
+        let (whole, looked) = ((&text[..], inline_length(&text)), (&part[..], inline_length(&part)));
+        return super::strings::find_in(whole, looked, inline_ascii(&text));
+    }
     with(|state| {
-        let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
-        super::strings::find_in(bytes_of(state, &text), bytes_of(state, &part))
+        let (whole, ascii) = match block_of(&text) {
+            Some(address) => super::strings::ascii_bytes_in_block(state, address.cast_signed()),
+            None => ((&text[..], inline_length(&text)), inline_ascii(&text)),
+        };
+        super::strings::find_in(whole, bytes_of(state, &part), ascii)
     })
+}
+
+/// Whether an inline header's bytes are all ASCII: none has its top bit set. The bytes past its
+/// length are zero, and its tag, in the last byte, isn't one of them.
+pub(super) fn inline_ascii(words: &[u64; 3]) -> bool {
+    let [first, second, last] = *words;
+    (first | second | (last & (u64::MAX >> 8))) & u64::from_ne_bytes([0x80; 8]) == 0
 }
 
 /// `fennec_str_split_at_header(text, separator, at)`: where the next `separator` in `text` starts
 /// from byte `at`, in bytes, or `text`'s length in bytes when there's none: where the part a
-/// loop over `text.split(separator)` takes next ends. Both are headers, only read.
+/// loop over `text.split(separator)` takes next ends. Both are headers, only read. Two inline
+/// headers are read as they are, with no heap to look in, as a loop over a short text's parts has.
 pub extern "C" fn split_at_header(t0: u64, t1: u64, t2: u64, s0: u64, s1: u64, s2: u64, at: i64) -> i64 {
-    with(|state| {
-        let (text, separator) = ([t0, t1, t2], [s0, s1, s2]);
-        let whole = bytes_of(state, &text);
-        let from = usize::try_from(at).unwrap_or(0);
-        let found = super::strings::place_from(whole, bytes_of(state, &separator), from);
-        i64::try_from(found.unwrap_or(whole.1)).unwrap_or(-1)
-    })
+    let (text, separator) = ([t0, t1, t2], [s0, s1, s2]);
+    let from = usize::try_from(at).unwrap_or(0);
+    if block_of(&text).is_none() && block_of(&separator).is_none() {
+        let whole = (&text[..], inline_length(&text));
+        return next_part_ends(whole, (&separator[..], inline_length(&separator)), from);
+    }
+    with(|state| next_part_ends(bytes_of(state, &text), bytes_of(state, &separator), from))
+}
+
+/// Where the next `separator` in `whole` starts from byte `from`, or `whole`'s length when there's
+/// none, as [`split_at_header`] gives it.
+#[inline]
+fn next_part_ends(whole: (&[u64], usize), separator: (&[u64], usize), from: usize) -> i64 {
+    let found = super::strings::place_from(whole, separator, from);
+    i64::try_from(found.unwrap_or(whole.1)).unwrap_or(-1)
 }
 
 /// The eight bytes of `words` from byte `at` on, as a word, zero past the words' end. Bytes are
 /// packed into words in order from each word's lowest byte, as a block and an inline header hold
 /// them.
+///
+/// The two words the bytes are in are read with one check, and put together with no branch: the
+/// second is shifted up one place and then the rest of the way, so a shift of zero takes none of it.
 pub(super) fn eight_bytes_at(words: &[u64], at: usize) -> u64 {
     let (number, shift) = (at / 8, (at % 8) * 8);
-    let low = words.get(number).copied().unwrap_or(0) >> shift;
-    if shift == 0 {
-        return low;
+    if let Some(&[low, high]) = words.get(number..number.saturating_add(2)) {
+        return (low >> shift) | ((high << 1) << (63 - shift));
     }
-    low | (words.get(number + 1).copied().unwrap_or(0) << (64 - shift))
+    words.get(number).copied().unwrap_or(0) >> shift
 }
 
 /// `fennec_text_starts_with(text, part)`: `text.startswith(part)` for two headers.
@@ -982,6 +1010,28 @@ mod tests {
         bytes.chunks(8).map(|word| u64::from_le_bytes(word.try_into().unwrap())).collect()
     }
 
+    /// `eight_bytes_at` gives the eight bytes from every place, read a byte at a time, across a
+    /// word's end and past the last word, where they're zero.
+    #[test]
+    fn eight_bytes_from_any_place_are_the_bytes_there() {
+        for count in 0..4 {
+            let bytes: Vec<u8> = (1..=u8::try_from(count * 8).unwrap()).collect();
+            let words: Vec<u64> =
+                bytes.chunks(8).map(|word| u64::from_le_bytes(word.try_into().unwrap())).collect();
+            for at in 0..count * 8 + 9 {
+                let mut eight = [0; 8];
+                for (number, byte) in eight.iter_mut().enumerate() {
+                    *byte = bytes.get(at + number).copied().unwrap_or(0);
+                }
+                assert_eq!(
+                    super::eight_bytes_at(&words, at),
+                    u64::from_le_bytes(eight),
+                    "{count} words, at {at}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn looking_for_bytes_in_place_agrees_with_str_on_every_place_and_size() {
         let texts = [
@@ -1038,6 +1088,45 @@ mod tests {
         // Nothing past an inline string's bytes counts, like the tag in its last byte.
         assert!(!found(short, super::inline(b"\0")));
         assert_eq!(live(), before + 1);
+        finish();
+    }
+
+    /// A loop over `text.split(separator)` takes the parts Rust's own split gives, through
+    /// `split_at_header`: an inline text, read with no heap, and one in a block, by separators of
+    /// one byte, a few and a wide character.
+    #[test]
+    fn a_loop_over_a_split_ends_each_part_where_rusts_own_split_does() {
+        begin();
+        let texts =
+            ["/api/orders/42", "a//b/", "", "/", "\u{e9}t\u{e9}/x", "2026-11-12T09:00:00.000Z INFO api GET"];
+        for text in texts {
+            let words = with(|state| Some(super::header(state, text))).unwrap();
+            for separator in ["/", " ", "//", "\u{e9}", "00:"] {
+                let between = super::inline(separator.as_bytes());
+                let mut parts = Vec::new();
+                let mut at = 0;
+                loop {
+                    let [t0, t1, t2] = words;
+                    let [s0, s1, s2] = between;
+                    let ends = usize::try_from(super::split_at_header(
+                        t0,
+                        t1,
+                        t2,
+                        s0,
+                        s1,
+                        s2,
+                        i64::try_from(at).unwrap(),
+                    ))
+                    .unwrap();
+                    parts.push(text.get(at..ends).unwrap());
+                    if ends >= text.len() {
+                        break;
+                    }
+                    at = ends + separator.len();
+                }
+                assert_eq!(parts, text.split(separator).collect::<Vec<_>>(), "{text:?} by {separator:?}");
+            }
+        }
         finish();
     }
 
@@ -1178,6 +1267,21 @@ mod tests {
         {
             let [p0, p1, p2] = header(part);
             assert_eq!(super::find_header(i0, i1, i2, p0, p1, p2), at, "{part:?}");
+        }
+        // ASCII texts, whose byte is the answer with no characters counted: a block, whose count
+        // says so, and an inline one, whose bytes do; and a part only past the first word.
+        let ascii = header("GET /users/12 HTTP/1.1\r\nHost: a.example\r\n\r\n{}");
+        let [a0, a1, a2] = ascii;
+        let [h0, h1, h2] = header("Content-Length: 12");
+        for (part, at, inline_at) in
+            [("\r\n\r\n", 39, -1), (": ", 28, 14), ("12", 11, 16), ("\u{e9}", -1, -1)]
+        {
+            let [p0, p1, p2] = header(part);
+            assert_eq!(super::find_header(a0, a1, a2, p0, p1, p2), at, "{part:?}");
+            assert_eq!(super::find_header(h0, h1, h2, p0, p1, p2), inline_at, "{part:?}");
+        }
+        if let Some(address) = block_of(&ascii) {
+            heap::free_text(address.cast_signed());
         }
         heap::free_text(text);
         if let Some(address) = block_of(&whole) {

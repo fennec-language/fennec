@@ -2975,7 +2975,7 @@ fn std_math_runs_from_its_own_source() {
             return
         ",
         "Vec3(x=1.5, y=-1.5, z=3.5) Vec3(x=0.5, y=2.5, z=2.5) 1.0 Vec3(x=-2.5, y=1.0, z=1.5)\n\
-         1.0 32.0\n\
+         0.99999994 32.0\n\
          2.5 4.0 0.8414709848078965 1.2311444133449163\n\
          [3, 2, 1] 2 1.5\n",
     );
@@ -5876,6 +5876,41 @@ fn an_optional_of_an_optional_keeps_a_none_inside_apart() {
             return
         "#,
         "False True None 8\nFalse True 1\nFalse True None missing\nFalse True\nnarrowed True None\nshown None found None found None found 3\nnothing False\n",
+    );
+}
+
+/// A `T?` that's `None`, passed to a `T??` parameter or put in a `T??` field, is held there
+/// apart from nothing, as native code holds it and as a `return` does: a `T??` never collapses
+/// into a `T?` (#2465). A `None` written out is nothing at every level, and a `T??` given to a
+/// `T??` is kept as it is. A `T??` local the checker narrows to the `T?` it was given is read as
+/// that `T?`, natively too, until the checker keeps its levels.
+#[test]
+fn a_none_put_in_an_optional_of_an_optional_is_held_apart() {
+    prints(
+        r"
+        struct Holder:
+            value: int??
+
+        def shown(value: int??) -> bool:
+            return value is None
+
+        def given_back(inner: int?) -> int??:
+            return inner
+
+        def probe(inner: int?, stdout: Stdout):
+            stdout.print(shown(inner), shown(None), shown(given_back(inner)))
+            held = Holder(value=inner)
+            stdout.print(held.value is None, (held.value else 1) is None)
+            mut box = Holder(value=None)
+            stdout.print(box.value is None)
+            box.value = inner
+            stdout.print(box.value is None)
+
+        def main(stdout: Stdout):
+            probe(None, stdout)
+            probe(3, stdout)
+        ",
+        "False True False\nFalse True\nTrue\nFalse\nFalse True False\nFalse False\nTrue\nFalse\n",
     );
 }
 

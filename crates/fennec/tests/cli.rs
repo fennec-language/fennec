@@ -6067,6 +6067,54 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// Past the daemon's budget (`FENNEC_KEPT_BUDGET`), the kit built longest ago is let go of once its
+/// build is done, this one too when it's past by itself: the next build after an edit carries
+/// nothing over, and makes the same program as one made here.
+#[cfg(unix)]
+#[test]
+fn a_kit_past_the_daemons_budget_is_let_go_of_and_its_next_build_checks_all_of_it() {
+    let (folder, kit, home) = small_kit("kept-budget").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let here_home = folder.join("home-here");
+    let main = kit.join("src/main.fen");
+    let before = "def main(stdout: Stdout):\n    stdout.print(doubled(2))\n\n\
+                  def doubled(n: int) -> int:\n    return n * 2\n";
+    let after = before.replace("    return n * 2\n", "    total = n * 2 + 1\n    return total\n");
+    let fennec = |args: &[&str], daemon: bool, home: &Path| {
+        let mut command = crate::executables::fennec_command();
+        command.args(args).current_dir(&kit).env("FENNEC_HOME", home);
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_KEPT_BUDGET", "1").env_remove("CI");
+        if daemon {
+            command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
+        }
+        command
+    };
+    let status = || fennec(&["daemon", "status"], true, &home).output();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"], true, &home), &status).unwrap();
+    for source in [before, after.as_str()] {
+        std::fs::write(&main, source).unwrap();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let here = fennec(&["build", ".", "-o", "prog"], false, &here_home).output().unwrap();
+        let made_here = std::fs::read(kit.join("prog")).ok();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let made = fennec(&["build", ".", "-o", "prog"], true, &home).output().unwrap();
+        assert_eq!(made.status.code(), Some(0), "{}", text(&made.stderr));
+        assert_eq!(text(&made.stderr), text(&here.stderr));
+        assert!(made_here.is_some());
+        assert_eq!(std::fs::read(kit.join("prog")).ok(), made_here);
+    }
+    let run = std::process::Command::new(kit.join("prog")).output().unwrap();
+    assert_eq!(text(&run.stdout), "5\n");
+    let said = text(&status().unwrap().stdout);
+    assert!(said.contains("checks kept: 0 kits"), "{said}");
+    assert!(said.contains("the last build carried over 0 functions"), "{said}");
+    fennec(&["daemon", "stop"], true, &home).output().unwrap();
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
 /// When the daemon checks all of a kit again in the background, after a build that carried
 /// anything over, and disagrees with that build, the next build says so and checks all of it, with
 /// the files as they were too: what that build put in the store is taken back, so the program it

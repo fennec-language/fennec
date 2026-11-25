@@ -52,7 +52,7 @@ def run(which: int, crash: bool, stdout: Stdout, scores: shared Scores) fails Sh
         stdout.print(values[held])
 
 def main(stdout: Stdout, args: Args) fails Shut | Crashed:
-    which = int(args[0]) except InvalidValue(): 0
+    which = int.parse(args[0]) except InvalidValue(): 0
     crash = args[1] == "crash"
     shared scores = Scores()
     run(which, crash, stdout, scores)?

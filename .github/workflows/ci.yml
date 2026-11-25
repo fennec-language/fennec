@@ -647,6 +647,8 @@ jobs:
         run: .github/scripts/test-gate-lock.sh
       - name: Telling flakes from failures main fixed, on a throwaway repository
         run: .github/scripts/test-flakes.sh
+      - name: Saying plainly a job never got a runner, against a GitHub answering from files
+        run: .github/scripts/test-ci-passed.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
         run: .github/scripts/test-nightly-report.sh
       - name: A mutants run's counts, a timeout neither caught nor missed, and one where most timed out failing
@@ -755,9 +757,17 @@ jobs:
   # programs built both ways. Leaks aren't checked: the runtime leaves freeing at exit
   # to the system.
   asan:
-    name: AddressSanitizer on LLVM-built programs
+    name: AddressSanitizer on LLVM-built programs (${{ matrix.half }} of 2)
     needs: changes
     if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    # In two halves, each with half the examples and one of the two fuzzers. In one job it took 29
+    # minutes median and 37 at most of its 40, because ubuntu-latest's machines differ: the same
+    # LLVM tests take 10.5 minutes on an EPYC 9V45 and 15 on an EPYC 7763, and on 2026-11-24 the
+    # examples took 17 minutes where they mostly take 9. Each half has room for the slowest.
+    strategy:
+      fail-fast: false
+      matrix:
+        half: [1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -772,6 +782,9 @@ jobs:
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Which machine it got, since a half's time means something only beside it.
+      - name: Say the machine
+        run: .github/scripts/machine.sh
       - name: Build fennec, and its runtime library with AddressSanitizer
         run: |
           cargo build --release --locked -p fennec -p fennec-fuzz
@@ -785,11 +798,18 @@ jobs:
             --features threads,sanitize -Zbuild-std --target x86_64-unknown-linux-gnu --target-dir target/threads
           cp target/threads/x86_64-unknown-linux-gnu/release/libfennec_runtime.a \
             target/release/libfennec_runtime_threads.a
-      - name: Run every example LLVM takes
+      # The half's examples: every other one, in order of their names, from the first or the
+      # second.
+      - name: Run every example LLVM takes in this half
+        env:
+          HALF: ${{ matrix.half }}
         run: |
           built=0
           failed=0
+          at=0
           for program in examples/*.fen; do
+            at=$((at + 1))
+            [ $((at % 2)) = $((HALF % 2)) ] || continue
             for how in dev release; do
               release=()
               [ "$how" = release ] && release=(--release)
@@ -814,13 +834,15 @@ jobs:
             done
           done
           echo "$built builds ran under AddressSanitizer"
-          [ "$built" -ge 40 ] || { echo "::error::only $built builds ran"; failed=1; }
+          [ "$built" -ge 20 ] || { echo "::error::only $built builds ran"; failed=1; }
           exit "$failed"
       - name: Fuzz programs built through LLVM
+        if: matrix.half == 1
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed 1 --inputs 150 --seconds 300 --found found
       # Random programs, trees of enums holding strings and lists among them, built checking
       # proofs, each compared with the reference evaluator.
       - name: Fuzz random programs
+        if: matrix.half == 2
         env:
           FENNEC_CHECK_PROOFS: 1
           # As the workers' job has it, since a task's stack isn't the thread's.
@@ -832,7 +854,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: asan-fuzz-found
+          name: asan-fuzz-found-${{ matrix.half }}
           path: found
           if-no-files-found: ignore
 
@@ -1243,9 +1265,18 @@ jobs:
     needs: [changes, lint, test, x86-mac, coverage, audit, deny, site, workflows, budgets, bench, worker-sanitizers, tsan-programs, server-sanitizers, lean-runtime, static, install, asan, llvm-asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The run's jobs, and their checks' notes, which say when GitHub had no runner for one.
     permissions:
       actions: read
+      checks: read
+      contents: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      # A job GitHub never gave a runner is said so plainly, apart from the code's failures, and
+      # still fails the run but for a macOS job on a pull request: see `ci-passed.sh`.
       - name: Every job succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -1256,67 +1287,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          failed=0
-          while read -r job result; do
-            [ "$result" = success ] && continue
-            [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
-            # The macOS jobs alone, or every other: what the run leaves out isn't its to pass.
-            if [ "$result" = skipped ] && [ "$PLATFORMS" = macos ] && [ "$job" != changes ] \
-              && [ "$job" != test ] && [ "$job" != x86-mac ]; then
-              continue
-            fi
-            [ "$result" = skipped ] && [ "$PLATFORMS" = others ] && [ "$job" = x86-mac ] && continue
-            # Coverage and the heap audit run only in the scheduled run and by hand.
-            if [ "$result" = skipped ] && { [ "$job" = coverage ] || [ "$job" = audit ]; } \
-              && [ "$EVENT" != schedule ] && [ "$EVENT" != workflow_dispatch ]; then
-              continue
-            fi
-            if [ "$result" = skipped ] && [ "$EVENT" = merge_group ]; then
-              [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
-            fi
-            # `test` has one result for its whole matrix, so each OS's job is looked at, and so is
-            # each part of the Intel Mac's.
-            case "$job" in
-              test) jobs='(^|/ )Test \\(' ;;
-              x86-mac) jobs='(^|/ )Native code on x86-64 macOS \\(' ;;
-              *) jobs='' ;;
-            esac
-            if [ -n "$jobs" ] && [ "$result" != skipped ]; then
-              looked_at=0
-              # The one exception, on pull requests only: GitHub's macOS runners are short, and
-              # a macOS job no runner ever took (cancelled, with no runner and no steps) is a
-              # warning rather than a failure. A macOS job that ran and failed still fails, and
-              # so does every other OS and every push to main. The fields are split on `|`,
-              # since tabs would run together where the runner is empty.
-              while IFS='|' read -r name conclusion runner steps; do
-                looked_at=1
-                [ "$conclusion" = success ] && continue
-                if [ "$EVENT" = pull_request ] && [[ "$name" =~ (macos-latest, [^\)]*\)|x86-64 macOS \([^\)]*\))$ ]] \
-                  && [ "$conclusion" = cancelled ] && [ -z "$runner" ] && [ "$steps" = 0 ]; then
-                  echo "::warning::$name never got a runner, so it doesn't count; the push to main runs it again"
-                  continue
-                fi
-                echo "$name finished with: $conclusion"
-                failed=1
-              done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
-                --jq ".jobs[] | select(.name | test(\"$jobs\")) | [.name, (.conclusion // \"unfinished\"), (.runner_name // \"\"), (.steps | length | tostring)] | join(\"|\")")
-              # Run through `staging.yml`, a job's name has that job's in front. If this ever found
-              # no jobs at all, it can't say they passed.
-              [ "$looked_at" = 1 ] || { echo "found no $job jobs to look at"; failed=1; }
-              continue
-            fi
-            echo "$job finished with: $result"
-            failed=1
-          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<< "$NEEDS")
-          exit "$failed"
+        run: .github/scripts/ci-passed.sh
       # A run that passed only when jobs ran again: each earlier failure on this commit is a flake,
       # written in the flake ledger and kept with the run, so none is ever just rerun.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: success() && github.run_attempt != '1'
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/scripts
       - name: Write down the flakes
         if: success() && github.run_attempt != '1'
         env:

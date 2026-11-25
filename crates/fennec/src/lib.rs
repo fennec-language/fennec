@@ -2,9 +2,17 @@
 #![expect(clippy::print_stdout, reason = "the command line prints its results")]
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
-/// What `fennec` allocates through, programs it runs included.
+/// What `fennec` allocates through, programs it runs included, counted, so the build daemon knows
+/// what it holds (`kept::fit_budget`).
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: cap::Cap<mimalloc::MiMalloc> = cap::Cap::new(mimalloc::MiMalloc, usize::MAX);
+
+/// How many bytes this process holds allocated now. Only the build daemon, which is unix's alone,
+/// asks.
+#[cfg(unix)]
+pub(crate) fn held_bytes() -> usize {
+    ALLOCATOR.allocated()
+}
 
 mod aot;
 mod bench;
@@ -36,16 +44,9 @@ mod upkeep;
 mod verdict;
 
 /// A path in Fennec's `work` folder for this command's own scratch work, named so that nothing
-/// else can have it: the process's id and when it asked, as the folder is shared by every command,
-/// and one killed before it tidied up can leave a tool it started still writing to a folder named
-/// by an id the system has given out again. The daemon removes what such a command leaves.
+/// else can have it (`fennec_daemon::own_temp_in`).
 pub(crate) fn own_temp(what: &str) -> std::path::PathBuf {
-    static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_nanos());
-    let count = ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    fennec_build::work_folder().join(format!("fennec-{what}-{}-{at:x}-{count}", std::process::id()))
+    fennec_daemon::own_temp_in(&fennec_build::work_folder(), what)
 }
 
 use std::process::ExitCode;

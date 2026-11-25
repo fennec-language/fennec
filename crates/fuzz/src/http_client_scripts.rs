@@ -21,9 +21,13 @@
 //! - a 303, and a 301 or 302 to a `POST`, becomes a `GET` with no body;
 //! - a narrowed `Net` refuses a host it doesn't reach with `Denied`, before asking it.
 //!
-//! Each server notes what it's asked, which has to be what the model says too. The client sends a
-//! made-up key in a header, which may reach only the site it was first sent to: the same host and
-//! port.
+//! Each server notes what it's asked, the host the request names among it, which has to be what the
+//! model says too. The client sends a made-up key in a header, which may reach only the site it was
+//! first sent to: the same host and port.
+//!
+//! The `http-client-splits` target asks the same servers many times, each splitting its answer
+//! after a different byte each time, so the client reads a status line, a header, a length, a chunk
+//! or a body cut wherever a network might cut it.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -33,7 +37,8 @@ use std::time::{Duration, Instant};
 
 use crate::json_rules::{Json, parse};
 
-/// The client the target builds: it asks the server on the port it's given three times, with
+/// The client the targets build: it asks the server on the port it's given as many times as it's
+/// told, with
 /// the timeout, the most a body may be, the method and the hosts it's given, and a made-up key in a
 /// header, and prints what it read or the case it failed with, each time.
 pub(crate) const SCRIPTED_CLIENT: &str = "\
@@ -75,11 +80,12 @@ def main(net: Net, args: Args, stdout: Stdout):
     timeout = 3s if args[1] == \"3\" else 1s
     most = 64 if args[2] == \"small\" else 67108864
     reach = net.hosts([\"127.0.0.1\"]) if args[4] == \"narrowed\" else net
-    for _ in range(3):
+    asks = int.parse(args[5]) except InvalidValue(): 3
+    for _ in range(asks):
         asked(reach, method=args[3], url=url, timeout=timeout, most=most, stdout=stdout)
 ";
 
-/// How many times the client asks, each on a connection of its own.
+/// How many times the client asks for `http-client-scripts`, each on a connection of its own.
 const ASKS: usize = 3;
 
 /// The client's limits, as std.net has them.
@@ -112,6 +118,8 @@ enum Sent {
 const DRIPPED: usize = 32;
 const DRIP: Duration = Duration::from_millis(2);
 const PAUSE: Duration = Duration::from_millis(30);
+/// The pause between an answer's pieces for `http-client-splits`, which asks many times.
+const SPLIT_PAUSE: Duration = Duration::from_millis(1);
 
 /// How the server ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,7 +144,20 @@ struct Script {
     sent: Sent,
     ends: Ends,
     split: usize,
+    /// How long a split answer's pieces are apart.
+    pause: Duration,
     answers: Vec<Vec<u8>>,
+}
+
+impl Script {
+    /// How long a server waits while sending an answer, besides the time its bytes take.
+    fn waits(&self) -> Duration {
+        match self.sent {
+            Sent::Whole => Duration::ZERO,
+            Sent::Dripped => DRIP.saturating_mul(DRIPPED.try_into().unwrap_or(u32::MAX)),
+            Sent::Split => self.pause,
+        }
+    }
 }
 
 /// The script an input says. Its first byte is flags, from its lowest bits:
@@ -180,6 +201,7 @@ fn script(input: &[u8]) -> Script {
             _ => Ends::Closes,
         },
         split: high << 8 | low,
+        pause: PAUSE,
         answers,
     }
 }
@@ -392,11 +414,12 @@ fn status_of(line: &str) -> Option<i64> {
     (written && (100..=599).contains(&status)).then_some(status)
 }
 
-/// What a server is asked: by which of them, with what method and body, and whether the client's
-/// key came with it.
+/// What a server is asked: by which of them, naming which host and port, with what method and body,
+/// and whether the client's key came with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Asked {
     server: usize,
+    host: String,
     method: String,
     key: bool,
     body: Vec<u8>,
@@ -477,11 +500,12 @@ fn wanted(script: &Script, answers: &[Vec<u8>], ports: &[u16]) -> (Outcome, Vec<
             return (Outcome::Fails("Other"), asked);
         }
         // Drips and pauses add up over many servers asked, until the timeout may run out first.
-        if asked.len() >= 4 && script.sent != Sent::Whole {
+        if asked.len() >= 4 && script.waits() >= PAUSE {
             return (Outcome::Unpromised, asked);
         }
         asked.push(Asked {
             server,
+            host: format!("{host}:{port}"),
             method: method.to_owned(),
             key: local && port == first,
             body: body.clone(),
@@ -536,8 +560,14 @@ fn heard(line: &str) -> Result<Outcome, String> {
 }
 
 /// One server's side of being asked: it reads the request, notes it, sends its answer as the
-/// script says, and ends as it says.
-fn served(mut stream: TcpStream, script: &Script, server: usize, answer: &[u8], noted: &Mutex<Vec<Asked>>) {
+/// script says, split after `split` bytes, and ends as it says.
+fn served(
+    mut stream: TcpStream,
+    script: &Script,
+    (server, split): (usize, usize),
+    answer: &[u8],
+    noted: &Mutex<Vec<Asked>>,
+) {
     let waits = Duration::from_secs(script.seconds + 4);
     let _ = stream.set_read_timeout(Some(waits));
     let _ = stream.set_nodelay(true);
@@ -563,8 +593,9 @@ fn served(mut stream: TcpStream, script: &Script, server: usize, answer: &[u8], 
         body.clear();
     }
     let key = header("x-key").is_some();
-    noted.lock().unwrap_or_else(PoisonError::into_inner).push(Asked { server, method, key, body });
-    let split = script.split.min(answer.len());
+    let host = header("host").unwrap_or_default();
+    noted.lock().unwrap_or_else(PoisonError::into_inner).push(Asked { server, host, method, key, body });
+    let split = split.min(answer.len());
     let (first, rest) = answer.split_at(split);
     let wrote = match (script.sent, script.ends) {
         (_, Ends::Cut) => stream.write_all(first),
@@ -580,7 +611,7 @@ fn served(mut stream: TcpStream, script: &Script, server: usize, answer: &[u8], 
                 .and_then(|()| stream.write_all(rest))
         }
         (Sent::Split, _) => stream.write_all(first).and_then(|()| {
-            std::thread::sleep(PAUSE);
+            std::thread::sleep(script.pause);
             stream.write_all(rest)
         }),
     };
@@ -592,16 +623,17 @@ fn served(mut stream: TcpStream, script: &Script, server: usize, answer: &[u8], 
     let _ = stream.shutdown(Shutdown::Both);
 }
 
-/// What's wrong if the client took longer than its timeout lets it for its asks, however each
+/// What's wrong if the client took longer than its timeout lets it for its `asks`, however each
 /// ended. A timeout is a promise on the clock, so this is checked on the clock, with room for a
 /// gate on a machine under heavy load: three times the timeout and ten seconds more, on each ask.
 /// Past it, the client is said to be that late.
-fn on_time(took: Duration, script: &Script) -> Result<(), String> {
-    let promised = Duration::from_secs(ASKS as u64 * script.seconds);
-    let most = Duration::from_secs(ASKS as u64 * (3 * script.seconds + 10));
+fn on_time(took: Duration, script: &Script, asks: usize) -> Result<(), String> {
+    let asks_now = u64::try_from(asks).unwrap_or(u64::MAX);
+    let promised = Duration::from_secs(asks_now.saturating_mul(script.seconds));
+    let most = Duration::from_secs(asks_now.saturating_mul(3 * script.seconds + 10));
     if took > most {
         return Err(format!(
-            "the client took {took:?} for {ASKS} asks with a timeout of {} s each, {:?} past the {promised:?} \
+            "the client took {took:?} for {asks} asks with a timeout of {} s each, {:?} past the {promised:?} \
              they could take, and {:?} past the room for a busy machine: {script:?}",
             script.seconds,
             took.saturating_sub(promised),
@@ -611,82 +643,199 @@ fn on_time(took: Duration, script: &Script) -> Result<(), String> {
     Ok(())
 }
 
-/// The target: what the client reads, three times, from servers answering as the script says,
-/// against what the model says, and what it asked each of them on the way.
+/// About how long one connection to a scripted server takes for `http-client-splits`: the pause
+/// between its answer's pieces, and as much again for the rest.
+const CONNECTION_TAKES: Duration = Duration::from_millis(2);
+/// How long the client may expect to spend asking for `http-client-splits` on one input.
+const SPLITS_TAKE_AT_MOST: Duration = Duration::from_secs(3);
+/// An answer this long or shorter is split after every byte, even where a longer one is split at a
+/// few places to keep to `SPLITS_TAKE_AT_MOST`.
+const SPLIT_EVERY_BYTE_UP_TO: usize = 64;
+
+/// About how long one ask takes for `http-client-splits`, asking each server in `asked`. Asking for
+/// `localhost` takes longer on Windows, which looks it up as `::1` first and refuses a port nothing
+/// listens on there only slowly, so the client gives that address its short try and then asks
+/// `127.0.0.1`.
+fn ask_takes(asked: &[Asked]) -> Duration {
+    let by_name =
+        asked.iter().filter(|asked| asked.host.to_ascii_lowercase().starts_with("localhost:")).count();
+    let by_name = if cfg!(windows) { u32::try_from(by_name).unwrap_or(u32::MAX) } else { 0 };
+    let connections = u32::try_from(asked.len()).unwrap_or(u32::MAX);
+    CONNECTION_TAKES
+        .saturating_mul(connections)
+        .saturating_add(Duration::from_millis(250).saturating_mul(by_name))
+}
+
+/// Where each server splits its answer on each connection for `http-client-splits`, round and round,
+/// and how many times the client asks so each server meets every place it's given. That's after
+/// every byte of its answer but the last, or, where asking for them all would take longer than
+/// `SPLITS_TAKE_AT_MOST`, the few places `split_points` gives a long answer, as many of those as fit.
+fn split_places(answers: &[Vec<u8>], asked: &[Asked]) -> (Vec<Vec<usize>>, usize) {
+    let planned = |every_byte_up_to| {
+        let places: Vec<Vec<usize>> = answers
+            .iter()
+            .map(|answer| crate::http_sessions::split_points(answer.len(), every_byte_up_to))
+            .collect();
+        let asks = places.iter().enumerate().map(|(server, places)| {
+            let visits = asked.iter().filter(|asked| asked.server == server).count();
+            if visits == 0 { 0 } else { places.len().div_ceil(visits) }
+        });
+        let asks = asks.max().unwrap_or(0).max(1);
+        (places, asks)
+    };
+    let takes = ask_takes(asked).max(CONNECTION_TAKES);
+    let fit = usize::try_from(SPLITS_TAKE_AT_MOST.as_micros() / takes.as_micros()).unwrap_or(1).max(1);
+    let (places, asks) = planned(usize::MAX);
+    if asks <= fit {
+        return (places, asks);
+    }
+    let (places, asks) = planned(SPLIT_EVERY_BYTE_UP_TO);
+    (places, asks.min(fit))
+}
+
+/// The `http-client-scripts` target: what the client reads, three times, from servers answering as
+/// the script says, against what the model says, and what it asked each of them on the way.
 pub(crate) fn http_client_scripts(input: &[u8]) -> Result<(), String> {
-    if crate::llvm::built_reader("http-client-scripts")?.is_none() {
-        return Ok(());
-    }
-    let script = Arc::new(script(input));
-    let mut listeners = Vec::new();
-    for _ in &script.answers {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|err| err.to_string())?;
-        let port = listener.local_addr().map_err(|err| err.to_string())?.port();
-        listeners.push((listener, port));
-    }
-    let ports: Vec<u16> = listeners.iter().map(|(_, port)| *port).collect();
-    let answers: Arc<Vec<Vec<u8>>> =
-        Arc::new(script.answers.iter().enumerate().map(|(at, answer)| placed(answer, at, &ports)).collect());
-    let done = Arc::new(AtomicBool::new(false));
-    let noted = Arc::new(Mutex::new(Vec::new()));
-    let serving: Vec<_> = listeners
-        .into_iter()
-        .enumerate()
-        .map(|(server, (listener, _))| {
-            let (script, answers, done, noted) =
-                (Arc::clone(&script), Arc::clone(&answers), Arc::clone(&done), Arc::clone(&noted));
-            std::thread::spawn(move || {
-                for stream in listener.incoming() {
-                    if done.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let Ok(stream) = stream else { return };
-                    let answer = answers.get(server).map_or(&[][..], Vec::as_slice);
-                    served(stream, &script, server, answer, &noted);
-                }
-            })
-        })
-        .collect();
-    let started = Instant::now();
-    let first = ports.first().copied().unwrap_or(0);
-    let args = [
-        first.to_string(),
+    met(script(input), false)
+}
+
+/// The `http-client-splits` target: an `http-client-scripts` input whose servers each split their
+/// answer after a different byte on each connection, its two pieces a millisecond apart, and then
+/// close, whatever its flags say of how they send and end. The client asks until each server has
+/// split its answer at every place `split_places` gives it, and each time it has to read what the
+/// model says the whole answer gets, and ask each server what the model says.
+pub(crate) fn http_client_splits(input: &[u8]) -> Result<(), String> {
+    met(Script { sent: Sent::Split, ends: Ends::Closes, pause: SPLIT_PAUSE, ..script(input) }, true)
+}
+
+/// What the scripted servers share: the script, each one's answer and the places it splits it at
+/// on each connection, whether they're done, and what each was asked.
+struct Shared {
+    script: Script,
+    answers: Vec<Vec<u8>>,
+    places: Vec<Vec<usize>>,
+    done: AtomicBool,
+    noted: Mutex<Vec<Asked>>,
+}
+
+/// A server answering each connection as the script says until it's done. Where it has places to
+/// split its answer at, each connection takes the next, round and round.
+fn serving(listener: TcpListener, server: usize, shared: Arc<Shared>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let answer = shared.answers.get(server).map_or(&[][..], Vec::as_slice);
+        let places = shared.places.get(server).map_or(&[][..], Vec::as_slice);
+        for (nth, stream) in listener.incoming().enumerate() {
+            if shared.done.load(Ordering::Relaxed) {
+                return;
+            }
+            let Ok(stream) = stream else { return };
+            let split = nth.checked_rem(places.len()).and_then(|at| places.get(at)).copied();
+            served(
+                stream,
+                &shared.script,
+                (server, split.unwrap_or(shared.script.split)),
+                answer,
+                &shared.noted,
+            );
+        }
+    })
+}
+
+/// A server's listener on a port of its own, and the port.
+fn listening() -> Result<(TcpListener, u16), String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|err| err.to_string())?;
+    let port = listener.local_addr().map_err(|err| err.to_string())?.port();
+    Ok((listener, port))
+}
+
+/// What the client's told: the first server's port, the timeout, the most body, the method, the
+/// hosts and how many times to ask.
+fn client_args(script: &Script, port: u16, asks: usize) -> [String; 6] {
+    [
+        port.to_string(),
         script.seconds.to_string(),
         if script.small { "small" } else { "default" }.to_owned(),
         if script.posts { "POST" } else { "GET" }.to_owned(),
         if script.narrowed { "narrowed" } else { "open" }.to_owned(),
-    ];
+        asks.to_string(),
+    ]
+}
+
+/// What the client reads from servers answering as `script` says, against what the model says,
+/// and what it asked each of them on the way: three times, or, `splitting`, as many as it takes
+/// each server to split its answer at each place `split_places` gives it.
+fn met(script: Script, splitting: bool) -> Result<(), String> {
+    if crate::llvm::built_reader("http-client-scripts")?.is_none() {
+        return Ok(());
+    }
+    let listeners = script.answers.iter().map(|_| listening()).collect::<Result<Vec<_>, String>>()?;
+    let ports: Vec<u16> = listeners.iter().map(|(_, port)| *port).collect();
+    let answers: Vec<Vec<u8>> =
+        script.answers.iter().enumerate().map(|(at, answer)| placed(answer, at, &ports)).collect();
+    let (wanted, asked) = wanted(&script, &answers, &ports);
+    let (places, asks) = if splitting {
+        // Which outcome isn't promised, however it's split, and the scripted target meets it.
+        if wanted == Outcome::Unpromised {
+            return Ok(());
+        }
+        split_places(&answers, &asked)
+    } else {
+        (Vec::new(), ASKS)
+    };
+    let shared = Arc::new(Shared {
+        script,
+        answers,
+        places,
+        done: AtomicBool::new(false),
+        noted: Mutex::new(Vec::new()),
+    });
+    let serving: Vec<_> = listeners
+        .into_iter()
+        .enumerate()
+        .map(|(server, (listener, _))| serving(listener, server, Arc::clone(&shared)))
+        .collect();
+    let script = &shared.script;
+    let started = Instant::now();
+    let first = ports.first().copied().unwrap_or(0);
+    let args = client_args(script, first, asks);
     let args: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
     let printed = crate::llvm::run_reader("http-client-scripts", &args);
     let took = started.elapsed();
     // Each server waits on its next ask: one connection each lets it see it's done.
-    done.store(true, Ordering::Relaxed);
+    shared.done.store(true, Ordering::Relaxed);
     for port in &ports {
         let _ = TcpStream::connect(("127.0.0.1", *port));
     }
     for server in serving {
         let _ = server.join();
     }
-    let shown = || format!("{script:?}");
+    let shown = || {
+        let splits =
+            if splitting { ", each server's answer split at its next place on each ask" } else { "" };
+        format!("{script:?}{splits}")
+    };
     let Some(printed) = printed.map_err(|wrong| format!("{wrong}: {}", shown()))? else { return Ok(()) };
     let printed = String::from_utf8_lossy(&printed).into_owned();
-    on_time(took, &script)?;
+    on_time(took, script, asks)?;
     let lines: Vec<&str> = printed.lines().collect();
-    if lines.len() != ASKS {
+    if lines.len() != asks {
         return Err(format!("the client printed {printed:?}: {}", shown()));
     }
-    let (wanted, asked) = wanted(&script, &answers, &ports);
     if wanted == Outcome::Unpromised {
         return Ok(());
     }
-    for line in lines {
+    for (nth, line) in lines.into_iter().enumerate() {
         let got = heard(line)?;
         if got != wanted {
-            return Err(format!("the client read {got:?}, not {wanted:?}: {}", shown()));
+            return Err(format!(
+                "the client read {got:?}, not {wanted:?}, on ask {} of {asks}: {}",
+                nth + 1,
+                shown()
+            ));
         }
     }
-    let noted = noted.lock().unwrap_or_else(PoisonError::into_inner).clone();
-    let asked: Vec<Asked> = (0..ASKS).flat_map(|_| asked.iter().cloned()).collect();
+    let noted = shared.noted.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let asked: Vec<Asked> = (0..asks).flat_map(|_| asked.iter().cloned()).collect();
     if noted != asked {
         return Err(format!("the servers were asked {noted:?}, not {asked:?}: {}", shown()));
     }
@@ -702,13 +851,18 @@ fn written(flags: u8, split: u16, answer: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Asked, Ends, NEXT_SERVER, Outcome, Sent, http_client_scripts, placed, script, wanted, written,
+        Asked, Ends, NEXT_SERVER, Outcome, Sent, http_client_scripts, http_client_splits, placed, script,
+        split_places, wanted, written,
     };
 
     const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
 
     /// The ports the model's tests give their servers.
     const PORTS: [u16; 4] = [4001, 4002, 4003, 4004];
+
+    /// Held by a test running the client: both targets run the one program, which writes what it
+    /// prints into one folder, so two at once would read each other's.
+    static CLIENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// What the model says of a script, and what it asks each server.
     fn followed(flags: u8, split: u16, answer: &[u8]) -> (Outcome, Vec<Asked>) {
@@ -733,8 +887,22 @@ mod tests {
         format!("HTTP/1.1 {status} Moved\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n").into_bytes()
     }
 
+    /// What a server is asked for `127.0.0.1`.
     fn asked(server: usize, method: &str, key: bool, body: &[u8]) -> Asked {
-        Asked { server, method: method.to_owned(), key, body: body.to_vec() }
+        let port = PORTS.get(server).copied().unwrap_or(0);
+        Asked {
+            server,
+            host: format!("127.0.0.1:{port}"),
+            method: method.to_owned(),
+            key,
+            body: body.to_vec(),
+        }
+    }
+
+    /// What a server is asked for `localhost`.
+    fn by_name(asked: Asked) -> Asked {
+        let port = PORTS.get(asked.server).copied().unwrap_or(0);
+        Asked { host: format!("localhost:{port}"), ..asked }
     }
 
     #[test]
@@ -837,7 +1005,7 @@ mod tests {
         assert_eq!(outcome(0, 0, &path_then_out), Outcome::Fails("Other"));
         assert_eq!(
             followed(0, 0, &out),
-            (read(200, b"hello"), vec![asked(0, "GET", true, b""), asked(1, "GET", false, b"")])
+            (read(200, b"hello"), vec![asked(0, "GET", true, b""), by_name(asked(1, "GET", false, b""))])
         );
         assert_eq!(followed(0x80, 0, &out), (Outcome::Fails("Denied"), vec![asked(0, "GET", true, b"")]));
         // Ten redirects are followed, the eleventh isn't.
@@ -856,6 +1024,7 @@ mod tests {
     /// stalling and cut, and reads what the model says each time, ending holding nothing.
     #[test]
     fn the_client_reads_what_the_model_says() {
+        let _client = CLIENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
         let cases: [(u8, u16, &[u8]); 7] = [
             (0b00_0000, 0, OK),
@@ -889,6 +1058,46 @@ mod tests {
         let long = b"HTTP/1.1 200 OK\r\n\r\nmore than sixty-four bytes of body, which most_body=64 refuses, as it must";
         for flags in [0b00_0010, 0b00_1010] {
             if let Err(wrong) = http_client_scripts(&written(flags, 19, long)) {
+                unreachable!("{wrong}");
+            }
+        }
+    }
+
+    /// Each server is given every place its answer can be split, and the client asks often enough
+    /// for each to meet them all: a server asked twice an ask meets two places an ask. An answer too
+    /// long to split everywhere in time is split at a few places.
+    #[test]
+    fn each_server_meets_every_place_to_split() {
+        let answers = vec![vec![b'a'; 5], vec![b'b'; 9]];
+        let once = [asked(0, "GET", true, b""), asked(1, "GET", false, b"")];
+        let (places, asks) = split_places(&answers, &once);
+        assert_eq!(places, [vec![1, 2, 3, 4], (1..9).collect::<Vec<_>>()]);
+        assert_eq!(asks, 8);
+        let twice = [asked(0, "GET", true, b""), asked(1, "GET", false, b""), asked(1, "GET", false, b"")];
+        assert_eq!(split_places(&answers, &twice).1, 4);
+        // A server not asked takes no asks.
+        assert_eq!(split_places(&answers, &once[..1]).1, 4);
+        let long = vec![vec![b'c'; 100_000]];
+        let (places, asks) = split_places(&long, &once[..1]);
+        assert_eq!((places.first().map(Vec::len), asks), (Some(48), 48));
+    }
+
+    /// The client reads what the model says of an answer split after any of its bytes, a header,
+    /// a length, a chunk or a body cut there, from one server and across redirects.
+    #[test]
+    fn the_client_reads_an_answer_split_anywhere() {
+        let _client = CLIENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let chunked =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nx-t: 1\r\n\r\n";
+        let cases: [(u8, Vec<u8>); 5] = [
+            (0b11_0000, OK.to_vec()),
+            (0b01_0110, chunked.to_vec()),
+            (0x40, servers(&[&redirect(303, "@next"), OK])),
+            (0x00, servers(&[&redirect(301, "@out"), &redirect(307, "@next"), OK])),
+            (0x00, b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nhello".to_vec()),
+        ];
+        for (flags, answers) in cases {
+            if let Err(wrong) = http_client_splits(&written(flags, 0, &answers)) {
                 unreachable!("{wrong}");
             }
         }

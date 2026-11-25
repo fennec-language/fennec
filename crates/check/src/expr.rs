@@ -101,7 +101,7 @@ impl FnCx<'_> {
                 if let Some(tested) = tested {
                     self.direct_read = Some((tested.start, tested.end));
                 }
-                let (left, right) = self.operands(lhs, rhs);
+                let (left, right) = self.operator_operands(*op, lhs, rhs);
                 self.direct_read = outer;
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }

@@ -212,7 +212,7 @@ fn builtins_check_what_they_are_given() {
         [
             "`sum` of `str` needs a starting value: sum(..., start=\"\") @ sum([\"a\"])",
             "a str has no method `abs` @ abs(\"a\")",
-            "`int` converts a number or text, not a list[int] @ [1]",
+            "`int` converts a number, not a list[int] @ [1]",
             "`range` takes one to three ints @ range(1.5)",
             "`round` takes a number, but this is a float @ round(1.5, \"a\")",
         ]

@@ -11,6 +11,7 @@
 //! shouldn't, and the order assignments go in.
 
 mod ast;
+mod crews;
 mod eval;
 mod generate;
 mod messaging;
@@ -1411,6 +1412,116 @@ mod tests {
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
+    /// The crews `locked_crews_check_and_the_evaluator_agrees_with_the_oracle_and_the_builds` starts
+    /// with, before those picked at random.
+    fn fixed_crews() -> Vec<super::ast::Stmt> {
+        use super::ast::Stmt;
+        use super::crews::{Arg, Change, Crew};
+        let crew =
+            |id, items: &[i64], counts: &[(usize, i64)], locks: Vec<Vec<Change>>, tasks: Vec<Vec<i64>>| {
+                Crew {
+                    id,
+                    items: items.to_vec(),
+                    counts: counts.to_vec(),
+                    locks,
+                    tasks,
+                    by: i64::try_from(id % 3).unwrap_or(0),
+                }
+            };
+        vec![
+            Stmt::Crewed(crew(
+                1,
+                &[0, 100],
+                &[(0, 8), (1, 5)],
+                vec![vec![Change::PopCount(0), Change::AddTwice(Arg::Times(1))], vec![Change::Pop]],
+                vec![vec![-1, 2, 0], vec![3]],
+            )),
+            Stmt::Crewed(crew(
+                2,
+                &[1],
+                &[(2, 4)],
+                vec![
+                    vec![Change::AddTwice(Arg::LengthLess), Change::Remove(0)],
+                    vec![Change::Append(Arg::Plus(-2)), Change::PopCount(2)],
+                ],
+                vec![vec![5, 6], vec![1, 1], vec![]],
+            )),
+            Stmt::Crewed(crew(
+                3,
+                &[],
+                &[],
+                vec![
+                    vec![Change::AddTwice(Arg::Length(2))],
+                    vec![Change::Bump(3, Arg::Times(3)), Change::SetCount(1, Arg::LengthLess)],
+                    vec![Change::Bump(-1, Arg::Literal(i64::MAX))],
+                ],
+                vec![vec![2, 4, 6], vec![0]],
+            )),
+            Stmt::Crewed(crew(
+                4,
+                &[2, -1, 7],
+                &[(0, 1), (1, 2), (2, 3)],
+                vec![
+                    vec![Change::SetCount(0, Arg::Times(2)), Change::Pop],
+                    vec![Change::AddTwice(Arg::Plus(1))],
+                ],
+                vec![vec![1, 2, 3, 4]],
+            )),
+        ]
+    }
+
+    /// `Crewed` statements check, and the evaluator prints what the oracle prints, and what a dev and
+    /// a release build print where they can be built here. Among them:
+    /// - #2516's program, a key popped and `add_twice` called with `(number * 1)` in one lock, whose
+    ///   task crashes on its second number;
+    /// - a crash in a later lock after an earlier one's `ref self` call with a computed argument;
+    /// - a place outside the list, an overflow, and a task with nothing to crash on;
+    /// - 20 crews picked at random.
+    ///
+    /// Run with `FENNEC_CHECK_PROOFS=1` or `FENNEC_AUDIT=1`, a false proof or a block left fails it.
+    #[test]
+    fn locked_crews_check_and_the_evaluator_agrees_with_the_oracle_and_the_builds() {
+        use super::ast::{Program, Stmt};
+        let mut body = fixed_crews();
+        let mut state: u64 = 2516;
+        let mut choose = |n: usize| {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
+        };
+        body.extend((5..25).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
+        let native = crate::llvm::ready().is_ok() && crate::llvm::threads_runtime_here();
+        let mut crashed = 0;
+        for stmt in body {
+            let program = Program { body: vec![stmt], threadless: false };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some((printed, true, _)) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+            };
+            crashed += usize::from(printed.contains("crashed"));
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
+            assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+            if !native {
+                continue;
+            }
+            for release in [false, true] {
+                let built = crate::llvm::built_and_run(&source, "programs-crewed", release);
+                let Ok((said, told, _)) = built else { unreachable!("{built:?}\n{source}") };
+                // Built checking proofs or for a heap audit, what either catches fails it too.
+                if let Some(wrong) = super::caught(if release { "release" } else { "dev" }, &told) {
+                    unreachable!("{wrong}\n{source}");
+                }
+                assert_eq!(String::from_utf8_lossy(&said), printed, "release {release}\n{source}");
+            }
+        }
+        assert!(crashed >= 10, "only {crashed} of 24 crews crashed");
     }
 
     /// A `Messaged` statement of every shape, flat and not, each case sent with texts short, long,

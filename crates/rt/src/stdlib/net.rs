@@ -3001,6 +3001,12 @@ fn send_to(handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
 
 /// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends,
 /// and a server being served stops taking connections, so the loop over it ends.
+/// For a test: `server.close()`, from a thread of its own.
+#[cfg(test)]
+pub(crate) fn close_for_a_test(handle: i64) {
+    close(handle);
+}
+
 fn close(handle: i64) {
     let closed = open(|open| open.remove(&handle));
     if let Some(Socket::Stream(stream)) = &closed {
@@ -3119,7 +3125,10 @@ pub(crate) fn take_listener(handle: i64) -> Option<(TcpListener, crate::embed::s
         Some(Socket::Listener(listening)) => {
             let tls = listening.tls.clone();
             let stop = *listening.stop.lock().unwrap_or_else(PoisonError::into_inner);
-            Some((listening.listener.try_clone().ok()?, crate::embed::serve::Listened { tls, stop }))
+            let listener = listening.listener.try_clone().ok()?;
+            // Listed as served while the open sockets are held, so a close finds it in one or the other.
+            let draining = crate::embed::serve::serving_soon(handle);
+            Some((listener, crate::embed::serve::Listened { tls, stop, draining }))
         }
         Some(other) => {
             open.insert(handle, other);

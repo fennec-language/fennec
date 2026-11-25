@@ -738,6 +738,58 @@ extern "C" fn heads_body(_env: i64, conn: i64, _thread: i64) -> i64 {
     }
 }
 
+/// A server closed at `gap`, before its serving has started, as a task can close it while `main`
+/// sets out to serve: serving it ends as a close does, where the close was lost and the loop over
+/// it never ended (#2549). A server not ended after 30 seconds is stopped, and the test fails.
+fn closed_at(gap: super::Gap) {
+    use super::super::{Tables, finish, start};
+    use crate::value::Value;
+    super::super::parallel::set_worker_setup(Box::new(|| {
+        let tables = Tables {
+            shapes: vec![std::rc::Rc::new(crate::packed::Element::Str)],
+            elements: vec![std::rc::Rc::new(crate::packed::Element::Int)],
+            ..Tables::default()
+        };
+        start(tables, crate::Inputs::default());
+    }));
+    start(Tables::default(), crate::Inputs::default());
+    let span = fennec_syntax::Span::default();
+    let listened = crate::stdlib::net::real_net("_listen", &[Value::Int(0)], None, span).unwrap();
+    let Value::Ok(server) = listened else { panic!("not listening: {listened:?}") };
+    let Value::Instance(instance) = server.as_ref() else { panic!("no server") };
+    let Some(Value::Int(server)) = instance.field("_handle") else { panic!("no handle") };
+    let server = *server;
+    super::AT_GAP.with_borrow_mut(|at| {
+        *at = Some((gap, Box::new(move || crate::stdlib::net::close_for_a_test(server))));
+    });
+    // Stopping every server is all that's left once a close was lost; another test's stop may end
+    // this one too, so it's judged by how long it served.
+    let (ended, ending) = std::sync::mpsc::channel::<()>();
+    let watching = std::thread::spawn(move || {
+        if ending.recv_timeout(Duration::from_secs(30)).is_err() {
+            super::stop_servers();
+        }
+    });
+    let started = std::time::Instant::now();
+    let answer = super::net_serve(server, echo_body, 0);
+    let took = started.elapsed();
+    let _ = ended.send(());
+    watching.join().unwrap();
+    assert!(took < Duration::from_secs(20), "a server closed before its serving started served for {took:?}");
+    assert_eq!(answer, 0);
+    finish();
+}
+
+#[test]
+fn a_server_closed_once_its_listener_is_taken_ends_as_it_starts() {
+    closed_at(super::Gap::Taken);
+}
+
+#[test]
+fn a_server_closed_after_its_workers_join_and_before_it_knows_its_stopper_ends() {
+    closed_at(super::Gap::Joined);
+}
+
 #[test]
 fn a_served_connection_reads_each_head_in_one_call_and_leaves_what_follows() {
     use super::super::{Tables, finish, start};
@@ -1163,8 +1215,13 @@ mod tls {
         };
         let pool = crate::embed::parallel::with_setup(1, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
         let Ok(tls) = server(CHAIN, KEY) else { panic!("the certificate didn't load") };
-        let served: Served =
-            serve(listening, pool, None, &echo(), (started, None, Listened { tls: Some(tls), stop: None }));
+        let served: Served = serve(
+            listening,
+            pool,
+            None,
+            &echo(),
+            (started, None, Listened { tls: Some(tls), stop: None, draining: Arc::default() }),
+        );
         if let Ok(Err(panic)) = ran.recv() {
             std::panic::resume_unwind(panic);
         }

@@ -24,9 +24,20 @@ pub(crate) const STUCK: Duration = Duration::from_secs(10);
 const WAITING_TIMES: u32 = 30;
 /// The most memory a worker may hold.
 pub(crate) const MOST_KILOBYTES: u64 = 4 * 1024 * 1024;
-/// How much CPU time building one program may take, the tools `fennec build` starts included.
-/// A generated program builds in a few seconds; one `opt` once ran 18 hours on one.
-pub(crate) const BUILD_STUCK: Duration = Duration::from_secs(120);
+/// How much CPU time building a program may take, the tools `fennec build` starts included:
+/// `BUILD_STUCK`, and `BUILD_STUCK_PER_LINE` for each of its lines. A short generated program
+/// builds in a few seconds; one `opt` once ran 18 hours on one.
+///
+/// A long one takes far more. One of 1,014 lines (fennec#2554) took 64 to 83 s of CPU time to build
+/// in Fennec's Linux VM, plain or under a thread sanitizer, and up to 181 s with the Mac around it
+/// busy: a VM's processor waiting for the Mac's counts as CPU time there. That's 0.18 s a line at
+/// worst, and the budget gives it more than twice that, so only a runaway build passes it, in
+/// minutes rather than hours.
+pub(crate) fn build_stuck(lines: usize) -> Duration {
+    BUILD_STUCK.saturating_add(BUILD_STUCK_PER_LINE.saturating_mul(u32::try_from(lines).unwrap_or(u32::MAX)))
+}
+const BUILD_STUCK: Duration = Duration::from_secs(120);
+const BUILD_STUCK_PER_LINE: Duration = Duration::from_millis(400);
 
 /// How a worker went wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

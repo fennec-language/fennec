@@ -17,7 +17,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::generate::printing_plainly;
-use crate::supervise::{BUILD_STUCK, MOST_KILOBYTES, STUCK, output_watched, watch};
+use crate::supervise::{MOST_KILOBYTES, STUCK, build_stuck, output_watched, watch};
 
 /// `fennec`: where `FENNEC` says, or beside this program. A test binary, which Cargo puts in a
 /// `deps` folder below the one it builds `fennec` in, finds it in that one. Looking only beside
@@ -150,11 +150,11 @@ pub(crate) const BROKEN: [&str; 6] =
     ["linking failed", "failed on", "couldn't run", "once trimmed", "panicked", "the runtime library `"];
 
 /// What `fennec build` gave, run with the tools it starts in a group of their own: one whose
-/// tools together take more than `BUILD_STUCK` CPU time or `MOST_KILOBYTES` of memory is
-/// stopped, every tool with it, and that's a failure of its own, since building a program
-/// should never take that.
-pub(crate) fn built_within(command: &mut Command) -> Result<std::process::Output, String> {
-    let (built, failure) = output_watched(command, BUILD_STUCK, MOST_KILOBYTES)?;
+/// tools together take more CPU time than `build_stuck` gives a program of `lines` lines, or more
+/// than `MOST_KILOBYTES` of memory, is stopped, every tool with it, and that's a failure of its
+/// own, since building a program should never take that.
+pub(crate) fn built_within(command: &mut Command, lines: usize) -> Result<std::process::Output, String> {
+    let (built, failure) = output_watched(command, build_stuck(lines), MOST_KILOBYTES)?;
     match failure {
         Some(failure) => Err(format!(
             "building it {failure}, `fennec build` and the tools it started together, and all were stopped:\n{}",
@@ -192,7 +192,7 @@ pub(crate) fn build_with(
         .env("FENNEC_HOME", work)
         .env("FENNEC_NO_CACHE", "1")
         .env("FENNEC_NO_DAEMON", "1");
-    let built = built_within(&mut command)?;
+    let built = built_within(&mut command, source.lines().count())?;
     if built.status.success() {
         return Ok(Some(executable));
     }
@@ -243,7 +243,7 @@ pub(crate) fn built_and_run_laid_out(
     } else {
         command.env_remove("FENNEC_BOXED_TYPES");
     }
-    let built = built_within(&mut command)?;
+    let built = built_within(&mut command, source.lines().count())?;
     if !built.status.success() {
         let how = match (release, boxed) {
             (true, _) => "with --release",

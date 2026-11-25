@@ -597,9 +597,21 @@ fn served(
     noted.lock().unwrap_or_else(PoisonError::into_inner).push(Asked { server, host, method, key, body });
     let split = split.min(answer.len());
     let (first, rest) = answer.split_at(split);
+    // Where the server closes once it's sent, its last bytes go with its close (see `corked`).
+    let last = |stream: &TcpStream| {
+        if script.ends != Ends::Stalls {
+            corked(stream);
+        }
+    };
     let wrote = match (script.sent, script.ends) {
-        (_, Ends::Cut) => stream.write_all(first),
-        (Sent::Whole, _) => stream.write_all(answer),
+        (_, Ends::Cut) => {
+            last(&stream);
+            stream.write_all(first)
+        }
+        (Sent::Whole, _) => {
+            last(&stream);
+            stream.write_all(answer)
+        }
         (Sent::Dripped, _) => {
             let (dripped, rest) = answer.split_at(DRIPPED.min(answer.len()));
             dripped
@@ -608,10 +620,14 @@ fn served(
                     std::thread::sleep(DRIP);
                     stream.write_all(&[*byte])
                 })
-                .and_then(|()| stream.write_all(rest))
+                .and_then(|()| {
+                    last(&stream);
+                    stream.write_all(rest)
+                })
         }
         (Sent::Split, _) => stream.write_all(first).and_then(|()| {
             std::thread::sleep(script.pause);
+            last(&stream);
             stream.write_all(rest)
         }),
     };
@@ -622,6 +638,23 @@ fn served(
     }
     let _ = stream.shutdown(Shutdown::Both);
 }
+
+/// Holds back what's written to `stream` until it's shut (`TCP_CORK`), so its last bytes and its
+/// close go out together. Otherwise a client could read a whole answer and close before the server
+/// did, which happens under load. The side that closes first waits out `TIME_WAIT`, and a client's
+/// connections each hold a port of their own while they wait: on Linux, `http-client-splits`'s
+/// clients closed first on a fifth of their connections, about 150 to one server, and with the
+/// kept tests' other inputs held more than 3,000 ports at once (CI's time-wait check, main at
+/// c4dee35f3). A server that closes first waits on the one port it listens on.
+///
+/// Linux only, where the check failed: elsewhere a client may still now and then close first.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn corked(stream: &TcpStream) {
+    let _ = socket2::SockRef::from(stream).set_tcp_cork(true);
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const fn corked(_stream: &TcpStream) {}
 
 /// What's wrong if the client took longer than its timeout lets it for its `asks`, however each
 /// ended. A timeout is a promise on the clock, so this is checked on the clock, with room for a

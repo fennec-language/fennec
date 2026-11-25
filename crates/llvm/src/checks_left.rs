@@ -241,7 +241,22 @@ mod tests {
         let (units, _, _) = crate::emit(&lowered(body)?)?;
         let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
         assert_eq!(text.matches("call i64 @llvm.umax.i64(").count(), 1, "{text}");
-        assert_eq!(text.matches(", label %ranged").count(), 1, "{text}");
+        // The loop over the bucket is written twice, and its way in picks by the check.
+        let picks = text
+            .lines()
+            .filter(|line| {
+                line.rsplit_once(", label %bb").is_some_and(|(first, second)| {
+                    first.rsplit_once("label %bb").is_some_and(|(_, copy)| copy.strip_suffix('v') == second.split(',').next())
+                })
+            })
+            .count();
+        assert_eq!(picks, 1, "{text}");
+        let copied = text.lines().filter(|line| line.starts_with("bb") && line.ends_with("v:")).count();
+        assert!(copied > 0, "{text}");
+        // The copy with no checks has `xs[other]` checked, and not `order[at]` (`xs[ball]` is
+        // known inside already): one more out-of-range call than the reads that keep checks.
+        let reads = kept(body)?.iter().filter(|(what, _)| *what == CheckKind::Bounds).count();
+        assert_eq!(text.matches("call void @fennec_out_of_range(").count(), reads + 1, "{text}");
         let changed = body.replace("starts: list[int]", "ref starts: list[int]").replace("    mut touched = 0\n", "    mut touched = 0\n    starts[0] = 0\n");
         let (units, _, _) = crate::emit(&lowered(&changed)?)?;
         let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;

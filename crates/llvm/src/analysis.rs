@@ -166,6 +166,9 @@ pub(crate) struct Analysis {
     /// The checks of item ranges those reads lean on, each made at the end of the block going into
     /// the outermost loop the reads are in.
     pub(crate) range_scans: Vec<RangeScan>,
+    /// The loops written twice for those reads: once checking them as today, and once, chosen on
+    /// the way in when the check held, reading with no check (`find_versioned_loops`).
+    pub(crate) versioned: Vec<Versioned>,
     /// The int parameters every call gives a known range, with it (see `param_ranges`). A build
     /// that checks proofs checks each on the way in.
     pub(crate) param_ranges: Vec<(usize, Range)>,
@@ -227,6 +230,7 @@ impl Analysis {
             guarded_reads,
             ranged_reads,
             range_scans,
+            versioned,
             param_ranges,
         } = self;
         hash_set(safe, state);
@@ -278,6 +282,7 @@ impl Analysis {
         hash_set(guarded_reads, state);
         hash_map(ranged_reads, state);
         range_scans.hash(state);
+        versioned.hash(state);
         param_ranges.hash(state);
     }
 }
@@ -1253,6 +1258,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         None
     };
     let mut found: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+    let mut counted_by: HashMap<(usize, usize), fennec_ir::Count> = HashMap::new();
     for count in function.counts.iter().filter(|count| !count.down) {
         let Some(bounds) = item_of(count.stop.0) else { continue };
         // The count's first value, the one write of it that isn't its step.
@@ -1291,6 +1297,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
                     && known.steady_lengths.contains(&read.0)
                 {
                     found.insert((at, index), (bounds, read.0));
+                    counted_by.insert((at, index), *count);
                 }
             }
         }
@@ -1351,8 +1358,87 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         });
         reads.insert((at, index), id);
     }
+    known.versioned = find_versioned_loops(function, &reads, &counted_by, &ways_in);
     known.ranged_reads = reads;
     known.range_scans = scans;
+}
+
+/// The most blocks, and instructions, a loop written twice may have.
+const MOST_VERSIONED_BLOCKS: usize = 48;
+const MOST_VERSIONED_INSTS: usize = 400;
+
+/// The loops whose count indexes reads `find_ranged_reads` found, each to be written twice: as
+/// today, and with those reads unchecked, the way in choosing by the flag of their check once a
+/// time in rather than at every read. A loop is its start and every block that goes back to it
+/// without passing through it; it needs one block going into it, by a plain jump, and to be small,
+/// since it's code written twice. Only loops whose reads all lean on one check.
+fn find_versioned_loops(
+    function: &Function,
+    reads: &HashMap<(usize, usize), usize>,
+    counted_by: &HashMap<(usize, usize), fennec_ir::Count>,
+    ways_in: &HashMap<usize, Vec<usize>>,
+) -> Vec<Versioned> {
+    let mut by_count: BTreeMap<usize, (fennec_ir::Count, BTreeSet<usize>)> = BTreeMap::new();
+    for (place, id) in reads {
+        let Some(count) = counted_by.get(place) else { continue };
+        by_count.entry(count.count.0).or_insert_with(|| (*count, BTreeSet::new())).1.insert(*id);
+    }
+    let mut found: Vec<Versioned> = Vec::new();
+    for (count, scans) in by_count.into_values() {
+        let [scan] = scans.into_iter().collect::<Vec<_>>()[..] else { continue };
+        let held = Operand::Local(count.count);
+        let header = function.blocks.iter().position(|block| {
+            let Terminator::Branch { cond: Operand::Local(cond), .. } = &block.end else { return false };
+            block.insts.iter().any(|inst| {
+                matches!(&inst.kind, InstKind::Binary { dest, op: BinOp::Lt, lhs, rhs: Operand::Local(stop) }
+                    if dest == cond && *lhs == held && *stop == count.stop)
+            })
+        });
+        let Some(header) = header else { continue };
+        let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|block| &block.end) else {
+            continue;
+        };
+        // The blocks reached from the body that go back to the start without passing through it.
+        let reached = loop_blocks(function, header, then.0);
+        let into = ways_in.get(&header).map_or(&[][..], Vec::as_slice);
+        let mut blocks: BTreeSet<usize> = BTreeSet::from([header]);
+        let mut waiting: Vec<usize> = into.iter().copied().filter(|from| reached.contains(from)).collect();
+        while let Some(at) = waiting.pop() {
+            if blocks.insert(at) {
+                waiting.extend(ways_in.get(&at).map_or(&[][..], Vec::as_slice).iter().copied().filter(|from| reached.contains(from)));
+            }
+        }
+        let outside: Vec<usize> = into.iter().copied().filter(|from| !blocks.contains(from)).collect();
+        let [before] = outside[..] else { continue };
+        let plain_way_in = function
+            .blocks
+            .get(before)
+            .is_some_and(|block| matches!(block.end, Terminator::Jump(to) if to.0 == header));
+        let insts: usize = blocks.iter().filter_map(|at| function.blocks.get(*at)).map(|block| block.insts.len()).sum();
+        // Every read it leans on is inside, and nothing inside goes in from elsewhere.
+        let closed = blocks.iter().all(|at| {
+            *at == header || ways_in.get(at).map_or(&[][..], Vec::as_slice).iter().all(|from| blocks.contains(from))
+        });
+        if plain_way_in
+            && closed
+            && blocks.len() <= MOST_VERSIONED_BLOCKS
+            && insts <= MOST_VERSIONED_INSTS
+            && !found.iter().any(|other| other.blocks.iter().any(|at| blocks.contains(at)))
+        {
+            found.push(Versioned { header, before, blocks, scan });
+        }
+    }
+    found
+}
+
+/// A loop written twice (`find_versioned_loops`): its start, the one block going into it, its
+/// blocks, and the check of item ranges whose flag picks the copy with no checks on its reads.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Versioned {
+    pub(crate) header: usize,
+    pub(crate) before: usize,
+    pub(crate) blocks: BTreeSet<usize>,
+    pub(crate) scan: usize,
 }
 
 /// A check, at the end of the block `before`, that every item of the list `bounds` is from 0 to
@@ -4154,6 +4240,7 @@ impl Analysis {
             guarded_reads: HashSet::new(),
             ranged_reads: HashMap::new(),
             range_scans: Vec::new(),
+            versioned: Vec::new(),
             param_ranges: Vec::new(),
         }
     }
@@ -4178,6 +4265,11 @@ impl Analysis {
 
     /// The list whose items bound the index of the read at this block and place in it, and the
     /// list read, if the read is inside wherever the function's check of those items held.
+    /// The loop written twice that a block is in, if it's in one.
+    pub(crate) fn versioned_at(&self, block: usize) -> Option<&Versioned> {
+        self.versioned.iter().find(|loop_| loop_.blocks.contains(&block))
+    }
+
     pub(crate) fn ranged_read(&self, at: (usize, usize)) -> Option<(usize, RangeScan)> {
         let id = *self.ranged_reads.get(&at)?;
         Some((id, *self.range_scans.get(id)?))
@@ -6012,9 +6104,11 @@ fennec_syntax::codec_fields!(Analysis {
     guarded_reads,
     ranged_reads,
     range_scans,
+    versioned,
     param_ranges,
     slice_ranges,
 });
+fennec_syntax::codec_fields!(Versioned { header, before, blocks, scan });
 fennec_syntax::codec_fields!(RangeScan { bounds, read, before, count, stop });
 fennec_syntax::codec_fields!(AloneInLoop { entry, blocks, locals });
 fennec_syntax::codec_fields!(Reserved { list, limit, copied_from });

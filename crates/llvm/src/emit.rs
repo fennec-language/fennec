@@ -1086,6 +1086,7 @@ impl<'p> Module<'_, 'p> {
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             ranged_flags: HashMap::new(),
+            again: false,
             pair_slots: HashMap::new(),
             taken_places: HashMap::new(),
             walks: HashMap::new(),
@@ -1199,6 +1200,11 @@ enum Places {
     clippy::struct_excessive_bools,
     reason = "each says something of its own about the function being written"
 )]
+/// What's known at the start of a block, kept from its first copy for the second of a loop written
+/// twice: the lists alone in it, the locals holding, the fields seen to, the items known inside,
+/// and the dict entries found.
+type BlockStart = (HashSet<String>, BTreeSet<usize>, Vec<FieldPath>, Vec<FieldPath>, Vec<(LocalId, Operand, String)>);
+
 pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) module: &'e mut Module<'w, 'p>,
     pub(crate) function: &'p Function,
@@ -1330,6 +1336,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// For each check of item ranges (`range_scans`), the flag saying it held when last made
     /// (`check_item_ranges`): clear until it's made.
     pub(crate) ranged_flags: HashMap<usize, String>,
+    /// Whether the blocks being written are the second copy of a loop written twice
+    /// (`find_versioned_loops`), whose reads the check of item ranges covers take no check.
+    pub(crate) again: bool,
     /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
     pub(crate) pair_slots: HashMap<usize, String>,
     /// The slot holding where each item taken out of a `Table` to be put back is, by the local it
@@ -1615,9 +1624,24 @@ impl Emit<'_, '_, '_> {
         let lengths: (&dyn Callees, Tracked) = (&lengthened, Tracked::Lengths);
         // Each block after every one leading to it, but for loops, so what's known carries on.
         let mut done = HashSet::new();
-        for at in written_order(function) {
+        // Every block, then the blocks of each loop written twice again, as the second copy
+        // (`find_versioned_loops`), each starting from what was known when its first was written.
+        let order = written_order(function);
+        let mut passes: Vec<(usize, bool)> = order.iter().map(|at| (*at, false)).collect();
+        passes.extend(order.iter().filter(|at| self.known.versioned_at(**at).is_some()).map(|at| (*at, true)));
+        let mut started: HashMap<usize, BlockStart> = HashMap::new();
+        for (at, again) in passes {
             let Some(block) = function.blocks.get(at) else { continue };
-            self.start_block(&format!("bb{at}"));
+            self.again = again;
+            let label = self.block_label(at);
+            self.start_block(&label);
+            if again {
+                let start = started.remove(&at).ok_or("a loop written twice with no first copy")?;
+                (self.alone_in_block, self.holding_now, self.alone_fields, self.inside_items, self.found_entries) =
+                    start;
+                self.filling.clear();
+                self.write_kept_lengths(at);
+            } else {
             self.alone_in_block = self.alone_by_block.get(&at).cloned().unwrap_or_default();
             self.holding_now = self.holding.coming_in(at);
             self.filling.clear();
@@ -1638,6 +1662,19 @@ impl Emit<'_, '_, '_> {
                 }
                 _ => Vec::new(),
             };
+            if self.known.versioned_at(at).is_some() {
+                started.insert(
+                    at,
+                    (
+                        self.alone_in_block.clone(),
+                        self.holding_now.clone(),
+                        self.alone_fields.clone(),
+                        self.inside_items.clone(),
+                        self.found_entries.clone(),
+                    ),
+                );
+            }
+            }
             let mut appended = false;
             for (index, inst) in block.insts.iter().enumerate() {
                 self.at = (at, index);
@@ -1698,10 +1735,16 @@ impl Emit<'_, '_, '_> {
                 step(self, &self.holding, (at, index), &inst.kind, &mut now);
                 self.holding_now = now;
             }
-            left_with.insert(at, std::mem::take(&mut self.found_entries));
-            alone_left.insert(at, std::mem::take(&mut self.alone_fields));
-            inside_left.insert(at, std::mem::take(&mut self.inside_items));
-            done.insert(at);
+            if again {
+                self.found_entries.clear();
+                self.alone_fields.clear();
+                self.inside_items.clear();
+            } else {
+                left_with.insert(at, std::mem::take(&mut self.found_entries));
+                alone_left.insert(at, std::mem::take(&mut self.alone_fields));
+                inside_left.insert(at, std::mem::take(&mut self.inside_items));
+                done.insert(at);
+            }
             for reserved in self.reserved_at(at) {
                 self.reserve(LocalId(reserved.list), &reserved.limit)?;
             }
@@ -1713,9 +1756,12 @@ impl Emit<'_, '_, '_> {
             for local in self.alone_before_loops.get(&at).cloned().unwrap_or_default() {
                 self.alone_for_loop(local)?;
             }
-            self.check_item_ranges(at)?;
+            if !again {
+                self.check_item_ranges(at)?;
+            }
             self.terminator(&block.end)?;
         }
+        self.again = false;
         // What follows runs on a crash from anywhere in the function, in no loop.
         self.alone_in_block.clear();
         // A crash inside a `lock ... as ref` block puts back what it changed before leaving, and a
@@ -4738,8 +4784,29 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// A block's label: its second copy's, while a loop written twice is written again.
+    pub(crate) fn block_label(&self, at: usize) -> String {
+        if self.again && self.known.versioned_at(at).is_some() { format!("bb{at}v") } else { format!("bb{at}") }
+    }
+
     fn terminator(&mut self, end: &Terminator) -> Result<(), String> {
         match end {
+            // The way into a loop written twice takes the copy with no checks on its reads where
+            // their check held (`find_versioned_loops`).
+            Terminator::Jump(target)
+                if !self.again
+                    && let Some(scan) = self
+                        .known
+                        .versioned
+                        .iter()
+                        .find(|loop_| loop_.header == target.0 && loop_.before == self.at.0)
+                        .map(|loop_| loop_.scan) =>
+            {
+                let flag = self.ranged_flags.get(&scan).cloned().ok_or("a loop written twice with no flag")?;
+                let held = self.temp();
+                self.line(&format!("{held} = load i1, ptr {flag}"));
+                self.line(&format!("br i1 {held}, label %bb{}v, label %bb{}, !prof !8", target.0, target.0));
+            }
             Terminator::Jump(target) => {
                 let back = self.back_edges.contains(&(self.at.0, target.0))
                     && !counted_header(self.function, target.0);
@@ -4747,14 +4814,17 @@ impl Emit<'_, '_, '_> {
                     let id = FIRST_LOOP + self.module.loops;
                     self.module.loops += 1;
                     self.declare(&format!("!{id} = distinct !{{!{id}, !13}}"));
-                    self.line(&format!("br label %bb{}, !llvm.loop !{id}", target.0));
+                    let label = self.block_label(target.0);
+                    self.line(&format!("br label %{label}, !llvm.loop !{id}"));
                 } else {
-                    self.line(&format!("br label %bb{}", target.0));
+                    let label = self.block_label(target.0);
+                    self.line(&format!("br label %{label}"));
                 }
             }
             Terminator::Branch { cond, then, otherwise } => {
                 let (cond, _) = self.operand(cond)?;
-                self.line(&format!("br i1 {cond}, label %bb{}, label %bb{}", then.0, otherwise.0));
+                let (then, otherwise) = (self.block_label(then.0), self.block_label(otherwise.0));
+                self.line(&format!("br i1 {cond}, label %{then}, label %{otherwise}"));
             }
             Terminator::Return(value) => self.give_back(value.as_ref())?,
             Terminator::Unreachable => self.line("unreachable"),

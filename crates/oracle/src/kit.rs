@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use fennec_syntax::{Expr, ExprKind, FnDef, Import, Item, Module, Pattern, Sources, TypeExpr, visit};
+use fennec_syntax::{Blob, Expr, ExprKind, FnDef, Import, Item, Module, Pattern, Sources, TypeExpr, visit};
 
 use crate::load::Refused;
 
@@ -244,7 +244,8 @@ fn folder_of(file: &Path) -> PathBuf {
 
 /// Puts each `embed_file("path")` a file calls in as the bytes it gives, as the compiler reads
 /// them as it builds the program: the file at `path` from the folder of the file that calls it,
-/// which can't be outside `root`. `embed_folder` isn't modeled.
+/// which can't be outside `root`. Each `embed_folder("path")` is put in as the files under that
+/// folder, which the evaluator makes an `EmbeddedFolder` of.
 fn embed_files(module: &mut Module, file: &Path, root: &Path) -> Result<(), Refused> {
     let folder = folder_of(file);
     let root = root.canonicalize().map_err(|err| Refused::Invalid(format!("the kit's folder: {err}")))?;
@@ -253,7 +254,19 @@ fn embed_files(module: &mut Module, file: &Path, root: &Path) -> Result<(), Refu
         let ExprKind::Call { callee, args } = &expr.kind else { return };
         let ExprKind::Name(name) = &callee.kind else { return };
         if name == "embed_folder" {
-            refused.get_or_insert_with(|| Refused::Unsupported("`embed_folder`".to_owned()));
+            let [arg] = args.as_slice() else { return };
+            let ExprKind::Str(path) = &arg.value.kind else {
+                refused.get_or_insert_with(|| {
+                    Refused::Unsupported("`embed_folder` of a path not written out".to_owned())
+                });
+                return;
+            };
+            match folder_files(&folder.join(path), &root) {
+                Ok(files) => expr.kind = ExprKind::Folder(files),
+                Err(why) => {
+                    refused.get_or_insert(why);
+                }
+            }
             return;
         }
         if name != "embed_file" {
@@ -284,6 +297,55 @@ fn embed_files(module: &mut Module, file: &Path, root: &Path) -> Result<(), Refu
         };
     });
     refused.map_or(Ok(()), Err)
+}
+
+/// The files under `folder`, which can't be outside `root`, by their paths from it written with
+/// `/`, in sorted path order. A file or folder whose name starts with `.` is left out, as is one
+/// whose name isn't UTF-8.
+fn folder_files(folder: &Path, root: &Path) -> Result<Vec<(String, Blob)>, Refused> {
+    let real = folder.canonicalize().ok().filter(|real| real.starts_with(root) && real.is_dir());
+    let Some(real) = real else {
+        let shown = folder.display();
+        return Err(Refused::Invalid(format!("`embed_folder` finds no folder {shown} in the kit")));
+    };
+    let mut files = Vec::new();
+    gather(&real, "", root, &mut HashSet::new(), &mut files)?;
+    files.sort_by(|first, second| first.0.cmp(&second.0));
+    Ok(files)
+}
+
+/// Adds the files under `real` to `files`, each by `prefix` and its path from `real`. `seen` holds
+/// the folders read so far, as a link can lead back to one.
+fn gather(
+    real: &Path,
+    prefix: &str,
+    root: &Path,
+    seen: &mut HashSet<PathBuf>,
+    files: &mut Vec<(String, Blob)>,
+) -> Result<(), Refused> {
+    let shown = real.display();
+    let unreadable = |err: std::io::Error| Refused::Invalid(format!("`embed_folder` reading {shown}: {err}"));
+    if !seen.insert(real.to_path_buf()) {
+        return Err(Refused::Invalid(format!("`embed_folder` reaches {shown} again through a link")));
+    }
+    for entry in std::fs::read_dir(real).map_err(unreadable)? {
+        let Ok(name) = entry.map_err(unreadable)?.file_name().into_string() else { continue };
+        if name.starts_with('.') {
+            continue;
+        }
+        let inner = real.join(&name).canonicalize().map_err(unreadable)?;
+        if !inner.starts_with(root) {
+            let outside = inner.display();
+            return Err(Refused::Invalid(format!("`embed_folder` reaches {outside}, outside the kit")));
+        }
+        if inner.is_dir() {
+            gather(&inner, &format!("{prefix}{name}/"), root, seen, files)?;
+        } else {
+            let data = std::fs::read(&inner).map_err(unreadable)?;
+            files.push((format!("{prefix}{name}"), Blob(data.into())));
+        }
+    }
+    Ok(())
 }
 
 /// The names a file defines at the top level.

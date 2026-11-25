@@ -1,0 +1,5 @@
+{"a": Bag(items=[1, 1]), "b": Bag(items=[])}
+[Bag(items=[7, 1]), Bag(items=[0])]
+refused 2
+[Bag(items=[7, 1]), Bag(items=[0])]
+3

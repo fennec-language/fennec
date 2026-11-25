@@ -29,8 +29,9 @@ jobs:
     with:
       platforms: macos
     # What `ci.yml`'s jobs ask for, which a call has to allow even for one that's skipped: only
-    # `prune-caches` writes, and it never runs here.
+    # `prune-caches` writes, and it never runs here. `CI passed` reads checks' notes.
     permissions:
       actions: write
+      checks: read
       contents: read
       pull-requests: read

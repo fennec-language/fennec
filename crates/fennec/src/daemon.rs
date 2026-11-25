@@ -829,7 +829,12 @@ mod unix {
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         state.sessions = state.sessions.saturating_sub(1);
         state.worked();
+        let idle = state.sessions == 0;
         drop(state);
+        // With no build under way, what's held is what's kept, so it's held to the budget.
+        if idle {
+            crate::kept::fit_budget();
+        }
         // A build that carried over what the kit's last check found is checked all again, off the
         // build's way, once it's answered.
         if crate::kept::pending() {

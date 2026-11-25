@@ -1,46 +1,47 @@
 #!/usr/bin/env bash
-# A release's dry run: installs a toolchain archive the release workflow built through the launcher,
-# into a Fennec home with nothing in it, and then builds, runs and tests every example, every
-# example kit and a kit with a dependency, from that install alone. Nothing it runs reaches this
+# A release's dry run: installs the launcher's archive and the toolchain's archive the release
+# workflow built, through the launcher's own code, into a Fennec home with nothing in it. Then,
+# through that launcher alone, it makes a kit with `fennec new`, and builds, runs and tests it, every
+# example, every example kit and a kit with a dependency. Nothing it runs reaches this
 # checkout, Rust's toolchain, or anything set up for development: a step that needs them fails
 # here rather than on a person's machine.
 #
-#   .github/scripts/release-dry-run.sh fennec-v0.4.2-aarch64-apple-darwin.tar.gz [target]
+#   .github/scripts/release-dry-run.sh fennec-v0.4.2-aarch64-apple-darwin.tar.gz #     fennec-launcher-v0.4.2-aarch64-apple-darwin.tar.gz [target]
 #
-# The launcher installs the archive for the platform it's built for, so it's built for the
-# archive's own: on Windows that's `x86_64-pc-windows-gnullvm`, as the toolchain is, not the MSVC
-# target Rust builds for there by default.
+# The dry run's installer installs the archives for the platform it's built for, so it's built for
+# the archives' own: on Windows that's `x86_64-pc-windows-gnullvm`, as the toolchain is, not the
+# MSVC target Rust builds for there by default.
 #
-# Nobody has signed the archive, so `crates/launcher/examples/dry_run.rs` signs it with a key made
-# for the run, which only that run trusts, and installs it. From then on it's the launcher people
-# install, run as `fennec`, which trusts the release keys alone and finds the toolchain installed.
+# Nobody has signed the archives, so `crates/launcher/examples/dry_run.rs` signs them with keys
+# made for the run, which only that run trusts, lays them out as the bucket is, and installs them:
+# the launcher as `fennec self update` replaces one, and the toolchain as a kit's first run installs
+# it. From then on it's the launcher from the archive, run as `fennec`, which trusts the release
+# keys alone and finds the toolchain installed.
 set -euo pipefail
-archive=$(cd "$(dirname "${1:?give the archive to try}")" && pwd)/$(basename "$1")
+archive=$(cd "$(dirname "${1:?give the toolchain archive to try}")" && pwd)/$(basename "$1")
+launcher=$(cd "$(dirname "${2:?and the launcher archive}")" && pwd)/$(basename "$2")
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 exe=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe=".exe" ;; esac
 
-target=${2:-}
-# Built while the checkout and Rust are still in reach: the launcher, and the dry run's installer.
-(cd "$repo" && cargo build --locked --quiet --release -p fennec-launcher --bins --example dry_run ${target:+--target "$target"})
+target=${3:-}
+# Built while the checkout and Rust are still in reach: the dry run's installer. The launcher is
+# the archive's.
+(cd "$repo" && cargo build --locked --quiet --release -p fennec-launcher --example dry_run ${target:+--target "$target"})
 built="$repo/target/${target:+$target/}release"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # The launcher's folder as bash's own `PATH` takes it, which is `/c/...` on Windows.
-bin="$work/bin"
+bin="$work/home/bin"
 # On Windows the programs are Windows' own, which read `C:/...` and not Git Bash's `/tmp/...`.
 if [ -n "$exe" ]; then
-  bin=$(cygpath -u "$work/bin")
+  bin=$(cygpath -u "$work/home/bin")
   work=$(cygpath -m "$work")
   archive=$(cygpath -m "$archive")
+  launcher=$(cygpath -m "$launcher")
 fi
 home="$work/home"
-mkdir -p "$home" "$work/bin" "$work/dist"
-cp "$built/fennec-launcher$exe" "$work/bin/fennec$exe"
-# What does the rest of its work, and what fetches over the network for it, go beside it, as an
-# install puts them.
-cp "$built/fennec-setup$exe" "$work/bin/fennec-setup$exe"
-cp "$built/fennec-fetch$exe" "$work/bin/fennec-fetch$exe"
+mkdir -p "$home" "$work/dist"
 cp "$built/examples/dry_run$exe" "$work/dry_run$exe"
 cp -R "$repo/examples" "$work/examples"
 within="$repo/.github/scripts/within.sh"
@@ -83,10 +84,13 @@ run() {
 step() { echo "--- $*" >&2; }
 
 cd "$work"
-step "install $(basename "$archive") into an empty home"
-installed=$(run "./dry_run$exe" "$archive" "$work/dist" "$home")
+step "install $(basename "$launcher") and $(basename "$archive") into an empty home"
+installed=$(run "./dry_run$exe" "$archive" "$launcher" "$work/dist" "$home")
 version=$("$installed" --version | awk '{print $NF}')
 step "installed Fennec $version at $installed"
+for program in fennec fennec-setup fennec-fetch; do
+  [ -x "$home/bin/$program$exe" ] || { echo "::error::the launcher's archive put no $program in bin"; exit 1; }
+done
 # What isn't in a kit runs with the version set for scripts.
 run fennec default "$version"
 
@@ -105,6 +109,24 @@ check() {
     failed=1
   fi
 }
+
+step "the launcher from the archive trusts only the release keys"
+if run fennec self update > "$work/said.txt" 2>&1; then
+  echo "::error::fennec self update ran with no release keys to check a launcher against"
+  failed=1
+elif ! grep -q "trusts 0 release keys" "$work/said.txt"; then
+  echo "::error::fennec self update refused for another reason:"
+  cat "$work/said.txt"
+  failed=1
+fi
+
+step "a new kit, made, run and tested"
+check "fennec new" "" fennec new fresh
+printf 'Hello from fresh!\n' > fresh.out
+check "fennec run in the new kit" fresh.out sh -c "cd fresh && fennec run"
+check "fennec test in the new kit" "" sh -c "cd fresh && fennec test"
+grep -qx "fennec = \"$version\"" fresh/kit.toml || { echo "::error::the new kit doesn't ask for $version"; failed=1; }
+grep -q "^toolchain $version " fresh/kit.lock || { echo "::error::the new kit's lock doesn't pin $version"; failed=1; }
 
 step "every example"
 for program in examples/*.fen; do

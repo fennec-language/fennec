@@ -201,6 +201,38 @@ fn build_on_threads(dir: &Path, source: &str, name: &str) -> std::io::Result<std
     Ok(executable)
 }
 
+/// Sums over `parallel` whose items count loops of their own (#2499): an inner `sum`, a filtered
+/// one, and a comprehension. Each range starts its partial from its own first item. It once took
+/// the inner loop's count for its position, so it never started the partial and added into
+/// whatever was on the stack. Every turn prints the same, and every sum is worked out by hand:
+/// 5,000 items are split into many ranges.
+const INNER_LOOPS: &str = "\
+def main(stdout: Stdout):
+    xs = [n for n in range(5000)]
+    for turn in range(3):
+        stdout.print(turn, sum(sum(y for y in [1, 2]) for x in parallel(xs)))
+        stdout.print(sum(float(x) * sum(float(y) * 1.5 for y in parallel([1, 2]) if y % 2 == 0) for x in parallel(xs)))
+        stdout.print(sum(len([y for y in range(x % 3)]) for x in parallel(xs)))
+";
+
+#[test]
+fn a_sum_whose_items_count_loops_of_their_own_adds_every_item_natively() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-inner-loops-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let executable = build_on_threads(&dir, INNER_LOOPS, "inner")?;
+    let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    let turn = |turn: u32| format!("{turn} 15000\n37492500.0\n4999\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), format!("{}{}{}", turn(0), turn(1), turn(2)));
+    Ok(())
+}
+
 #[test]
 fn ranges_run_on_the_runtime_s_workers_each_with_its_own_stack_limit_and_failure_flag() -> std::io::Result<()>
 {
@@ -1119,6 +1151,59 @@ fn locals_changed_under_a_write_lock_are_let_go_of_as_outside_it() -> std::io::R
         assert_eq!(ran.status.code(), Some(0), "on {threads} threads: {said}");
         assert_eq!(printed, wanted, "on {threads} threads");
         assert!(said.contains(" live 0"), "on {threads} threads it left blocks live: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task that crashes under a write lock, after an earlier lock called a `ref self` method on the
+/// shared value with a computed argument, leaves the value as that lock left it (#2516). The
+/// computed argument made the method's place wait for the call, and something after the call took
+/// it out a second time, leaving its slot saying it was out: the crash wrote the emptied local
+/// over the value, whose next lock found its list and dict gone and crashed the process. The same
+/// program with a plain argument is beside it, and one with two such calls in the lock.
+/// `ThreadSanitizer` runs all three.
+#[test]
+fn a_crash_under_a_lock_after_a_ref_call_with_a_computed_argument_keeps_the_value() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-lock-crash-ref-call-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    // The same with two calls in the lock, each of which takes the place out for itself.
+    let programs = [
+        (
+            "lock_crash_after_a_ref_call_computed",
+            include_str!("fixtures/workers/lock_crash_after_a_ref_call_computed.fen"),
+            include_str!("fixtures/workers/lock_crash_after_a_ref_call_computed.out"),
+        ),
+        (
+            "lock_crash_after_a_ref_call_plain",
+            include_str!("fixtures/workers/lock_crash_after_a_ref_call_plain.fen"),
+            include_str!("fixtures/workers/lock_crash_after_a_ref_call_plain.out"),
+        ),
+        (
+            "lock_crash_after_two_ref_calls",
+            include_str!("fixtures/workers/lock_crash_after_two_ref_calls.fen"),
+            include_str!("fixtures/workers/lock_crash_after_two_ref_calls.out"),
+        ),
+    ];
+    for (name, source, wanted) in programs {
+        let built = build_on_threads(&dir, source, name)?;
+        for threads in ["1", "4", "8"] {
+            let ran = Command::new(&built)
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(ran.status.code(), Some(0), "{name} on {threads} threads: {said}");
+            assert_eq!(printed, wanted, "{name} on {threads} threads");
+            assert!(said.contains("the dict has no key \"a\""), "{name} on {threads} threads: {said}");
+            assert!(said.contains(" live 0"), "{name} on {threads} threads left blocks live: {said}");
+        }
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

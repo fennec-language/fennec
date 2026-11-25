@@ -1,6 +1,6 @@
 def main(stdout: Stdout):
     mut numbers = list[int]()
     for text in ["7", "seven", "-2"]:
-        number = int(text) except InvalidValue(): 0
+        number = int.parse(text) except InvalidValue(): 0
         numbers.append(number)
     stdout.print(numbers[0], numbers[1], numbers[2])

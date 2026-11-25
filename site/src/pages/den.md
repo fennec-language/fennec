@@ -28,7 +28,7 @@ Accounts use passkeys only, with no passwords and no recovery by email.
 
 ## Updates and private code
 
-Nothing about a dependency changes without `fennec update`, which shows what changed and asks you before a dependency gets a new capability. Private kits come from git, pinned to an exact commit, or from a local path. A kit that depends on them can't be published to the Den.
+Nothing about a dependency changes without `fennec update`, which shows what changed. A dependency gets a new capability only through `fennec update --accept`, which lists each one and writes it into `kit.lock` for review. Private kits come from git, pinned to an exact commit, or from a local path. A kit that depends on them can't be published to the Den.
 
 ## Known gap
 

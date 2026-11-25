@@ -8,7 +8,7 @@ error RangeError:
     TooBig(value: int, limit: int)
 
 def parse(text: str) -> int fails ParseError:
-    return int(text) except InvalidValue(): fail .NotANumber(text)
+    return int.parse(text) except InvalidValue(): fail .NotANumber(text)
 
 def in_range(value: int, limit: int) -> int fails RangeError:
     if value > limit: fail .TooBig(value, limit)

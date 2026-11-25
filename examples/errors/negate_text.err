@@ -4,4 +4,4 @@ error: can't negate a str
 3 |     stdout.print(-name)
   |                  ^^^^^
   |
-  = help: only a number is negated, as `-count`: convert it first, as `-int(text)`
+  = help: only a number is negated, as `-count`: convert it first, as `-int.parse(text)?`

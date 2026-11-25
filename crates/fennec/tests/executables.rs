@@ -579,21 +579,37 @@ pub(crate) fn runtime_beside_fennec() -> bool {
 /// `parallel` when `FENNEC_THREADS_RUNTIME=1` asks, next to `fennec` as
 /// `libfennec_runtime_threads.a`. It's built in a folder of its own, since Cargo puts the same
 /// file name in place for both, once a run as `runtime_built` does.
+///
+/// Where `FENNEC_EXPECT_LLVM` is set, one that doesn't build fails the test, rather than letting
+/// it pass by returning early (fennec#2557).
 pub(crate) fn threads_runtime_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
-    *BUILT.get_or_init(|| runtime_variant_built("threads", "threads", "fennec_runtime_threads"))
+    let built = *BUILT.get_or_init(|| runtime_variant_built("threads", "threads", "fennec_runtime_threads"));
+    assert!(
+        built || !crate::llvm::llvm_expected(),
+        "FENNEC_EXPECT_LLVM is set, but the runtime library with threads didn't build"
+    );
+    built
 }
 
 /// Builds both runtime libraries with the heap audit in them, next to `fennec`, as
 /// `libfennec_runtime_audit.a` and `libfennec_runtime_threads_audit.a`: what a program built under
 /// `FENNEC_AUDIT=1` links. Each is built in the folder the gate and CI build it in before the
 /// tests, so here it's found built.
+///
+/// Where `FENNEC_EXPECT_LLVM` is set, one that doesn't build fails the test, rather than letting
+/// it pass by returning early (fennec#2557).
 pub(crate) fn audited_runtimes_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
-    *BUILT.get_or_init(|| {
+    let built = *BUILT.get_or_init(|| {
         runtime_variant_built("audit", "audit", "fennec_runtime_audit")
             && runtime_variant_built("threads,audit", "threads-audit", "fennec_runtime_threads_audit")
-    })
+    });
+    assert!(
+        built || !crate::llvm::llvm_expected(),
+        "FENNEC_EXPECT_LLVM is set, but the runtime libraries with the heap audit didn't build"
+    );
+    built
 }
 
 /// Builds the runtime library with `features`, in a folder of its own named `folder`, beside the

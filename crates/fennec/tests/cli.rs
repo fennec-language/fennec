@@ -865,11 +865,18 @@ fn run_takes_a_kits_folder() {
 
 /// Whether `fennec run` builds through LLVM here: LLVM's tools are found, and
 /// the runtime library is beside the `fennec` these tests run, which is where `fennec run`
-/// looks. Under coverage, `fennec` is built somewhere else, without one.
+/// looks. Under coverage, `fennec` is built somewhere else, without one. Where
+/// `FENNEC_EXPECT_LLVM` is set, what's missing fails the test (fennec#2557).
 fn llvm_ready_for_run() -> bool {
-    fennec_llvm::Tools::find().is_ok()
-        && crate::executables::runtime_built()
-        && crate::executables::runtime_beside_fennec()
+    if !crate::llvm::ready() {
+        return false;
+    }
+    let beside = crate::executables::runtime_beside_fennec();
+    assert!(
+        beside || !crate::llvm::llvm_expected(),
+        "FENNEC_EXPECT_LLVM is set, but there's no runtime library beside `fennec`"
+    );
+    beside
 }
 
 /// A conversion to the type a value has already gives it back. The linter takes these out of the examples, since they change nothing.

@@ -7647,6 +7647,34 @@ def main(stdout: Stdout) fails Closed | Crashed:
 const NESTED_OPTIONALS_PRINTS: &str =
     "None 7 99\nFalse True\nTrue\ngot 12 False\ngot None True\ngot 3 False\n";
 
+/// A local written as an optional of an optional keeps both levels when it's given an optional
+/// (#2465): `outer: int?? = inner`, with `inner` a `None` the checker can't see, holds a `None`
+/// inside, not `None` itself, and so does one given it again, as a parameter or field already did.
+#[test]
+fn a_local_optional_of_an_optional_keeps_a_none_it_was_given_inside() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("nested_optional_locals", NESTED_OPTIONAL_LOCALS, NESTED_OPTIONAL_LOCALS_PRINTS)
+}
+
+const NESTED_OPTIONAL_LOCALS: &str = r#"def shown(stdout: Stdout, inner: int?, text: str?):
+    outer: int?? = inner
+    stdout.print(outer is None, (outer else 5) is None)
+    mut again: int?? = 4
+    again = inner
+    stdout.print(again is None, (again else 5) is None)
+    words: str?? = text
+    stdout.print(words is None, (words else "none") is None)
+
+def main(stdout: Stdout):
+    shown(stdout, None, None)
+    shown(stdout, 3, "three")
+"#;
+
+const NESTED_OPTIONAL_LOCALS_PRINTS: &str =
+    "False True\nFalse True\nFalse True\nFalse False\nFalse False\nFalse False\n";
+
 const NONE_EVERY_WAY: &str = r#"# Optionals that are `None` going every way a value goes to another task: a channel, a task's
 # captures, `parallel`'s items and what it gives back, and a lock, for `str?`, `list[int]?` and
 # `dict[str, int]?`, each inside a tuple, and where one can be, alone.

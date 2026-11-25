@@ -88,6 +88,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         "toml-rules",
         "http-client",
         "http-client-scripts",
+        "http-client-splits",
         "http-server",
         "http-sessions",
         "http-splits",
@@ -109,6 +110,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         "html",
         "http-client",
         "http-client-scripts",
+        "http-client-splits",
         "http-server",
         "http-sessions",
         "http-splits",
@@ -125,8 +127,8 @@ fn a_short_run_of_every_target_finds_nothing() {
         "utf8",
     ];
     let left_out = printed.contains(
-        "base64, csv, html, http-client, http-client-scripts, http-server, http-sessions, http-splits, json, json-rules, \
-         numbers, pack, postgres, router, time, toml, toml-rules, url, utf8: left out",
+        "base64, csv, html, http-client, http-client-scripts, http-client-splits, http-server, http-sessions, http-splits, \
+         json, json-rules, numbers, pack, postgres, router, time, toml, toml-rules, url, utf8: left out",
     );
     for target in targets {
         if left_out && native.contains(&target) {
@@ -203,6 +205,31 @@ fn every_http_seed_and_kept_input_is_heard_the_same_split_anywhere() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every script the `http-client-scripts` target starts from or has kept is read the same with each
+/// server's answer split at every byte (`http-client-splits`): a status line, a header, a length, a
+/// chunk or a body cut across two reads gets what the whole of it gets.
+#[test]
+fn every_client_seed_and_kept_input_reads_the_same_split_anywhere() {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for folder in [here.join("seeds/http-client-scripts"), here.join("found/http-client-scripts")] {
+        for input in std::fs::read_dir(&folder).unwrap() {
+            let input = input.unwrap().path();
+            if pinned_output(&input) {
+                continue;
+            }
+            let output = fuzz().args(["one", "http-client-splits"]).arg(&input).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}: {}\n{}{}",
+                input.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
 }
 
 /// Large inputs for the readers of data: JSON, TOML, `std.pack` after the `header` of a packed

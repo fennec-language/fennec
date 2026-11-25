@@ -650,6 +650,8 @@ jobs:
         run: .github/scripts/test-gate-lock.sh
       - name: Telling flakes from failures main fixed, on a throwaway repository
         run: .github/scripts/test-flakes.sh
+      - name: Saying plainly a job never got a runner, against a GitHub answering from files
+        run: .github/scripts/test-ci-passed.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
         run: .github/scripts/test-nightly-report.sh
       - name: A mutants run's counts, a timeout neither caught nor missed, and one where most timed out failing
@@ -1246,9 +1248,18 @@ jobs:
     needs: [changes, lint, test, x86-mac, coverage, audit, deny, site, workflows, budgets, bench, worker-sanitizers, tsan-programs, server-sanitizers, lean-runtime, static, install, asan, llvm-asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The run's jobs, and their checks' notes, which say when GitHub had no runner for one.
     permissions:
       actions: read
+      checks: read
+      contents: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      # A job GitHub never gave a runner is said so plainly, apart from the code's failures, and
+      # still fails the run but for a macOS job on a pull request: see `ci-passed.sh`.
       - name: Every job succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -1259,67 +1270,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          failed=0
-          while read -r job result; do
-            [ "$result" = success ] && continue
-            [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
-            # The macOS jobs alone, or every other: what the run leaves out isn't its to pass.
-            if [ "$result" = skipped ] && [ "$PLATFORMS" = macos ] && [ "$job" != changes ] \
-              && [ "$job" != test ] && [ "$job" != x86-mac ]; then
-              continue
-            fi
-            [ "$result" = skipped ] && [ "$PLATFORMS" = others ] && [ "$job" = x86-mac ] && continue
-            # Coverage and the heap audit run only in the scheduled run and by hand.
-            if [ "$result" = skipped ] && { [ "$job" = coverage ] || [ "$job" = audit ]; } \
-              && [ "$EVENT" != schedule ] && [ "$EVENT" != workflow_dispatch ]; then
-              continue
-            fi
-            if [ "$result" = skipped ] && [ "$EVENT" = merge_group ]; then
-              [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
-            fi
-            # `test` has one result for its whole matrix, so each OS's job is looked at, and so is
-            # each part of the Intel Mac's.
-            case "$job" in
-              test) jobs='(^|/ )Test \\(' ;;
-              x86-mac) jobs='(^|/ )Native code on x86-64 macOS \\(' ;;
-              *) jobs='' ;;
-            esac
-            if [ -n "$jobs" ] && [ "$result" != skipped ]; then
-              looked_at=0
-              # The one exception, on pull requests only: GitHub's macOS runners are short, and
-              # a macOS job no runner ever took (cancelled, with no runner and no steps) is a
-              # warning rather than a failure. A macOS job that ran and failed still fails, and
-              # so does every other OS and every push to main. The fields are split on `|`,
-              # since tabs would run together where the runner is empty.
-              while IFS='|' read -r name conclusion runner steps; do
-                looked_at=1
-                [ "$conclusion" = success ] && continue
-                if [ "$EVENT" = pull_request ] && [[ "$name" =~ (macos-latest, [^\)]*\)|x86-64 macOS \([^\)]*\))$ ]] \
-                  && [ "$conclusion" = cancelled ] && [ -z "$runner" ] && [ "$steps" = 0 ]; then
-                  echo "::warning::$name never got a runner, so it doesn't count; the push to main runs it again"
-                  continue
-                fi
-                echo "$name finished with: $conclusion"
-                failed=1
-              done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
-                --jq ".jobs[] | select(.name | test(\"$jobs\")) | [.name, (.conclusion // \"unfinished\"), (.runner_name // \"\"), (.steps | length | tostring)] | join(\"|\")")
-              # Run through `staging.yml`, a job's name has that job's in front. If this ever found
-              # no jobs at all, it can't say they passed.
-              [ "$looked_at" = 1 ] || { echo "found no $job jobs to look at"; failed=1; }
-              continue
-            fi
-            echo "$job finished with: $result"
-            failed=1
-          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<< "$NEEDS")
-          exit "$failed"
+        run: .github/scripts/ci-passed.sh
       # A run that passed only when jobs ran again: each earlier failure on this commit is a flake,
       # written in the flake ledger and kept with the run, so none is ever just rerun.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: success() && github.run_attempt != '1'
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/scripts
       - name: Write down the flakes
         if: success() && github.run_attempt != '1'
         env:

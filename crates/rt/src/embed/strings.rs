@@ -497,6 +497,20 @@ pub(super) fn bytes_in_block(state: &State, address: i64) -> (&[u64], usize) {
         })
 }
 
+/// [`bytes_in_block`], and whether the string is ASCII, its bytes its characters, as its block's
+/// count of characters says: it's ASCII when there are as many as bytes.
+pub(super) fn ascii_bytes_in_block(state: &State, address: i64) -> ((&[u64], usize), bool) {
+    u64::try_from(address)
+        .ok()
+        .and_then(|address| state.heap.block(address))
+        .filter(|block| super::heap::is_text(state, block))
+        .map_or(((&[], 0), true), |block| {
+            let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+            let chars = block.get(3).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+            ((block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), length), chars == length)
+        })
+}
+
 /// The longest `part` looked for in place: it fits one word.
 pub(super) const WORD_BYTES: usize = 8;
 
@@ -1080,24 +1094,37 @@ pub extern "C" fn find(address: i64, part: i64) -> i64 {
         if !looked_for.is_some_and(|block| super::heap::is_text(state, block)) {
             return -1;
         }
-        find_in(bytes_in_block(state, address), bytes_in_block(state, part))
+        let (whole, ascii) = ascii_bytes_in_block(state, address);
+        find_in(whole, bytes_in_block(state, part), ascii)
     })
 }
 
 /// Which character `part` first starts at in `whole`, each given as the words its bytes are in and
 /// how many bytes, or -1 when it isn't there. A part of a word or less, as most are, is looked for
-/// where both are, the characters before it counted eight bytes at a time. A longer one is copied
-/// out with `whole` into bytes kept for them, for `str`'s search, which stays linear however the
-/// two repeat themselves.
-pub(super) fn find_in(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> i64 {
+/// where both are. The characters before it are counted eight bytes at a time, unless `whole` is
+/// `ascii`, when its bytes are its characters and the byte it's found at is the answer. A longer
+/// part is looked for by [`find_long`].
+///
+/// Inlined, so a short part's search doesn't save and restore the many registers a long one's
+/// takes.
+#[inline]
+pub(super) fn find_in(whole: (&[u64], usize), (part, size): (&[u64], usize), ascii: bool) -> i64 {
     if size == 0 {
         return 0;
     }
-    if size <= WORD_BYTES {
-        let first = part.first().map_or(0, |word| u64::from_le(*word));
-        let found = word_in_place(whole, first, size);
-        return found.map_or(-1, |at| i64::try_from(chars_before(whole.0, at)).unwrap_or(-1));
+    if size > WORD_BYTES {
+        return find_long(whole, (part, size));
     }
+    let first = part.first().map_or(0, |word| u64::from_le(*word));
+    let Some(at) = word_in_place(whole, first, size) else { return -1 };
+    let before = if ascii { at } else { chars_before(whole.0, at) };
+    i64::try_from(before).unwrap_or(-1)
+}
+
+/// [`find_in`] for a part longer than a word, which is rare: both are copied out into bytes kept
+/// for them, for `str`'s search, which stays linear however the two repeat themselves.
+#[inline(never)]
+fn find_long(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> i64 {
     let (mut text, mut looked) = (READ.take(), READ_PART.take());
     copy_words(whole, &mut text);
     copy_words((part, size), &mut looked);
@@ -1285,17 +1312,20 @@ fn split_in_words(state: &mut State, text: &[u64; 3], separator: &[u64; 3]) -> O
     // The text's words are copied out once, whole words at a time, so making a long part's block
     // can't move them.
     let mut words = std::mem::take(&mut state.heap.scratch);
-    let (held, length) = super::text::bytes_of(state, text);
+    let ((held, length), ascii) = match super::text::block_of(text) {
+        Some(address) => ascii_bytes_in_block(state, address.cast_signed()),
+        None => ((&text[..], super::text::inline_length(text)), super::text::inline_ascii(text)),
+    };
     words.clear();
     words.extend_from_slice(held.get(..length.div_ceil(8)).unwrap_or_default());
     let mut items = SPLIT_ITEMS.take();
     items.clear();
     let mut from = 0;
     each_place_of_from((&words, length), between, size, 0, |found| {
-        put_part_of_words(state, &mut items, &words, from, found - from);
+        put_part_of_words(state, &mut items, (&words, ascii), from, found - from);
         from = found + size;
     });
-    put_part_of_words(state, &mut items, &words, from, length.saturating_sub(from));
+    put_part_of_words(state, &mut items, (&words, ascii), from, length.saturating_sub(from));
     let list = super::lists::list_of_texts(state, &items);
     SPLIT_ITEMS.set(items);
     state.heap.keep_scratch(words);
@@ -1305,10 +1335,11 @@ fn split_in_words(state: &mut State, text: &[u64; 3], separator: &[u64; 3]) -> O
 /// The list `split` gives of bytes `start..length` of `words`, a text's bytes copied out, cut at
 /// each place of `between`, a separator of `size` bytes, one to eight: each part made inline from
 /// the words or a string of its own, as [`split_in_words`] makes them. A slice's split, which
-/// starts partway; a whole text's is [`split_in_words`]' own loop, which this mustn't slow.
+/// starts partway; a whole text's is [`split_in_words`]' own loop, which this mustn't slow. The
+/// words are `ascii` when the text they're from is.
 pub(super) fn split_words(
     state: &mut State,
-    words: &[u64],
+    (words, ascii): (&[u64], bool),
     (start, length): (usize, usize),
     (between, size): (u64, usize),
 ) -> i64 {
@@ -1316,17 +1347,18 @@ pub(super) fn split_words(
     items.clear();
     let mut from = start;
     each_place_of_from((words, length), between, size, start, |found| {
-        put_part_of_words(state, &mut items, words, from, found - from);
+        put_part_of_words(state, &mut items, (words, ascii), from, found - from);
         from = found + size;
     });
-    put_part_of_words(state, &mut items, words, from, length.saturating_sub(from));
+    put_part_of_words(state, &mut items, (words, ascii), from, length.saturating_sub(from));
     let list = super::lists::list_of_texts(state, &items);
     SPLIT_ITEMS.set(items);
     list
 }
 
 /// Adds the part of `length` bytes at byte `start` of `words`, a text's bytes, to a `split`'s
-/// items, as a header: inline when it fits, and otherwise a string of its own.
+/// items, as a header: inline when it fits, and otherwise a string of its own, whose characters
+/// are its bytes when the text is `ascii`.
 ///
 /// Inlined into the loop that finds the parts, as most parts are short: a long part's block is
 /// made by a function of its own, so its work doesn't make every short part save and restore the
@@ -1336,18 +1368,30 @@ pub(super) fn split_words(
     reason = "a `split` writes every part through this, and as a call of its own at each of its two places it cost about 20 instructions a part"
 )]
 #[inline(always)]
-fn put_part_of_words(state: &mut State, items: &mut Vec<u64>, words: &[u64], start: usize, length: usize) {
+fn put_part_of_words(
+    state: &mut State,
+    items: &mut Vec<u64>,
+    (words, ascii): (&[u64], bool),
+    start: usize,
+    length: usize,
+) {
     if length <= super::text::INLINE_BYTES {
         items.extend(super::text::inline_from_words(words, start, length));
     } else {
-        items.extend(long_part_of_words(state, words, start, length));
+        items.extend(long_part_of_words(state, (words, ascii), start, length));
     }
 }
 
 /// The header of the part of `length` bytes, more than fit inline, at byte `start` of `words`,
-/// a text's bytes: a string of its own, owned once.
+/// a text's bytes: a string of its own, owned once. Its characters are counted from its bytes,
+/// unless the text is `ascii`, when there are as many as bytes.
 #[inline(never)]
-fn long_part_of_words(state: &mut State, words: &[u64], start: usize, length: usize) -> [u64; 3] {
+fn long_part_of_words(
+    state: &mut State,
+    (words, ascii): (&[u64], bool),
+    start: usize,
+    length: usize,
+) -> [u64; 3] {
     let count = length.div_ceil(8);
     let mut block = state.heap.fresh_written(TEXT_HEADER_WORDS + count, TEXT_HEADER_WORDS + count);
     if let Some(body) = block.get_mut(TEXT_HEADER_WORDS..) {
@@ -1358,7 +1402,8 @@ fn long_part_of_words(state: &mut State, words: &[u64], start: usize, length: us
         }
     }
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
-    let chars = chars_before(block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), length);
+    let chars =
+        if ascii { length } else { chars_before(block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), length) };
     let header = [1, state.tables.str_shape, number(length), number(chars), number(count * 8), 0];
     if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {
         start.copy_from_slice(&header);
@@ -1575,12 +1620,22 @@ mod split_tests {
     use super::split;
     use crate::packed::Element;
 
-    /// The parts `split` gave, read back from the list's items, headers or blocks' addresses.
+    /// The parts `split` gave, read back from the list's items, headers or blocks' addresses. Each
+    /// part in a block of its own keeps how many characters it has, as `len` reads them.
     fn parts(list: i64, headers: bool) -> Vec<String> {
         with(|state| {
             let block = state.heap.block(list.cast_unsigned()).unwrap_or_default();
             if headers {
-                text::texts(state, lists::items(block, 3))
+                let items = lists::items(block, 3);
+                let texts = text::texts(state, items);
+                for (part, words) in texts.iter().zip(items.chunks(3)) {
+                    let Ok(words) = <[u64; 3]>::try_from(words) else { continue };
+                    if let Some(address) = text::block_of(&words) {
+                        let chars = state.heap.block(address).and_then(|block| block.get(3)).copied();
+                        assert_eq!(chars, Some(u64::try_from(part.chars().count()).unwrap()), "{part:?}");
+                    }
+                }
+                texts
             } else {
                 let items = lists::items(block, 1);
                 items.iter().map(|item| super::text(state, item.cast_signed()).unwrap_or_default()).collect()
@@ -1649,7 +1704,9 @@ mod split_tests {
             "/".to_owned(),
             "/api/orders/42".to_owned(),
             "a//b/".to_owned(),
-            format!("\u{e9}t\u{e9}/{long}/\u{65e5}\u{672c}\u{1f98a}"),
+            format!("\u{e9}t\u{e9}/{long}/\u{65e5}\u{672c}\u{1f98a}/{long} \u{e9}t\u{e9}"),
+            // ASCII, whose long parts' characters are their bytes, with none counted.
+            format!("/{long}/x/{long}"),
             "  spaced \t out\nwords  ".to_owned(),
         ];
         for headers in [true, false] {

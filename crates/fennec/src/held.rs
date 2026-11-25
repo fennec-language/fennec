@@ -20,6 +20,7 @@ use fennec_build::{KitFile, KitState};
 
 /// The most kits held at once. Each is a few hundred bytes a file, so this is far under the
 /// daemon's budget, which lets go of all of them if it's passed anyway (`kept::fit_budget`).
+#[cfg(unix)]
 const MOST_KITS: usize = 64;
 
 /// What's held for one kit, by its absolute path.
@@ -41,6 +42,10 @@ struct Held {
     /// The root a run of that image built, by its name in the run roots.
     root: Option<(String, String)>,
     /// When it was last used, to let go of the one used longest ago past `MOST_KITS`.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "only the build daemon holds runs, and Windows has none")
+    )]
     used: u64,
 }
 
@@ -107,6 +112,7 @@ pub(crate) fn begin(path: &str) {
 /// longest ago past `MOST_KITS`. A run that noted no image holds nothing: its look at the files
 /// may be missing what `embed` read, which only the cache's note of a load has, and the next run
 /// looks by that note.
+#[cfg(unix)]
 pub(crate) fn done() {
     let Some(now) = NOW.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
     if now.found.image.is_none() {
@@ -123,6 +129,7 @@ pub(crate) fn done() {
 }
 
 /// Lets go of everything held: something was taken back, or it's past the daemon's budget.
+#[cfg(unix)]
 pub(crate) fn forget_all() {
     if let Some(held) = HELD.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
         held.clear();

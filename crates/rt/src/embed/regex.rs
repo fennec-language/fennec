@@ -12,7 +12,7 @@ use std::rc::Rc;
 use fennec_re::Anchor;
 use fennec_syntax::{Diagnostic, Span};
 
-use super::heap::{NEVER_FREED_COUNT, TEXT_HEADER_WORDS, mark_never_freed, text_address};
+use super::heap::{IMMORTAL, NEVER_FREED_COUNT, TEXT_HEADER_WORDS, mark_never_freed, text_address};
 use super::lists::{list_of_strings, list_of_words};
 use super::{State, attempt, span, with};
 use crate::stdlib::re::{LONGEST_KEPT, chars, invalid, replaced};
@@ -198,26 +198,52 @@ fn push_places(
     }
 }
 
-/// A list of ints holding `places`, with the number of its kind of list. Where nothing was found, the
-/// list is one made once a run for that kind and never freed, so the searches that find nothing,
-/// most of those a grep makes, make and free no list. Native code only reads it.
+thread_local! {
+    /// For each kind of list of ints, the empty one a search that finds nothing gives back, by its
+    /// address and its kind's word: made once and never freed.
+    static NO_PLACES: RefCell<Vec<(i64, u64, u64)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether `block` is an empty list that's never freed, with the kind word `kind`, which says it's
+/// never freed too: one that can stand for no places, whichever run made it.
+fn kept_empty(block: &[u64], kind: u64) -> bool {
+    block.first().is_some_and(|count| *count >= IMMORTAL)
+        && block.get(1) == Some(&kind)
+        && block.get(2) == Some(&0)
+}
+
+/// A list of ints holding `places`, with the number of its kind of list. Where nothing was found,
+/// the list is one made once and never freed, so the searches that find nothing, most of those a
+/// grep makes, make and free no list. Native code only reads it. It's checked in the heap each time,
+/// so one kept from a run that's ended, or a block freed and made again since, is never given out.
 fn places_list(state: &mut State, ints: i64, places: &[u64]) -> i64 {
     if !places.is_empty() {
         return list_of_words(state, ints, places);
     }
-    if let Some((_, at)) = state.no_places.iter().find(|(kind, _)| *kind == ints) {
-        return *at;
+    let kept = NO_PLACES.with_borrow(|kept| {
+        kept.iter().find(|(element, ..)| *element == ints).map(|(_, at, kind)| (*at, *kind))
+    });
+    if let Some((at, kind)) = kept
+        && state.heap.block(at).is_some_and(|block| kept_empty(block, kind))
+    {
+        return i64::try_from(at).unwrap_or(0);
     }
-    let at = list_of_words(state, ints, &[]);
-    if let Some(block) = u64::try_from(at).ok().and_then(|address| state.heap.block_mut(address))
+    let made = list_of_words(state, ints, &[]);
+    if let Some(at) = u64::try_from(made).ok()
+        && let Some(block) = state.heap.block_mut(at)
         && let Some(count) = block.first_mut()
     {
         // Its owners stay far above the mark, as a constant's do, so letting one go never frees it.
         *count = count.saturating_add(NEVER_FREED_COUNT);
         mark_never_freed(block);
-        state.no_places.push((ints, at));
+        if let Some(kind) = block.get(1).copied() {
+            NO_PLACES.with_borrow_mut(|kept| {
+                kept.retain(|(element, ..)| *element != ints);
+                kept.push((ints, at, kind));
+            });
+        }
     }
-    at
+    made
 }
 
 /// `find_all`: where every match is, as a list of ints. `ints` is the number of the kind of
@@ -281,7 +307,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::super::{Tables, finish, heap, start, with};
-    use super::{KEPT_BYTES, SEARCHED, compiled, holds_text, with_text};
+    use super::{IMMORTAL, KEPT_BYTES, SEARCHED, compiled, find, holds_text, with_text};
     use crate::packed::Element;
 
     /// How much room the searched text's buffer keeps between calls.
@@ -335,5 +361,42 @@ mod tests {
         assert_eq!(held, [true, false, false, false]);
         let (_, failure, _) = finish();
         assert!(failure.is_none());
+    }
+
+    /// Searches that find nothing give back one kept empty list, the same each time, which letting go
+    /// doesn't free; a run started afresh gets one in its own heap, never one kept from a run that's
+    /// ended.
+    #[test]
+    fn searches_that_find_nothing_share_one_kept_empty_list() {
+        let tables = || Tables {
+            shapes: vec![Rc::new(Element::Str)],
+            elements: vec![Rc::new(Element::Int)],
+            ..Tables::default()
+        };
+        let kept_empty = |at: i64| {
+            with(|state| {
+                let block = u64::try_from(at).ok().and_then(|address| state.heap.block(address));
+                block.is_some_and(|block| {
+                    block.first().is_some_and(|count| *count >= IMMORTAL) && block.get(2) == Some(&0)
+                })
+            })
+        };
+        let mut made = Vec::new();
+        for _ in 0..2 {
+            start(tables(), crate::Inputs::default());
+            let (pattern, line) = with(|state| {
+                (
+                    heap::text_address(state, r"TODO\((\w+)\)"),
+                    heap::text_address(state, "nothing to do on this line"),
+                )
+            });
+            let (first, again) = (find(pattern, line, 0, 0, 0, 0), find(pattern, line, 0, 0, 0, 0));
+            assert_eq!(first, again);
+            assert!(kept_empty(first), "{first} isn't a kept empty list");
+            made.push(first);
+            let (_, failure, _) = finish();
+            assert!(failure.is_none());
+        }
+        assert_eq!(made.len(), 2);
     }
 }

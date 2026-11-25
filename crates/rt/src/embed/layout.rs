@@ -377,10 +377,13 @@ mod tests {
         let (pattern, whole) = (string("é(b)|(c)"), string("aéb c"));
         assert_eq!(regex::is_valid(pattern), 1);
         assert_eq!(regex::is_valid(string("(")), 0);
-        assert_eq!(
-            (regex::groups(pattern), regex::groups(string("b")), regex::groups(string("("))),
-            (2, 0, -1)
-        );
+        // A search and a pattern's groups take their strings as headers' words.
+        let header = |text: &str| with(|state| super::super::text::header(state, text));
+        let groups = |text: &str| {
+            let [p0, p1, p2] = header(text);
+            regex::groups(p0, p1, p2)
+        };
+        assert_eq!((groups("é(b)|(c)"), groups("b"), groups("(")), (2, 0, -1));
         let places = regex::find_all(pattern, whole, 0, 0, 0);
         let minus = u64::from_ne_bytes((-1_i64).to_ne_bytes());
         let read = |at: i32| word(places, LIST_ITEMS + at * 8).unwrap();
@@ -393,9 +396,13 @@ mod tests {
         assert_eq!(word(parts, LIST_LENGTH), Some(2));
         let first = i64::try_from(word(parts, LIST_ITEMS).unwrap()).unwrap();
         assert_eq!(text_of(first), "aéb");
-        let anchored = regex::find(string("b"), whole, 1, 0, 0, 0);
+        let search = |pattern: &str, text: &str, kind: i64| {
+            let ([p0, p1, p2], [t0, t1, t2]) = (header(pattern), header(text));
+            regex::find(p0, p1, p2, t0, t1, t2, kind, 0, 0, 0)
+        };
+        let anchored = search("b", "aéb c", 1);
         assert_eq!(word(anchored, LIST_LENGTH), Some(0));
-        let anywhere = regex::find(string("b"), whole, 0, 0, 0, 0);
+        let anywhere = search("b", "aéb c", 0);
         assert_eq!(word(anywhere, LIST_LENGTH), Some(2));
         finish();
     }

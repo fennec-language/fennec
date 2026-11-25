@@ -1,0 +1,21 @@
+# Loops, `break`, `continue` and an early return inside the loop written twice.
+def scan(starts: list[int], order: list[int], limit: int) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        if value == 0: continue
+        for index, other in enumerate(order):
+            if other > value: break
+            total += index
+        mut left = value
+        while left > 0:
+            left -= 2
+            total += 1
+        if total > limit: return -total
+        if value == 9: break
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 6], order=[3, 0, 5, 1, 9, 4], limit=1000))
+    stdout.print(scan([0, 6], order=[3, 0, 5, 1, 9, 4], limit=10))
+    stdout.print(scan([1, 4], order=[3, 0, 5, 1, 9, 4], limit=1000))

@@ -1,0 +1,28 @@
+# A Table added to, read and walked by `for ref` inside the loop written twice.
+from std.collections import Id, Table
+
+struct Unit:
+    health: int
+
+def scan(ref units: Table[Unit], starts: list[int], order: list[int]) -> int:
+    mut ids = list[Id[Unit]]()
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        ids.append(units.add(Unit(health=value)))
+        for ref unit in units:
+            unit.health += 1
+        mut first = units[ids[0]]
+        first.health += value
+        units[ids[0]] = first
+        if value == 7:
+            _ = units.remove(ids[1])
+        total += len(units)
+    for unit in units:
+        total += unit.health
+    return total
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    kept = units
+    stdout.print(scan(ref units, starts=[0, 4], order=[5, 6, 7, 8]), len(units), len(kept))

@@ -1,0 +1,17 @@
+# A dict looked up and then put to inside the loop that's written twice, with a branch between.
+def tally(ref seen: dict[int, int], starts: list[int], order: list[int]) -> int:
+    mut added = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        found = seen.get(value) else 0
+        if found > 1:
+            added += 1
+        seen[value] = found + 1
+    return added
+
+def main(stdout: Stdout):
+    mut seen = dict[int, int]()
+    stdout.print(tally(ref seen, starts=[0, 6], order=[3, 1, 3, 3, 1, 3]))
+    stdout.print(seen)
+    # An item past the end: the checked copy runs.
+    stdout.print(tally(ref seen, starts=[0, 7], order=[3, 1, 3, 3, 1, 3]))

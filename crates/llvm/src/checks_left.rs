@@ -255,10 +255,12 @@ mod tests {
         assert_eq!(picks, 1, "{text}");
         let copied = text.lines().filter(|line| line.starts_with("bb") && line.ends_with("v:")).count();
         assert!(copied > 0, "{text}");
-        // The copy with no checks has `xs[other]` checked, and not `order[at]` (`xs[ball]` is
-        // known inside already): one more out-of-range call than the reads that keep checks.
-        let reads = kept(body)?.iter().filter(|(what, _)| *what == CheckKind::Bounds).count();
-        assert_eq!(text.matches("call void @fennec_out_of_range(").count(), reads + 1, "{text}");
+        // The second copy is the first, renamed, with only the way the read leaning on the check
+        // takes turned: `br i1 true` to no check, where the first has `br i1 false` to its check.
+        // Its blocks are the IR's and the emitter's own within them, as many as the first's.
+        let compared = same_copies(text);
+        assert!(compared.as_ref().is_ok_and(|blocks| *blocks > copied), "{compared:?}\n{text}");
+        assert_eq!(text.matches("br i1 true, label %ranged").count(), 1, "{text}");
         // Each of these leaves the read with nothing to check once: the bucket list can change;
         // the count starts at a number that may be below 0, or ends at an item of another list; or
         // the read list's length can change.
@@ -281,6 +283,81 @@ mod tests {
             assert_eq!(text.matches("@llvm.umax.i64(").count(), 0, "{changed}\n{text}");
         }
         Ok(())
+    }
+
+    /// Compares the two copies of each loop written twice in a function's LLVM text: every block of
+    /// the second, its names' `v` taken off and its `checked once` branch turned back, has to be the
+    /// first's block of the same name, but for the note on a loop's own back jump. Gives back how
+    /// many blocks the second copy has, or the first that differs.
+    fn same_copies(text: &str) -> Result<usize, String> {
+        let mut blocks: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        let mut current = String::new();
+        for line in text.lines() {
+            // The function's end, after which come the module's notes.
+            if line == "}" {
+                current.clear();
+                continue;
+            }
+            if let Some(label) = line.strip_suffix(':')
+                && !line.starts_with(' ')
+            {
+                label.clone_into(&mut current);
+                continue;
+            }
+            let line = line.split_once(", !llvm.loop !").map_or(line, |(head, _)| head);
+            blocks.entry(current.clone()).or_default().push(line.to_owned());
+        }
+        let second: Vec<String> = blocks
+            .keys()
+            .filter(|label| label.ends_with('v') && blocks.contains_key(label.trim_end_matches('v')))
+            .cloned()
+            .collect();
+        // The names the second copy defines: its labels and its values, each ending in `v`.
+        let mut defined: std::collections::HashSet<String> = second.iter().cloned().collect();
+        for label in &second {
+            for line in blocks.get(label).into_iter().flatten() {
+                if let Some((name, _)) =
+                    line.trim_start().strip_prefix('%').and_then(|rest| rest.split_once(" = "))
+                {
+                    defined.insert(name.to_owned());
+                }
+            }
+        }
+        for label in &second {
+            let first = blocks.get(label.trim_end_matches('v')).ok_or(label.clone())?;
+            let back: Vec<String> = blocks
+                .get(label)
+                .into_iter()
+                .flatten()
+                .map(|line| {
+                    let mut written = String::new();
+                    let mut rest = line.as_str();
+                    while let Some((before, after)) = rest.split_once('%') {
+                        written.push_str(before);
+                        written.push('%');
+                        let end = after
+                            .find(|found: char| !(found.is_ascii_alphanumeric() || "_.$-".contains(found)))
+                            .unwrap_or(after.len());
+                        let (name, tail) = after.split_at(end);
+                        written.push_str(if defined.contains(name) {
+                            name.trim_end_matches('v')
+                        } else {
+                            name
+                        });
+                        rest = tail;
+                    }
+                    written.push_str(rest);
+                    if written.ends_with(crate::emit::CHECKED_ONCE) {
+                        written = written.replacen("br i1 true,", "br i1 false,", 1);
+                    }
+                    written
+                })
+                .collect();
+            if &back != first {
+                return Err(format!("{label}: {back:?} against {first:?}"));
+            }
+        }
+        Ok(second.len())
     }
 
     /// The overflow checks emit writes for `+`, `-` and `*` are the ones reported, for programs with

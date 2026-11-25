@@ -1,0 +1,2 @@
+exit 1
+error: index 0 is out of range for length 0

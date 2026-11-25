@@ -1,0 +1,2 @@
+build fails
+error: `ref rows` and `rows[0]` overlap

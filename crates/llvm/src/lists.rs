@@ -1647,21 +1647,13 @@ impl Emit<'_, '_, '_> {
                 self.adjacent_position((list, &length), low, index, span)
             }
             _ => match self.ranged_flag(from) {
-                // In the copy of a loop written twice that its check chose, no check at all.
-                Some(_) if self.again && self.known.versioned_at(self.at.0).is_some() => {
-                    self.proof_inside(
-                        list,
-                        index,
-                        "a count between two items checked to be inside the list",
-                        span,
-                    );
-                    index.to_owned()
+                // In a loop written twice on this read's own check, the copy decides: checked in the
+                // first, not in the second (`Emit::write_second_copies`).
+                Some((id, _)) if self.known.versioned_at(self.at.0).is_some_and(|loop_| loop_.scan == id) => {
+                    self.ranged_position((list, &length), None, index, span)
                 }
-                // In the other copy, or a loop not written twice that the check covers.
-                Some(_) if self.known.versioned_at(self.at.0).is_some() => {
-                    self.position_checked(&length, index, span)
-                }
-                Some(flag) => self.ranged_position((list, &length), &flag, index, span),
+                // Anywhere else the check covers, its flag decides at the read.
+                Some((_, flag)) => self.ranged_position((list, &length), Some(&flag), index, span),
                 None => self.position_checked(&length, index, span),
             },
         };
@@ -1725,12 +1717,12 @@ impl Emit<'_, '_, '_> {
 
     /// The flag of the check of item ranges that covers the read being written from `from`, if
     /// one does (`find_ranged_reads`).
-    fn ranged_flag(&self, from: Option<LocalId>) -> Option<String> {
+    fn ranged_flag(&self, from: Option<LocalId>) -> Option<(usize, String)> {
         let (id, scan) = self.known.ranged_read(self.at)?;
         if from != Some(LocalId(scan.read)) {
             return None;
         }
-        self.ranged_flags.get(&id).cloned()
+        Some((id, self.ranged_flags.get(&id).cloned()?))
     }
 
     /// At the end of the block going into a loop, the checks of item ranges reads in the loop
@@ -1760,9 +1752,11 @@ impl Emit<'_, '_, '_> {
                 (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
             self.line(&format!("{turns} = sub i64 {stop}, {first}"));
             self.line(&format!("{quarter} = lshr i64 {count}, 2"));
+            // A loop that can be left early may take far fewer turns than its count says.
+            let enough_turns = if scan.early { "false".to_owned() } else { enough.clone() };
             self.line(&format!("{enough} = icmp sle i64 {quarter}, {turns}"));
             self.line(&format!("{small} = icmp ule i64 {count}, 64"));
-            self.line(&format!("{worth} = or i1 {small}, {enough}"));
+            self.line(&format!("{worth} = or i1 {small}, {enough_turns}"));
             let (checking, walk, done) =
                 (self.label("range_check"), self.label("range_walk"), self.label("range_walked"));
             let skipped = self.current.clone();
@@ -1806,17 +1800,25 @@ impl Emit<'_, '_, '_> {
     /// Where a read `find_ranged_reads` found points: where the function's check of the items
     /// bounding its index held, the index itself, and otherwise checked as any read is, to fail
     /// where it always did.
+    /// With no flag, in a loop written twice on the read's own check, the way taken is written
+    /// `false`, to the check, ending in [`crate::emit::CHECKED_ONCE`], which the loop's second copy
+    /// turns to `true`.
     fn ranged_position(
         &mut self,
         (list, length): (&str, &str),
-        flag: &str,
+        flag: Option<&str>,
         index: &str,
         span: Span,
     ) -> String {
-        let held = self.temp();
-        self.line(&format!("{held} = load i1, ptr {flag}"));
         let (inside, alone, joined) = (self.label("ranged"), self.label("unranged"), self.label("placed"));
-        self.line(&format!("br i1 {held}, label %{inside}, label %{alone}, !prof !8"));
+        if let Some(flag) = flag {
+            let held = self.temp();
+            self.line(&format!("{held} = load i1, ptr {flag}"));
+            self.line(&format!("br i1 {held}, label %{inside}, label %{alone}, !prof !8"));
+        } else {
+            let once = crate::emit::CHECKED_ONCE;
+            self.line(&format!("br i1 false, label %{inside}, label %{alone} {once}"));
+        }
         self.start_block(&alone);
         let checked = self.position_checked(length, index, span);
         let checked_in = self.current.clone();

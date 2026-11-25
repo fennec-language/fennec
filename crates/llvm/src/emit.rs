@@ -1086,7 +1086,7 @@ impl<'p> Module<'_, 'p> {
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             ranged_flags: HashMap::new(),
-            again: false,
+            copied_text: HashMap::new(),
             pair_slots: HashMap::new(),
             taken_places: HashMap::new(),
             walks: HashMap::new(),
@@ -1195,11 +1195,8 @@ enum Places {
     Numbered,
 }
 
-/// What's known at the start of a block, kept from its first copy for the second of a loop written
-/// twice: the lists alone in it, the locals holding, the fields seen to, the items known inside,
-/// and the dict entries found.
-type BlockStart =
-    (HashSet<String>, BTreeSet<usize>, Vec<FieldPath>, Vec<FieldPath>, Vec<(LocalId, Operand, String)>);
+/// Where a block of a loop written twice is in the text: its part of `out`, then of `cold`.
+type CopiedText = ((usize, usize), (usize, usize));
 
 /// One function being written.
 #[expect(
@@ -1337,9 +1334,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// For each check of item ranges (`range_scans`), the flag saying it held when last made
     /// (`check_item_ranges`): clear until it's made.
     pub(crate) ranged_flags: HashMap<usize, String>,
-    /// Whether the blocks being written are the second copy of a loop written twice
-    /// (`find_versioned_loops`), whose reads the check of item ranges covers take no check.
-    pub(crate) again: bool,
+    /// For each loop written twice (`find_versioned_loops`), by its place in `versioned`, where the
+    /// text of each of its blocks is in `out` and `cold`, for the second copy to be made from.
+    copied_text: HashMap<usize, Vec<CopiedText>>,
     /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
     pub(crate) pair_slots: HashMap<usize, String>,
     /// The slot holding where each item taken out of a `Table` to be put back is, by the local it
@@ -1625,63 +1622,37 @@ impl Emit<'_, '_, '_> {
         let lengths: (&dyn Callees, Tracked) = (&lengthened, Tracked::Lengths);
         // Each block after every one leading to it, but for loops, so what's known carries on.
         let mut done = HashSet::new();
-        // Every block, then the blocks of each loop written twice again, as the second copy
-        // (`find_versioned_loops`), each starting from what was known when its first was written.
-        let order = written_order(function);
-        let mut passes: Vec<(usize, bool)> = order.iter().map(|at| (*at, false)).collect();
-        passes
-            .extend(order.iter().filter(|at| self.known.versioned_at(**at).is_some()).map(|at| (*at, true)));
-        let mut started: HashMap<usize, BlockStart> = HashMap::new();
-        for (at, again) in passes {
+        for at in written_order(function) {
             let Some(block) = function.blocks.get(at) else { continue };
-            self.again = again;
-            let label = self.block_label(at);
-            self.start_block(&label);
-            if again {
-                let start = started.remove(&at).ok_or("a loop written twice with no first copy")?;
-                (
-                    self.alone_in_block,
-                    self.holding_now,
-                    self.alone_fields,
-                    self.inside_items,
-                    self.found_entries,
-                ) = start;
-                self.filling.clear();
-                self.write_kept_lengths(at);
-            } else {
-                self.alone_in_block = self.alone_by_block.get(&at).cloned().unwrap_or_default();
-                self.holding_now = self.holding.coming_in(at);
-                self.filling.clear();
-                self.write_kept_lengths(at);
-                let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
-                self.alone_fields =
-                    coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
-                self.inside_items =
-                    coming_in(function, self.known, lengths, (at, &before, &done), (&[], &inside_left));
-                self.found_entries = match ways_in.split_first() {
-                    Some((first, rest)) if ways_in.iter().all(|from| done.contains(from)) => {
-                        let mut kept = left_with.get(first).cloned().unwrap_or_default();
-                        for from in rest {
-                            let theirs = left_with.get(from).map_or(&[][..], Vec::as_slice);
-                            kept.retain(|entry| theirs.contains(entry));
-                        }
-                        kept
+            let copied = self.known.versioned.iter().position(|loop_| loop_.blocks.contains(&at));
+            let written_from = (self.out.len(), self.cold.len());
+            self.start_block(&format!("bb{at}"));
+            self.alone_in_block = self.alone_by_block.get(&at).cloned().unwrap_or_default();
+            self.holding_now = self.holding.coming_in(at);
+            self.filling.clear();
+            self.write_kept_lengths(at);
+            let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
+            self.alone_fields =
+                coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
+            self.inside_items =
+                coming_in(function, self.known, lengths, (at, &before, &done), (&[], &inside_left));
+            // A block a loop written twice goes to is reached from either copy, so nothing the
+            // first copy found is known coming in (`write_second_copies`).
+            let after_copies = copied.is_none()
+                && ways_in
+                    .iter()
+                    .any(|from| self.known.versioned.iter().any(|loop_| loop_.blocks.contains(from)));
+            self.found_entries = match ways_in.split_first() {
+                Some((first, rest)) if !after_copies && ways_in.iter().all(|from| done.contains(from)) => {
+                    let mut kept = left_with.get(first).cloned().unwrap_or_default();
+                    for from in rest {
+                        let theirs = left_with.get(from).map_or(&[][..], Vec::as_slice);
+                        kept.retain(|entry| theirs.contains(entry));
                     }
-                    _ => Vec::new(),
-                };
-                if self.known.versioned_at(at).is_some() {
-                    started.insert(
-                        at,
-                        (
-                            self.alone_in_block.clone(),
-                            self.holding_now.clone(),
-                            self.alone_fields.clone(),
-                            self.inside_items.clone(),
-                            self.found_entries.clone(),
-                        ),
-                    );
+                    kept
                 }
-            }
+                _ => Vec::new(),
+            };
             let mut appended = false;
             for (index, inst) in block.insts.iter().enumerate() {
                 self.at = (at, index);
@@ -1742,16 +1713,10 @@ impl Emit<'_, '_, '_> {
                 step(self, &self.holding, (at, index), &inst.kind, &mut now);
                 self.holding_now = now;
             }
-            if again {
-                self.found_entries.clear();
-                self.alone_fields.clear();
-                self.inside_items.clear();
-            } else {
-                left_with.insert(at, std::mem::take(&mut self.found_entries));
-                alone_left.insert(at, std::mem::take(&mut self.alone_fields));
-                inside_left.insert(at, std::mem::take(&mut self.inside_items));
-                done.insert(at);
-            }
+            left_with.insert(at, std::mem::take(&mut self.found_entries));
+            alone_left.insert(at, std::mem::take(&mut self.alone_fields));
+            inside_left.insert(at, std::mem::take(&mut self.inside_items));
+            done.insert(at);
             for reserved in self.reserved_at(at) {
                 self.reserve(LocalId(reserved.list), &reserved.limit)?;
             }
@@ -1763,12 +1728,14 @@ impl Emit<'_, '_, '_> {
             for local in self.alone_before_loops.get(&at).cloned().unwrap_or_default() {
                 self.alone_for_loop(local)?;
             }
-            if !again {
-                self.check_item_ranges(at)?;
-            }
+            self.check_item_ranges(at)?;
             self.terminator(&block.end)?;
+            if let Some(loop_) = copied {
+                let text = ((written_from.0, self.out.len()), (written_from.1, self.cold.len()));
+                self.copied_text.entry(loop_).or_default().push(text);
+            }
         }
-        self.again = false;
+        self.write_second_copies()?;
         // What follows runs on a crash from anywhere in the function, in no loop.
         self.alone_in_block.clear();
         // A crash inside a `lock ... as ref` block puts back what it changed before leaving, and a
@@ -4791,13 +4758,56 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// A block's label: its second copy's, while a loop written twice is written again.
-    pub(crate) fn block_label(&self, at: usize) -> String {
-        if self.again && self.known.versioned_at(at).is_some() {
-            format!("bb{at}v")
-        } else {
-            format!("bb{at}")
+    /// The second copy of each loop written twice (`find_versioned_loops`), made from the text of
+    /// the first, its ways out and cold blocks included: everything they define is renamed, with a
+    /// `v` after its name, so the way in can go to either, and each read that leans on the loop's
+    /// check takes the way with no check (`Emit::ranged_once`). Made from the text, the copies
+    /// can't differ in anything else, whatever the emitter knew writing the first.
+    fn write_second_copies(&mut self) -> Result<(), String> {
+        let mut loops: Vec<usize> = self.copied_text.keys().copied().collect();
+        loops.sort_unstable();
+        for loop_ in loops {
+            let spans = self.copied_text.remove(&loop_).unwrap_or_default();
+            let (mut text, mut cold) = (String::new(), String::new());
+            for ((from, to), (cold_from, cold_to)) in spans {
+                text.push_str(self.out.get(from..to).ok_or("a copied block's text is gone")?);
+                cold.push_str(self.cold.get(cold_from..cold_to).ok_or("a copied cold block's text is gone")?);
+            }
+            let defined: HashSet<String> =
+                text.lines().chain(cold.lines()).filter_map(defined_name).collect();
+            // A failure out of a traced call in the second copy leaves through the same block as
+            // one in the first, whose phi is told of both (`write_traced_exit`, written after).
+            let traced: Vec<(String, u32)> = self
+                .traced_calls
+                .iter()
+                .filter(|(block, _)| defined.contains(block))
+                .map(|(block, place)| (format!("{block}v"), *place))
+                .collect();
+            self.traced_calls.extend(traced);
+            let mut renamed = |part: &str| -> String {
+                let mut written = String::with_capacity(part.len() + part.len() / 8);
+                for line in part.lines() {
+                    let mut line = renamed_line(line, &defined);
+                    if line.ends_with(CHECKED_ONCE) {
+                        line = line.replacen("br i1 false,", "br i1 true,", 1);
+                    }
+                    // A loop's own note for LLVM is its own, in each copy.
+                    if let Some((head, _)) = line.split_once(", !llvm.loop !") {
+                        let id = FIRST_LOOP + self.module.loops;
+                        self.module.loops += 1;
+                        self.declare(&format!("!{id} = distinct !{{!{id}, !13}}"));
+                        line = format!("{head}, !llvm.loop !{id}");
+                    }
+                    written.push_str(&line);
+                    written.push('\n');
+                }
+                written
+            };
+            let (text, cold) = (renamed(&text), renamed(&cold));
+            self.out.push_str(&text);
+            self.cold.push_str(&cold);
         }
+        Ok(())
     }
 
     fn terminator(&mut self, end: &Terminator) -> Result<(), String> {
@@ -4805,13 +4815,12 @@ impl Emit<'_, '_, '_> {
             // The way into a loop written twice takes the copy with no checks on its reads where
             // their check held (`find_versioned_loops`).
             Terminator::Jump(target)
-                if !self.again
-                    && let Some(scan) = self
-                        .known
-                        .versioned
-                        .iter()
-                        .find(|loop_| loop_.header == target.0 && loop_.before == self.at.0)
-                        .map(|loop_| loop_.scan) =>
+                if let Some(scan) = self
+                    .known
+                    .versioned
+                    .iter()
+                    .find(|loop_| loop_.header == target.0 && loop_.before == self.at.0)
+                    .map(|loop_| loop_.scan) =>
             {
                 let flag =
                     self.ranged_flags.get(&scan).cloned().ok_or("a loop written twice with no flag")?;
@@ -4826,17 +4835,14 @@ impl Emit<'_, '_, '_> {
                     let id = FIRST_LOOP + self.module.loops;
                     self.module.loops += 1;
                     self.declare(&format!("!{id} = distinct !{{!{id}, !13}}"));
-                    let label = self.block_label(target.0);
-                    self.line(&format!("br label %{label}, !llvm.loop !{id}"));
+                    self.line(&format!("br label %bb{}, !llvm.loop !{id}", target.0));
                 } else {
-                    let label = self.block_label(target.0);
-                    self.line(&format!("br label %{label}"));
+                    self.line(&format!("br label %bb{}", target.0));
                 }
             }
             Terminator::Branch { cond, then, otherwise } => {
                 let (cond, _) = self.operand(cond)?;
-                let (then, otherwise) = (self.block_label(then.0), self.block_label(otherwise.0));
-                self.line(&format!("br i1 {cond}, label %{then}, label %{otherwise}"));
+                self.line(&format!("br i1 {cond}, label %bb{}, label %bb{}", then.0, otherwise.0));
             }
             Terminator::Return(value) => self.give_back(value.as_ref())?,
             Terminator::Unreachable => self.line("unreachable"),
@@ -4845,6 +4851,60 @@ impl Emit<'_, '_, '_> {
         }
         Ok(())
     }
+}
+
+/// What ends the line of the branch a read covered by a loop's own check of item ranges takes:
+/// `br i1 false` to its check in the first copy of the loop, which the second turns to `true`
+/// (`Emit::write_second_copies`).
+pub(crate) const CHECKED_ONCE: &str = "; checked once";
+
+/// The name a line of LLVM text defines: a block's label, or a value.
+fn defined_name(line: &str) -> Option<String> {
+    if let Some(label) = line.strip_suffix(':')
+        && !label.starts_with(' ')
+        && !label.is_empty()
+        && label.chars().all(llvm_name_char)
+    {
+        return Some(label.to_owned());
+    }
+    let (name, _) = line.trim_start().strip_prefix('%')?.split_once(" = ")?;
+    name.chars().all(llvm_name_char).then(|| name.to_owned())
+}
+
+/// Whether a character can be part of an LLVM name written without quotes.
+fn llvm_name_char(found: char) -> bool {
+    found.is_ascii_alphanumeric() || matches!(found, '_' | '.' | '$' | '-')
+}
+
+/// A line with every name in `defined` renamed for the second copy: a value or label used, `%name`,
+/// and a block's own label.
+fn renamed_line(line: &str, defined: &HashSet<String>) -> String {
+    if let Some(label) = line.strip_suffix(':')
+        && defined.contains(label)
+    {
+        return format!("{label}v:");
+    }
+    let mut written = String::with_capacity(line.len() + 8);
+    let mut chars = line.chars().peekable();
+    while let Some(found) = chars.next() {
+        written.push(found);
+        if found != '%' {
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(&next) = chars.peek() {
+            if !llvm_name_char(next) {
+                break;
+            }
+            name.push(next);
+            chars.next();
+        }
+        written.push_str(&name);
+        if defined.contains(&name) {
+            written.push('v');
+        }
+    }
+    written
 }
 
 // Windows has no target here yet, as `fennec build` doesn't link there.

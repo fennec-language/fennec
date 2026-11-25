@@ -1,0 +1,41 @@
+# Places changed in their place inside the loop written twice: an item of a list of lists, a
+# dict's value, a field of an item, each with something worked out between reaching it and
+# changing it.
+struct Row:
+    items: list[int]
+    notes: dict[str, int]
+
+struct Board:
+    rows: list[Row]
+    groups: dict[int, list[int]]
+
+def grown(ref items: list[int], by: int) -> int:
+    items.append(by)
+    return len(items)
+
+def scan(ref board: Board, ref lists: list[list[int]], starts: list[int], order: list[int]) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        lists[value % 2].append(order[at] + len(lists))
+        board.rows[value % 2].items.append(sum(order[0:at + 1]))
+        board.rows[at % 2].notes["seen"] = (board.rows[at % 2].notes.get("seen") else 0) + value
+        if value not in board.groups:
+            board.groups[value] = []
+        board.groups[value].append(len(board.rows[0].items))
+        total += grown(ref board.rows[value % 2].items, by=order[at] * 10)
+        total += grown(ref lists[at % 2], by=len(board.groups[value]))
+    return total
+
+def main(stdout: Stdout):
+    mut board = Board(rows=[Row(items=[], notes={}), Row(items=[1], notes={"seen": 5})], groups={})
+    mut lists = [[0], [1]]
+    kept_board = board
+    kept_lists = lists
+    stdout.print(scan(ref board, ref lists, starts=[0, 4], order=[5, 6, 5, 8]))
+    for row in board.rows:
+        stdout.print(row.items, row.notes)
+    stdout.print(board.groups, lists)
+    for row in kept_board.rows:
+        stdout.print(row.items, row.notes)
+    stdout.print(kept_board.groups, kept_lists)

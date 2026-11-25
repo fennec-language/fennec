@@ -1327,8 +1327,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         else {
             continue;
         };
-        let mut blocks = loop_blocks(function, header, then.0);
-        blocks.insert(header);
+        let blocks = natural_loop(function, header, then.0, &ways_in);
         let outside: Vec<usize> = ways_in
             .get(&header)
             .map_or(&[][..], Vec::as_slice)
@@ -1342,7 +1341,8 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
             .get(*before)
             .is_some_and(|block| matches!(block.end, Terminator::Jump(to) if to.0 == header))
         {
-            loops.push((blocks, *before, *count));
+            let early = leaves_early(function, header, &blocks);
+            loops.push((blocks, *before, *count, early));
         }
     }
     // A read's check is made before the outermost loop it's in, where the loop's count says how
@@ -1352,14 +1352,21 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
     let mut places: Vec<_> = found.into_iter().collect();
     places.sort_unstable();
     for ((at, index), (bounds, read)) in places {
-        let Some((_, before, count)) = loops
+        let Some((_, before, count, early)) = loops
             .iter()
-            .filter(|(blocks, _, _)| blocks.contains(&at))
-            .max_by_key(|(blocks, before, _)| (blocks.len(), usize::MAX - before))
+            .filter(|(blocks, _, _, _)| blocks.contains(&at))
+            .max_by_key(|(blocks, before, _, _)| (blocks.len(), usize::MAX - before))
         else {
             continue;
         };
-        let scan = RangeScan { bounds, read, before: *before, count: count.count.0, stop: count.stop.0 };
+        let scan = RangeScan {
+            bounds,
+            read,
+            before: *before,
+            count: count.count.0,
+            stop: count.stop.0,
+            early: *early,
+        };
         let id = scans.iter().position(|known| *known == scan).unwrap_or_else(|| {
             scans.push(scan);
             scans.len() - 1
@@ -1379,7 +1386,12 @@ const MOST_VERSIONED_INSTS: usize = 400;
 /// today, and with those reads unchecked, the way in choosing by the flag of their check once a
 /// time in rather than at every read. A loop is its start and every block that goes back to it
 /// without passing through it; it needs one block going into it, by a plain jump, and to be small,
-/// since it's code written twice. Only loops whose reads all lean on one check.
+/// since it's code written twice. Only loops whose own reads all lean on one check: a read in its
+/// blocks that leans on another goes by that one's flag in both copies.
+///
+/// The second copy is the first's text with what it defines renamed (`Emit::write_second_copies`),
+/// so it's written with its ways out: every block only the loop's blocks lead to, as one ending
+/// in a `break` or a `return` is.
 fn find_versioned_loops(
     function: &Function,
     reads: &HashMap<(usize, usize), usize>,
@@ -1405,40 +1417,44 @@ fn find_versioned_loops(
             })
         });
         let Some(header) = header else { continue };
-        let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|block| &block.end)
+        let Some(Terminator::Branch { then, otherwise, .. }) =
+            function.blocks.get(header).map(|block| &block.end)
         else {
             continue;
         };
-        // The blocks reached from the body that go back to the start without passing through it.
-        let reached = loop_blocks(function, header, then.0);
+        let natural = natural_loop(function, header, then.0, ways_in);
         let into = ways_in.get(&header).map_or(&[][..], Vec::as_slice);
-        let mut blocks: BTreeSet<usize> = BTreeSet::from([header]);
-        let mut waiting: Vec<usize> = into.iter().copied().filter(|from| reached.contains(from)).collect();
-        while let Some(at) = waiting.pop() {
-            if blocks.insert(at) {
-                waiting.extend(
-                    ways_in
-                        .get(&at)
-                        .map_or(&[][..], Vec::as_slice)
-                        .iter()
-                        .copied()
-                        .filter(|from| reached.contains(from)),
-                );
-            }
-        }
-        let outside: Vec<usize> = into.iter().copied().filter(|from| !blocks.contains(from)).collect();
+        let outside: Vec<usize> = into.iter().copied().filter(|from| !natural.contains(from)).collect();
         let [before] = outside[..] else { continue };
         let plain_way_in = function
             .blocks
             .get(before)
             .is_some_and(|block| matches!(block.end, Terminator::Jump(to) if to.0 == header));
+        // Nothing but the way in goes into the loop's blocks from outside them.
+        let closed = natural.iter().all(|at| {
+            *at == header
+                || ways_in.get(at).map_or(&[][..], Vec::as_slice).iter().all(|from| natural.contains(from))
+        });
+        // With its ways out: each block every way into which is from those written already, but
+        // where the loop goes when its count reaches its stop, and what follows that.
+        let mut blocks = natural.clone();
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for at in 0..function.blocks.len() {
+                let into = ways_in.get(&at).map_or(&[][..], Vec::as_slice);
+                if at != otherwise.0
+                    && !blocks.contains(&at)
+                    && !into.is_empty()
+                    && into.iter().all(|from| blocks.contains(from))
+                {
+                    blocks.insert(at);
+                    grew = true;
+                }
+            }
+        }
         let insts: usize =
             blocks.iter().filter_map(|at| function.blocks.get(*at)).map(|block| block.insts.len()).sum();
-        // Every read it leans on is inside, and nothing inside goes in from elsewhere.
-        let closed = blocks.iter().all(|at| {
-            *at == header
-                || ways_in.get(at).map_or(&[][..], Vec::as_slice).iter().all(|from| blocks.contains(from))
-        });
         if plain_way_in
             && closed
             && blocks.len() <= MOST_VERSIONED_BLOCKS
@@ -1451,8 +1467,47 @@ fn find_versioned_loops(
     found
 }
 
+/// A loop's blocks: its start, and every block reached from its body that goes back to the start
+/// without passing through it. A block that ends in a `break` or a `return` isn't one.
+fn natural_loop(
+    function: &Function,
+    header: usize,
+    body: usize,
+    ways_in: &HashMap<usize, Vec<usize>>,
+) -> BTreeSet<usize> {
+    let reached = loop_blocks(function, header, body);
+    let into = ways_in.get(&header).map_or(&[][..], Vec::as_slice);
+    let mut blocks: BTreeSet<usize> = BTreeSet::from([header]);
+    let mut waiting: Vec<usize> = into.iter().copied().filter(|from| reached.contains(from)).collect();
+    while let Some(at) = waiting.pop() {
+        if blocks.insert(at) {
+            waiting.extend(
+                ways_in
+                    .get(&at)
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .copied()
+                    .filter(|from| reached.contains(from)),
+            );
+        }
+    }
+    blocks
+}
+
+/// Whether a loop can be left other than by its start's test: a block in it going out of it, as a
+/// `break` or a `return` does.
+fn leaves_early(function: &Function, header: usize, blocks: &BTreeSet<usize>) -> bool {
+    blocks.iter().filter(|at| **at != header).any(|at| {
+        function.blocks.get(*at).is_some_and(|block| {
+            matches!(block.end, Terminator::Return(_))
+                || block.end.targets().iter().any(|target| !blocks.contains(&target.0))
+        })
+    })
+}
+
 /// A loop written twice (`find_versioned_loops`): its start, the one block going into it, its
-/// blocks, and the check of item ranges whose flag picks the copy with no checks on its reads.
+/// blocks with its ways out, and the check of item ranges whose flag picks the copy with no checks
+/// on the reads that lean on it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Versioned {
     pub(crate) header: usize,
@@ -1471,6 +1526,10 @@ pub(crate) struct RangeScan {
     pub(crate) before: usize,
     pub(crate) count: usize,
     pub(crate) stop: usize,
+    /// Whether the loop can be left before its count reaches its stop, by a `break` or a `return`,
+    /// so its count says only how many turns it may take: the check is then made only for a list
+    /// short enough to cost little whatever it takes.
+    pub(crate) early: bool,
 }
 
 /// Whether a local is never below 0: each write gives it a number from 0 up, or adds one to what
@@ -6129,6 +6188,6 @@ fennec_syntax::codec_fields!(Analysis {
     slice_ranges,
 });
 fennec_syntax::codec_fields!(Versioned { header, before, blocks, scan });
-fennec_syntax::codec_fields!(RangeScan { bounds, read, before, count, stop });
+fennec_syntax::codec_fields!(RangeScan { bounds, read, before, count, stop, early });
 fennec_syntax::codec_fields!(AloneInLoop { entry, blocks, locals });
 fennec_syntax::codec_fields!(Reserved { list, limit, copied_from });

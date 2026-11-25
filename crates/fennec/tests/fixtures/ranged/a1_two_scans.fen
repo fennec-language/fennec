@@ -1,0 +1,15 @@
+# Two bucket lists in one loop nest. The outer loop is the one written twice, picked by the check
+# of `starts` against `order`. The inner read leans on another check, of `other_starts` against
+# `other`, which fails here: `other_starts` has an item far past `other`'s end.
+def both(starts: list[int], order: list[int], other_starts: list[int], other: list[int]) -> int:
+    mut added = 0
+    for at in range(starts[0], starts[1]):
+        added += order[at]
+        for inner in range(other_starts[0], other_starts[1]):
+            added += other[inner]
+    return added
+
+def main(stdout: Stdout):
+    stdout.print("in range:", both([0, 2], order=[1, 2], other_starts=[0, 1], other=[5]))
+    stdout.print("past the end:", both([0, 2], order=[1, 2], other_starts=[0, 3], other=[5]))
+    stdout.print("far past the end:", both([0, 2], order=[1, 2], other_starts=[0, 50000000], other=[5]))

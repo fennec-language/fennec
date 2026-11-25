@@ -1,0 +1,4 @@
+one 0 30
+one 1 30
+exit 1
+error: index 6 is out of range for length 6

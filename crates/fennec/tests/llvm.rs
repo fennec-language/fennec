@@ -5030,6 +5030,85 @@ fn a_read_between_two_bucket_items_checked_once_fails_where_it_always_did() -> s
     Ok(())
 }
 
+/// The programs of #9's review (`fixtures/ranged`), each printing and exiting as main's build did,
+/// whose output is pinned beside it: lists changed every way a function can, reads that fail at
+/// each place, and other features inside a loop written twice. Each is built checking proofs, so
+/// a read left unchecked wrongly stops it. Those that once read out of range, or didn't build, are
+/// built all four ways: with and without `--release`, each plain and checking proofs.
+#[test]
+fn the_bucket_review_programs_print_what_they_always_did() -> std::io::Result<()> {
+    const EVERY_WAY: [&str; 10] = [
+        "a1_two_scans",
+        "a1b_outer_index",
+        "b1_dict_entry",
+        "c04_take_item",
+        "c07_lock",
+        "c09_dicts",
+        "c10_closures",
+        "c11_failures",
+        "c15_place_waits",
+        "e1_entry_and_leave",
+    ];
+    if !ready() {
+        return Ok(());
+    }
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ranged");
+    let mut programs: Vec<PathBuf> = std::fs::read_dir(&fixtures)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<_>>()?;
+    programs.retain(|path| path.extension().is_some_and(|extension| extension == "fen"));
+    programs.sort();
+    assert_eq!(programs.len(), 45);
+    let dir = folder("bucket_review")?;
+    let executable = dir.join("program");
+    for program in &programs {
+        let name = program.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+        let wanted = std::fs::read_to_string(program.with_extension("out"))?;
+        let ways: &[(&[&str], &str)] = if EVERY_WAY.contains(&name) {
+            &[
+                (&["--llvm"], "0"),
+                (&["--llvm"], "1"),
+                (&["--llvm", "--release"], "0"),
+                (&["--llvm", "--release"], "1"),
+            ]
+        } else {
+            &[(&["--llvm"], "1")]
+        };
+        for (how, proofs) in ways {
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(*how)
+                .arg(program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            let first_error = |said: &[u8]| {
+                String::from_utf8_lossy(said)
+                    .lines()
+                    .find(|line| line.starts_with("error"))
+                    .map(|line| format!("{line}\n"))
+                    .unwrap_or_default()
+            };
+            let got = if built.status.success() {
+                let ran = Command::new(&executable).current_dir(&fixtures).output_within()?;
+                format!(
+                    "{}exit {}\n{}",
+                    String::from_utf8_lossy(&ran.stdout),
+                    ran.status.code().unwrap_or(-1),
+                    first_error(&ran.stderr)
+                )
+            } else {
+                format!("build fails\n{}", first_error(&built.stderr))
+            };
+            assert_eq!(got, wanted, "{name} {how:?} proofs {proofs}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What every call gives a helper is known in it: `go`'s sums are proven from positions and a
 /// count stepped once a turn, and a build checking proofs checks what it's given on the way in.
 /// `shifted` is given both ends of int across its calls, so its sum keeps its check, and fails.

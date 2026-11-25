@@ -648,7 +648,8 @@ fn built(
     } else {
         command.env("FENNEC_NO_CACHE", "1");
     }
-    let built = crate::llvm::built_within(&mut command)?;
+    let lines = std::fs::read_to_string(program).map_or(0, |source| source.lines().count());
+    let built = crate::llvm::built_within(&mut command, lines)?;
     let said = String::from_utf8_lossy(&built.stderr);
     if built.status.success() {
         return Ok(true);

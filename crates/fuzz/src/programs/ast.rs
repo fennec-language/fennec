@@ -1688,6 +1688,78 @@ pub(crate) const POP_WAYS: [PopWay; 13] = [
     PopWay::ByRef,
     PopWay::Empty,
 ];
+/// An `Exchanged` statement: `exchanged{id}(stdout)`, a list of one `PopTy`'s values, held in a local or
+/// a struct's field, whose items are swapped at places counting from either end, directly and
+/// through a `ref` parameter, beside a `Table` of the same values whose rows are updated at live
+/// and removed `Id`s and read back. Map row 15: nothing called `swap` or `Table.update` before.
+#[derive(Clone, Debug)]
+pub(crate) struct Exchanging {
+    pub(crate) id: usize,
+    pub(crate) ty: PopTy,
+    /// Whether the list is a struct's field, rather than a local.
+    pub(crate) in_field: bool,
+    pub(crate) steps: Vec<ExchangeStep>,
+}
+
+/// A step of an `Exchanged` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExchangeStep {
+    pub(crate) way: ExchangeWay,
+    /// The places a swap takes, from -4 to 3: a negative one counts from the end.
+    pub(crate) first: i64,
+    pub(crate) second: i64,
+    /// The value a step puts in, from 0 to 2 in `PopTy::values`.
+    pub(crate) which: usize,
+    /// The row a Table step takes, from 0 to 2: one of the three added first.
+    pub(crate) row: usize,
+}
+
+impl ExchangeStep {
+    /// How many items the list needs for both of a swap's places to be in it.
+    pub(crate) fn needs(self) -> i64 {
+        let one = |place: i64| if place < 0 { -place } else { place + 1 };
+        one(self.first).max(one(self.second))
+    }
+}
+
+/// What a step of an `Exchanged` statement does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExchangeWay {
+    /// `items.swap(first, second)`, where the list is long enough.
+    Swap,
+    /// `items.swap(first, first)`, which leaves it as it was.
+    SwapSame,
+    /// `exchanged_in(ref items, first=..., second=...)`: swapped through a `ref` parameter.
+    SwapByRef,
+    /// `items.append(value)`.
+    Pushed,
+    /// `_ = items.pop()`.
+    Dropped,
+    /// `stdout.print(items)`, partway.
+    Shown,
+    /// `stdout.print(rows.update(row_ids[row], value))`: `True` at a live `Id`, `False` at a removed one.
+    Updated,
+    /// `rows.update` then, where it took, `rows[row_ids[row]]` printed.
+    UpdatedThenRead,
+    /// `_ = rows.remove(row_ids[row])`.
+    RowRemoved,
+    /// `row_ids.append(rows.add(value))`.
+    RowAdded,
+}
+
+/// Every `ExchangeWay`, for the generator to pick from.
+pub(crate) const EXCHANGE_WAYS: [ExchangeWay; 10] = [
+    ExchangeWay::Swap,
+    ExchangeWay::SwapSame,
+    ExchangeWay::SwapByRef,
+    ExchangeWay::Pushed,
+    ExchangeWay::Dropped,
+    ExchangeWay::Shown,
+    ExchangeWay::Updated,
+    ExchangeWay::UpdatedThenRead,
+    ExchangeWay::RowRemoved,
+    ExchangeWay::RowAdded,
+];
 
 /// A `Sized` statement: `sized{id}(stdout)`, a number of one of the eight integer sizes changed a
 /// step at a time and printed after each: checked arithmetic, `wrapping_` and `saturating_`
@@ -2472,6 +2544,8 @@ pub(crate) enum Stmt {
     Arrayed(Arraying),
     /// `popped{id}(stdout)`: optionals of a heap type put in a list and taken out every way.
     Popped(Popping),
+    /// `exchanged{id}(stdout)`: a list's items swapped from either end, and a Table's rows updated.
+    Exchanged(Exchanging),
     /// `sized{id}(stdout)`: a number of one integer size, changed every way it can be.
     Sized(Sizing),
     /// `generated{id}(stdout)`: generators that fail partway, wrapped with `? from` and held in

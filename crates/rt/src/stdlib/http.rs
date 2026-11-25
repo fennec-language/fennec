@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::net::SecureStream;
-use super::net::{Failure, TlsServer, Waits, Wanted, parked_out_on};
+use super::net::{Failure, TlsServer, Waits, Wanted, connected_until, parked_out_on};
 
 /// How many redirects a request follows.
 const MOST_REDIRECTS: usize = 10;
@@ -332,30 +332,13 @@ fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream,
         .to_socket_addrs()
         .map_err(|_| Failure::NotFound(url.host.clone()))?
         .collect();
-    let mut failure = Failure::NotFound(url.host.clone());
-    for address in addresses {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(Failure::TimedOut(timeout));
-        }
-        match TcpStream::connect_timeout(&address, left) {
-            Ok(stream) => {
-                // A request is its head and then its body, two writes. Each goes out at once,
-                // rather than the body waiting for the head to be acknowledged, which a server
-                // may delay by up to 40 ms. If it can't be set, the request is only slower.
-                let _ = stream.set_nodelay(true);
-                return Ok(stream);
-            }
-            Err(error) => {
-                failure = match error.kind() {
-                    ErrorKind::ConnectionRefused => Failure::Refused(url.host.clone(), i64::from(url.port)),
-                    ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut(timeout),
-                    _ => Failure::Other(error.to_string()),
-                };
-            }
-        }
-    }
-    Err(failure)
+    let target = (url.host.as_str(), url.port);
+    let stream = super::net::first_connected(target, &addresses, (timeout, Some(deadline)), connected_until)?;
+    // A request is its head and then its body, two writes. Each goes out at once, rather than the
+    // body waiting for the head to be acknowledged, which a server may delay by up to 40 ms. If it
+    // can't be set, the request is only slower.
+    let _ = stream.set_nodelay(true);
+    Ok(stream)
 }
 
 /// A connection with TLS over it.
@@ -1856,6 +1839,52 @@ mod tests {
         let asked = there_done.join().unwrap();
         assert!(!asked.first().unwrap().contains("secret"), "{asked:?}");
         assert!(asked.first().unwrap().contains("User-Agent: kept"), "{asked:?}");
+    }
+
+    /// A server listening only on `127.0.0.1`, asked as `localhost` with a short timeout, answers
+    /// on every system. Windows looks `localhost` up as `::1` first, and refuses a connect there
+    /// only after about 2 seconds, which used to take all of a 1 second timeout before `127.0.0.1`
+    /// was tried.
+    #[test]
+    fn localhost_reaches_a_server_on_127_0_0_1_alone_within_a_short_timeout() {
+        let (port, done) = serving(vec!["HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_owned()]);
+        let answer = send(&Request {
+            method: "GET".to_owned(),
+            url: format!("http://localhost:{port}/"),
+            params: Vec::new(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            timeout: Duration::from_secs(1),
+            most_body: super::MOST_BODY,
+            hosts: None,
+        });
+        let got = answer.ok().unwrap();
+        assert_eq!((got.status, got.body.as_slice()), (200, &b"hello"[..]));
+        done.join().unwrap();
+    }
+
+    /// Ten redirects, each connecting to `localhost` again, reach a server listening only on
+    /// `127.0.0.1` within a 1 second timeout. The address that answered is tried first the next
+    /// time, so on Windows only the first connection pays `::1`'s short try.
+    #[test]
+    fn a_chain_of_redirects_to_localhost_keeps_within_a_short_timeout() {
+        let again = "HTTP/1.1 302 Found\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n".to_owned();
+        let mut answers = vec![again; 10];
+        answers.push("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_owned());
+        let (port, done) = serving(answers);
+        let answer = send(&Request {
+            method: "GET".to_owned(),
+            url: format!("http://localhost:{port}/"),
+            params: Vec::new(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            timeout: Duration::from_secs(1),
+            most_body: super::MOST_BODY,
+            hosts: None,
+        });
+        let got = answer.ok().unwrap();
+        assert_eq!((got.status, got.body.as_slice()), (200, &b"hello"[..]));
+        assert_eq!(done.join().unwrap().len(), 11);
     }
 
     /// Another port on the same host is another site, as far as who's asking goes.

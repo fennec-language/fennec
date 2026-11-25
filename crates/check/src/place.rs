@@ -280,8 +280,16 @@ impl FnCx<'_> {
     /// which can be narrower, as `int` for an `int?` given `5`, except for a function. One whose
     /// type differs from a function type it's given where, as one giving back `str` where
     /// `(int) -> str?` goes, is made to give back what that says, so the name holds that type:
-    /// what it holds can't be read back as the narrower function.
+    /// what it holds can't be read back as the narrower function. An optional of an optional,
+    /// `int??`, given an `int?` that might be `None` holds an `int??` (#2465): read as the `int?`
+    /// it was given, the `None` inside would be the `None` of the name itself.
     fn held_as(&mut self, declared: &Type, ty: Type) -> Type {
+        if let Type::Optional(inner) = self.checker.settled(declared)
+            && self.checker.settled(&inner).maybe_none()
+            && matches!(self.checker.settled(&ty), Type::Optional(_))
+        {
+            return declared.clone();
+        }
         let Type::Arrow(..) = self.checker.settled(declared) else { return ty };
         let given = match self.checker.settled(&ty) {
             Type::Function(key) => match self.checker.signature(&key) {

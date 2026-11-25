@@ -1,0 +1,480 @@
+---
+import Base from '../layouts/Base.astro';
+import Mark from '../components/Mark.astro';
+import Wordmark from '../components/Wordmark.astro';
+
+const base = import.meta.env.BASE_URL;
+const brand = (file: string) => `${base}brand/${file}`;
+
+const grounds = [
+  { name: 'Ink', hex: '#0c0b10', fg: '#fce3c4' },
+  { name: 'Navy', hex: '#1d1a36', fg: '#fce3c4' },
+  { name: 'Cream', hex: '#fce3c4', fg: '#16141f' },
+  { name: 'White', hex: '#ffffff', fg: '#16141f' },
+];
+const outfits = [
+  ['explorer', 'Explorer', 'The default: the tour, the docs, the home page'],
+  ['director', 'Director', 'Record and replay'],
+  ['inspector', 'Inspector', 'Checks, safety, the library'],
+  ['detective', 'Detective', 'Errors and their fixes'],
+  ['racer', 'Racer', 'Speed and benchmarks'],
+  ['courier', 'Courier', 'Kits, kit.lock and the Den'],
+  ['conductor', 'Conductor', 'Tasks, channels and locks'],
+];
+const files = [
+  ['fennec-mark.svg', 'The mark, in colour'],
+  ['fennec-mark-mono-dark.svg', 'The mark in one colour, for light grounds'],
+  ['fennec-mark-mono-light.svg', 'The mark in one colour, for dark grounds'],
+  ['fennec-lockup.svg', 'Mark and wordmark, for light grounds'],
+  ['fennec-lockup-light.svg', 'Mark and wordmark, for dark grounds'],
+  ['fennec-wordmark.svg', 'The wordmark'],
+  ['fennec-wordmark-display.svg', 'The heavy wordmark, for display sizes only'],
+  ['favicon.svg', 'The 16 px cut'],
+  ['fennec-app-icon.svg', 'The app icon and avatar'],
+  ['fennec-seal.svg', 'The seal, for signed releases and merch tags'],
+  ['fennec-pattern-dark.svg', 'The ear pattern, as texture only'],
+];
+---
+
+<Base title="Brand" description="Fennec's mark, wordmark and mascot, how to use them, and the files.">
+  <section class="wrap page">
+    <header class="intro">
+      <span class="eyebrow">Brand</span>
+      <h1>The mark, the word, and Scout</h1>
+      <p class="lede">The mark is Scout's head: Fennec's fennec fox. It works best with room around it, on a quiet ground. These rules keep it clear wherever it goes. The files are in <code>site/public/brand</code>, and every PNG there is rendered from the SVGs.</p>
+    </header>
+
+    <div class="hero-mark">
+      <div class="space">
+        <Mark size={220} />
+        <span class="guide" aria-hidden="true"></span>
+      </div>
+      <div class="hero-copy">
+        <h2>Clear space</h2>
+        <p>Leave at least a quarter of the mark's width clear on every side: about the width of one ear tip. Nothing else goes inside that space, text and other marks included.</p>
+        <p>Below 32 px, use the 16 px cut (<code>favicon.svg</code>), which is drawn for the pixel grid. Don't scale down the full mark.</p>
+      </div>
+    </div>
+
+    <h2>Lockups</h2>
+    <div class="locks">
+      <div class="plate light"><Mark size={56} /><Wordmark height={36} /></div>
+      <div class="plate dark"><Mark size={56} /><Wordmark height={36} /></div>
+    </div>
+    <p class="note">The wordmark is always lowercase, and its two n's peak like ears. Use the heavy cut, <code>fennec-wordmark-display.svg</code>, only at display sizes: a hero headline, a stage banner, the back of a hoodie.</p>
+
+    <h2>Grounds</h2>
+    <p class="note">Put the mark on a solid ground, or on the quiet part of an illustration. Its cream ears and face need contrast, and they lose it on texture.</p>
+    <div class="grounds">
+      {
+        grounds.map((g) => (
+          <figure>
+            <div class="swatch" style={`background:${g.hex};color:${g.fg}`}>
+              <Mark size={64} />
+            </div>
+            <figcaption><b>{g.name}</b><code>{g.hex}</code></figcaption>
+          </figure>
+        ))
+      }
+      <figure>
+        <div class="swatch art"><img src={brand('scout/scout-hero-night.webp')} alt="" /><span class="on-art"><Mark size={52} /></span></div>
+        <figcaption><b>Art, its quiet part</b><span>The dark sky, away from Scout</span></figcaption>
+      </figure>
+      <figure>
+        <div class="swatch" style="background:#f28c28"><img src={brand('fennec-mark-mono-light.svg')} alt="" width="64" height="64" /></div>
+        <figcaption><b>Orange</b><span>One-colour cream mark only</span></figcaption>
+      </figure>
+    </div>
+
+    <h2>Never</h2>
+    <div class="nevers">
+      <figure>
+        <div class="swatch pattern"><Mark size={64} /></div>
+        <figcaption><b>On the pattern</b><span>The ears and face turn muddy against the repeat.</span></figcaption>
+      </figure>
+      <figure>
+        <div class="swatch art busy"><img src={brand('scout/scout-hero-night.webp')} alt="" /><span class="on-art"><Mark size={52} /></span></div>
+        <figcaption><b>On a busy part of the art</b><span>Scout or bright detail behind the mark.</span></figcaption>
+      </figure>
+      <figure>
+        <div class="swatch" style="background:#fbfaf7"><span class="stretch"><Mark size={64} /></span></div>
+        <figcaption><b>Stretched or redrawn</b><span>Keep its proportions and its shapes.</span></figcaption>
+      </figure>
+      <figure>
+        <div class="swatch" style="background:#fbfaf7"><span class="recolour"><Mark size={64} /></span></div>
+        <figcaption><b>Recoloured</b><span>Use the colour mark or a one-colour file.</span></figcaption>
+      </figure>
+    </div>
+
+    <h2>The pattern</h2>
+    <div class="pattern-row">
+      <div class="pattern-demo dark" aria-hidden="true"></div>
+      <div class="pattern-demo cream" aria-hidden="true"></div>
+    </div>
+    <p class="note">The ear pattern is texture: a footer band, a box's lining, a slide background. Keep it low contrast, and keep it away from the mark and the wordmark. When a mark goes on a patterned surface, put a solid panel under it first, with the clear space inside the panel.</p>
+
+    <h2>The seal</h2>
+    <div class="seal-row">
+      <img src={brand('fennec-seal.svg')} alt="Fennec's seal: the mark inside a ring that reads Fennec, signed release, built in the open" width="160" height="160" />
+      <img src={brand('fennec-seal-dark.svg')} alt="" width="160" height="160" />
+      <p class="note">For signed releases, download buttons and merch tags. It doesn't replace the mark, and it isn't used below 32 px.</p>
+    </div>
+
+    <h2>Scout</h2>
+    <p class="note">Scout wears one outfit at a time, matched to what the page is about. Explorer is the default. Scout heads a page or fills an empty state; he never sits behind text.</p>
+    <div class="outfits">
+      {
+        outfits.map(([art, name, job]) => (
+          <figure>
+            <div class="tile"><img src={brand(`scout/scout-${art}.webp`)} alt={`Scout as the ${name}`} loading="lazy" /></div>
+            <figcaption><b>{name}</b><span>{job}</span></figcaption>
+          </figure>
+        ))
+      }
+    </div>
+
+    <h2>Motion</h2>
+    <p class="note">In the nav, Scout's right ear twitches and his eyes blink every few seconds, and a cursor blinks after the wordmark on hover. That's all the motion there is, and it stops for anyone who asks for reduced motion.</p>
+
+    <h2>Colours</h2>
+    <div class="colours">
+      <div><span style="background:#f28c28"></span><b>Fennec orange</b><code>#f28c28</code></div>
+      <div><span style="background:#fce3c4"></span><b>Cream</b><code>#fce3c4</code></div>
+      <div><span style="background:#1d1a36"></span><b>Navy</b><code>#1d1a36</code></div>
+      <div><span style="background:#0c0b10"></span><b>Ink</b><code>#0c0b10</code></div>
+    </div>
+
+    <h2>Files</h2>
+    <ul class="files">
+      {
+        files.map(([file, what]) => (
+          <li><a href={brand(file)}><code>{file}</code></a><span>{what}</span></li>
+        ))
+      }
+    </ul>
+  </section>
+</Base>
+
+<style>
+  .page {
+    padding-top: 3.5rem;
+  }
+
+  .intro {
+    display: grid;
+    gap: 0.9rem;
+    max-width: 46rem;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(2.2rem, 5vw, 3.2rem);
+    line-height: 1.05;
+    letter-spacing: -0.035em;
+    font-weight: 650;
+  }
+
+  h2 {
+    margin: 3.5rem 0 1rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    font-size: 1.5rem;
+    letter-spacing: -0.02em;
+    font-weight: 620;
+  }
+
+  .lede {
+    margin: 0;
+    color: var(--muted);
+    font-size: 1.1rem;
+  }
+
+  .note {
+    color: var(--muted);
+    max-width: 44rem;
+  }
+
+  .hero-mark {
+    margin-top: 2.5rem;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 2.5rem;
+    align-items: center;
+  }
+
+  .hero-mark h2 {
+    margin-top: 0;
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .hero-copy p {
+    color: var(--muted);
+    margin: 0 0 0.8rem;
+  }
+
+  .space {
+    position: relative;
+    padding: 55px;
+    background: #fbfaf7;
+    border-radius: 14px;
+  }
+
+  .space .guide {
+    position: absolute;
+    inset: 55px;
+    border: 1.5px dashed #c2620b;
+    border-radius: 4px;
+    box-shadow: 0 0 0 55px rgba(194, 98, 11, 0.08);
+    pointer-events: none;
+  }
+
+  .locks {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+  }
+
+  .plate {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 2rem;
+    border-radius: 12px;
+    min-width: 0;
+  }
+
+  .plate.light {
+    background: #fbfaf7;
+    color: #16141f;
+    border: 1px solid #ece7de;
+  }
+
+  .plate.dark {
+    background: #0c0b10;
+    color: #fce3c4;
+    border: 1px solid var(--border);
+  }
+
+  .plate :global(svg[role='img']) {
+    max-width: 100%;
+    height: auto;
+  }
+
+  .grounds,
+  .nevers {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1rem;
+  }
+
+  .nevers {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  figure {
+    margin: 0;
+    display: grid;
+    align-content: start;
+    gap: 0.5rem;
+  }
+
+  figcaption {
+    display: grid;
+    gap: 0.1rem;
+    font-size: 0.88rem;
+  }
+
+  figcaption span,
+  figcaption code {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .swatch {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    max-width: 100%;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+
+  .swatch.art img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 75% 50%;
+  }
+
+  .swatch.art .on-art {
+    position: absolute;
+    left: 12%;
+    top: 22%;
+  }
+
+  .swatch.art.busy img {
+    object-position: 66% 40%;
+    transform: scale(1.6);
+  }
+
+  .swatch.art.busy .on-art {
+    left: 44%;
+    top: 34%;
+  }
+
+  .nevers figure {
+    position: relative;
+  }
+
+  .nevers .swatch::after {
+    content: '';
+    position: absolute;
+    inset: 8px;
+    border: 2px solid #f27a6d;
+    border-radius: 8px;
+    pointer-events: none;
+  }
+
+  .swatch.pattern,
+  .pattern-demo.cream {
+    background: url('/brand/fennec-pattern-cream.svg') 0 0 / 88px 88px;
+  }
+
+  .stretch {
+    display: inline-block;
+    transform: scale(1.6, 0.8);
+  }
+
+  .recolour {
+    display: inline-block;
+    filter: hue-rotate(160deg) saturate(1.4);
+  }
+
+  .pattern-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+  }
+
+  .pattern-demo {
+    height: 140px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+
+  .pattern-demo.dark {
+    background: url('/brand/fennec-pattern-dark.svg') 0 0 / 88px 88px;
+  }
+
+  .seal-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .seal-row .note {
+    flex: 1 1 16rem;
+    margin: 0;
+  }
+
+  .outfits {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 0.8rem;
+  }
+
+  .tile {
+    aspect-ratio: 1;
+    max-width: 100%;
+    background: #fbf3e6;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.5rem;
+    display: grid;
+    grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .tile img {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    object-fit: contain;
+  }
+
+  .colours {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1rem;
+  }
+
+  .colours div {
+    display: grid;
+    gap: 0.25rem;
+    font-size: 0.88rem;
+  }
+
+  .colours span {
+    height: 64px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+  }
+
+  .colours code {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .files {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .files li {
+    display: grid;
+    grid-template-columns: minmax(0, 18rem) minmax(0, 1fr);
+    gap: 1rem;
+    font-size: 0.92rem;
+  }
+
+  .files span {
+    color: var(--muted);
+  }
+
+  @media (max-width: 900px) {
+    .hero-mark {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .space {
+      width: max-content;
+      max-width: 100%;
+    }
+    .grounds,
+    .nevers,
+    .colours {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .outfits {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .locks,
+    .pattern-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .files li {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+    }
+  }
+</style>

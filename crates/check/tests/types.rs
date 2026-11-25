@@ -137,8 +137,9 @@ fn i64_and_f64_convert_as_int_and_float_do() {
     assert_eq!(
         problems(program),
         [
-            "`i64` converts a number or text, not a list[int] @ items",
-            "`f64` converts a number or text, not a list[int] @ items",
+            "`i64(...)` converts a number, and never fails: text is read with `int.parse(text)`, which can @ text",
+            "`i64` converts a number, not a list[int] @ items",
+            "`f64` converts a number, not a list[int] @ items",
         ]
     );
 }
@@ -512,7 +513,7 @@ fn builtins_give_back_the_right_types() {
         ("len([1]) + 1.0", "can't mix int and float in `+` @ len([1]) + 1.0"),
         ("str(1) + 1", "can't use `+` on a str and an int @ str(1) + 1"),
         ("int(1.5) + 1.0", "can't mix int and float in `+` @ int(1.5) + 1.0"),
-        ("int('1') + 1", "this is the result of something that can fail @ int(\"1\") + 1"),
+        ("int.parse('1') + 1", "this is the result of something that can fail @ int.parse(\"1\") + 1"),
         ("floor(1.5) + 1.0", "can't mix int and float in `+` @ floor(1.5) + 1.0"),
         ("round(1.5) + 1.0", "can't mix int and float in `+` @ round(1.5) + 1.0"),
         ("round(1.5, 1) + 1", "can't mix int and float in `+` @ round(1.5, 1) + 1"),

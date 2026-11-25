@@ -1680,29 +1680,42 @@ done:
         self.line(&format!("br i1 {inside}, label %{find}, label %{slow}"));
         self.start_block(&find);
         self.char_place_helper();
-        // The end of the text has no character to find: it's where the bytes end.
+        // The end of the text has no character to find: it's where the bytes end, and nothing is
+        // called for it.
         let place = |emit: &mut Self, at: &str| {
-            let (found, at_end, place) = (emit.temp(), emit.temp(), emit.temp());
-            emit.line(&format!("{found} = call i64 @fen_char_place(ptr {block}, i64 {at})"));
+            let at_end = emit.temp();
             emit.line(&format!("{at_end} = icmp eq i64 {at}, {chars}"));
-            emit.line(&format!("{place} = select i1 {at_end}, i64 {bytes}, i64 {found}"));
+            let (call, placed) = (emit.label("slice_place"), emit.label("slice_placed"));
+            let before = emit.current.clone();
+            emit.line(&format!("br i1 {at_end}, label %{placed}, label %{call}"));
+            emit.start_block(&call);
+            let found = emit.temp();
+            emit.line(&format!("{found} = call i64 @fen_char_place(ptr {block}, i64 {at})"));
+            emit.line(&format!("br label %{placed}"));
+            emit.start_block(&placed);
+            let place = emit.temp();
+            emit.line(&format!("{place} = phi i64 [ {bytes}, %{before} ], [ {found}, %{call} ]"));
             place
         };
+        // A part of more than 23 characters has more than 23 bytes, so it can't be inline: it goes
+        // to `slow` without either end being found.
+        let (count, short_count) = (self.temp(), self.temp());
+        self.line(&format!("{count} = sub i64 {to}, {from}"));
+        self.line(&format!("{short_count} = icmp ule i64 {count}, 23"));
+        let short = self.label("slice_short");
+        self.line(&format!("br i1 {short_count}, label %{short}, label %{slow}"));
+        self.start_block(&short);
         // The end first, which a parser has just read up to and the cursor is at.
         let to_place = place(self, &to);
         // A short part that's ASCII is as many bytes back from the end as it has characters: it's
         // made from those bytes, and kept when they're all ASCII, as they then are its characters.
         let body = self.offset(&block, crate::emit::TEXT_START);
-        let (count, guess, short_count, in_text, try_guess) =
-            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{count} = sub i64 {to}, {from}"));
+        let (guess, in_text) = (self.temp(), self.temp());
         self.line(&format!("{guess} = sub i64 {to_place}, {count}"));
-        self.line(&format!("{short_count} = icmp ule i64 {count}, 23"));
         self.line(&format!("{in_text} = icmp sge i64 {guess}, 0"));
-        self.line(&format!("{try_guess} = and i1 {short_count}, {in_text}"));
         let (guessing, walking, joined) =
             (self.label("slice_guess"), self.label("slice_walk"), self.label("slice_joined"));
-        self.line(&format!("br i1 {try_guess}, label %{guessing}, label %{walking}"));
+        self.line(&format!("br i1 {in_text}, label %{guessing}, label %{walking}"));
         self.start_block(&guessing);
         let guess_at = self.temp();
         self.line(&format!("{guess_at} = getelementptr inbounds i8, ptr {body}, i64 {guess}"));

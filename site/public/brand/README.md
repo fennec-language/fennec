@@ -6,7 +6,7 @@ The mark is Scout's head: Fennec's fennec fox, drawn on a 100-unit grid. The SVG
 |---|---|
 | `fennec-mark.svg` | The mark in colour. |
 | `fennec-mark-mono-dark.svg`, `fennec-mark-mono-light.svg` | The mark in one colour, for light and for dark grounds, and for one-colour print. |
-| `favicon.svg`, `favicon.ico`, `favicon-32.png` | The 16 px cut: drawn for the pixel grid, not scaled down. |
+| `favicon.svg`, `favicon.ico`, `favicon-32.png` | The 16 px cut: drawn for the pixel grid, not scaled down. A copy of `favicon.ico` sits at the site root, `/favicon.ico`, for crawlers, feed readers and bookmark tools that ask for it there; keep the two the same. |
 | `favicon-mono.svg` | The 16 px cut in one colour. |
 | `fennec-app-icon.svg`, `icon-192.png`, `icon-512.png` | The app icon: the fox in negative space on an orange squircle. Also the avatar and social square. |
 | `fennec-app-icon-square.svg`, `apple-touch-icon.png` | The app icon, full bleed, for platforms that round the corners themselves. |

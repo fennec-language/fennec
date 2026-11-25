@@ -5162,6 +5162,28 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A slice of a block's text that isn't ASCII finds where its ends are only once it's known to
+    /// be short enough to be inline. A longer one goes to the runtime with nothing walked, as
+    /// `api_handler`'s body did. An end that's the text's own end is never looked for: it's where
+    /// the bytes end.
+    #[test]
+    fn a_slice_finds_its_ends_only_when_it_could_be_inline() -> Result<(), String> {
+        let source = "def go(s: str, a: int) -> str:\n    return s[a:]\n\ndef main(stdout: Stdout):\n    stdout.print(go(\"caf\u{e9} na\u{ef}ve\", 2))\n    return\n";
+        let program = lowered(source)?;
+        let (plain, _, _) = emit(&program)?;
+        let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
+        let start = plain.find("@\"f_go\"(").ok_or_else(|| format!("no go:\n{plain}"))?;
+        let go = plain.get(start..).and_then(|rest| rest.split("\n}\n").next()).unwrap_or_default();
+        let short = go.find("\nslice_short").ok_or_else(|| format!("no short check:\n{go}"))?;
+        let placed = go.find("call i64 @fen_char_place(").ok_or_else(|| format!("no place found:\n{go}"))?;
+        assert!(short < placed, "a place is found before the length is checked:\n{go}");
+        // Each place is found in a block of its own, which the text's own end goes around.
+        let guarded =
+            go.lines().filter(|line| line.starts_with("slice_place") && !line.starts_with("slice_placed"));
+        assert_eq!(go.matches("call i64 @fen_char_place(").count(), guarded.count(), "{go}");
+        Ok(())
+    }
+
     /// A build that checks proofs checks a text joined into a block is past 23 bytes, as its
     /// header, made from the block with nothing looked up, takes it to be. A plain build doesn't.
     #[test]

@@ -130,6 +130,13 @@ const SAVED_VALUES: bool = true;
 /// a sum, and transactions kept or undone while the database outside them sees what was kept.
 const STORED_ROWS: bool = true;
 
+/// Whether a statement has tasks change a `shared Bag` under its lock (`Crewed`), one task after
+/// another, each taking every number it's sent through two or three locks: appends and pops,
+/// entries set, removed and popped, and `ref self` calls with arguments worked out from the number
+/// and the bag, any of which can crash partway through a lock. `main` locks and reads the bag after
+/// each task. #2516's segfault, at `main`'s next lock after such a crash, was found only by chance.
+const LOCKED_CREWS: bool = true;
+
 /// Whether a statement sends enums to a task (`Messaged`): flat ones, which go as words once enums
 /// do (cheap messages, step 5), and ones that aren't, which are copied as blocks, each case's texts
 /// short, long, empty or the sender's own as it changes.
@@ -849,6 +856,7 @@ impl Writer<'_> {
             27 if POPPED_OPTIONALS && self.choice(4) == 0 => self.popped_optionals(body),
             27 if SAVED_VALUES && self.choice(4) == 0 => self.saved_values(body),
             27 if STORED_ROWS && self.choice(4) == 0 => self.stored_rows(body),
+            27 if LOCKED_CREWS && !self.threadless && self.choice(4) == 0 => self.locked_crews(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1720,6 +1728,14 @@ impl Writer<'_> {
         self.made += 1;
         let id = self.made;
         body.push(Stmt::Stored(super::storing::picked(id, &mut |n| self.choice(n))));
+    }
+
+    /// A `Crewed` statement: tasks changing a `shared Bag` under two or three locks each, one after
+    /// another, and `main` reading it after each.
+    fn locked_crews(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        body.push(Stmt::Crewed(super::crews::picked(id, &mut |n| self.choice(n))));
     }
 
     /// A `Messaged` statement: 2 to 8 enums of one shape sent to a task.

@@ -818,11 +818,24 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        // A float written out beside an `f32`, as in `max(speed, 0.5)`, is the nearest `f32`.
+        let mut f32_given = false;
+        for arg in args {
+            f32_given |= !matches!(arg, Operand::Float(_)) && self.operand(arg)?.1 == Kind::F32;
+        }
+        let given = |cx: &mut Self, arg: &Operand| -> Result<(String, Kind), String> {
+            let (value, kind) = cx.operand(arg)?;
+            Ok(if f32_given && matches!(arg, Operand::Float(_)) {
+                (cx.rounded_to_f32(&value), Kind::F32)
+            } else {
+                (value, kind)
+            })
+        };
         let (first, others) = args.split_first().ok_or("no argument")?;
-        let (mut best, kind) = self.operand(first)?;
+        let (mut best, kind) = given(self, first)?;
         let text = if kind.in_memory() { "ptr".to_owned() } else { self.text_of(&kind) };
         for other in others {
-            let (value, other_kind) = self.operand(other)?;
+            let (value, other_kind) = given(self, other)?;
             if other_kind != kind {
                 return Err(format!("it calls `{name}` on a {kind:?} and a {other_kind:?}"));
             }
@@ -863,7 +876,8 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{compared} = icmp {cc} i1 {score}, {best}"));
                 Ok(compared)
             }
-            Kind::Float => {
+            // An `f32` is held as the float it is exactly, so it orders as that float does.
+            Kind::Float | Kind::F32 => {
                 let (score, best) = (self.total_order_key(score), self.total_order_key(best));
                 let cc = if is_max { "sgt" } else { "slt" };
                 self.line(&format!("{compared} = icmp {cc} i64 {score}, {best}"));

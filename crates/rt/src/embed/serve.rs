@@ -1045,6 +1045,8 @@ impl Io {
             return;
         }
         let id = server.id;
+        // Closed before this worker joined, as a close before serving started is: it drains now.
+        let closed = server.draining.load(Ordering::SeqCst);
         let here = Here {
             server,
             listener,
@@ -1054,6 +1056,9 @@ impl Io {
             leaving: false,
         };
         self.servers.insert(id, here);
+        if closed {
+            self.drain_waking(id);
+        }
     }
 
     /// Leaves a server: its tasks here are cancelled, each told, ending and closing its
@@ -2268,10 +2273,20 @@ impl Stopper {
         if self.server.draining.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.drain_waking();
+    }
+
+    /// Has every worker drain the server, as a close does.
+    pub(super) fn drain_waking(&self) {
         let id = self.server.id;
         for at in 0..self.pool.threads() {
             self.pool.run_on(at, Box::new(move |io: &mut Io| io.drain_waking(id)));
         }
+    }
+
+    /// The flag the server drains by.
+    pub(super) fn draining(&self) -> &Arc<AtomicBool> {
+        &self.server.draining
     }
 
     /// Drains the server because the program was asked to stop, once: it takes no more
@@ -2300,6 +2315,8 @@ impl Stopper {
 pub(crate) struct Listened {
     pub(crate) tls: Option<Arc<dyn TlsServer>>,
     pub(crate) stop: Option<Duration>,
+    /// What its serving drains by, which a close sets, from when its listener was taken.
+    pub(crate) draining: Arc<AtomicBool>,
 }
 
 /// Serves `listener` on `pool`'s workers, running `handler` on each connection as a parked task,
@@ -2310,7 +2327,11 @@ pub(super) fn serve(
     pool: &'static Pool,
     lent: Option<&Arc<super::table::Table>>,
     handler: &Handler,
-    (started, replay, Listened { tls, stop }): (impl FnOnce(Stopper), Option<&crate::replay::Task>, Listened),
+    (started, replay, Listened { tls, stop, draining }): (
+        impl FnOnce(Stopper),
+        Option<&crate::replay::Task>,
+        Listened,
+    ),
 ) -> Served {
     let workers = pool.threads();
     let server = Arc::new(Server {
@@ -2325,7 +2346,7 @@ pub(super) fn serve(
         replayed: None,
         tls,
         stop,
-        draining: Arc::new(AtomicBool::new(false)),
+        draining,
     });
     // The worker that accepts joins last, so every other worker has joined before it hands one
     // a connection: each worker takes what it's given in turn.
@@ -2334,6 +2355,8 @@ pub(super) fn serve(
         let (joining, given) = (Arc::clone(&server), if at == 0 { listener.take() } else { None });
         pool.run_on(at, Box::new(move |io: &mut Io| io.join(joining, given)));
     }
+    #[cfg(test)]
+    at_gap(Gap::Joined);
     started(Stopper { server: Arc::clone(&server), pool });
     // A server that stops when the program's asked to drains then, and its rounds have `grace` to
     // finish before they're cut short.
@@ -2348,6 +2371,35 @@ pub(super) fn serve(
     }
     server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// For a test: where serving a server can be held up, for a close to land there.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Gap {
+    /// Its listener has left the open sockets, and nothing has joined yet.
+    Taken,
+    /// Its workers have been given it, and its stopper isn't yet known.
+    Joined,
+}
+
+/// For a test: what to do at a gap, and which.
+#[cfg(test)]
+pub(super) type AtGap = (Gap, Box<dyn FnOnce()>);
+
+#[cfg(test)]
+thread_local! {
+    /// For a test: what this thread does at a gap, as it next serves a server, once.
+    pub(super) static AT_GAP: RefCell<Option<AtGap>> = const { RefCell::new(None) };
+}
+
+/// For a test: runs what it asked to at this gap, on the thread serving.
+#[cfg(test)]
+pub(super) fn at_gap(gap: Gap) {
+    let wanted = AT_GAP.with_borrow_mut(|at| at.take_if(|(when, _)| *when == gap));
+    if let Some((_, then)) = wanted {
+        then();
+    }
 }
 
 /// For a test: the pool whose workers pause before resuming a kept round (`Io::pause_for_a_test`).
@@ -2436,8 +2488,6 @@ pub(super) fn serve_replayed(
 
 mod calls;
 
-pub(crate) use calls::close_served;
-
 /// Closes the server with this handle once it's being served, for a test's client to end the
 /// serving it talked to: only that server, as tests share the process, and [`stop_servers`] would
 /// stop another test's too (#2540). Gives up after 20 seconds, when it was never served.
@@ -2450,6 +2500,7 @@ pub(crate) fn close_when_served(server: i64) {
 }
 pub(super) use calls::served_call;
 pub use calls::{ConnBody, net_serve, net_serve_failure, stop_servers};
+pub(crate) use calls::{close_served, serving_soon};
 pub(in crate::embed) use calls::{
     served_body, served_draining, served_head, served_reads_within, served_room_for_body, served_write,
 };

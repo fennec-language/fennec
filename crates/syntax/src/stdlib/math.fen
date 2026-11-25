@@ -3,8 +3,9 @@
 ## Matrices are column-major and multiply column vectors, as in GLSL, WGSL and glTF, so a matrix
 ## goes to a GPU as it is: `Mat4`'s fields are its four columns. Rotations are right-handed, and
 ## `Mat4.perspective` maps depth to 0 through 1, as Vulkan, Metal, D3D and WebGPU take it. Each
-## formula is the one glam uses, so the two give the same numbers. Each type has a twin whose
-## parts are `float`s, as glam has: `DVec3` is the `Vec3` of doubles, and `DMat4` the `Mat4`.
+## formula is the one glam uses, so the two give the same numbers. Their parts are `f32`s, as a
+## GPU takes them, and each type has a twin whose parts are `float`s, as glam has: `DVec3` is the
+## `Vec3` of doubles, and `DMat4` the `Mat4`.
 from std import math
 
 ## Infinity, bigger than every other float: `-INFINITY` is smaller than all of them.
@@ -15,6 +16,7 @@ export INFINITY = 1e309
 export NAN = INFINITY - INFINITY
 
 ## A 2D vector, or a point in 2D.
+## Its parts are `f32`s, 32 bits each, as glam's `Vec2`'s are, and a GPU's.
 ##
 ## ```fennec
 ## from std.math import Vec2
@@ -22,8 +24,8 @@ export NAN = INFINITY - INFINITY
 ## assert point.y == 2.0
 ## ```
 export struct Vec2:
-    x = 0.0
-    y = 0.0
+    x: f32 = 0.0
+    y: f32 = 0.0
 
     ## The vector with every part 0.
     ##
@@ -58,7 +60,7 @@ export struct Vec2:
     ## from std.math import Vec2
     ## assert Vec2(x=1.0, y=2.0) * 2.0 == Vec2(x=2.0, y=4.0)
     ## ```
-    def *(self, scale: float) -> Vec2:
+    def *(self, scale: f32) -> Vec2:
         return Vec2(x=self.x * scale, y=self.y * scale)
 
     ## Each part times the same part of `other`.
@@ -85,7 +87,7 @@ export struct Vec2:
     ## from std.math import Vec2
     ## assert Vec2(x=1.0, y=2.0).dot(Vec2(x=1.0, y=1.0)) == 3.0
     ## ```
-    def dot(self, other: Vec2) -> float:
+    def dot(self, other: Vec2) -> f32:
         return self.x * other.x + self.y * other.y
 
     ## The length times itself, which needs no square root: quicker, for comparing lengths.
@@ -94,7 +96,7 @@ export struct Vec2:
     ## from std.math import Vec2
     ## assert Vec2(x=3.0, y=4.0).length_squared() == 25.0
     ## ```
-    def length_squared(self) -> float:
+    def length_squared(self) -> f32:
         return self.dot(self)
 
     ## How long the vector is.
@@ -103,7 +105,7 @@ export struct Vec2:
     ## from std.math import Vec2
     ## assert Vec2(x=3.0, y=4.0).length() == 5.0
     ## ```
-    def length(self) -> float:
+    def length(self) -> f32:
         return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
@@ -123,7 +125,7 @@ export struct Vec2:
     ## from std.math import Vec2
     ## assert Vec2(x=1.0).distance(Vec2(x=4.0)) == 3.0
     ## ```
-    def distance(self, other: Vec2) -> float:
+    def distance(self, other: Vec2) -> f32:
         return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
@@ -132,7 +134,7 @@ export struct Vec2:
     ## from std.math import Vec2
     ## assert Vec2().lerp(Vec2(x=2.0), amount=0.5) == Vec2(x=1.0)
     ## ```
-    def lerp(self, other: Vec2, amount: float) -> Vec2:
+    def lerp(self, other: Vec2, amount: f32) -> Vec2:
         return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
@@ -163,6 +165,7 @@ export struct Vec2:
         return Vec2(x=abs(self.x), y=abs(self.y))
 
 ## A 3D vector, or a point in 3D.
+## Its parts are `f32`s, 32 bits each, as glam's `Vec3`'s are, and a GPU's.
 ##
 ## ```fennec
 ## from std.math import Vec3
@@ -170,9 +173,9 @@ export struct Vec2:
 ## assert point.y == 2.0
 ## ```
 export struct Vec3:
-    x = 0.0
-    y = 0.0
-    z = 0.0
+    x: f32 = 0.0
+    y: f32 = 0.0
+    z: f32 = 0.0
 
     ## The vector with every part 0.
     ##
@@ -207,7 +210,7 @@ export struct Vec3:
     ## from std.math import Vec3
     ## assert Vec3(x=1.0, y=2.0, z=3.0) * 2.0 == Vec3(x=2.0, y=4.0, z=6.0)
     ## ```
-    def *(self, scale: float) -> Vec3:
+    def *(self, scale: f32) -> Vec3:
         return Vec3(x=self.x * scale, y=self.y * scale, z=self.z * scale)
 
     ## Each part times the same part of `other`.
@@ -234,7 +237,7 @@ export struct Vec3:
     ## from std.math import Vec3
     ## assert Vec3(x=1.0, y=2.0, z=3.0).dot(Vec3(x=1.0, y=1.0, z=1.0)) == 6.0
     ## ```
-    def dot(self, other: Vec3) -> float:
+    def dot(self, other: Vec3) -> f32:
         return self.x * other.x + self.y * other.y + self.z * other.z
 
     ## The vector at right angles to both, by the right-hand rule.
@@ -256,7 +259,7 @@ export struct Vec3:
     ## from std.math import Vec3
     ## assert Vec3(x=3.0, y=4.0).length_squared() == 25.0
     ## ```
-    def length_squared(self) -> float:
+    def length_squared(self) -> f32:
         return self.dot(self)
 
     ## How long the vector is.
@@ -265,7 +268,7 @@ export struct Vec3:
     ## from std.math import Vec3
     ## assert Vec3(x=3.0, y=4.0).length() == 5.0
     ## ```
-    def length(self) -> float:
+    def length(self) -> f32:
         return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
@@ -285,7 +288,7 @@ export struct Vec3:
     ## from std.math import Vec3
     ## assert Vec3(x=1.0).distance(Vec3(x=4.0)) == 3.0
     ## ```
-    def distance(self, other: Vec3) -> float:
+    def distance(self, other: Vec3) -> f32:
         return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
@@ -294,7 +297,7 @@ export struct Vec3:
     ## from std.math import Vec3
     ## assert Vec3().lerp(Vec3(x=2.0), amount=0.5) == Vec3(x=1.0)
     ## ```
-    def lerp(self, other: Vec3, amount: float) -> Vec3:
+    def lerp(self, other: Vec3, amount: f32) -> Vec3:
         return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
@@ -330,10 +333,11 @@ export struct Vec3:
     ## from std.math import Vec3, Vec4
     ## assert Vec3(x=1.0, y=2.0, z=3.0).extend(1.0) == Vec4(x=1.0, y=2.0, z=3.0, w=1.0)
     ## ```
-    def extend(self, w: float) -> Vec4:
+    def extend(self, w: f32) -> Vec4:
         return Vec4(x=self.x, y=self.y, z=self.z, w=w)
 
 ## A 4D vector: a point or direction in 3D with its `w`, or a column of a `Mat4`.
+## Its parts are `f32`s, 32 bits each, as glam's `Vec4`'s are, and a GPU's.
 ##
 ## ```fennec
 ## from std.math import Vec4
@@ -341,10 +345,10 @@ export struct Vec3:
 ## assert point.y == 2.0
 ## ```
 export struct Vec4:
-    x = 0.0
-    y = 0.0
-    z = 0.0
-    w = 0.0
+    x: f32 = 0.0
+    y: f32 = 0.0
+    z: f32 = 0.0
+    w: f32 = 0.0
 
     ## The vector with every part 0.
     ##
@@ -379,7 +383,7 @@ export struct Vec4:
     ## from std.math import Vec4
     ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0) * 2.0 == Vec4(x=2.0, y=4.0, z=6.0, w=8.0)
     ## ```
-    def *(self, scale: float) -> Vec4:
+    def *(self, scale: f32) -> Vec4:
         return Vec4(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
 
     ## Each part times the same part of `other`.
@@ -406,7 +410,7 @@ export struct Vec4:
     ## from std.math import Vec4
     ## assert Vec4(x=1.0, y=2.0, z=3.0, w=4.0).dot(Vec4(x=1.0, y=1.0, z=1.0, w=1.0)) == 10.0
     ## ```
-    def dot(self, other: Vec4) -> float:
+    def dot(self, other: Vec4) -> f32:
         return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
 
     ## The length times itself, which needs no square root: quicker, for comparing lengths.
@@ -415,7 +419,7 @@ export struct Vec4:
     ## from std.math import Vec4
     ## assert Vec4(x=3.0, y=4.0).length_squared() == 25.0
     ## ```
-    def length_squared(self) -> float:
+    def length_squared(self) -> f32:
         return self.dot(self)
 
     ## How long the vector is.
@@ -424,7 +428,7 @@ export struct Vec4:
     ## from std.math import Vec4
     ## assert Vec4(x=3.0, y=4.0).length() == 5.0
     ## ```
-    def length(self) -> float:
+    def length(self) -> f32:
         return math.sqrt(self.dot(self))
 
     ## The same direction with length 1, or zero for the zero vector, which has no direction.
@@ -444,7 +448,7 @@ export struct Vec4:
     ## from std.math import Vec4
     ## assert Vec4(x=1.0).distance(Vec4(x=4.0)) == 3.0
     ## ```
-    def distance(self, other: Vec4) -> float:
+    def distance(self, other: Vec4) -> f32:
         return (self - other).length()
 
     ## The point `amount` of the way to `other`: `self` at 0 and `other` at 1.
@@ -453,7 +457,7 @@ export struct Vec4:
     ## from std.math import Vec4
     ## assert Vec4().lerp(Vec4(x=2.0), amount=0.5) == Vec4(x=1.0)
     ## ```
-    def lerp(self, other: Vec4, amount: float) -> Vec4:
+    def lerp(self, other: Vec4, amount: f32) -> Vec4:
         return self * (1.0 - amount) + other * amount
 
     ## The smaller of each part.
@@ -503,6 +507,7 @@ export struct Vec4:
         return Vec3(x=self.x, y=self.y, z=self.z)
 
 ## A rotation in 3D, as a unit quaternion. `Quat()` turns nothing.
+## Its parts are `f32`s, 32 bits each, as glam's `Quat`'s are, and a GPU's.
 ##
 ## ```fennec
 ## from std.math import Quat
@@ -510,10 +515,10 @@ export struct Vec4:
 ## assert turn.w == 1.0
 ## ```
 export struct Quat:
-    x = 0.0
-    y = 0.0
-    z = 0.0
-    w = 1.0
+    x: f32 = 0.0
+    y: f32 = 0.0
+    z: f32 = 0.0
+    w: f32 = 1.0
 
     ## The rotation that turns nothing, as `Quat()` is.
     ##
@@ -529,10 +534,10 @@ export struct Quat:
     ##
     ## ```fennec
     ## from std.math import PI, Quat, Vec3
-    ## turn = Quat.from_axis_angle(Vec3(z=1.0), PI / 2.0)
+    ## turn = Quat.from_axis_angle(Vec3(z=1.0), f32(PI / 2.0))
     ## assert turn.rotate(Vec3(x=1.0)).distance(Vec3(y=1.0)) < 0.000001
     ## ```
-    def from_axis_angle(axis: Vec3, angle: float) -> Quat:
+    def from_axis_angle(axis: Vec3, angle: f32) -> Quat:
         half = angle * 0.5
         turned = axis * math.sin(half)
         return Quat(x=turned.x, y=turned.y, z=turned.z, w=math.cos(half))
@@ -541,10 +546,10 @@ export struct Quat:
     ##
     ## ```fennec
     ## from std.math import PI, Quat, Vec3
-    ## turn = Quat.from_rotation_x(PI / 2.0)
+    ## turn = Quat.from_rotation_x(f32(PI / 2.0))
     ## assert turn.rotate(Vec3(y=1.0)).distance(Vec3(z=1.0)) < 0.000001
     ## ```
-    def from_rotation_x(angle: float) -> Quat:
+    def from_rotation_x(angle: f32) -> Quat:
         half = angle * 0.5
         return Quat(x=math.sin(half), w=math.cos(half))
 
@@ -552,10 +557,10 @@ export struct Quat:
     ##
     ## ```fennec
     ## from std.math import PI, Quat, Vec3
-    ## turn = Quat.from_rotation_y(PI / 2.0)
+    ## turn = Quat.from_rotation_y(f32(PI / 2.0))
     ## assert turn.rotate(Vec3(z=1.0)).distance(Vec3(x=1.0)) < 0.000001
     ## ```
-    def from_rotation_y(angle: float) -> Quat:
+    def from_rotation_y(angle: f32) -> Quat:
         half = angle * 0.5
         return Quat(y=math.sin(half), w=math.cos(half))
 
@@ -563,10 +568,10 @@ export struct Quat:
     ##
     ## ```fennec
     ## from std.math import PI, Quat, Vec3
-    ## turn = Quat.from_rotation_z(PI / 2.0)
+    ## turn = Quat.from_rotation_z(f32(PI / 2.0))
     ## assert turn.rotate(Vec3(x=1.0)).distance(Vec3(y=1.0)) < 0.000001
     ## ```
-    def from_rotation_z(angle: float) -> Quat:
+    def from_rotation_z(angle: f32) -> Quat:
         half = angle * 0.5
         return Quat(z=math.sin(half), w=math.cos(half))
 
@@ -575,16 +580,32 @@ export struct Quat:
     ##
     ## ```fennec
     ## from std.math import PI, Quat
-    ## assert Quat.from_euler(yaw=PI / 2.0, pitch=0.0, roll=0.0) == Quat.from_rotation_y(PI / 2.0)
+    ## assert Quat.from_euler(yaw=f32(PI / 2.0), pitch=0.0, roll=0.0) == Quat.from_rotation_y(f32(PI / 2.0))
     ## ```
-    def from_euler(yaw: float, pitch: float, roll: float) -> Quat:
-        return Quat.from_rotation_y(yaw) * Quat.from_rotation_x(pitch) * Quat.from_rotation_z(roll)
+    def from_euler(yaw: f32, pitch: f32, roll: f32) -> Quat:
+        # Shoemake's way, as glam's: each turn's half angle's sine and cosine, put together once.
+        yaw_sin = math.sin(yaw * 0.5)
+        yaw_cos = math.cos(yaw * 0.5)
+        pitch_sin = math.sin(pitch * 0.5)
+        pitch_cos = math.cos(pitch * 0.5)
+        roll_sin = math.sin(roll * 0.5)
+        roll_cos = math.cos(roll * 0.5)
+        both_cos = yaw_cos * roll_cos
+        cos_sin = yaw_cos * roll_sin
+        sin_cos = yaw_sin * roll_cos
+        both_sin = yaw_sin * roll_sin
+        return Quat(
+            x=pitch_cos * both_sin + pitch_sin * both_cos,
+            y=pitch_cos * sin_cos - pitch_sin * cos_sin,
+            z=pitch_cos * cos_sin - pitch_sin * sin_cos,
+            w=pitch_cos * both_cos + pitch_sin * both_sin,
+        )
 
     ## Turning by `other`, then by this.
     ##
     ## ```fennec
     ## from std.math import PI, Quat, Vec3
-    ## quarter = Quat.from_rotation_z(PI / 2.0)
+    ## quarter = Quat.from_rotation_z(f32(PI / 2.0))
     ## assert (quarter * quarter).rotate(Vec3(x=1.0)).distance(Vec3(x=-1.0)) < 0.000001
     ## ```
     def *(self, other: Quat) -> Quat:
@@ -599,7 +620,7 @@ export struct Quat:
     ##
     ## ```fennec
     ## from std.math import PI, Quat, Vec3
-    ## assert Quat.from_rotation_z(PI / 2.0).rotate(Vec3(x=2.0)).distance(Vec3(y=2.0)) < 0.000001
+    ## assert Quat.from_rotation_z(f32(PI / 2.0)).rotate(Vec3(x=2.0)).distance(Vec3(y=2.0)) < 0.000001
     ## ```
     def rotate(self, point: Vec3) -> Vec3:
         axis = Vec3(x=self.x, y=self.y, z=self.z)
@@ -613,7 +634,7 @@ export struct Quat:
     ## from std.math import Quat
     ## assert Quat().dot(Quat()) == 1.0
     ## ```
-    def dot(self, other: Quat) -> float:
+    def dot(self, other: Quat) -> f32:
         return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
 
     ## The quaternion's length, which is 1 for a rotation.
@@ -622,7 +643,7 @@ export struct Quat:
     ## from std.math import Quat
     ## assert Quat(w=2.0).length() == 2.0
     ## ```
-    def length(self) -> float:
+    def length(self) -> f32:
         return math.sqrt(self.dot(self))
 
     ## The same rotation with length 1, which rounding drifts from after many turns.
@@ -660,10 +681,10 @@ export struct Quat:
     ##
     ## ```fennec
     ## from std.math import PI, Quat
-    ## halfway = Quat().lerp(Quat.from_rotation_z(PI / 2.0), amount=0.5)
-    ## assert halfway.dot(Quat.from_rotation_z(PI / 4.0)) > 0.999999
+    ## halfway = Quat().lerp(Quat.from_rotation_z(f32(PI / 2.0)), amount=0.5)
+    ## assert halfway.dot(Quat.from_rotation_z(f32(PI / 4.0))) > 0.999999
     ## ```
-    def lerp(self, other: Quat, amount: float) -> Quat:
+    def lerp(self, other: Quat, amount: f32) -> Quat:
         if self.dot(other) < 0.0: return self._between(other._scaled(-1.0), amount)
         return self._between(other, amount)
 
@@ -671,33 +692,51 @@ export struct Quat:
     ##
     ## ```fennec
     ## from std.math import PI, Quat
-    ## halfway = Quat().slerp(Quat.from_rotation_z(PI / 2.0), amount=0.5)
-    ## assert halfway.dot(Quat.from_rotation_z(PI / 4.0)) > 0.999999
+    ## halfway = Quat().slerp(Quat.from_rotation_z(f32(PI / 2.0)), amount=0.5)
+    ## assert halfway.dot(Quat.from_rotation_z(f32(PI / 4.0))) > 0.999999
     ## ```
-    def slerp(self, other: Quat, amount: float) -> Quat:
+    def slerp(self, other: Quat, amount: f32) -> Quat:
         mut toward = other
         mut cosine = self.dot(other)
         if cosine < 0.0:
             toward = other._scaled(-1.0)
             cosine = -cosine
-        # Nearly the same rotation: the angle's sine is too small to divide by.
-        if cosine > 1.0 - 2.220446049250313e-16: return self._between(toward, amount)
-        angle = math.acos(min(max(cosine, -1.0), 1.0))
+        # Nearly the same rotation, past 1 less an f32's epsilon: the angle's sine is too small
+        # to divide by.
+        if cosine > 0.99999988: return self._between(toward, amount)
+        angle = Quat._acos_near(cosine)
         start = math.sin(angle * (1.0 - amount))
         end = math.sin(angle * amount)
         return self._scaled(start)._plus(toward._scaled(end))._scaled(1.0 / math.sin(angle))
 
-    def _scaled(self, scale: float) -> Quat:
+    ## The angle whose cosine is `cosine`, near enough for a turn: glam's `f32` slerp uses this
+    ## approximation, DirectXMath's, so the two give the same bits. `cosine` past 1 or -1 counts
+    ## as 1 or -1.
+    def _acos_near(cosine: f32) -> f32:
+        size = abs(cosine)
+        root = math.sqrt(max(1.0 - size, 0.0))
+        mut near = -0.0012624911 * size + 0.00667009
+        near = near * size - 0.017088126
+        near = near * size + 0.03089188
+        near = near * size - 0.050174303
+        near = near * size + 0.08897899
+        near = near * size - 0.2145988
+        near = (near * size + 1.5707963) * root
+        if cosine >= 0.0: return near
+        return f32(math.PI) - near
+
+    def _scaled(self, scale: f32) -> Quat:
         return Quat(x=self.x * scale, y=self.y * scale, z=self.z * scale, w=self.w * scale)
 
     def _plus(self, other: Quat) -> Quat:
         return Quat(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z, w=self.w + other.w)
 
-    def _between(self, other: Quat, amount: float) -> Quat:
+    def _between(self, other: Quat, amount: f32) -> Quat:
         return self._scaled(1.0 - amount)._plus(other._scaled(amount)).normalize()
 
 ## A 3x3 matrix, by its columns: a rotation and scale in 3D, or a 2D transform. `Mat3()` is the
 ## identity.
+## Its parts are `f32`s, 32 bits each, as glam's `Mat3`'s are, and a GPU's.
 ##
 ## ```fennec
 ## from std.math import Mat3, Vec3
@@ -722,7 +761,7 @@ export struct Mat3:
     ##
     ## ```fennec
     ## from std.math import Mat3, PI, Quat, Vec3
-    ## turn = Mat3.from_quat(Quat.from_rotation_z(PI / 2.0))
+    ## turn = Mat3.from_quat(Quat.from_rotation_z(f32(PI / 2.0)))
     ## assert turn.mul_vec3(Vec3(x=1.0)).distance(Vec3(y=1.0)) < 0.000001
     ## ```
     def from_quat(rotation: Quat) -> Mat3:
@@ -789,7 +828,7 @@ export struct Mat3:
     ## from std.math import Mat3, Vec3
     ## assert Mat3(x_axis=Vec3(x=2.0)).determinant() == 2.0
     ## ```
-    def determinant(self) -> float:
+    def determinant(self) -> f32:
         return self.x_axis.dot(self.y_axis.cross(self.z_axis))
 
     ## The matrix that undoes this one, or `None` when it squashes space flat and nothing can.
@@ -811,6 +850,7 @@ export struct Mat3:
 
 ## A 4x4 matrix, by its columns: a transform in 3D, a camera's view or a projection. `Mat4()` is
 ## the identity.
+## Its parts are `f32`s, 32 bits each, as glam's `Mat4`'s are, and a GPU's.
 ##
 ## ```fennec
 ## from std.math import Mat4, Vec3, Vec4
@@ -845,7 +885,7 @@ export struct Mat4:
     ##
     ## ```fennec
     ## from std.math import Mat4, PI, Quat, Vec3
-    ## turn = Mat4.rotation(Quat.from_rotation_z(PI / 2.0))
+    ## turn = Mat4.rotation(Quat.from_rotation_z(f32(PI / 2.0)))
     ## assert turn.transform_vector(Vec3(x=1.0)).distance(Vec3(y=1.0)) < 0.000001
     ## ```
     def rotation(rotation: Quat) -> Mat4:
@@ -909,11 +949,11 @@ export struct Mat4:
     ##
     ## ```fennec
     ## from std.math import Mat4, PI, Vec4
-    ## projection = Mat4.perspective(fov_y=PI / 2.0, aspect=1.0, near=1.0, far=10.0)
+    ## projection = Mat4.perspective(fov_y=f32(PI / 2.0), aspect=1.0, near=1.0, far=10.0)
     ## closest = projection.mul_vec4(Vec4(z=-1.0, w=1.0))
     ## assert closest.z == 0.0 and closest.w == 1.0
     ## ```
-    def perspective(fov_y: float, aspect: float, near: float, far: float) -> Mat4:
+    def perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4:
         half = 0.5 * fov_y
         height = math.cos(half) / math.sin(half)
         depth = far / (near - far)
@@ -990,7 +1030,7 @@ export struct Mat4:
     ## from std.math import Mat4, Vec3
     ## assert Mat4.scaling(Vec3(x=2.0, y=3.0, z=4.0)).determinant() == 24.0
     ## ```
-    def determinant(self) -> float:
+    def determinant(self) -> f32:
         first = self.x_axis
         second = self.y_axis
         third = self.z_axis
@@ -1634,8 +1674,22 @@ export struct DQuat:
     ## assert DQuat.from_euler(yaw=PI / 2.0, pitch=0.0, roll=0.0) == DQuat.from_rotation_y(PI / 2.0)
     ## ```
     def from_euler(yaw: float, pitch: float, roll: float) -> DQuat:
-        return (
-            DQuat.from_rotation_y(yaw) * DQuat.from_rotation_x(pitch) * DQuat.from_rotation_z(roll)
+        # Shoemake's way, as glam's: each turn's half angle's sine and cosine, put together once.
+        yaw_sin = math.sin(yaw * 0.5)
+        yaw_cos = math.cos(yaw * 0.5)
+        pitch_sin = math.sin(pitch * 0.5)
+        pitch_cos = math.cos(pitch * 0.5)
+        roll_sin = math.sin(roll * 0.5)
+        roll_cos = math.cos(roll * 0.5)
+        both_cos = yaw_cos * roll_cos
+        cos_sin = yaw_cos * roll_sin
+        sin_cos = yaw_sin * roll_cos
+        both_sin = yaw_sin * roll_sin
+        return DQuat(
+            x=pitch_cos * both_sin + pitch_sin * both_cos,
+            y=pitch_cos * sin_cos - pitch_sin * cos_sin,
+            z=pitch_cos * cos_sin - pitch_sin * sin_cos,
+            w=pitch_cos * both_cos + pitch_sin * both_sin,
         )
 
     ## Turning by `other`, then by this.

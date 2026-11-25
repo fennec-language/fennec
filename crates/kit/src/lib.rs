@@ -151,6 +151,20 @@ pub fn embedded_name(path: &Path) -> String {
 /// What starts the name of a file `embed` read.
 pub const EMBEDDED: &str = "embed:";
 
+/// The names in a folder `embed_folder` reads, sorted, leaving out hidden ones. A folder it read
+/// is noted as these, one a line, so the caches look at a folder as it does.
+///
+/// # Errors
+/// When the folder can't be read.
+pub fn folder_names(folder: &Path) -> std::io::Result<Vec<String>> {
+    let mut names: Vec<String> = std::fs::read_dir(folder)?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 /// Where loading starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entry {

@@ -238,12 +238,7 @@ impl Walk<'_> {
             )
             .with_help("a link back to a folder would have it read again inside itself without end; take the link out"));
         }
-        let mut names: Vec<String> = std::fs::read_dir(real)
-            .map_err(unreadable)?
-            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-            .filter(|name| !name.starts_with('.'))
-            .collect();
-        names.sort();
+        let names = crate::folder_names(real).map_err(unreadable)?;
         found.1.push(Embedded { path: real.to_path_buf(), data: Blob::from(names.join("\n").into_bytes()) });
         for name in names {
             let (inner, shown) = (beside.join(&name), format!("{prefix}{name}"));

@@ -5806,6 +5806,122 @@ test \"the word isn't broken\":\n    assert word() != \"broken\"\n"
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `fennec run` in `dir` through the daemon, using the cache, as a person's run does.
+#[cfg(unix)]
+fn run_held(dir: &Path, home: &Path, args: &[&str]) -> std::io::Result<Output> {
+    crate::executables::fennec_command()
+        .arg("run")
+        .args(args)
+        .current_dir(dir)
+        .env("FENNEC_HOME", home)
+        .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
+        .env_remove("FENNEC_NO_DAEMON")
+        .env_remove("FENNEC_NO_CACHE")
+        .env("FENNEC_DAEMONS", crate::executables::daemons_of(home))
+        .output()
+}
+
+/// How many runs the daemon of `home` has started from what it held.
+#[cfg(unix)]
+fn runs_held(dir: &Path, home: &Path) -> Option<u64> {
+    let status = text(&with_daemon(dir, home, DAEMON_IDLE, &["daemon", "status"]).ok()?.stdout);
+    let Some((_, held)) = status.split_once("runs held: ") else { return Some(0) };
+    held.split_once(", and ")?.1.split_once(" run")?.0.parse().ok()
+}
+
+/// A program the daemon holds is the program of the path the run was given, which names every file
+/// in what it says: a kit run as `k` and then as `.`, or through a link, and a single file run from
+/// another folder, each say where they fail by the path they were given.
+#[cfg(unix)]
+#[test]
+fn a_held_run_names_files_by_the_path_it_was_given() {
+    let dir = scratch("daemon_held_paths").unwrap();
+    let home = dir.join("home");
+    let _stopped = DaemonsStopped { home: &home };
+    let source = "def pick(items: list[int], at: int) -> int:\n    return items[at]\n\n\
+def main(stdout: Stdout):\n    mut at = 0\n    for step in range(7):\n        at += step\n    stdout.print(pick([1, 2, 3], at=at))\n";
+    write_kit(&dir.join("k"), "k", "", &[("main.fen", source)]).unwrap();
+    std::os::unix::fs::symlink("k", dir.join("link")).unwrap();
+    std::fs::write(dir.join("prog.fen"), source).unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    // A run given `given` in `at` fails, saying it failed at `said`. The lint lines before it still
+    // name the path the kit was first run by (#2541), so only the failure's own line is looked at.
+    let fails_at = |at: &Path, given: &str, said: &str| {
+        let ran = run_held(at, &home, &[given]).unwrap();
+        let printed = text(&ran.stderr);
+        assert!(!ran.status.success() && printed.contains(&format!("--> {said}\n")), "{given}: {printed}");
+    };
+    for _ in 0..3 {
+        fails_at(&dir, "k", "k/src/main.fen:2:12");
+    }
+    assert_eq!(runs_held(&dir, &home), Some(2));
+    fails_at(&dir.join("k"), ".", "src/main.fen:2:12");
+    fails_at(&dir, "link", "link/src/main.fen:2:12");
+    fails_at(&dir, "./k", "./k/src/main.fen:2:12");
+    for _ in 0..3 {
+        fails_at(&dir, "prog.fen", "prog.fen:2:12");
+    }
+    fails_at(&dir.join("sub"), "../prog.fen", "../prog.fen:2:12");
+    fails_at(&dir, "./prog.fen", "./prog.fen:2:12");
+
+    with_daemon(&dir, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&dir, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A kit that embeds a folder is held, and what's held goes when what's in the folder changes:
+/// a file in it saved as an editor saves it, by a new file renamed over it, and run at once, and
+/// then a file added to it. Each run shows what the folder holds, and the runs after a change are
+/// held again.
+#[cfg(unix)]
+#[test]
+fn a_held_run_sees_what_an_embedded_folder_holds() {
+    let dir = scratch("daemon_held_folder").unwrap();
+    let home = dir.join("home");
+    let _stopped = DaemonsStopped { home: &home };
+    let main = "SITE = embed_folder(\"../site\")\n\ndef main(stdout: Stdout):\n    \
+                for path, data in SITE.items():\n        stdout.print(path, len(data))\n";
+    let kit = dir.join("k");
+    write_kit(&kit, "k", "", &[("main.fen", main)]).unwrap();
+    std::fs::create_dir_all(kit.join("site")).unwrap();
+    std::fs::write(kit.join("site/app.css"), "body {}\n").unwrap();
+    std::fs::write(kit.join("site/index.html"), "<p>hi</p>\n").unwrap();
+    let run = || {
+        let ran = run_held(&kit, &home, &[]).unwrap();
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        text(&ran.stdout)
+    };
+    // Runs until one starts from what's held, at most `most`, each printing `said`.
+    let held_within = |most: u64, said: &str| {
+        let before = runs_held(&kit, &home).unwrap();
+        for _ in 0..most {
+            assert_eq!(run(), said);
+            if runs_held(&kit, &home).unwrap() > before {
+                return;
+            }
+        }
+        panic!("none of {most} runs started from what was held");
+    };
+    held_within(3, "app.css 8\nindex.html 10\n");
+
+    // An editor's save: the folder's time changes, and the kit is run at once.
+    std::fs::write(kit.join("site/.app.css.tmp"), "body { color: red }\n").unwrap();
+    std::fs::rename(kit.join("site/.app.css.tmp"), kit.join("site/app.css")).unwrap();
+    held_within(3, "app.css 20\nindex.html 10\n");
+
+    // A file added to the folder, after the time it changed has settled.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    std::fs::write(kit.join("site/logo.svg"), "<svg/>\n").unwrap();
+    held_within(3, "app.css 20\nindex.html 10\nlogo.svg 7\n");
+    // A hidden file changes nothing it holds.
+    std::fs::write(kit.join("site/.DS_Store"), "").unwrap();
+    held_within(1, "app.css 20\nindex.html 10\nlogo.svg 7\n");
+
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec daemon status` and `stop` reach every daemon the user has running, one for each
 /// environment commands ran in: a terminal set up another way still sees and stops them all.
 #[cfg(unix)]

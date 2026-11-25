@@ -25,6 +25,9 @@ const MOST_KITS: usize = 64;
 /// What's held for one kit, by its absolute path.
 #[derive(Clone)]
 struct Held {
+    /// The path the run was given, which the program names every file by: a run given another
+    /// path to the same kit is another program, as `image::kept_hash` makes it.
+    given: String,
     /// The kit's files when what's held was found, before any was read.
     state: KitState,
     /// How many analyses the daemon had found wrong then, which takes back what was made before.
@@ -88,19 +91,27 @@ pub(crate) fn begin(path: &str) {
     let state = state_of(&files);
     let used = BEGUN.fetch_add(1, Ordering::Relaxed);
     let same = before.as_ref().is_some_and(|before| {
-        before.found_wrong == found_wrong && crate::verdict::same_files(&before.state, &files)
+        before.given == path
+            && before.found_wrong == found_wrong
+            && crate::verdict::same_files(&before.state, &files)
     });
+    let given = path.to_owned();
     let found = match before {
         Some(before) if same => Held { state, used, ..before },
-        _ => Held { state, found_wrong, tested: false, linted: None, image: None, root: None, used },
+        _ => Held { given, state, found_wrong, tested: false, linted: None, image: None, root: None, used },
     };
     *now = Some(Now { given: path.to_owned(), absolute, found, same });
 }
 
 /// Holds what the run found, with the files it looked at first, and lets go of the kit used
-/// longest ago past `MOST_KITS`.
+/// longest ago past `MOST_KITS`. A run that noted no image holds nothing: its look at the files
+/// may be missing what `embed` read, which only the cache's note of a load has, and the next run
+/// looks by that note.
 pub(crate) fn done() {
     let Some(now) = NOW.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
+    if now.found.image.is_none() {
+        return;
+    }
     let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
     let Some(held) = held.as_mut() else { return };
     held.insert(now.absolute, now.found);
@@ -181,10 +192,21 @@ pub(crate) fn linted(path: &str) -> Option<String> {
     held(path, |held| held.linted.clone())
 }
 
-/// Notes what the lint found with `files`, a kit's, or with a single file's text, which the files
-/// looked at first hold.
-pub(crate) fn note_linted(path: &str, files: Option<&[KitFile]>, shown: &str) {
-    note(path, files, |held| held.linted = Some(shown.to_owned()));
+/// Notes what the lint found with a kit's `files`.
+pub(crate) fn note_linted(path: &str, files: &[KitFile], shown: &str) {
+    note(path, Some(files), |held| held.linted = Some(shown.to_owned()));
+}
+
+/// Notes what the lint found in a single file with this text, if it's the text the file had when
+/// the run looked at it first: one edited in between was linted as it is now, not as it was.
+pub(crate) fn note_linted_file(path: &str, text: fennec_blake3::Hash, shown: &str) {
+    // The file is noted by its full path, as `verdict::loaded_files` notes it.
+    let module = std::path::absolute(path).map_or_else(|_| path.to_owned(), |at| at.display().to_string());
+    note(path, None, |held| {
+        if held.state.files.get(&module).is_some_and(|file| file.text == text) {
+            held.linted = Some(shown.to_owned());
+        }
+    });
 }
 
 /// The kept image of these same files, as `image::kept` gives it, which a run starting from it
@@ -232,4 +254,36 @@ fn state_of(files: &[KitFile]) -> KitState {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
     KitState { files: files.iter().map(|file| (file.module.clone(), file.clone())).collect(), noted_at }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Held, NOW, Now, PoisonError, linted, note_linted_file, state_of};
+
+    /// A single file's lint is held only for the text the run looked at first: one found after the
+    /// file was edited is for text the next run may not have, as when the edit is put back.
+    #[test]
+    fn a_single_files_lint_is_held_only_for_the_text_first_looked_at() {
+        let path = "held-lint-test.fen";
+        let module = std::path::absolute(path).unwrap().display().to_string();
+        let first =
+            fennec_build::KitFile { module, text: fennec_blake3::hash(b"first"), size: 5, changed_at: 1 };
+        let found = Held {
+            given: path.to_owned(),
+            state: state_of(&[first]),
+            found_wrong: 0,
+            tested: false,
+            linted: None,
+            image: None,
+            root: None,
+            used: 0,
+        };
+        *NOW.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(Now { given: path.to_owned(), absolute: path.to_owned(), found, same: true });
+        note_linted_file(path, fennec_blake3::hash(b"edited"), "lint: of the edited text\n");
+        assert_eq!(linted(path), None);
+        note_linted_file(path, fennec_blake3::hash(b"first"), "lint: of the first text\n");
+        assert_eq!(linted(path).as_deref(), Some("lint: of the first text\n"));
+        *NOW.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }

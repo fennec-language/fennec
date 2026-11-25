@@ -151,40 +151,45 @@ pub fn embedded_name(path: &Path) -> String {
 /// What starts the name of a file `embed` read.
 pub const EMBEDDED: &str = "embed:";
 
-/// The names in a folder `embed_folder` reads, sorted, leaving out hidden ones.
+/// A folder `embed_folder` reads, from one listing of it: the names it reads, sorted, leaving out
+/// hidden ones, and what it's noted as, so the caches look at it as it does.
+///
+/// The note says what each name is, since what's read through a link is noted by where it led: a
+/// link pointed elsewhere, a link made a file, or a folder made a file, is seen here, in the folder.
+/// Each name is a letter for what it is, `f` a file, `d` a folder or `l` a link, then the name and
+/// a zero byte, and for a link where it leads and a zero byte. No name or target holds a zero byte,
+/// so no note reads two ways, whatever a name holds.
 ///
 /// # Errors
-/// When the folder can't be read.
-pub fn folder_names(folder: &Path) -> std::io::Result<Vec<String>> {
-    let mut names: Vec<String> = std::fs::read_dir(folder)?
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| !name.starts_with('.'))
-        .collect();
-    names.sort();
-    Ok(names)
-}
-
-/// What a folder `embed_folder` read is noted as, so the caches look at it as it does: each name
-/// it reads, one a line, saying what it is. A file is its name, a folder `name/`, and a link
-/// `name -> where it leads`. What's read through a link is noted by where it led, so a link
-/// pointed elsewhere, a link made a file, or a folder made a file, is seen here, in the folder.
-///
-/// # Errors
-/// When the folder, or what a name in it is, can't be read.
-pub fn folder_text(folder: &Path) -> std::io::Result<String> {
-    let mut lines = Vec::new();
-    for name in folder_names(folder)? {
-        let at = folder.join(&name);
-        let kind = std::fs::symlink_metadata(&at)?.file_type();
-        lines.push(if kind.is_symlink() {
-            format!("{name} -> {}", std::fs::read_link(&at)?.display())
-        } else if kind.is_dir() {
-            format!("{name}/")
-        } else {
-            name
-        });
+/// When the folder, or where a link in it leads, can't be read.
+pub fn folder_listing(folder: &Path) -> std::io::Result<(Vec<String>, Vec<u8>)> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let Ok(name) = entry.file_name().into_string() else { continue };
+        if !name.starts_with('.') {
+            found.push((name, entry.file_type()?));
+        }
     }
-    Ok(lines.join("\n"))
+    found.sort_by(|(one, _), (other, _)| one.cmp(other));
+    let mut noted = Vec::new();
+    for (name, kind) in &found {
+        let letter = if kind.is_symlink() {
+            b'l'
+        } else if kind.is_dir() {
+            b'd'
+        } else {
+            b'f'
+        };
+        noted.push(letter);
+        noted.extend_from_slice(name.as_bytes());
+        noted.push(0);
+        if kind.is_symlink() {
+            noted.extend_from_slice(std::fs::read_link(folder.join(name))?.as_os_str().as_encoded_bytes());
+            noted.push(0);
+        }
+    }
+    Ok((found.into_iter().map(|(name, _)| name).collect(), noted))
 }
 
 /// Where loading starts.

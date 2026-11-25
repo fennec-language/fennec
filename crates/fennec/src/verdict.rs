@@ -52,12 +52,12 @@ fn kit_file(module: String, path: &Path, state: Option<&KitState>) -> Option<Kit
 }
 
 /// A folder's text as `embed_folder` notes it, each name in it and what it is
-/// (`fennec_kit::folder_text`). So a folder's note is always what's in it, however close to its
+/// (`fennec_kit::folder_listing`). So a folder's note is always what's in it, however close to its
 /// change it's looked at, a link in it pointed elsewhere is seen, and a hidden file coming or going
 /// changes nothing.
 fn folder_text(path: &Path) -> Option<fennec_blake3::Hash> {
-    let text = fennec_kit::folder_text(path).ok()?;
-    Some(fennec_blake3::hash(text.as_bytes()))
+    let (_, noted) = fennec_kit::folder_listing(path).ok()?;
+    Some(fennec_blake3::hash(&noted))
 }
 
 /// The files a single file's program read when it was last kept, each as it is now: the file,

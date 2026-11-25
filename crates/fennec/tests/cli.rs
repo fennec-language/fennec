@@ -5981,6 +5981,39 @@ fn a_held_run_sees_a_link_in_an_embedded_folder_changed() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// An embedded folder's note can't be read two ways, whatever a name in it holds: a link `latest`
+/// to `v2.txt` made a file named `latest -> v2.txt` is seen, with no daemon, as the cache looks.
+#[cfg(unix)]
+#[test]
+fn a_file_named_like_a_link_in_an_embedded_folder_is_seen() {
+    let dir = scratch("embedded_link_name").unwrap();
+    let main = "SITE = embed_folder(\"../site\")\n\ndef main(stdout: Stdout):\n    \
+                for path, data in SITE.items():\n        stdout.print(path, len(data))\n";
+    let kit = dir.join("k");
+    write_kit(&kit, "k", "", &[("main.fen", main)]).unwrap();
+    let site = kit.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("v2.txt"), "two\n").unwrap();
+    std::os::unix::fs::symlink("v2.txt", site.join("latest")).unwrap();
+    let run = || {
+        let ran = crate::executables::fennec_command()
+            .arg("run")
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        text(&ran.stdout)
+    };
+    assert_eq!(run(), "latest 4\nv2.txt 4\n");
+    assert_eq!(run(), "latest 4\nv2.txt 4\n");
+    std::fs::remove_file(site.join("latest")).unwrap();
+    std::fs::write(site.join("latest -> v2.txt"), "a file of its own\n").unwrap();
+    assert_eq!(run(), "latest -> v2.txt 18\nv2.txt 4\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec daemon status` and `stop` reach every daemon the user has running, one for each
 /// environment commands ran in: a terminal set up another way still sees and stops them all.
 #[cfg(unix)]

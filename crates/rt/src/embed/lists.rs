@@ -1554,7 +1554,9 @@ pub(super) fn list_of_texts(state: &mut State, items: &[u64]) -> i64 {
         state.tables.texts_element = Some(at);
         at
     };
-    let stride = if headers { Element::Text.words() } else { Element::Str.words() };
+    // A header's three words, or a block's address: what `Element::Text` and `Element::Str` take,
+    // written out, as asking either cost a call each time.
+    let stride = if headers { 3 } else { 1 };
     let block = build(state, at, stride, items, 0);
     state.heap.insert(block)
 }

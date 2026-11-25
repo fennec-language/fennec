@@ -2096,7 +2096,7 @@ fn what_std_writes_in_fennec_is_lowered_with_its_types() {
 struct Body:
     position = Vec3.zero
 
-def f() -> float:
+def f() -> f32:
     return (Body().position + Vec3(x=3.0)).length()
 ";
     let program = lowered(source).unwrap();

@@ -115,7 +115,7 @@ fn boxed_too(input: &[u8]) -> bool {
 /// The target: the two builds agree with each other and with the evaluator, and a boxed third
 /// build, where there's one, with them.
 pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
-    if crate::llvm::ready().is_err() {
+    if !crate::llvm::can_build()? {
         return Ok(());
     }
     let program = generate::program(input);
@@ -124,7 +124,7 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     // none, a program that may launch one, through `tally`, `guard_all` or a `sent`, can't be
     // built.
     let launches = !program.threadless;
-    if launches && !crate::llvm::threads_runtime_here() {
+    if launches && !crate::llvm::can_build_threads()? {
         return Ok(());
     }
     let with_program = |wrong: String| format!("{wrong}\n--- program\n{source}");
@@ -1491,7 +1491,7 @@ mod tests {
             usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
         };
         body.extend((5..25).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
-        let native = crate::llvm::ready().is_ok() && crate::llvm::threads_runtime_here();
+        let native = crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}"));
         let mut crashed = 0;
         for stmt in body {
             let program = Program { body: vec![stmt], threadless: false };
@@ -1583,7 +1583,7 @@ mod tests {
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
-        if crate::llvm::ready().is_err() || !crate::llvm::threads_runtime_here() {
+        if !crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}")) {
             return;
         }
         for release in [false, true] {
@@ -1617,7 +1617,7 @@ mod tests {
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
-        if crate::llvm::ready().is_err() || !crate::llvm::threads_runtime_here() {
+        if !crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}")) {
             return;
         }
         for release in [false, true] {

@@ -759,7 +759,7 @@ pub(crate) fn edits(input: &[u8]) -> Result<(), String> {
     let versions = versions(&plan(input));
     checks_agree(&versions)?;
     analyses_agree(&versions)?;
-    if crate::llvm::ready().is_err() {
+    if !crate::llvm::can_build()? {
         return Ok(());
     }
     builds_agree(&crate::llvm::fennec(), &versions, &crate::llvm::work().join("edits"))?;

@@ -361,7 +361,7 @@ fn sweep_old_runs(executable: &std::path::Path) {
         let ours = path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("fennec-run-"));
+            .is_some_and(|name| name.starts_with(fennec_build::RUN_PREFIX));
         let old = entry
             .metadata()
             .and_then(|metadata| metadata.modified())

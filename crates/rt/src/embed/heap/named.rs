@@ -113,20 +113,14 @@ fn id_map(instance: &Instance) -> Option<Table> {
         Value::List(items) => Some(items),
         _ => None,
     };
-    let (items, generations) = (list("items")?, list("generations")?);
-    let slots = items.iter().zip(generations.iter()).map(|(item, generation)| {
-        let Value::Int(generation) = generation else { return None };
-        Some(if *generation < 0 {
-            Slot { generation: u32::try_from(-1 - generation).ok()?, value: None }
-        } else {
-            Slot { generation: u32::try_from(*generation).ok()?, value: Some(item.clone()) }
-        })
+    let (items, tags) = (list("items")?, list("slots")?);
+    // Each slot's tag: its `Id`'s, or 0 once its item's taken out (#2424).
+    let slots = items.iter().zip(tags.iter()).map(|(item, tag)| {
+        let Value::Int(tag) = tag else { return None };
+        let tag = u64::try_from(*tag).ok()?;
+        Some(Slot { tag, value: (tag != 0).then(|| item.clone()) })
     });
-    let tag = match instance.field("tag")? {
-        Value::Int(tag) => u64::try_from(*tag).ok()?,
-        _ => return None,
-    };
-    Some(Table::tagged(slots.collect::<Option<_>>()?, tag))
+    Some(Table::new(slots.collect::<Option<_>>()?))
 }
 
 /// What `write_named` did.
@@ -203,31 +197,35 @@ fn write_id_map(
     map: &Table,
     words: &mut Vec<u64>,
 ) -> Option<()> {
-    let item = match fields.first() {
-        Some((_, Element::List(item))) => Rc::clone(item),
-        Some((_, Element::ListOf(number))) => Rc::clone(state.tables.element(*number)?),
+    let (_, items_kind) = fields.iter().find(|(field, _)| field.as_ref() == "items")?;
+    let item = match items_kind {
+        Element::List(item) => Rc::clone(item),
+        Element::ListOf(number) => Rc::clone(state.tables.element(*number)?),
         _ => return None,
     };
     let mut items = Vec::new();
-    let mut generations = Vec::new();
     for slot in &map.slots {
-        let generation = i64::from(slot.generation);
-        if let Some(value) = &slot.value {
-            write(state, &item, value, &mut items)?;
-            generations.push(generation.cast_unsigned());
-        } else {
-            items.resize(items.len() + item.words(), 0);
-            generations.push((-1 - generation).cast_unsigned());
+        match &slot.value {
+            Some(value) => write(state, &item, value, &mut items)?,
+            None => items.resize(items.len() + item.words(), 0),
         }
     }
+    let tags: Vec<u64> =
+        map.slots.iter().map(|slot| if slot.value.is_some() { slot.tag } else { 0 }).collect();
     let live = map.slots.iter().filter(|slot| slot.value.is_some()).count();
-    words.push(u64::try_from(super::super::lists::list_of_items(state, &item, &items)).ok()?);
     let ints = Rc::new(Element::Int);
-    words.push(u64::try_from(super::super::lists::list_of_items(state, &ints, &generations)).ok()?);
-    words.push(u64::try_from(live).ok()?);
-    // Where to start looking for a free slot: from the first is always right.
-    words.push(0);
-    words.push(map.tag);
+    for (field, _) in fields {
+        let word = match field.as_ref() {
+            "items" => super::super::lists::list_of_items(state, &item, &items),
+            // Each slot's tag, 0 for one whose item's taken out.
+            "slots" => super::super::lists::list_of_items(state, &ints, &tags),
+            "live" => i64::try_from(live).ok()?,
+            // Where to start looking for a free slot: from the first is always right.
+            "free_from" => 0,
+            _ => return None,
+        };
+        words.push(word.cast_unsigned());
+    }
     Some(())
 }
 

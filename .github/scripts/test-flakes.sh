@@ -2,7 +2,7 @@
 # Tries `flakes.sh` on a throwaway repository, as the gate runs it: a gate of a change fails, main
 # may move, and the next gate of the change passes. What failed is a flake when it passed on the
 # same tree, or when main changed nothing it tests. It's fixed on main, and kept out of the ledger,
-# when main changed the compiler's crates or the failing test's own file.
+# when main changed the compiler's crates, the failing test's own file or its crate's code.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d)"
@@ -22,8 +22,10 @@ mkdir -p "$FENNEC_HOME"
 repo="$work/repo"
 git init -q -b main "$repo"
 cd "$repo"
-mkdir -p crates/llvm/src crates/fennec/tests docs
+mkdir -p crates/llvm/src crates/fennec/src crates/fennec/tests crates/other/src docs
 echo start > crates/llvm/src/lib.rs
+echo start > crates/fennec/src/lib.rs
+echo start > crates/other/src/lib.rs
 echo start > crates/fennec/tests/llvm.rs
 echo start > docs/notes.md
 git add -A
@@ -87,8 +89,15 @@ grep -q "as fixed on main, not a flake" "$work/said" || fail "it isn't said to b
 round crates/fennec/tests/llvm.rs
 expect 1 2 "main changed the failing test's own file, so it's fixed on main"
 
+round crates/fennec/src/lib.rs
+expect 1 3 "main changed the code of the failing test's crate, so it's fixed on main"
+grep -q "after main changed crates/fennec/src/lib.rs" "$fixed" || fail "the entry doesn't name the crate's code: $(cat "$fixed")"
+
+round crates/other/src/lib.rs
+expect 2 3 "main changed only another crate's code, so it's a flake"
+
 round -
-expect 2 2 "it passed on the same tree, so it's a flake"
+expect 3 3 "it passed on the same tree, so it's a flake"
 
 [ -z "$(ls -A "$FENNEC_HOME/flakes-pending" 2> /dev/null)" ] || fail "failures were left pending"
 echo "test-flakes: passed"

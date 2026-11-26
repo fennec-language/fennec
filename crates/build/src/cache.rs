@@ -401,6 +401,15 @@ impl Cache {
     /// out, where a link can be made. Gives back whether there was one, and one that doesn't match
     /// its hash wasn't. An entry written as bytes, which ends in its hash, is written out whole
     /// without it.
+    ///
+    /// On Unix, `to` is a symbolic link to a hard link of the kept program beside it, which every run
+    /// of the same program shares: `fennec-run-kept-` and part of its hash, a name no sweep of a
+    /// command's scratch takes for a process's. A hard link for each run was most of a
+    /// no-change run's `link_out`: 5.6M instructions on APFS, against 0.6M for a symbolic link,
+    /// and the shared one is made once. Started through either, the program is the kept file
+    /// itself, so macOS doesn't check it as a new one. The shared name holds the program as a run's
+    /// own hard link did, so a cleanup keeps it, and a sweep of what runs put out takes it as it
+    /// took those, by the program's time, marked as it's put out.
     pub fn link_out(&self, kind: &str, name: &str, to: &Path) -> std::io::Result<bool> {
         if !self.usable() {
             return Ok(false);
@@ -421,7 +430,7 @@ impl Cache {
             return Ok(false);
         }
         let _ = std::fs::remove_file(to);
-        if std::fs::hard_link(&path, to).is_err() {
+        if linked(&path, &sum, to).is_err() {
             std::fs::copy(&path, to)?;
             read_only_program(to)?;
         }
@@ -672,6 +681,37 @@ const CHECK_STANDS: Duration = Duration::from_hours(1);
 /// How old a kept program's time may be when a run puts it out without marking it again. A later
 /// run sweeps what a run put out once its time is 10 minutes old, and this is well inside that.
 const RUN_MARKED: Duration = Duration::from_mins(1);
+
+/// A second name at `to` for the kept program at `path`, whose hash is `sum` (see
+/// [`Cache::link_out`]): for a run's on Unix, a symbolic link to the hard link every run of it
+/// shares, made if it isn't there, and otherwise a hard link of its own. Only a run's: what runs
+/// put out is swept once it's old, the shared name too, and a name nothing sweeps would hold the
+/// program for good.
+fn linked(path: &Path, sum: &str, to: &Path) -> std::io::Result<()> {
+    let a_run =
+        to.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(RUN_PREFIX));
+    #[cfg(unix)]
+    if a_run {
+        use std::os::unix::fs::MetadataExt as _;
+        let short = sum.get(..32).unwrap_or(sum);
+        let shared = to.with_file_name(format!("{RUN_PREFIX}kept-{short}"));
+        let file = |at: &Path| std::fs::metadata(at).map(|metadata| (metadata.dev(), metadata.ino()));
+        if file(&shared).ok() != file(path).ok() {
+            // Another program's, or one swept since: put in place by a rename, so a run starting
+            // meanwhile finds the one or the other.
+            let fresh = to.with_file_name(format!("{RUN_PREFIX}kept-{short}.{}", std::process::id()));
+            let _ = std::fs::remove_file(&fresh);
+            std::fs::hard_link(path, &fresh)?;
+            std::fs::rename(&fresh, &shared)?;
+        }
+        return std::os::unix::fs::symlink(&shared, to);
+    }
+    let _ = (sum, a_run);
+    std::fs::hard_link(path, to)
+}
+
+/// How the names of what runs put out start, which a later run sweeps once they're old.
+pub const RUN_PREFIX: &str = "fennec-run-";
 
 /// The ending of the file beside a kept program noting its last whole check.
 const SEEN: &str = "seen";

@@ -1253,25 +1253,87 @@ pub use pool::{has_worker_setup, run_worker_setup};
 pub use pool::{on_task_resume, set_worker_setup, stack_limit};
 pub(crate) use pool::{stress_asked, workers_wanted};
 
+/// The tables each test that runs on the pool or serves gives its workers: a string's shape, and
+/// lists of ints as element 0 and of strings as element 1.
+///
+/// The workers' setup is the process's, kept from the first test to give one, so every such test
+/// must give this same one, through [`set_test_worker_setup`]: when one test's workers had lists of
+/// strings as element 0 and another's lists of ints, whichever test came first set up both
+/// tests' workers, and the other's lists came out of the wrong kind (#2540).
+#[cfg(test)]
+pub(in crate::embed) fn test_worker_tables() -> super::Tables {
+    use crate::packed::Element;
+    super::Tables {
+        shapes: vec![std::rc::Rc::new(Element::Str)],
+        elements: vec![std::rc::Rc::new(Element::Int), std::rc::Rc::new(Element::Str)],
+        ..super::Tables::default()
+    }
+}
+
+/// Gives the workers' setup every test that runs on the pool or serves gives: a runtime started
+/// with [`test_worker_tables`].
+#[cfg(test)]
+pub(in crate::embed) fn set_test_worker_setup() {
+    set_worker_setup(Box::new(|| super::start(test_worker_tables(), crate::Inputs::default())));
+}
+
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex};
 
     use fennec_syntax::{Diagnostic, Span};
 
     use super::super::{State, Tables, attempt, finish, heap, lists, start, strings, threads, with};
-    use crate::packed::Element;
     use crate::value::Value;
     use std::sync::atomic::Ordering;
 
     fn tables() -> Tables {
-        Tables {
-            shapes: vec![Rc::new(Element::Str)],
-            elements: vec![Rc::new(Element::Int)],
-            ..Tables::default()
+        super::test_worker_tables()
+    }
+
+    /// The workers' setup is given by a program, once, and by tests only through
+    /// [`super::set_test_worker_setup`]: as the process keeps the first one given, a test giving
+    /// its own set up every other test's workers with its tables (#2540). Each call of
+    /// `set_worker_setup` in the runtime's sources is one of those, or where it's defined.
+    #[test]
+    fn only_a_program_and_the_shared_test_setup_set_workers_up() {
+        // Each file is named by its path from `src`, its parts joined by `/`, however the system
+        // writes paths: Windows gave them whole, with `\\`, and none matched (#2546's follow-up).
+        fn calls_in(sources: &std::path::Path, folder: &std::path::Path, found: &mut Vec<(String, usize)>) {
+            for entry in std::fs::read_dir(folder).expect("the runtime's sources").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    calls_in(sources, &path, found);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    let source = std::fs::read_to_string(&path).expect("a source file");
+                    let calls = source.matches(["set_worker", "_setup("].concat().as_str()).count();
+                    if calls > 0 {
+                        let inside = path.strip_prefix(sources).expect("a file under the sources");
+                        let parts: Vec<String> = inside
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                            .collect();
+                        found.push((parts.join("/"), calls));
+                    }
+                }
+            }
         }
+        let mut found = Vec::new();
+        let sources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        calls_in(&sources, &sources, &mut found);
+        found.sort();
+        let wanted = [
+            // A program's own setup, given as it starts.
+            ("embed/aot.rs", 1),
+            // Defined without threads, and the shared test setup's one call.
+            ("embed/parallel.rs", 2),
+            // Defined with them.
+            ("embed/parallel/pool.rs", 1),
+        ];
+        let wanted: Vec<(String, usize)> =
+            wanted.iter().map(|(name, calls)| ((*name).to_owned(), *calls)).collect();
+        assert_eq!(found, wanted, "a test gives the workers a setup of its own, not set_test_worker_setup()");
     }
 
     /// A thread's call shares its ranges with a pool of two workers or more, and keeps them with a
@@ -1288,9 +1350,7 @@ mod tests {
     }
 
     fn begin() {
-        super::set_worker_setup(Box::new(|| {
-            start(tables(), crate::Inputs::default());
-        }));
+        super::set_test_worker_setup();
         start(tables(), crate::Inputs::default());
     }
 

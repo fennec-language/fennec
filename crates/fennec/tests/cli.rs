@@ -3989,7 +3989,7 @@ fn fix_migrate_rewrites_what_needs_no_types_in_a_program_that_doesnt_check() {
     let program = dir.join("mistake.fen");
     let path = program.to_string_lossy().into_owned();
     let old = "def size(items: list[int]) -> int:\n    items.len()\n\n\
-        def main(stdout: Stdout):\n    got = int(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
+        def main(stdout: Stdout):\n    got = int.parse(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
         stdout.print(size([got]), nowhere)\n";
     std::fs::write(&program, old).unwrap();
     let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();

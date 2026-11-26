@@ -11,7 +11,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The file in each folder its process holds a lock on.
 const HELD: &str = ".held";
@@ -31,16 +31,17 @@ pub(crate) fn own(folder: &Path) -> io::Result<()> {
     if owned.contains_key(folder) {
         return Ok(());
     }
+    let mut denied_since = None;
     loop {
         match std::fs::create_dir_all(folder) {
-            Err(err) if !swept(&err, folder) => return Err(err),
+            Err(err) if !swept(&err, folder) && !pending(&err, &mut denied_since) => return Err(err),
             Err(_) => continue,
             Ok(()) => {}
         }
         let held = folder.join(HELD);
         let file = match OpenOptions::new().create(true).truncate(false).write(true).open(&held) {
             Ok(file) => file,
-            Err(err) if swept(&err, folder) => continue,
+            Err(err) if swept(&err, folder) || pending(&err, &mut denied_since) => continue,
             Err(err) => return Err(err),
         };
         file.lock()?;
@@ -63,6 +64,28 @@ fn swept(err: &io::Error, folder: &Path) -> bool {
     let kind = err.kind();
     matches!(kind, io::ErrorKind::NotFound | io::ErrorKind::AlreadyExists | io::ErrorKind::InvalidInput)
         && !folder.is_dir()
+}
+
+/// How long a process making its folder waits out `PermissionDenied` on Windows. There, an open
+/// file can't be removed: it waits, pending deletion, until it's closed, and making or opening it
+/// meanwhile is denied. A sweep removing the folder holds its file open, and locked, until the
+/// removal is done, so the denial lasts only as long as one folder's removal. Past this, it's taken
+/// to be a real denial, such as a folder of the same name that isn't this user's.
+const PENDING_FOR: Duration = Duration::from_secs(10);
+
+/// Whether `err`, from making a folder or its file, is Windows denying it while a sweep's removal
+/// of it is pending, so waiting a moment and making it again is the answer. `denied_since` is when
+/// the denials began.
+fn pending(err: &io::Error, denied_since: &mut Option<Instant>) -> bool {
+    if !cfg!(windows) || err.kind() != io::ErrorKind::PermissionDenied {
+        return false;
+    }
+    let since = *denied_since.get_or_insert_with(Instant::now);
+    if since.elapsed() > PENDING_FOR {
+        return false;
+    }
+    std::thread::sleep(Duration::from_millis(1));
+    true
 }
 
 /// Lets go of a folder this process owns, and removes it.
@@ -164,7 +187,7 @@ mod tests {
     /// A process that makes its folder while a sweep holds the lock on it, to remove it, waits for
     /// the sweep, finds its folder gone and makes it again, and the next sweep keeps it. The owner
     /// may make the folder or open its file at any moment of the removal, which on macOS can fail
-    /// with `InvalidInput`, so it's done 50 times.
+    /// with `InvalidInput`, and on Windows with `PermissionDenied`, so it's done 50 times.
     #[test]
     fn a_folder_made_while_a_sweep_removes_it_is_made_again_and_kept() {
         let folder = test_folder("swept");

@@ -1219,6 +1219,51 @@ fn flat_messages_replay_as_they_ran_on_one_thread_and_four() -> std::io::Result<
     Ok(())
 }
 
+/// `Table`s copied every way a run can copy one replay as they ran (#2424): every item added takes a
+/// tag of its own from one count, which a replay has to hand out the same way. Recorded on 4
+/// threads and replayed on 1, and the other way.
+#[test]
+fn copied_tables_replay_as_they_ran_on_four_threads_and_one() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("copied-tables")?;
+    let program = dir.join("tables.fen");
+    std::fs::write(&program, include_str!("fixtures/tables_copied.fen"))?;
+    let executable = dir.join("tables");
+    let built = fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_THREADS_RUNTIME", "1")
+        .output_within()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for (recording, (recorded_on, replayed_on)) in [("4", "1"), ("1", "4")].into_iter().enumerate() {
+        let log = dir.join(format!("tables-{recording}.log"));
+        fennec_rt::replay::start_log(&log, format!("native\0{}", program.display()).as_bytes())?;
+        let recorded = std::process::Command::new(&executable)
+            .env("FENNEC_RECORD", &log)
+            .env("FENNEC_THREADS", recorded_on)
+            .current_dir(&dir)
+            .output_within()?;
+        let recorded = outcome(&recorded);
+        assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+        assert_eq!(recorded.0, include_str!("fixtures/tables_copied.out"), "recorded on {recorded_on}");
+        let replayed = std::process::Command::new(&executable)
+            .env("FENNEC_REPLAY", &log)
+            .env("FENNEC_THREADS", replayed_on)
+            .current_dir(&dir)
+            .output_limited(DEADLINE, Duration::from_secs(60))?;
+        let replayed = outcome(&replayed);
+        let how = format!("recorded on {recorded_on} threads, replayed on {replayed_on}: {}", replayed.1);
+        assert_eq!(replayed.0, recorded.0, "{how}");
+        assert_eq!(replayed.2, Some(0), "{how}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A replay that can't follow its recording says where it first couldn't, once, and ends. Here
 /// `main` takes a lock its recording didn't. A replay of that waited out its patience, crashed, and
 /// then its connection's cleanup asked for a close where the recording read a line: the replay said

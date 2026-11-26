@@ -305,6 +305,22 @@ mod tests {
         Ok(())
     }
 
+    /// A bucket loop left by `break`, inside another loop, is written twice too: its blocks are
+    /// found back from its own jumps back to its start, so the `break`'s way round the outer loop
+    /// to the block going into it doesn't make that block one of its own.
+    #[test]
+    fn a_bucket_loop_left_by_a_break_inside_another_is_written_twice() -> Result<(), String> {
+        let body = "def go(starts: list[int], order: list[int], wanted: int) -> int:\n    mut total = 0\n    for cell in range(len(starts) - 1):\n        for at in range(starts[cell], starts[cell + 1]):\n            if order[at] == wanted:\n                total += order[at] * 100\n                break\n            total += order[at]\n    return total\n";
+        let (units, _, _) = crate::emit(&lowered(body)?)?;
+        let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+        assert_eq!(text.matches("call i64 @llvm.umax.i64(").count(), 1, "{text}");
+        // `order[at]` read twice is placed once: one read leans on the check, in the second copy.
+        assert_eq!(text.matches("br i1 true, label %ranged").count(), 1, "{text}");
+        let compared = same_copies(text);
+        assert!(compared.as_ref().is_ok_and(|blocks| *blocks > 0), "{compared:?}\n{text}");
+        Ok(())
+    }
+
     /// Compares the two copies of each loop written twice in a function's LLVM text: every block of
     /// the second, its names' `v` taken off and its `checked once` branch turned back, has to be the
     /// first's block of the same name, but for the note on a loop's own back jump. Gives back how

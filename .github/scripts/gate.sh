@@ -337,7 +337,11 @@ quick() {
   .github/scripts/runtime-crates.sh || { echo "runtime-crates" >> "$names"; failed=1; }
   .github/scripts/tsan-suppressions-check.sh || { echo "tsan-suppressions-check" >> "$names"; failed=1; }
   .github/scripts/test-known-failures.sh > /dev/null || { echo "test-known-failures" >> "$names"; failed=1; }
-  .github/scripts/linkage-check.sh target/debug/fennec || { echo "linkage-check" >> "$names"; failed=1; }
+  # Built afresh, not from the store: a workaround for #2593, where the store keys a runtime
+  # archive by name and stamp, so a hello world linked against another archive from the same
+  # source came back from it 7% bigger and failed every gate's size check. The fix for #2593
+  # takes this out.
+  FENNEC_NO_CACHE=1 .github/scripts/linkage-check.sh target/debug/fennec || { echo "linkage-check" >> "$names"; failed=1; }
   # With no git settings but git's own, as CI's runners have: this Mac's git names a new
   # repository's first branch `main`, which hid two tests that needed it, and CI found them.
   local script

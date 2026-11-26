@@ -1176,7 +1176,28 @@ impl Emit<'_, '_, '_> {
                     }
                     _ => held,
                 };
-                text = self.append_piece(&text, &header);
+                // An int's text is inline and ASCII, at most 20 digits and a sign, so its characters
+                // are its bytes. A float's can take 24, past what a header holds inline.
+                text = if kind == Kind::Int {
+                    self.append_header_known(&text, &header, true)
+                } else {
+                    self.append_piece(&text, &header)
+                };
+                continue;
+            }
+            // A literal's length and characters are known here. One that fits inline goes on as
+            // a header made of constants, which LLVM sees through; a longer one is its block,
+            // its counts written in rather than read.
+            if let FormatPart::Text(literal) = part
+                && self.headers()
+            {
+                text = if literal.len() <= 23 {
+                    let header = self.literal_header(literal);
+                    self.append_header_known(&text, &header, literal.is_ascii())
+                } else {
+                    let block = self.literal(literal);
+                    self.append_text_counted(&text, &block, Some((literal.len(), literal.chars().count())))
+                };
                 continue;
             }
             let (piece, owned) = match part {
@@ -1195,6 +1216,17 @@ impl Emit<'_, '_, '_> {
     /// `text += more`, taking over `text`'s owner: in place when nothing else holds it and it
     /// has room, which needs no call, or by the runtime, which may make a bigger block.
     pub(crate) fn append_text(&mut self, text: &str, more: &str) -> String {
+        self.append_text_counted(text, more, None)
+    }
+
+    /// [`Self::append_text`], with `counts`, when they're known here, `more`'s length in bytes
+    /// and in characters, written in rather than read from its block.
+    pub(crate) fn append_text_counted(
+        &mut self,
+        text: &str,
+        more: &str,
+        counts: Option<(usize, usize)>,
+    ) -> String {
         self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
         self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
         let header = HEADER_ACCESS;
@@ -1205,7 +1237,10 @@ impl Emit<'_, '_, '_> {
         let (length, more_length, total, room, fits, quick) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{length} = load i64, ptr {length_at}{header}"));
-        self.line(&format!("{more_length} = load i64, ptr {more_length_at}{header}"));
+        match counts {
+            Some((bytes, _)) => self.line(&format!("{more_length} = add i64 0, {bytes}")),
+            None => self.line(&format!("{more_length} = load i64, ptr {more_length_at}{header}")),
+        }
         self.line(&format!("{total} = add i64 {length}, {more_length}"));
         self.line(&format!("{room} = load i64, ptr {room_at}{header}"));
         self.line(&format!("{fits} = icmp ule i64 {total}, {room}"));
@@ -1224,7 +1259,10 @@ impl Emit<'_, '_, '_> {
         let (chars_at, more_chars_at) = (at(self, text, TEXT_CHARS), at(self, more, TEXT_CHARS));
         let (chars, more_chars, all_chars) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{chars} = load i64, ptr {chars_at}{header}"));
-        self.line(&format!("{more_chars} = load i64, ptr {more_chars_at}{header}"));
+        match counts {
+            Some((_, characters)) => self.line(&format!("{more_chars} = add i64 0, {characters}")),
+            None => self.line(&format!("{more_chars} = load i64, ptr {more_chars_at}{header}")),
+        }
         self.line(&format!("{all_chars} = add i64 {chars}, {more_chars}"));
         self.line(&format!("store i64 {all_chars}, ptr {chars_at}{header}"));
         let quick_end = self.current.clone();

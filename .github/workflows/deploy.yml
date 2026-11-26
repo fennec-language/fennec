@@ -2,7 +2,7 @@ name: Deploy
 
 # Builds the website and deploys it, and the fennec-lang.com redirect, to Cloudflare. It runs
 # only once the CLOUDFLARE_ACCOUNT_ID repository variable exists, and the API token lives in
-# the `production` environment, which only `main` can use.
+# the `site` environment, which only `main` can use.
 on:
   push:
     branches: [main]
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
-      name: production
+      name: site
       url: https://fennec-lang.dev
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

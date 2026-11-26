@@ -28,7 +28,7 @@ This page is the store's format, so that the launcher and a shared cache can rea
 
 Beside `fennec` is the toolchain's own store, `fennec-store/`, laid out as a home's `cache/` is. It
 holds what depends only on that build of Fennec and the libraries beside it: the standard library's
-parse, and which build each runtime library is from. Every home reads it when its own cache hasn't
+parse, and what each runtime library is: the build its stamp names and the hash of its bytes. Every home reads it when its own cache hasn't
 got an entry, so an empty home, as each test's and each CI job's is, doesn't parse the standard
 library or read a runtime library through again. What a command works out is kept in both. A store
 that can't be written, as in a folder only the system writes, is only read. `FENNEC_TOOLCHAIN_STORE`
@@ -97,7 +97,7 @@ Every build gets a root hash: one hash of everything the finished program depend
 - the target, as the LLVM triple and the CPU it's built for;
 - the version of LLVM that compiles it, so a program built before LLVM's tools changed isn't handed back after;
 - the flags and switches that change what's built: a release build, a static one, `--cpu baseline`, and `FENNEC_SANITIZE`, `FENNEC_CHECK_PROOFS` and `FENNEC_STRIP_FACTS`, so a program built one way is never handed back for another;
-- the runtime library linked in, by the hash of its file.
+- the runtime library linked in, and a release's runtime bitcode, by the hash of each one's bytes, kept by its path, size and when it changed so it's read once each time it changes. Its stamp names only the source it's built from, so two built from the same source with other features or another profile once keyed the same program (#2593).
 
 The finished program is kept in the store under its root hash, with the list of its functions'
 hashes beside it, so that an unchanged build reuses it whole, and a build that changed reuses every

@@ -91,6 +91,7 @@ jobs:
         if: always()
         with:
           name: suite-${{ matrix.os }}
+          retention-days: 7
           path: |
             suite-*.json
             suite-parallel-*.md

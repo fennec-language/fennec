@@ -673,6 +673,8 @@ jobs:
         run: .github/scripts/test-covered-by-push.sh
       - name: Deploying only the site or redirect that differs from what's live, on a throwaway site
         run: .github/scripts/test-site-deploys.sh
+      - name: The release workflow's nightly run building nothing on a commit that passed, against a GitHub answering from a file
+        run: .github/scripts/test-release-passed.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
         run: .github/scripts/test-nightly-report.sh
       - name: A mutants run's counts, a timeout neither caught nor missed, and one where most timed out failing
@@ -879,6 +881,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: asan-fuzz-found-${{ matrix.half }}
+          retention-days: 7
           path: found
           if-no-files-found: ignore
 
@@ -1175,6 +1178,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tsan-fuzz-found
+          retention-days: 7
           path: found
           if-no-files-found: ignore
 
@@ -1334,5 +1338,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: flakes
+          retention-days: 7
           path: flakes.log
           if-no-files-found: ignore

@@ -1,0 +1,33 @@
+# A launched task serves while the program's thread keeps counting the `Stdout` its rounds hold, as
+# each task it launches after takes an owner of it. A server in a task copies what its rounds are
+# given, and a block every thread can read, as a plain capability's is, is taken as it is, its count
+# not read: its owner may be changing it. Run under ThreadSanitizer, which once found the copy
+# reading the count the program's thread was writing.
+from std.concurrent import Crashed
+from std.net import Connection, NetError, Server
+
+## Answers a line with `done` and the line, saying it served it.
+def answered(conn: Connection, stdout: Stdout):
+    line = conn.read_line() except why:
+        stdout.print("a read failed", f"{why}")
+        return
+    asked = line else ""
+    stdout.print("served", asked)
+    conn.write(f"done {asked}\n") except why:
+        stdout.print("a write failed", f"{why}")
+
+def serving(server: Server, stdout: Stdout):
+    for conn in parallel(server):
+        answered(conn, stdout=stdout)
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout=stdout), stop_after=100ms)?:
+            for n in range(50):
+                with launch(() => stdout.print("task", n))?:
+                    pass
+            with net.connect("127.0.0.1", port)? as asking:
+                asking.write("r0\n")?
+                stdout.print(asking.read_line()? else "nothing")
+    stdout.print("over")

@@ -93,9 +93,8 @@ fn free_taken(state: &mut State, address: u64) -> bool {
         return false;
     }
     let shapes = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
-    let texts_here = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
     let Some((block, taken)) =
-        usize::try_from(address).ok().and_then(|at| state.heap.take_to_free(at, shapes, texts_here))
+        usize::try_from(address).ok().and_then(|at| state.heap.take_to_free(at, shapes))
     else {
         return false;
     };
@@ -131,6 +130,10 @@ fn forget_string(state: &mut State, address: u64) {
 /// each it was the last owner of: a string holds nothing, so it's out of the table and kept for
 /// reuse at once. Only for a thread that counts every block it can reach, which `release_one`
 /// finds in its own table.
+///
+/// Out of line, so `let_go`, which every free goes through, stays as small as it was: inlined, it
+/// made `let_go` save four more registers at every call, about 8 instructions a free.
+#[inline(never)]
 fn let_go_of_texts(state: &mut State, list: &[u64]) {
     let str_shape = state.tables.str_shape;
     for header in crate::embed::lists::items(list, 3).as_chunks::<3>().0 {
@@ -972,19 +975,19 @@ mod tests {
         let block = empty_list(0);
         let at = block.as_ptr().addr();
         heap.blocks.insert(block);
-        let taken = heap.take_to_free(at, shapes, true).map(|(block, taken)| (block.as_ptr().addr(), taken));
+        let taken = heap.take_to_free(at, shapes).map(|(block, taken)| (block.as_ptr().addr(), taken));
         assert!(taken == Some((at, super::super::Taken::Plain)), "an empty list is plain");
         let handle = empty_list(crate::embed::guarded::HANDLE_OWNER);
         let at = handle.as_ptr().addr();
         heap.blocks.insert(handle);
-        let taken = heap.take_to_free(at, shapes, true).map(|(_, taken)| taken);
+        let taken = heap.take_to_free(at, shapes).map(|(_, taken)| taken);
         assert!(taken == Some(super::super::Taken::Walked), "a handle was taken as plain");
         let behind = empty_list(0);
         let at = behind.as_ptr().addr();
         heap.blocks.insert(behind);
         let own = std::mem::take(&mut heap.blocks);
         heap.behind.push((Box::new(own), 0));
-        assert!(heap.take_to_free(at, shapes, true).is_none(), "taken from a table behind this one");
+        assert!(heap.take_to_free(at, shapes).is_none(), "taken from a table behind this one");
         assert!(heap.take_block(at).is_some(), "the walk finds it behind");
     }
 

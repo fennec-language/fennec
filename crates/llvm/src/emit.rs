@@ -1727,9 +1727,11 @@ impl Emit<'_, '_, '_> {
             for reserved in self.reserved_at(at) {
                 self.reserve(LocalId(reserved.list), &reserved.limit)?;
             }
-            // Every loop goes back to a block written no later than where it goes from, so that's
-            // where a task counts a turn.
-            if self.ticks() && block.end.targets().iter().any(|next| next.0 <= at) {
+            // Every loop has a jump back to its start ([`back_edges`]), which is where a task
+            // counts a turn: once a turn. A block numbered before the one going to it is often
+            // only further on in the same turn, as a `for` loop's step is after its body.
+            if self.ticks() && block.end.targets().iter().any(|next| self.back_edges.contains(&(at, next.0)))
+            {
                 self.tick();
             }
             for local in self.alone_before_loops.get(&at).cloned().unwrap_or_default() {

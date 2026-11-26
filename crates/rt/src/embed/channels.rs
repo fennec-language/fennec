@@ -136,36 +136,66 @@ const QUEUE_TRIES: u32 = 16;
 static CHANNELS: Mutex<Option<ByNumber<Arc<Channel>>>> = Mutex::new(None);
 static NEXT: AtomicI64 = AtomicI64::new(1);
 
-/// How many channels a thread keeps to find again before it lets go of those that are gone.
+/// How many channels a thread keeps to find again: one place each, by its number's last bits.
 const FOUND_KEPT: usize = 64;
+
+/// A channel kept to find again, by its whole number, which is checked at every look: two numbers
+/// with the same last bits share a place, and each finds only its own.
+type Kept = Option<(i64, std::sync::Weak<Channel>)>;
 
 thread_local! {
     /// The channels this thread found lately, kept to find again without taking `CHANNELS`' lock,
     /// which every thread's sends and receives took each time, and waited on each other for.
-    static FOUND: std::cell::RefCell<ByNumber<std::sync::Weak<Channel>>> =
-        std::cell::RefCell::new(ByNumber::default());
+    ///
+    /// One place for each, picked by the number's last bits, where a map kept them and was hashed
+    /// at every look: two looks a message, about 80 instructions each, in `chat_server`. Each is
+    /// watched, not held, so none keeps a channel freed elsewhere: it's found gone.
+    static FOUND: std::cell::RefCell<[Kept; FOUND_KEPT]> = const { std::cell::RefCell::new([const { None }; FOUND_KEPT]) };
+}
+
+/// The place in `FOUND` for the channel numbered `channel`.
+fn kept_at(channel: i64) -> usize {
+    usize::try_from(channel.cast_unsigned() % FOUND_KEPT as u64).unwrap_or(0)
 }
 
 fn channels<T>(use_them: impl FnOnce(&mut ByNumber<Arc<Channel>>) -> T) -> T {
     use_them(CHANNELS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(ByNumber::default))
 }
 
+/// The channel numbered `channel`, unless it's freed or was never made. Every send and receive
+/// looks its channel up here: one this thread found before is in its place in `FOUND`, and the
+/// rest is out of line.
+#[inline]
 fn find(channel: i64) -> Option<Arc<Channel>> {
-    let kept = FOUND.with_borrow(|found| found.get(&channel).and_then(std::sync::Weak::upgrade));
-    if let Some(kept) = kept {
-        return (!kept.freed.load(Ordering::Acquire)).then_some(kept);
+    let kept = FOUND.with_borrow(|found| match found.get(kept_at(channel)) {
+        Some(Some((number, kept))) if *number == channel => kept.upgrade(),
+        _ => None,
+    });
+    match kept {
+        Some(kept) => (!kept.freed.load(Ordering::Acquire)).then_some(kept),
+        None => found_again(channel),
     }
+}
+
+/// [`find`], for a channel this thread hasn't kept, or whose place another took: looked up in
+/// `CHANNELS` and kept in its place.
+#[inline(never)]
+fn found_again(channel: i64) -> Option<Arc<Channel>> {
     let found = channels(|channels| channels.get(&channel).cloned())?;
     FOUND.with_borrow_mut(|kept| {
-        if kept.len() >= FOUND_KEPT {
-            kept.retain(|_, channel| channel.strong_count() > 0);
-            if kept.len() >= FOUND_KEPT {
-                kept.clear();
-            }
+        if let Some(place) = kept.get_mut(kept_at(channel)) {
+            *place = Some((channel, Arc::downgrade(&found)));
         }
-        kept.insert(channel, Arc::downgrade(&found));
     });
     Some(found)
+}
+
+/// Whether this thread keeps the channel numbered `channel` to find again, for tests.
+#[cfg(test)]
+fn kept_to_find(channel: i64) -> bool {
+    FOUND.with_borrow(
+        |found| matches!(found.get(kept_at(channel)), Some(Some((number, _))) if *number == channel),
+    )
 }
 
 impl Channel {

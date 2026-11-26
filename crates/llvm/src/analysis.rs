@@ -1465,7 +1465,16 @@ fn find_versioned_loops(
             found.push(Versioned { header, before, blocks, scan });
         }
     }
-    found
+    // A loop whose way in is a block of another written twice, as one in a way out of it is,
+    // isn't written twice itself: each copy of the other would go into its copies, and its reads
+    // go by their flag instead. Only the other's copies are then made from text holding it.
+    let inside: Vec<bool> = found
+        .iter()
+        .map(|loop_| {
+            found.iter().any(|other| other.header != loop_.header && other.blocks.contains(&loop_.before))
+        })
+        .collect();
+    found.into_iter().zip(inside).filter_map(|(loop_, inside)| (!inside).then_some(loop_)).collect()
 }
 
 /// A loop's blocks: its start, and every block reached from its body that goes back to the start

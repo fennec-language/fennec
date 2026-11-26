@@ -1,0 +1,13 @@
+# The same list given as the bucket list and by `ref`.
+def scan(ref changed: list[int], starts: list[int], order: list[int]) -> int:
+    mut added = 0
+    for cell in range(len(starts) - 1):
+        changed[cell + 1] = 50000000
+        for at in range(starts[cell], starts[cell + 1]):
+            added += order[at]
+    return added
+
+def main(stdout: Stdout):
+    mut starts = [0, 2, 4]
+    stdout.print(scan(ref starts, starts=starts, order=[1, 2, 3, 4]))
+    stdout.print(starts)

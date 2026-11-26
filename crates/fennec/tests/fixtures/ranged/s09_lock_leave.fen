@@ -1,0 +1,25 @@
+# A lock inside the loop written twice left by `break`, `continue` and `return`.
+struct Ledger:
+    entries: list[int]
+    total: int
+
+def scan(ledger: shared Ledger, starts: list[int], order: list[int], most: int) -> int:
+    mut seen = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        lock ledger as ref held:
+            held.total += value
+            held.entries.append(value)
+            if value == 0: continue
+            if held.total > most: break
+            if value < 0: return -seen
+        seen += 1
+    return seen
+
+def main(stdout: Stdout):
+    shared ledger = Ledger(entries=[], total=0)
+    stdout.print(scan(ledger, starts=[0, 5], order=[5, 0, 7, 8, 9], most=100))
+    stdout.print(scan(ledger, starts=[0, 5], order=[5, 0, 7, 8, 9], most=50))
+    stdout.print(scan(ledger, starts=[1, 5], order=[5, 0, 7, -8, 9], most=500))
+    lock ledger as held:
+        stdout.print(held.entries, held.total)

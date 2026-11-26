@@ -258,12 +258,15 @@ jobs:
       # first, as a build of the whole workspace would. With `std-private`, so `fennec-std-tests` is
       # built beside it too: the fuzzer's `postgres` reader reads std's private names, so it's built
       # with that. `fennec` is the same with or without the feature.
+      # Their test binaries run two at a time: one after another, as `cargo test` runs them, they
+      # took 28 minutes of a 30-minute job on Linux, a few holding the run for minutes with a
+      # handful of long tests and cores to spare. See `two-at-a-time.sh`.
       - name: Run every other package's tests
         if: matrix.part == 'others'
         shell: bash
         run: |
           cargo build --locked -p fennec --features std-private
-          .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast --workspace --exclude fennec
+          .github/scripts/time-wait.sh 3000 .github/scripts/two-at-a-time.sh --locked --no-fail-fast --workspace --exclude fennec
       # A hello world built for release, held to its size here: Windows keeps a program's symbols
       # out of it, so what it links is checked on Linux, in `lean-runtime`, and in the gate on a Mac.
       # Even when a test failed, so the size is always known.
@@ -1013,8 +1016,9 @@ jobs:
           done
 
   # The one command that installs a working `fennec` from a checkout, `.github/scripts/install.sh`,
-  # tried as someone would: installed, then used from a new kit outside the checkout with Rust's
-  # toolchain out of reach, every runtime library from the same source as `fennec`.
+  # tried as someone would: installed, then used through the launcher from a new kit outside the
+  # checkout with Rust's toolchain out of reach, every runtime library from the same source as
+  # `fennec`.
   install:
     name: Install from a checkout
     needs: changes
@@ -1026,17 +1030,20 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: .github/scripts/install.sh "$RUNNER_TEMP/fennec"
+      - run: env FENNEC_HOME="$RUNNER_TEMP/fennec-home" .github/scripts/install.sh
       - name: Use it from a new kit, with nothing but what was installed
         run: |
-          reach="$RUNNER_TEMP/fennec:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup' | paste -sd: -)"
+          reach="$RUNNER_TEMP/fennec-home/bin:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup' | paste -sd: -)"
           cd "$RUNNER_TEMP"
           try() {
             env PATH="$reach" RUSTUP_HOME="$RUNNER_TEMP/no-rustup" CARGO_HOME="$RUNNER_TEMP/no-cargo" \
               FENNEC_HOME="$RUNNER_TEMP/fennec-home" "$@"
           }
+          # The launcher runs the build linked as `dev`, which is the version for scripts.
+          [ "$(try fennec default)" = dev ]
           try fennec new demo
           cd demo
+          grep -qx 'fennec = "dev"' kit.toml
           [ "$(try fennec run)" = "Hello from demo!" ]
           try fennec test
           try fennec build --release -o "$RUNNER_TEMP/demo-program"

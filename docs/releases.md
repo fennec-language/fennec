@@ -47,7 +47,7 @@ Print the private key, then destroy the file. Each `.pub` file's line goes in `R
 ## Signing a release
 
 1. Download `fennec-v0.4.2.manifest` from the prerelease.
-2. Check that the release's `Built twice, the same` job passed. CI builds each archive twice, from checkouts in two places on two machines, and that job holds that both builds made the same bytes. Windows isn't checked yet. With the release workflow's flags, anyone can build an archive again from the tag and get the hash in the manifest.
+2. Check that the release's `Built twice, the same` job passed. CI builds each archive twice, from checkouts in two places on two machines, and that job holds that both builds made the same bytes, on every platform. One script builds them, `.github/scripts/release-build.sh`, with the environment in `release-env.sh`. On Linux they're built in containers pinned by digest, with their compilers pinned by version in `release-container.sh`, so the same commit builds the same bytes off GitHub too: no path of the machine's, and no time but the commit's, goes in what's built.
 3. Sign it, touching the key when it blinks:
 
    ```bash

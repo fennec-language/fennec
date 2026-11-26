@@ -1,0 +1,14 @@
+# As s07, the outer bucket list out of range and the inner one in range.
+def find(starts: list[int], order: list[int], other_starts: list[int], other: list[int], wanted: int) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        total += order[at]
+        if order[at] == wanted:
+            for inner in range(other_starts[0], other_starts[1]):
+                total += other[inner]
+            return total
+    return -total
+
+def main(stdout: Stdout):
+    stdout.print(find([0, 3], order=[1, 2, 3], other_starts=[0, 2], other=[5, 6], wanted=3))
+    stdout.print(find([0, 4], order=[1, 2, 3], other_starts=[0, 2], other=[5, 6], wanted=9))

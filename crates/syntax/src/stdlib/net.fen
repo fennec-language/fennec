@@ -636,20 +636,17 @@ def read_request(
     lines: list[str],
     timeout: Duration,
 ) -> RequestRead fails NetError:
-    first = lines[0]
-    parts = first.split(" ")
-    if len(parts) != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):
-        return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
+    start_line = request_line(lines[0]) else return .Bad(status=400, reason=NOT_A_REQUEST_LINE)
+    mut target = start_line.target
     # A target is ASCII, as HTTP has it: a byte past 127 reaches the program as something a proxy
     # in front didn't see, once it's read as text.
-    if not is_token(parts[0]) or parts[1] == "" or not is_plain_target(parts[1]):
-        return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
+    if not is_token(start_line.method) or target == "" or not is_plain_target(target):
+        return .Bad(status=400, reason=NOT_A_REQUEST_LINE)
     # A target is a path, `*` for an `OPTIONS` of the server as a whole, or a whole `http` or
     # `https` URL, as a proxy sends one, whose host then stands for the `host` header, as HTTP/1.1
     # says. Anything else would reach the program as a path no one asked for.
-    mut target = parts[1]
     mut host: str? = None
-    if not target.startswith("/") and not (target == "*" and parts[0] == "OPTIONS"):
+    if not target.startswith("/") and not (target == "*" and start_line.method == "OPTIONS"):
         whole = whole_target(target) else return .Bad(
             status=400,
             reason="the target isn't a path or a URL",
@@ -702,10 +699,10 @@ def read_request(
                 return .Bad(status=status, reason=reason)
     if host is not None:
         headers["host"] = host
-    version = parts[2]
-    keep = asked != "close" if version == "HTTP/1.1" else asked == "keep-alive"
+    keep = asked != "close" if start_line.version == "HTTP/1.1" else asked == "keep-alive"
     mut path = target
-    mut query: dict[str, str] = {}
+    # Most targets have no query: they share one kept empty one, with no dict made for it.
+    mut query = NO_QUERY
     at = target.find("?")
     if at is not None:
         path = target[:at]
@@ -719,7 +716,7 @@ def read_request(
             return .Bad(status=400, reason="the query holds a NUL byte")
     return .Got(
         request=Request(
-            method=parts[0],
+            method=start_line.method,
             path=decoded,
             query=query,
             headers=headers,
@@ -728,6 +725,44 @@ def read_request(
         ),
         keep=keep,
     )
+
+## What a request line that isn't one is refused with.
+NOT_A_REQUEST_LINE = "that isn't an HTTP/1.1 request line"
+
+## A request line's three parts.
+struct RequestLine:
+    method: str
+    target: str
+    version: str
+
+## The three parts of `line`, a request line, cut out where they are between its two spaces, with
+## no list made of them. `None` when there's no space before the version, or the version isn't
+## HTTP/1.1 or HTTP/1.0. The version is the line's last 8 bytes after a space, so the line is read
+## only as far as its first space: a space in the target is refused with the target's other bytes,
+## by `is_plain_target`.
+def request_line(line: str) -> RequestLine?:
+    size = text_size(line)
+    target_end = size - 9
+    first_space = next_space(line, 0)
+    if first_space >= target_end or text_byte(line, target_end) != 32: return None
+    version = text_part(line, target_end + 1, size)
+    if version != "HTTP/1.1" and version != "HTTP/1.0": return None
+    return RequestLine(
+        method=text_part(line, 0, first_space),
+        target=text_part(line, first_space + 1, target_end),
+        version=version,
+    )
+
+## An empty query, kept for the run: what a request whose target has no `?` holds. A request
+## that changes its query changes a copy of its own.
+NO_QUERY: dict[str, str] = {}
+
+## Where the first space in `text` at or after `start` is, or `text`'s size when there's none.
+def next_space(text: str, start: int) -> int:
+    size = text_size(text)
+    for at in range(start, size):
+        if text_byte(text, at) == 32: return at
+    return size
 
 ## The refusal of a request with more than one header `name`, which is one of those that frame it.
 def twice(name: str) -> RequestRead:
@@ -773,7 +808,8 @@ def header_colon(line: str) -> int:
         if byte == 58:
             colon = at
             break
-        if not is_token_byte(byte): return -1
+        # A name is mostly lower-case letters and `-`, tested here before the rest of a token's bytes.
+        if (byte < 97 or byte > 122) and byte != 45 and not is_token_byte(byte): return -1
     if colon <= 0: return -1
     for at in range(colon + 1, size):
         byte = text_byte(line, at)
@@ -799,7 +835,9 @@ def is_token(text: str) -> bool:
 def is_token_part(text: str, start: int, end: int) -> bool:
     if end <= start: return False
     for at in range(start, end):
-        if not is_token_byte(text_byte(text, at)): return False
+        byte = text_byte(text, at)
+        # Mostly lower-case letters and `-`, tested here before the rest of a token's bytes.
+        if (byte < 97 or byte > 122) and byte != 45 and not is_token_byte(byte): return False
     return True
 
 ## Whether `byte` may be in a token.
@@ -850,11 +888,12 @@ def has_control(text: str, tab: bool) -> bool:
         if (b < 32 and not (tab and b == 9)) or b == 127: return True
     return False
 
-## Whether `text` can be a request's target: ASCII with no control character, read over once.
+## Whether `text` can be a request's target: ASCII with no control character or space, read over
+## once. A space would make the request line more than three parts.
 def is_plain_target(text: str) -> bool:
     for at in range(text_size(text)):
         byte = text_byte(text, at)
-        if byte < 32 or byte >= 127: return False
+        if byte <= 32 or byte >= 127: return False
     return True
 
 ## Whether `text` is one or more digits and nothing else.

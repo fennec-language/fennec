@@ -1,0 +1,18 @@
+# Two bucket lists, the inner loop left by `break`: each list in range and out of it in turn.
+def both(starts: list[int], order: list[int], other_starts: list[int], other: list[int], most: int) -> int:
+    mut added = 0
+    for at in range(starts[0], starts[1]):
+        added += order[at]
+        for inner in range(other_starts[0], other_starts[1]):
+            if other[inner] > most: break
+            added += other[inner]
+    return added
+
+def shown(stdout: Stdout, starts: list[int], other_starts: list[int]):
+    stdout.print(both(starts, order=[1, 2], other_starts=other_starts, other=[5, 6, 70], most=50))
+    return
+
+def main(stdout: Stdout):
+    shown(stdout, starts=[0, 2], other_starts=[0, 3])
+    shown(stdout, starts=[0, 2], other_starts=[1, 2])
+    shown(stdout, starts=[0, 2], other_starts=[0, 4])

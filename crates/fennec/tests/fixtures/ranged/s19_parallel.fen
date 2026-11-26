@@ -1,0 +1,10 @@
+# A sum over a list in parallel inside the loop written twice.
+def scan(starts: list[int], order: list[int], weights: list[int]) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        total += order[at] * sum(weight + at for weight in parallel(weights))
+        if total > 1000000: return -1
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 3], order=[5, 6, 7], weights=[1, 2, 3, 4]))

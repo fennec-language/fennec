@@ -1,0 +1,5 @@
+406
+15
+exit 1
+error: index 5 is out of range for length 5
+--> s18_way_out_read.fen:6:16

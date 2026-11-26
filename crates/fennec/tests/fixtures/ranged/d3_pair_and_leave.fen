@@ -1,0 +1,14 @@
+# `enumerate` over a list inside the loop written twice, with a way out of both loops that reads
+# the pair.
+def scan(names: list[str], starts: list[int], order: list[int]) -> str:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        for index, name in enumerate(names):
+            total += 1
+            if total > value:
+                return f"{index}: {name}"
+    return f"none in {total}"
+
+def main(stdout: Stdout):
+    stdout.print(scan(["ant", "bee", "cat"], starts=[0, 4], order=[50, 60, 7, 80]))

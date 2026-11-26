@@ -1,0 +1,19 @@
+# A field of a `ref` struct handed on by `ref` inside the loop written twice.
+struct Tally:
+    seen: list[int]
+    count: int
+
+def note(ref seen: list[int], value: int):
+    seen.append(value)
+    return
+
+def scan(ref tally: Tally, starts: list[int], order: list[int]):
+    for at in range(starts[0], starts[1]):
+        note(ref tally.seen, value=order[at])
+        tally.count += 1
+    return
+
+def main(stdout: Stdout):
+    mut tally = Tally(seen=[], count=0)
+    scan(ref tally, starts=[0, 4], order=[5, 6, 7, 8])
+    stdout.print(tally.seen, tally.count)

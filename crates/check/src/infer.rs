@@ -48,12 +48,14 @@ impl Checker {
         Type::Var(id)
     }
 
-    /// A type with every settled variable replaced by what it was settled to.
+    /// A type with every settled variable replaced by what it was settled to. What fails with
+    /// nothing, as a `T fails E` whose `E` was settled by a function that can't fail, is the `T`.
     pub(crate) fn settled(&self, ty: &Type) -> Type {
         ty.map(&mut |part| match part {
             Type::Var(id) => {
                 self.slot(*id).and_then(|slot| slot.value.as_ref()).map(|value| self.settled(value))
             }
+            Type::Result(value, error) if error.fails_with_nothing() => Some((**value).clone()),
             _ => None,
         })
     }
@@ -126,7 +128,7 @@ impl Checker {
             // type that takes and gives back what its signature does.
             (Type::Arrow(params, returns), Type::Function(key)) => self.function_fits(params, returns, key),
             (Type::Arrow(p1, r1), Type::Arrow(p2, r2)) if p1.len() == p2.len() => {
-                p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.fits(r1, r2)
+                p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.gives_back_fits(r1, r2)
             }
             // A member goes where its union is wanted, and so does a union of some of its members.
             (Type::Union(members), Type::Union(others)) => others.iter().all(|other| members.contains(other)),
@@ -190,7 +192,25 @@ impl Checker {
                 .iter()
                 .zip(params)
                 .all(|(param, ty)| !param.is_mut && self.fits(&param.ty, ty))
-            && self.fits(returns, &signature.returns)
+            && self.gives_back_fits(returns, &signature.returns)
+    }
+
+    /// Whether a function giving back `actual` goes where one giving back `expected` is wanted:
+    /// what it gives fits, or it can't fail where one that `fails E` goes, giving what fits the
+    /// `T`. An `E` still to be worked out is then nothing, so a call through it can't fail.
+    fn gives_back_fits(&mut self, expected: &Type, actual: &Type) -> bool {
+        let (expected, actual) = (self.settled(expected), self.settled(actual));
+        match (&expected, &actual) {
+            (Type::Result(value, error), plain)
+                if !matches!(plain, Type::Result(..) | Type::Var(_) | Type::Unknown) =>
+            {
+                if let Type::Var(id) = self.settled(error) {
+                    self.bind(id, &Type::nothing_failed());
+                }
+                self.fits(value, plain)
+            }
+            _ => self.fits(&expected, &actual),
+        }
     }
 
     /// The type of a value that comes from either `a` or `b`, or `None` when they don't fit

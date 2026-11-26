@@ -593,6 +593,42 @@ fn fails_can_name_several_errors_and_question_mark_passes_any_up() {
     );
 }
 
+/// A function that can't fail goes where one that `fails E` is wanted, as a handler that can't
+/// fail goes where a server's `(Request) -> Response fails E` does: given by name or written as an
+/// arrow, to a generic `E`, which is then nothing, or to a named error, for a field too, and with a
+/// type parameter bound by `Worded`. A generic's call through it then can't fail, so an `except` on
+/// it is refused as on any call that can't fail. One that fails with another error, or gives back
+/// another type, is still refused.
+#[test]
+fn a_function_that_cant_fail_goes_where_one_that_fails_does() {
+    let errors = "error Broken:\n    reason: str\n\nerror Other:\n    reason: str\n\n";
+    let functions = "def run_it[T, E](run: () -> T fails E) -> T fails E:\n    return run()?\n\n\
+                     def fixed(make: () -> int fails Broken) -> int:\n    got = make() except Broken():\n        return -2\n    return got\n\n\
+                     def worded[E: Worded](make: () -> int fails E) -> int:\n    got = make() except why:\n        return len(why.message())\n    return got\n\n\
+                     def five() -> int:\n    return 5\n\n\
+                     struct Holder:\n    make: () -> int fails Broken\n\n";
+    let fine = format!(
+        "{errors}{functions}def main(stdout: Stdout):\n    plain = run_it(() => 7)\n    \
+         stdout.print(plain + 1, run_it(five), fixed(five), fixed(() => 3), worded(() => 4))\n    \
+         holder = Holder(make=five)\n    stdout.print(fixed(holder.make))\n"
+    );
+    assert_eq!(problems(&fine), Vec::<String>::new());
+    let refused = format!(
+        "{errors}{functions}def other() -> int fails Other:\n    fail Other(reason=\"no\")\n\n\
+         def words() -> str:\n    return \"a\"\n\n\
+         def main(stdout: Stdout):\n    caught = run_it(() => 7) except why:\n        stdout.print(why)\n        return\n    \
+         stdout.print(caught, fixed(other), fixed(words))\n"
+    );
+    assert_eq!(
+        problems(&refused),
+        [
+            "this can't fail, so `except` has nothing to handle @ run_it(() => 7)",
+            "`make` should be a () -> result of int, but this is a function @ other",
+            "`make` should be a () -> result of int, but this is a function @ words",
+        ]
+    );
+}
+
 /// A leading-dot case that more than one of the errors it could be has, as `.NotFound` where
 /// `DiskError | NetError` both have one, names each and shows each written out, matched or built.
 /// Written with its type, it's fine.

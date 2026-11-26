@@ -552,6 +552,12 @@ impl FnCx<'_> {
             }
             self.check_mut_arg(function, param, arg, params);
             self.check_arg(param, &ty, arg.value.span);
+            if param.is_mut && arg.is_mut {
+                // What it was declared to hold, however it's narrowed here: the checker takes back
+                // what it knows of it after the call (`narrow_after_ref`).
+                let declared = self.declared_place(&arg.value).unwrap_or_else(|| ty.clone());
+                self.check_ref_holds_the_same(function, param, &declared, arg.value.span);
+            }
         }
         // An argument with a misspelled name is most likely the missing one.
         let mut left_out = Vec::new();
@@ -620,6 +626,53 @@ impl FnCx<'_> {
     }
 
     /// Checks an argument's type fits its parameter.
+    /// What a place passed with `ref` was declared to hold: a name's declared type, and a field's
+    /// or an item's of that, however what's in it is narrowed where it's passed.
+    fn declared_place(&mut self, place: &Expr) -> Option<Type> {
+        match &place.kind {
+            ExprKind::Name(name) => self.declared_type(name),
+            // A field of a struct with type parameters is what they're given as, which its
+            // declaration doesn't say, so it goes by what it holds here.
+            ExprKind::Attr { object, name, .. } => {
+                let owner = self.declared_place(object)?;
+                match self.checker.settled(&owner) {
+                    Type::Named(owner) => Some(self.checker.field_type(&owner, None, name)),
+                    _ => None,
+                }
+            }
+            ExprKind::Index { object, .. } => {
+                let held = self.declared_place(object)?;
+                match self.checker.settled(&held) {
+                    Type::List(item) | Type::Buffer(item) | Type::Array(item, _) => Some(*item),
+                    Type::Dict(_, value) => Some(*value),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// What's passed with `ref` is changed where it is, so it has to be all the parameter is, not
+    /// only something that fits it: a `list[int]` given where `ref items: list[int?]` goes could
+    /// be given a `None` its own type can't hold (#2596).
+    fn check_ref_holds_the_same(&mut self, function: &str, param: &ParamType, actual: &Type, span: Span) {
+        if !self.checker.fits(&param.ty, actual) || self.checker.holds_the_same(&param.ty, actual) {
+            return;
+        }
+        let (expected, actual) = (self.checker.settled(&param.ty), self.checker.settled(actual));
+        let message = format!(
+            "`{function}` changes `{}`, {}, so it could put in what this, {}, can't hold",
+            param.name,
+            a(&expected),
+            a(&actual)
+        );
+        let help = format!(
+            "what's passed with `ref` has to be exactly what the parameter is: make this {}",
+            a(&expected)
+        );
+        self.error(Diagnostic::new(message, span).with_help(help));
+    }
+
     pub(crate) fn check_arg(&mut self, param: &ParamType, actual: &Type, span: Span) {
         if !self.checker.fits(&param.ty, actual) {
             let expected = self.checker.settled(&param.ty);

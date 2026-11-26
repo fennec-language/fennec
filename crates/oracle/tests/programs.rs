@@ -551,6 +551,30 @@ fn an_int_that_overflows_stops_the_program() {
     assert!(matches!(&ended, Ended::Stopped(said) if said.contains("overflows an int")), "{ended:?}");
 }
 
+/// The oracle checks a program with the checker compiled code is checked with, so a `list[int]`
+/// passed with `ref` where a `list[int?]` is changed is refused before it runs, in the checker's
+/// words (#2596).
+#[test]
+fn a_ref_argument_that_holds_less_is_refused_before_it_runs() {
+    let (printed, ended) = ran("
+        def add_missing(ref items: list[int?]):
+            items.append(None)
+            return
+
+        def main(stdout: Stdout):
+            mut numbers = [1, 2]
+            add_missing(ref numbers)
+            total = numbers[2] + 1
+            stdout.print(numbers, total)
+            return
+        ");
+    assert_eq!(printed, "");
+    assert!(
+        matches!(&ended, Ended::Unsupported(said) if said.contains("so it could put in what this, a list[int], can't hold")),
+        "{ended:?}"
+    );
+}
+
 /// A generator held in a name fails through its loop as what it fails with, in a function that fails
 /// with a union of errors, as compiled code does since #2086.
 #[test]

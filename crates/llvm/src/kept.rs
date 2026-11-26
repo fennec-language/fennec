@@ -405,9 +405,17 @@ struct Checks {
     /// build that used anything again, a program's, a test's or a run's, hands its own.
     waiting: Vec<CheckPack>,
     running: bool,
+    /// How many builds are waiting for the running check to end, for a test to know one is.
+    #[cfg(test)]
+    waiters: usize,
 }
 
-static CHECKS: Mutex<Checks> = Mutex::new(Checks { waiting: Vec::new(), running: false });
+static CHECKS: Mutex<Checks> = Mutex::new(Checks {
+    waiting: Vec::new(),
+    running: false,
+    #[cfg(test)]
+    waiters: 0,
+});
 
 /// Told when a running check ends.
 static CHECK_ENDED: std::sync::Condvar = std::sync::Condvar::new();
@@ -432,8 +440,16 @@ pub fn wait_for_analyses_check() {
 fn wait_for_a_running_check() {
     let Ok(mut checks) = CHECKS.lock() else { return };
     while checks.running {
+        #[cfg(test)]
+        {
+            checks.waiters += 1;
+        }
         let Ok(waited) = CHECK_ENDED.wait(checks) else { return };
         checks = waited;
+        #[cfg(test)]
+        {
+            checks.waiters -= 1;
+        }
     }
 }
 
@@ -572,6 +588,7 @@ mod tests {
     /// checked, at its sixteenth use after that, and not before.
     #[test]
     fn an_analysis_used_again_is_checked_by_its_sixteenth_use() -> Result<(), String> {
+        let _alone = RUNNING_CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let text = "def doubled(count: int) -> int:\n    return count * 2\n\ndef main(stdout: Stdout):\n    stdout.print(doubled(2))\n    return\n";
         let mut module = fennec_syntax::parse(text).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
@@ -609,25 +626,34 @@ mod tests {
         Ok(())
     }
 
+    /// The tests that mark a check running, one at a time: a check that ends wakes every build
+    /// waiting, so one test's ending would end the wait another is testing.
+    static RUNNING_CHECKS: Mutex<()> = Mutex::new(());
+
     /// A build waits for a check that's running before it takes the store, and goes on once it ends.
     #[test]
     fn a_build_waits_for_a_running_check() {
-        CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = true;
+        let _alone = RUNNING_CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let checks = || CHECKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        checks().running = true;
         // Ended however the test goes, so no later test that takes the store waits for it.
         let check = AnalysesCheck { packs: Vec::new() };
-        let waited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let waiting = {
-            let waited = Arc::clone(&waited);
+            let ended = Arc::clone(&ended);
             std::thread::spawn(move || {
                 wait_for_a_running_check();
-                waited.store(true, std::sync::atomic::Ordering::SeqCst);
+                ended.load(std::sync::atomic::Ordering::SeqCst)
             })
         };
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        assert!(!waited.load(std::sync::atomic::Ordering::SeqCst), "it didn't wait for the check");
+        // Till the build is waiting, or has stopped without: it counts itself under the lock, which
+        // waiting gives up, so once it's counted here, it's waiting.
+        while checks().waiters == 0 && !waiting.is_finished() {
+            std::thread::yield_now();
+        }
+        ended.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(check);
-        assert!(waiting.join().is_ok());
-        assert!(waited.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(waiting.join().ok(), Some(true), "it didn't wait for the check");
     }
 
     /// What's kept reads back from its bytes as it was written, and bytes cut short or damaged keep

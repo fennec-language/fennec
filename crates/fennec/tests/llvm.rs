@@ -13082,6 +13082,35 @@ fn an_f_string_added_to_a_text_goes_on_its_end() -> std::io::Result<()> {
     )
 }
 
+/// An f-string's literal pieces go on a text with their bytes and characters known where it is
+/// built, and an int's with its characters taken as its bytes: short ones as headers, ASCII or not
+/// and up to exactly 23 bytes, and longer ones from their blocks. Each length and slice counts
+/// characters as `+` does, onto an inline text and onto a block.
+#[test]
+fn an_f_strings_known_pieces_go_on_counted() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "f_string_known_pieces",
+        r#"def main(stdout: Stdout):
+    mut out = ""
+    n = -9223372036854775807 - 1
+    for at in range(3):
+        out += f"<{at}>é日{n}|exactly twenty-three!|{at * -7}twenty-four bytes long.|日本語の文字で!!{at}|a literal of more than twenty-three bytes, ünï🦊|"
+    stdout.print(len(out), out[0:3], out[len(out) - 3:len(out)], out[60:70])
+    stdout.print(out)
+    mut short = "ab"
+    short += f"{5}é"
+    stdout.print(len(short), short, short[2:4])
+    mut plain = ""
+    plain += f"x{12}y"
+    stdout.print(len(plain), plain)
+"#,
+        "399 <0> ï🦊|  bytes lon\n<0>é日-9223372036854775808|exactly twenty-three!|0twenty-four bytes long.|日本語の文字で!!0|a literal of more than twenty-three bytes, ünï🦊|<1>é日-9223372036854775808|exactly twenty-three!|-7twenty-four bytes long.|日本語の文字で!!1|a literal of more than twenty-three bytes, ünï🦊|<2>é日-9223372036854775808|exactly twenty-three!|-14twenty-four bytes long.|日本語の文字で!!2|a literal of more than twenty-three bytes, ünï🦊|\n4 ab5é 5é\n4 x12y\n",
+    )
+}
+
 const F_STRINGS_IN_ONE_GO: &str = r#"struct Point:
     x: int
     y: int
@@ -21884,6 +21913,66 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A request line is three parts with a space between each, a method, a target and HTTP/1.1 or
+/// HTTP/1.0, and anything else is refused with a 400 before it's taken apart: a space in the
+/// target, a target missing, a space after the version, a version in lower case, a control byte in
+/// the method. A well-made line with a query, or with HTTP/1.0, is answered.
+#[test]
+fn a_request_line_of_other_than_three_parts_is_refused() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    let dir = folder("http_request_lines")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    // What the server says to `line` sent alone with `connection: close`, until it closes.
+    let answer = |line: &str| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        stream.write_all(format!("{line}\r\nconnection: close\r\n\r\n").as_bytes())?;
+        let mut heard = Vec::new();
+        stream.read_to_end(&mut heard)?;
+        Ok(String::from_utf8_lossy(&heard).into_owned())
+    };
+    let lines = [
+        "GET / x HTTP/1.1",
+        "GET  HTTP/1.1",
+        "GET / HTTP/1.1 ",
+        "GET /HTTP/1.1",
+        "GET / http/1.1",
+        "GET",
+        "G\u{1}T / HTTP/1.1",
+        "GET /a?q=1 HTTP/1.1",
+        "GET /b HTTP/1.0",
+    ];
+    let heard = lines.iter().map(|line| answer(line)).collect::<std::io::Result<Vec<_>>>()?;
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    let refused = "HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line";
+    let answered =
+        |path: &str| format!("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{path}");
+    let mut wanted = vec![refused.to_owned(); 7];
+    wanted.extend([answered("/a"), answered("/b")]);
+    assert_eq!(heard, wanted);
+    Ok(())
+}
+
 /// What a server says to `asked` on one connection, sent whole with the sending side then
 /// closed, built with the runtime `threads` names: `"1"` for the one with threads, `"0"` for the
 /// plain one. A reset after what was said shows as `[reset]`.
@@ -23308,6 +23397,135 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// On one thread, rounds spinning every way a loop can go back to its start still let another
+/// connection's round answer: a `while True` whose only way back is `continue`, a `for` whose body
+/// tests a value and goes on to its step, a loop whose inner loop is left by `break` on its first
+/// turn, and a loop walking a generator that yields on every turn of its own, where the walking
+/// loop ticks for each. A task ticks once a turn, on its jump back to the loop's start, and each
+/// spinning round here was started, and is still spinning, when its ping comes.
+#[test]
+fn a_round_spinning_through_any_way_back_lets_the_others_answer() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ticking-ways-back")?;
+    let program = dir.join("ways_back.fen");
+    std::fs::write(&program, WAYS_BACK)?;
+    let executable = dir.join("ways_back");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let mut spinning = Vec::new();
+    let mut answers = Vec::new();
+    for way in ["skipping", "testing", "leaving", "walking"] {
+        // The round has read its line before the ping comes, so it's spinning.
+        let mut spinner = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        spinner.write_all(format!("{way}\n").as_bytes())?;
+        spinning.push(spinner);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        ping.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        ping.write_all(b"ping\n")?;
+        let mut back = String::new();
+        let read = std::io::BufReader::new(ping).read_line(&mut back);
+        answers.push((way, back, read.is_ok()));
+    }
+    drop(spinning);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    for (way, back, read) in answers {
+        assert_eq!(back, "pong\n", "the ping wasn't answered while a round spun {way} (read {read})");
+    }
+    Ok(())
+}
+
+/// Rounds of a server that spin every way a loop can go back to its start, by the line they're
+/// sent, and answer `pong` to anything else.
+const WAYS_BACK: &str = "from std.net import NetError
+
+def skipping(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while True:
+        n += 1
+        x = (x * 31 + 7) % 1000003
+        if n < turns:
+            continue
+        break
+    return x
+
+def testing(turns: int) -> int:
+    mut x = 1
+    for n in range(turns):
+        if x == -1:
+            return n
+        x = (x * 31 + 7) % 1000003
+    return x
+
+def leaving(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while n < turns:
+        n += 1
+        for k in range(1000):
+            if k == 0:
+                break
+        x = (x * 31 + 7) % 1000003
+    return x
+
+def forever() -> Iterator[int]:
+    mut x = 1
+    while True:
+        x = (x * 31 + 7) % 1000003
+        yield x
+
+def walking() -> int:
+    for x in forever():
+        if x == -1:
+            return x
+    return 0
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            many = 1_000_000_000_000
+            if line == \"skipping\":
+                conn.write(f\"{skipping(many)}\\n\")?
+            elif line == \"testing\":
+                conn.write(f\"{testing(many)}\\n\")?
+            elif line == \"leaving\":
+                conn.write(f\"{leaving(many)}\\n\")?
+            elif line == \"walking\":
+                conn.write(f\"{walking()}\\n\")?
+            else:
+                conn.write(\"pong\\n\")?
+";
+
 /// A chat hub, launched from `main`, writing each line a round hands it to every member's
 /// connection itself, on whichever worker it runs. It counts the writes that went out.
 pub(crate) const HUB_WRITES_TO_EVERY_MEMBER: &str = r#"from std.concurrent import Closed, Crashed, Inbox, Sender
@@ -24592,6 +24810,52 @@ fn release_bitcode_from_another_build_is_refused_before_the_store() -> std::io::
         assert!(!built, "built with stale bitcode: {said}");
         assert!(said.contains("libfennec_runtime.bc") && said.contains(why), "{said}");
     }
+    Ok(())
+}
+
+/// A program built against one runtime library isn't handed back from the store for another of the
+/// same name and stamp built another way from the same source (#2593): the threads runtime, put
+/// where the plain one goes, gives another program, and the plain one put back gives the first
+/// back from the store.
+#[test]
+fn a_runtime_built_another_way_from_the_same_source_builds_another_program() -> std::io::Result<()> {
+    if !ready() || !runtime_built() || !crate::executables::runtime_beside_fennec() {
+        return Ok(());
+    }
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let plain = fennec.with_file_name(crate::executables::runtime_file());
+    let threaded = fennec.with_file_name("libfennec_runtime_threads.a");
+    if !threaded.is_file() {
+        return Ok(());
+    }
+    let dir = folder("runtime-contents")?;
+    let mine = dir.join("bin");
+    std::fs::create_dir_all(&mine)?;
+    let fennec_here = mine.join(fennec.file_name().unwrap_or_default());
+    if std::fs::hard_link(fennec, &fennec_here).is_err() {
+        std::fs::copy(fennec, &fennec_here)?;
+    }
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n")?;
+    let library = mine.join(crate::executables::runtime_file());
+    let built_with = |runtime: &Path, name: &str| -> std::io::Result<Vec<u8>> {
+        // A copy, so the library is a new file each time, as one built again is.
+        std::fs::copy(runtime, &library)?;
+        let output = dir.join(name);
+        let built = Command::new(&fennec_here)
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &output.to_string_lossy()])
+            .env("FENNEC_HOME", &dir)
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        std::fs::read(output)
+    };
+    let first = built_with(&plain, "first")?;
+    let other = built_with(&threaded, "other")?;
+    let again = built_with(&plain, "again")?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(first != other, "the program built against the plain runtime was handed back for another");
+    assert!(first == again, "the plain runtime put back didn't give back the first program");
     Ok(())
 }
 

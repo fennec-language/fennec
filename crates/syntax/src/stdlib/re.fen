@@ -7,7 +7,8 @@ from std.re import is_regex, pattern_problem
 ## `[a-z]+@[a-z]+\.com` runs through a megabyte in about 0.1 s, and the costliest pattern that
 ## fits, `(?:(?:a?){1000}){4}b`, in about 107 s, 0.1 ms a character. So when a pattern comes from
 ## outside, as a search box's does, bound its length, or the length of what it runs over, and build
-## it with `Regex.parse(pattern)`, which fails saying what's wrong.
+## it with `Regex.parse(pattern)`, which fails saying what's wrong: built from a pattern that isn't
+## valid, a `Regex` stops the program, as any value that breaks a `where` rule does.
 ## Patterns follow Python's `re`: `.`, classes like `[a-z]` and `\d`, anchors `^ $ \b`, repeats
 ## `* + ? {m,n}` (lazy with a `?` after), groups, `(?:...)` and `|`. Write them as raw strings,
 ## like `Regex(r"\d+")`.
@@ -38,7 +39,7 @@ export struct Regex:
     ## ```
     def parse(pattern: str) -> Regex fails InvalidValue:
         if not is_regex(pattern): fail InvalidValue(message=pattern_problem(pattern))
-        return Regex(pattern=pattern)?
+        return Regex(pattern=pattern)
 
 ## Where a `Regex` matched, and what its groups caught.
 ##

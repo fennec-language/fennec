@@ -189,7 +189,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 - `map.update(id, value) -> bool` puts a new value at a live ID and says whether it was there, for when the item may be gone. Chris decided this on 2026-11-09. Built for `Table`.
 - A map reports how many items are live, which makes a forgotten item visible.
 - Its storage is in chunks, so one write after a snapshot copies a chunk rather than the whole map.
-- A copy of a `Table` keeps its tag, so an `Id` made before the copy finds its item in both. Generations are unique across copies, so an item added to one copy has an `Id` that finds nothing in the other. Chris decided this. Not built yet: today an item added to each copy can get the same `Id`, so one copy's `Id` finds the other's item.
+- An `Id` made before a copy of a `Table` finds its item in both copies, and an item added to one copy has an `Id` that finds nothing in the other. Chris decided this. Built (#2424) as Fable's review proposed: each `add` takes a new tag from the runtime's 64-bit count and its slot keeps it, so the rule holds through every kind of copy and through a lock's rollback, with nothing done at a copy.
 - `type EnemyId = Id[Enemy]` is an optional alias, not something the compiler makes for each struct.
 
 *Why:* Game engines, compilers, graph libraries and servers use the same generational-handle pattern. IDs are small plain values, so they're cheap to copy and can be saved or sent anywhere. A cycle of them is just numbers, with nothing counted, so it can't leak. A stale ID that silently became `None` would hide bugs, so the short form is the loud one.
@@ -1460,7 +1460,7 @@ match tok:
 **Taking from an empty `list`, `Deque`, `Heap` or `PriorityQueue` gives `None`.** `pop`, `popleft` and `peek` return optionals, so the checker makes the empty case visible: `next = todo.pop() else break`. A list's `pop(at)` still fails on a position that isn't there, as `items[at]` does. Built.
 *Why:* Draining a list or a queue until it's empty is the normal way to use one, so the empty case is expected, not a mistake.
 
-**Regular expressions take linear time.** `std.re` runs patterns on a Pike VM, which follows every way a pattern could match at once, so no pattern can make matching blow up. There are no backreferences or lookarounds, which need backtracking. A pattern written in the program is checked before it runs; `Regex(text)` with a pattern built while it runs gives a result, like any struct with a `where` rule. `Regex.parse(text)` builds one from a pattern from outside, failing with `InvalidValue` that says what's wrong, as `int.parse` does.
+**Regular expressions take linear time.** `std.re` runs patterns on a Pike VM, which follows every way a pattern could match at once, so no pattern can make matching blow up. There are no backreferences or lookarounds, which need backtracking. A pattern written in the program is checked before it runs. `Regex.parse(text)` builds one from a pattern from outside, failing with `InvalidValue` that says what's wrong, as `int.parse` does.
 *Why:* A pattern from a mod, a config file or a player can't hang a game or a server.
 
 ## Toolchain
@@ -1483,6 +1483,7 @@ match tok:
 - A script outside a kit runs with `--version 0.4.2`, or else the version `fennec default 0.4.2` set, or else the newest stable version installed (2026-11-23, with `fennec` becoming the launcher). With none installed, the command stops and says how to get one; nothing is fetched unless asked. `fennec new` makes a kit with that same version. In a kit, `--version` is an error, since `kit.toml` says.
 - `fennec +0.4.2 build` runs that version anywhere, this once, and changes no pin.
 - `fennec toolchain link dev <path>` is for whoever works on Fennec itself: it runs the `fennec` in a folder of their own, like a checkout's `target/release`, with whatever LLVM that build finds, and fetches nothing. A kit asks for it with `fennec = "dev"`, which is never pinned, and `+dev` runs it once. `fennec toolchain remove dev` unlinks it and leaves the build.
+- `.github/scripts/install.sh` installs from a checkout as a release is installed (2026-11-24): the launcher as `~/.fennec/bin/fennec`, beside `fennec-setup` and `fennec-fetch`, and the checkout's release build, laid out as a release's folder in `~/.fennec/toolchains/dev`, linked as `dev`. `dev` becomes the version for scripts unless another is set. The launcher tells a linked build its name when it hands it `fennec new`, so the new kit asks for `dev`, not a version with no release to run.
 - `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.
 - A release's archives are the same bytes however often and wherever they're built, so anyone can build one again from its tag and check it against the signed manifest, and CI builds each platform twice and compares them.
 - The launcher hands a command over in one program's start (2026-11-23): it reads the kit's files and execs the toolchain as `fennec`, and on Windows lets Ctrl-C through to it and exits as it does. It reaches the network only through `fennec-fetch`, beside it, started only when something has to be fetched, since on macOS linking HTTPS's certificate checks loads frameworks that cost every start about 10 million instructions.
@@ -1760,6 +1761,9 @@ The commit before removal gets a tag, so the old engines can still be found. Bui
 
 **A release build optimizes what it uses of the runtime together with the program, so runtime calls can inline.** The runtime's own LLVM bitcode ships beside `fennec`, and a release links only the runtime's C parts (mimalloc and the compiler's helpers) afterwards. Development builds are unchanged.
 *Why:* It takes about 1.3% off a kernel's instructions on Arm, up to 4%, for release builds that take about 20 seconds instead of one, which release builds can afford.
+
+**The runtime's bitcode is stamped with the build of Fennec it's from, as the runtime library is, and a release refuses bitcode that isn't stamped with its own build** before it looks in the store; the store's key, and the key of a build of unchanged files, name the bitcode by that stamp (#2565). Bitcode packs a string's bytes into bits but keeps names as written, so the stamp is also in the name of the static that holds it. Unlike a library from before stamps, unstamped bitcode is refused too.
+*Why:* Bitcode from other source linked without a word and gave wrong answers, and a program built with other bitcode was handed back from the store, which once had a benchmark measure a stale runtime.
 
 Every build and the language server share one build engine and store, described under Builds.
 

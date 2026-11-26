@@ -1022,17 +1022,17 @@ pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
     out.push(']');
 }
 
-/// Writes the items of a `Table` whose slots are still in use: those whose generation in the
-/// list `generations` isn't negative.
-pub(super) fn shown_where_used(state: &State, held: u64, generations: u64, out: &mut Written) {
-    let (Some(block), Some(numbers)) = (state.heap.block(held), state.heap.block(generations)) else {
+/// Writes the items of a `Table` whose slots are still in use: those whose tag in the list
+/// `slots` isn't 0 (#2424).
+pub(super) fn shown_where_used(state: &State, held: u64, slots: u64, out: &mut Written) {
+    let (Some(block), Some(numbers)) = (state.heap.block(held), state.heap.block(slots)) else {
         return;
     };
     let Some(element) = element_of(state, block) else { return };
     let mut words = items(block, element.words()).iter();
     let mut first = true;
-    for generation in items(numbers, 1) {
-        let in_use = i64::from_ne_bytes(generation.to_ne_bytes()) >= 0;
+    for tag in items(numbers, 1) {
+        let in_use = *tag != 0;
         if in_use && !first {
             out.push_str(", ");
         }

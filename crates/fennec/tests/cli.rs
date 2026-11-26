@@ -3230,6 +3230,25 @@ fn new_makes_a_kit_that_runs_and_passes_its_tests() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A build the launcher runs as `dev`, linked from a checkout, makes kits that ask for `dev`, as
+/// there's no release of its version to run. Linked by another name, it asks for its version.
+#[test]
+fn new_made_by_a_build_linked_as_dev_asks_for_dev() {
+    let dir = scratch("new-dev").unwrap();
+    for (linked, asks) in [("dev", "dev"), ("mine", env!("CARGO_PKG_VERSION"))] {
+        let made = crate::executables::fennec_command()
+            .args(["new", linked])
+            .current_dir(&dir)
+            .env("FENNEC_LINKED_AS", linked)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{}", text(&made.stderr));
+        let manifest = std::fs::read_to_string(dir.join(linked).join("kit.toml")).unwrap();
+        assert!(manifest.contains(&format!("fennec = \"{asks}\"")), "{manifest}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn fmt_with_no_path_formats_the_kit_around_the_current_folder() {
     let dir = scratch("fmt-kit").unwrap();
@@ -3970,7 +3989,7 @@ fn fix_migrate_rewrites_what_needs_no_types_in_a_program_that_doesnt_check() {
     let program = dir.join("mistake.fen");
     let path = program.to_string_lossy().into_owned();
     let old = "def size(items: list[int]) -> int:\n    items.len()\n\n\
-        def main(stdout: Stdout):\n    got = int(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
+        def main(stdout: Stdout):\n    got = int.parse(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
         stdout.print(size([got]), nowhere)\n";
     std::fs::write(&program, old).unwrap();
     let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();

@@ -30,16 +30,18 @@ fn name_of(path: &str) -> String {
 /// - this build of Fennec, which covers its standard library and runtimes;
 /// - the machine it builds for, and release or dev;
 /// - the dev build's settings: the runtime, linking on its own, `--cpu` and every output switch;
+/// - for a release, which of the runtime's bitcode it would put in its unit, all of which is
+///   stamped with this build (`aot::release_bitcode`);
 /// - how many times the build daemon has found an analysis it kept wrong, so a program stored
 ///   before it did is never put out again (`kept::analyses_found_wrong`).
 ///
 /// With all the same, a build makes the same program.
-fn key(path: &str, files: &[KitFile], release: bool) -> String {
+fn key(path: &str, files: &[KitFile], (release, bitcode): (bool, &str)) -> String {
     let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build of unchanged files 2026-11-14");
     hasher.update(format!("{path}\0{}\0", crate::run::absolute(path)).as_bytes());
     hasher.update(
         format!(
-            "{BUILD}\n{}\n{}\n{}\nrelease={release}\n{}\nfound wrong {}\n",
+            "{BUILD}\n{}\n{}\n{}\nrelease={release} {bitcode}\n{}\nfound wrong {}\n",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::ARCH,
             std::env::consts::OS,
@@ -79,11 +81,14 @@ pub(crate) fn build_here(path: &str, output: Option<&str>, release: bool) -> Exi
     let Some(cache) = crate::run::cache() else { return crate::aot::build(path, output, release) };
     let name = name_of(path);
     let state = cache.kit_state(&name, BUILD);
+    // Bitcode from another build passes over what's stored for the build itself, which refuses it.
+    let bitcode = if release { crate::aot::release_bitcode().ok() } else { Some(String::new()) };
     if let Some(state) = &state
+        && let Some(bitcode) = &bitcode
         && let Some(files) = files_now(path, state)
         && crate::verdict::same_files(state, &files)
         && crate::kept::analyses_found_wrong() != u64::MAX
-        && stored(&cache, &key(path, &files, release), output)
+        && stored(&cache, &key(path, &files, (release, bitcode)), output)
     {
         return ExitCode::SUCCESS;
     }
@@ -100,12 +105,12 @@ pub(crate) fn build_here(path: &str, output: Option<&str>, release: bool) -> Exi
             let files = before.or_else(|| {
                 if Path::new(path).is_dir() { None } else { crate::verdict::loaded_files(&program) }
             });
-            if let (Some(files), Some(root)) = (files, &built.root) {
+            if let (Some(files), Some(root), Some(bitcode)) = (files, &built.root, &bitcode) {
                 note(
                     &cache,
                     path,
                     (&files, &program),
-                    release,
+                    (release, bitcode),
                     (root, built.total, &crate::aot::default_output(path, &program)),
                 );
             }
@@ -160,7 +165,7 @@ fn note(
     cache: &Cache,
     path: &str,
     (files, program): (&[KitFile], &fennec_kit::Program),
-    release: bool,
+    release: (bool, &str),
     (root, total, named): (&str, usize, &Path),
 ) {
     let files = crate::verdict::with_embedded(files, program);

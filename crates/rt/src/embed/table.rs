@@ -93,7 +93,7 @@ impl Held {
 #[derive(Default)]
 pub(super) struct Table {
     /// Each region's pages, by the region's number. A run uses one or two regions.
-    regions: Vec<(usize, Pages)>,
+    regions: Regions,
     /// Whether every block goes in `short`, for a table that's usually small: pages cost a lot more
     /// than a few blocks do.
     hashed: bool,
@@ -167,20 +167,45 @@ fn at(block: &[u64]) -> usize {
     block.as_ptr().addr()
 }
 
+/// Each region's pages, by the region's number. The first region made is held in the table
+/// itself, not in a list, so finding a place in it reads no list first: a run's blocks are almost
+/// all in one region, and every lookup, made, read or freed, began with that read.
+#[derive(Default)]
+struct Regions {
+    first: Option<(usize, Pages)>,
+    rest: Vec<(usize, Pages)>,
+}
+
+impl Regions {
+    /// Every region, the first first: for counting pages and the audit's checks.
+    #[cfg(any(test, feature = "threads", feature = "audit"))]
+    fn iter(&self) -> impl Iterator<Item = &(usize, Pages)> {
+        self.first.iter().chain(&self.rest)
+    }
+
+    fn push(&mut self, region: (usize, Pages)) {
+        if self.first.is_none() {
+            self.first = Some(region);
+        } else {
+            self.rest.push(region);
+        }
+    }
+}
+
 /// A region's pages. The first region is looked at before any search: a run's blocks are
 /// almost all in one.
-fn pages_of(regions: &[(usize, Pages)], region: usize) -> Option<&Pages> {
-    match regions.split_first()? {
-        ((number, pages), _) if *number == region => Some(pages),
-        (_, rest) => rest.iter().find(|(number, _)| *number == region).map(|(_, pages)| pages),
+fn pages_of(regions: &Regions, region: usize) -> Option<&Pages> {
+    match &regions.first {
+        Some((number, pages)) if *number == region => Some(pages),
+        _ => regions.rest.iter().find(|(number, _)| *number == region).map(|(_, pages)| pages),
     }
 }
 
 /// `pages_of`, to change them.
-fn pages_of_mut(regions: &mut [(usize, Pages)], region: usize) -> Option<&mut Pages> {
-    match regions.split_first_mut()? {
-        ((number, pages), _) if *number == region => Some(pages),
-        (_, rest) => rest.iter_mut().find(|(number, _)| *number == region).map(|(_, pages)| pages),
+fn pages_of_mut(regions: &mut Regions, region: usize) -> Option<&mut Pages> {
+    match &mut regions.first {
+        Some((number, pages)) if *number == region => Some(pages),
+        _ => regions.rest.iter_mut().find(|(number, _)| *number == region).map(|(_, pages)| pages),
     }
 }
 
@@ -207,7 +232,7 @@ fn disagrees(wrong: &str) -> ! {
 }
 
 /// The place for `address`, on a page that's been made, whatever it holds.
-fn place_mut(regions: &mut [(usize, Pages)], address: usize) -> Option<&mut u32> {
+fn place_mut(regions: &mut Regions, address: usize) -> Option<&mut u32> {
     let (region, page, place) = split(address);
     pages_of_mut(regions, region)?.get_mut(page)?.as_mut()?.get_mut(place)
 }
@@ -220,7 +245,7 @@ fn index_of(number: u32) -> usize {
 /// The place for `address` and the entry of `live` it points at, when that holds the block at
 /// `address`.
 fn found_mut<'table>(
-    regions: &'table mut [(usize, Pages)],
+    regions: &'table mut Regions,
     live: &'table mut [Held],
     address: usize,
 ) -> Option<(&'table mut u32, &'table mut Held)> {
@@ -759,7 +784,7 @@ impl Table {
     #[cfg(any(test, feature = "audit"))]
     fn agrees(&self) -> Result<(), String> {
         let mut pointed = 0_usize;
-        for (region, pages) in &self.regions {
+        for (region, pages) in self.regions.iter() {
             for (page, places) in pages.iter().enumerate().filter_map(|(n, page)| Some((n, page.as_ref()?))) {
                 for (place, number) in places.iter().enumerate().filter(|(_, number)| **number != 0) {
                     let Some(Held::Block(block)) = self.live.get(index_of(*number)) else {
@@ -1100,6 +1125,66 @@ mod tests {
         }
         assert_eq!(table.len(), 500);
         assert!(addresses.iter().skip(1).step_by(2).all(|address| table.get(*address).is_some()));
+    }
+
+    /// The first region, held in the table itself, is found only by its own number, as any other
+    /// is: a region's pages are picked by an address's low 32 bits, so the same page and place
+    /// are in every region. With no region made, none is found, not even region 0, which is the
+    /// whole of a 32-bit address space: "none" is never read as region 0.
+    #[test]
+    fn the_first_region_is_found_only_by_its_own_number() {
+        let mut regions = Regions::default();
+        assert!(pages_of(&regions, 0).is_none(), "no region made is read as region 0");
+        regions.push((5, empty().unwrap()));
+        regions.push((0, empty().unwrap()));
+        assert!(regions.first.as_ref().is_some_and(|(number, _)| *number == 5));
+        for region in [5, 0] {
+            assert!(pages_of(&regions, region).is_some(), "region {region}");
+            assert!(pages_of_mut(&mut regions, region).is_some(), "region {region}");
+        }
+        assert!(pages_of(&regions, 1).is_none());
+        if let Some(page) = pages_of_mut(&mut regions, 5).and_then(|pages| pages.get_mut(3)) {
+            *page = empty_page();
+        }
+        let low = (3 << PAGE_BITS) | (7 << PLACE_BITS);
+        assert!(place_mut(&mut regions, (5 << REGION_BITS) | low).is_some());
+        assert!(place_mut(&mut regions, low).is_none(), "region 0's page 3 was never made");
+        assert_eq!(regions.iter().map(|(number, _)| *number).collect::<Vec<_>>(), [5, 0]);
+    }
+
+    /// A table is swapped by value at every lock, so it holds its first region's pages by their
+    /// box, never the 512 KB array itself.
+    #[test]
+    fn a_table_stays_small_to_swap() {
+        assert!(size_of::<Table>() <= 512, "a table is {} bytes", size_of::<Table>());
+        assert_eq!(
+            size_of::<Regions>(),
+            size_of::<Option<(usize, Pages)>>() + size_of::<Vec<(usize, Pages)>>()
+        );
+    }
+
+    /// The first region's pages are counted, made, checked by the audit and given back, as those
+    /// of the regions after it are.
+    #[test]
+    fn the_first_regions_pages_are_counted_checked_and_given_back() {
+        let mut table = Table::default();
+        assert_eq!(table.pages(), 0);
+        let blocks: Vec<Box<[u64]>> = (0..200_u64).map(|n| vec![n; 4].into()).collect();
+        let addresses: Vec<usize> = blocks.iter().map(|block| at(block)).collect();
+        for block in blocks {
+            table.insert(block);
+        }
+        assert!(table.regions.first.is_some(), "no first region made");
+        let made: usize = table.regions.iter().map(|(_, pages)| pages.iter().flatten().count()).sum();
+        assert!(made > 0);
+        assert_eq!(table.pages(), made);
+        table.check_agrees();
+        for address in &addresses {
+            assert!(table.remove(*address).is_some());
+        }
+        table.check_agrees();
+        table.give_back_empty_pages();
+        assert_eq!(table.pages(), 0, "an empty page of the first region was kept");
     }
 
     #[test]

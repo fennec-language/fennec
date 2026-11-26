@@ -59,13 +59,16 @@ jobs:
     name: What changed
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # `actions: read` for whether a push run covers a scheduled run's commit.
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
       docs_only: ${{ steps.changes.outputs.docs-only }}
       parked_changed: ${{ steps.changes.outputs.parked-changed }}
       platforms: ${{ steps.platforms.outputs.platforms }}
+      covered: ${{ steps.covered.outputs.covered }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,11 +100,21 @@ jobs:
               ;;
           esac
           echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+      # A scheduled run on a commit whose push run is waiting, running or passed leaves the jobs a
+      # push runs too to that run, and runs only what's scheduled alone: coverage and the heap
+      # audit. Run beside the push run on main's 661ec0c3a, it held main up for over an hour
+      # (2026-11-26). See `covered-by-push.sh`.
+      - id: covered
+        env:
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: echo "covered=$(.github/scripts/covered-by-push.sh)" >> "$GITHUB_OUTPUT"
 
   lint:
     name: Format, lints and docs
     needs: changes
-    if: needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -155,7 +168,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.part == 'llvm' && 'llvm::' || matrix.part }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.covered != 'true'
     # The platforms the run has (see `changes`): macOS only through `ci-macos.yml`, a run by hand or
     # `staging.yml`. GitHub's macOS runners are short, and a job can wait an hour for one. A pull
     # request leaves out the Arm Mac, whose whole suite each one's `gate.sh` ran before it opened,
@@ -403,7 +416,7 @@ jobs:
   x86-mac:
     name: Native code on x86-64 macOS (${{ matrix.part }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'others'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'others' && needs.changes.outputs.covered != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -457,7 +470,7 @@ jobs:
   postgres:
     name: Postgres against a real server
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     services:
@@ -579,7 +592,7 @@ jobs:
   deny:
     name: Licenses, advisories and sources
     needs: changes
-    if: needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -602,7 +615,7 @@ jobs:
   site:
     name: Website builds
     needs: changes
-    if: needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -622,7 +635,7 @@ jobs:
   workflows:
     name: Workflow lints and security audit
     needs: changes
-    if: needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -656,6 +669,8 @@ jobs:
         run: .github/scripts/test-ci-passed.sh
       - name: Running again a run whose only failures got no runner, against a GitHub answering from files
         run: .github/scripts/test-rerun-no-runner.sh
+      - name: A scheduled run leaving a covered commit to its push run, against a GitHub answering from files
+        run: .github/scripts/test-covered-by-push.sh
       - name: Deploying only the site or redirect that differs from what's live, on a throwaway site
         run: .github/scripts/test-site-deploys.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
@@ -673,7 +688,7 @@ jobs:
   bench:
     name: Benchmarks
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -734,7 +749,7 @@ jobs:
   budgets:
     name: Instant-feedback budgets
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -768,7 +783,7 @@ jobs:
   asan:
     name: AddressSanitizer on LLVM-built programs (${{ matrix.half }} of 2)
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     # In two halves, each with half the examples and one of the two fuzzers. In one job it took 29
     # minutes median and 37 at most of its 40, because ubuntu-latest's machines differ: the same
     # LLVM tests take 10.5 minutes on an EPYC 9V45 and 15 on an EPYC 7763, and on 2026-11-24 the
@@ -875,7 +890,7 @@ jobs:
   llvm-asan:
     name: LLVM tests under AddressSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -905,7 +920,7 @@ jobs:
   lean-runtime:
     name: Every example and kernel built natively
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -978,7 +993,7 @@ jobs:
   static:
     name: Release builds in an empty container
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -1024,7 +1039,7 @@ jobs:
   install:
     name: Install from a checkout
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -1056,7 +1071,7 @@ jobs:
   worker-sanitizers:
     name: Workers under ${{ matrix.name }}
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -1138,7 +1153,7 @@ jobs:
   tsan-programs:
     name: Programs under ThreadSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -1175,6 +1190,7 @@ jobs:
       needs.changes.outputs.docs_only != 'true'
       && (github.event_name != 'merge_group' || needs.changes.outputs.parked_changed == 'true')
       && needs.changes.outputs.platforms != 'macos'
+      && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -1249,7 +1265,7 @@ jobs:
   server-sanitizers:
     name: Servers under ThreadSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -1296,6 +1312,7 @@ jobs:
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PARKED_CHANGED: ${{ needs.changes.outputs.parked_changed }}
           PLATFORMS: ${{ needs.changes.outputs.platforms }}
+          COVERED: ${{ needs.changes.outputs.covered }}
           EVENT: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}

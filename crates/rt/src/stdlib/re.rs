@@ -18,7 +18,7 @@ enum Part {
 const MOST_KEPT: usize = 256;
 
 /// The longest pattern kept compiled. A longer one is compiled each time it's used.
-const LONGEST_KEPT: usize = 4096;
+pub(crate) const LONGEST_KEPT: usize = 4096;
 
 /// Patterns compiled so far, each kept for the next time it's used, up to `MOST_KEPT` of them:
 /// past that, the one used longest ago goes.

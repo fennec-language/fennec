@@ -3670,10 +3670,9 @@ impl Emit<'_, '_, '_> {
             "intrinsics.id_key"
             | "intrinsics.id_at"
             | "intrinsics.id_tag"
-            | "intrinsics.table_tag"
             | "intrinsics.new_tag"
-            | "intrinsics.table_tagged"
             | "intrinsics.table_slots"
+            | "intrinsics.table_slot_tags"
             | "intrinsics.table_of_slots"
             | "intrinsics.id_of_key" => self.id_intrinsic(dest, name, args),
             "intrinsics.bytes_text" => self.bytes_text(dest.ok_or("no result")?, args),

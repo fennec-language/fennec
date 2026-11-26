@@ -214,7 +214,7 @@ impl FnCx<'_> {
         let help = if kinds.iter().all(|kind| kind == "an int" || kind == "a float") {
             "ints and floats don't mix: write whole floats with a decimal point, like `10.0`, or convert with float(...)"
         } else {
-            "a value has one type: convert one side, as `str(count)` or `int(text)`, or make an enum with a case for each"
+            "a value has one type: convert one side, as `str(count)` or `int.parse(text)?`, or make an enum with a case for each"
         };
         self.error(Diagnostic::new(format!("{what} {}", kinds.join(" and ")), span).with_help(help));
         Type::Unknown
@@ -542,7 +542,7 @@ impl FnCx<'_> {
     }
 
     /// The side of a one-line `if` that can fail where the other gives what it would on
-    /// success, as in `int(text) if given else 8080`: the two don't join, and the failure is why.
+    /// success, as in `int.parse(text) if given else 8080`: the two don't join, and the failure is why.
     fn failing_side<'e>(
         &mut self,
         (then, otherwise): (&'e Expr, &'e Expr),
@@ -888,7 +888,7 @@ impl FnCx<'_> {
                 let help = if ty == Type::Bool {
                     "a bool is turned around with `not`, as `not done`"
                 } else {
-                    "only a number is negated, as `-count`: convert it first, as `-int(text)`"
+                    "only a number is negated, as `-count`: convert it first, as `-int.parse(text)?`"
                 };
                 self.error(
                     Diagnostic::new(format!("can't negate {}", article(&ty.kind())), span).with_help(help),
@@ -1605,7 +1605,7 @@ fn operator_help(op: BinOp, left: &Type, right: &Type) -> &'static str {
         (Type::List(_), Type::List(_)) => {
             "work on a list's items, as `[item * 2 for item in items]`, or join lists with `+`"
         }
-        _ => "convert one side so both are numbers, as `int(text)` or `float(count)`",
+        _ => "convert one side so both are numbers, as `int.parse(text)?` or `float(count)`",
     }
 }
 

@@ -320,6 +320,40 @@ fn the_cap_is_for_every_build_folder_together() {
     std::fs::remove_dir_all(&home).unwrap();
 }
 
+/// On Unix a run's program is put out as a symbolic link to one hard link of the kept program that
+/// every run of it shares. The shared name has the program's time, marked as it's put out, so a
+/// sweep of what runs put out, which takes what's older than ten minutes, never takes it while a run
+/// is about to start it. Gone, swept or removed with its folder, it's made again by the next run,
+/// whose link then starts the program rather than pointing at nothing.
+#[test]
+#[cfg(unix)]
+fn a_run_s_shared_link_is_fresh_and_made_again_when_gone() {
+    let home = std::env::temp_dir().join(format!("fennec-cache-shared-run-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let cache = Cache::new(&home);
+    let program = home.join("launched");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(&program, b"a program").unwrap();
+    cache.keep_file("programs", "root", &program).unwrap();
+    let kept = cache.kept_program("programs", "root").unwrap();
+    set_time(&kept, SystemTime::now() - Duration::from_secs(3600)).unwrap();
+    let work = home.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let first = work.join(format!("{}1", fennec_build::RUN_PREFIX));
+    assert!(cache.link_out("programs", "root", &first).unwrap());
+    let shared = std::fs::read_link(&first).unwrap();
+    let age = std::fs::symlink_metadata(&shared).unwrap().modified().unwrap().elapsed().unwrap();
+    assert!(age < Duration::from_secs(60), "the shared name is as old as the program's mark: {age:?}");
+    assert!(shared.file_name().unwrap().to_str().unwrap().starts_with(fennec_build::RUN_PREFIX));
+    // Swept or removed between two runs, the next run makes it again.
+    std::fs::remove_file(&shared).unwrap();
+    let second = work.join(format!("{}2", fennec_build::RUN_PREFIX));
+    assert!(cache.link_out("programs", "root", &second).unwrap());
+    assert_eq!(std::fs::read(&second).unwrap(), b"a program");
+    assert_eq!(std::fs::read(&first).unwrap(), b"a program", "the first run's link finds it again too");
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
 /// However far over its cap the cache is, an entry stays while it was stored or used in the last
 /// [`fennec_build::KEPT_RECENT`], or while a run has its program put out: a command may be about
 /// to read it, or to start it. A program put out is marked as used then, read-only as it is, so a
@@ -383,8 +417,11 @@ fn an_entry_just_stored_used_or_put_out_is_never_removed() {
         assert!(sum.exists(), "the hash of a program that stays went without it");
         let again = home.join("work").join("fennec-run-2");
         assert!(cache.link_out("programs", "root", &again).unwrap());
-        std::fs::remove_file(&run).unwrap();
-        std::fs::remove_file(&again).unwrap();
+        // Each run's name is a symbolic link to the hard link they share, which a sweep takes too.
+        assert_eq!(std::fs::read_link(&run).unwrap(), std::fs::read_link(&again).unwrap());
+        for put_out in std::fs::read_dir(run.parent().unwrap()).unwrap() {
+            std::fs::remove_file(put_out.unwrap().path()).unwrap();
+        }
         for path in [&kept, &sum] {
             set_time(path, long_ago).unwrap();
         }

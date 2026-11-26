@@ -338,6 +338,10 @@ fn capital(word: &str) -> String {
 
 /// "a" or "an", by the name's first letter, as `std.json`'s messages choose.
 pub(crate) fn article(name: &str) -> String {
+    // Said "eff thirty-two".
+    if name == "f32" {
+        return "an f32".to_owned();
+    }
     if name.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) {
         format!("an {name}")
     } else {

@@ -2599,6 +2599,15 @@ fn pack_writes_the_headers_docs_pack_md_pins() {
     assert_eq!(printed, wanted);
 }
 
+/// An `f32` saves as itself in JSON, `std.pack` and TOML, as the compiled program prints it in
+/// `llvm::an_f32_saves_as_itself_in_json_pack_and_toml`.
+#[test]
+fn an_f32_saves_as_itself() {
+    let (printed, ended) = ran(include_str!("../../fennec/tests/fixtures/f32_saved.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/f32_saved.out"));
+}
+
 /// A value saved with `pack.dumps` loads back with `pack.loads`, and data for another type is
 /// refused by its shape hash. What it prints is what the compiled program printed.
 #[test]
@@ -3405,6 +3414,9 @@ const OWN_FORMAT: &str = "
                 self.parts.append(str(value))
 
             def float(ref self, value: float):
+                self.parts.append(str(value))
+
+            def f32(ref self, value: f32):
                 self.parts.append(str(value))
 
             def bool(ref self, value: bool):

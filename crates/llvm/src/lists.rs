@@ -1799,9 +1799,9 @@ impl Emit<'_, '_, '_> {
             self.start_block(&done);
             let (held, checked) = (self.temp(), self.temp());
             self.line(&format!("{held} = phi i1 [ false, %{skipped} ], [ {ok}, %{summed} ]"));
-            self.line(&format!("store i1 {held}, ptr {flag}"));
             // Made only once it's walked the list: one left for too few turns can be made later.
             self.line(&format!("{checked} = phi i1 [ false, %{skipped} ], [ true, %{summed} ]"));
+            self.line(&format!("store i1 {held}, ptr {flag}"));
             self.line(&format!("store i1 {checked}, ptr {made}"));
             self.line(&format!("br label %{kept}"));
             self.start_block(&kept);

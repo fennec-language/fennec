@@ -576,16 +576,23 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// Takes out each place this instruction changes that was waiting for it, unless it's been put
-    /// back: what names it after that, as letting go of the local at a lock's end does, would take
-    /// it out again and leave its slot saying it's out, so a crash later in the function would
-    /// write the emptied local over what holds it (#2516).
+    /// Takes out each place this instruction changes that was waiting for it. Letting go of the
+    /// local, as a lock's end does, changes no place, so it takes nothing out: a take there would
+    /// leave the slot saying the place is out with nothing to put it back, and a crash later in
+    /// the function would write the emptied local over what holds it (#2516). Whether the place
+    /// was put back can't say so here, as a lock's end may be written before the loop body
+    /// that puts it back.
     pub(crate) fn take_waiting_places(&mut self, inst: &InstKind, span: Span) -> Result<(), String> {
-        let (InstKind::Call { args, .. } | InstKind::Builtin { args, .. }) = inst else { return Ok(()) };
+        let args = match inst {
+            InstKind::Builtin { name, .. } if matches!(name.as_str(), "shared.drop" | "value.let_go") => {
+                return Ok(());
+            }
+            InstKind::Call { args, .. } | InstKind::Builtin { args, .. } => args,
+            _ => return Ok(()),
+        };
         for arg in args {
             if let Operand::Local(local) = arg
                 && self.known.place_waits(*local)
-                && !self.places_back.contains(&local.0)
             {
                 self.take_place(*local, span)?;
             }
@@ -774,7 +781,6 @@ impl Emit<'_, '_, '_> {
     }
 
     fn put_place_back(&mut self, value: LocalId) -> Result<(), String> {
-        self.places_back.insert(value.0);
         let (at, kind, access) = self.place_homes.get(&value.0).cloned().ok_or("a place never taken out")?;
         if let Some(slot) = self.places_out.get(&value.0).cloned() {
             self.line(&format!("store ptr null, ptr {slot}"));

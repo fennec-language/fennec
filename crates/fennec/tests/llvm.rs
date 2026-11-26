@@ -24567,6 +24567,52 @@ fn release_bitcode_from_another_build_is_refused_before_the_store() -> std::io::
     Ok(())
 }
 
+/// A program built against one runtime library isn't handed back from the store for another of the
+/// same name and stamp built another way from the same source (#2593): the threads runtime, put
+/// where the plain one goes, gives another program, and the plain one put back gives the first
+/// back from the store.
+#[test]
+fn a_runtime_built_another_way_from_the_same_source_builds_another_program() -> std::io::Result<()> {
+    if !ready() || !runtime_built() || !crate::executables::runtime_beside_fennec() {
+        return Ok(());
+    }
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let plain = fennec.with_file_name(crate::executables::runtime_file());
+    let threaded = fennec.with_file_name("libfennec_runtime_threads.a");
+    if !threaded.is_file() {
+        return Ok(());
+    }
+    let dir = folder("runtime-contents")?;
+    let mine = dir.join("bin");
+    std::fs::create_dir_all(&mine)?;
+    let fennec_here = mine.join(fennec.file_name().unwrap_or_default());
+    if std::fs::hard_link(fennec, &fennec_here).is_err() {
+        std::fs::copy(fennec, &fennec_here)?;
+    }
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n")?;
+    let library = mine.join(crate::executables::runtime_file());
+    let built_with = |runtime: &Path, name: &str| -> std::io::Result<Vec<u8>> {
+        // A copy, so the library is a new file each time, as one built again is.
+        std::fs::copy(runtime, &library)?;
+        let output = dir.join(name);
+        let built = Command::new(&fennec_here)
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &output.to_string_lossy()])
+            .env("FENNEC_HOME", &dir)
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        std::fs::read(output)
+    };
+    let first = built_with(&plain, "first")?;
+    let other = built_with(&threaded, "other")?;
+    let again = built_with(&plain, "again")?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(first != other, "the program built against the plain runtime was handed back for another");
+    assert!(first == again, "the plain runtime put back didn't give back the first program");
+    Ok(())
+}
+
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
 /// std's collections among them, so a program reading and writing them builds natively.
 #[test]

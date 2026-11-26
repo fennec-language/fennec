@@ -108,40 +108,54 @@ impl Instance {
     }
 }
 
-/// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.
-#[derive(Clone, Debug)]
+/// Slots that hand out IDs, so a stale ID never finds the wrong thing: each slot keeps the tag of
+/// the `Id` it handed out, a new one for every item added, or 0 once it's taken out, so no two
+/// items in any copy of any `Table` ever have the same `Id` (#2424).
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Table {
     pub(crate) slots: Vec<Slot>,
-    /// Which `Table` this is, so an `Id` from another finds nothing in it. A copy keeps it, since
-    /// it holds the same items in the same slots.
-    pub(crate) tag: u64,
 }
 
-/// The next `Table`'s tag. Tags count up from 1 for the whole run and are never used again; a
-/// 64-bit count can't run out.
+/// The next tag. Tags count up from 1 for the whole run and are never used again; a 64-bit count
+/// can't run out.
 static NEXT_TAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// A tag no `Table` has had.
+thread_local! {
+    /// This thread's run of tags, for native code: the next to hand out and where the run ends, both
+    /// 0 until native code takes its first run from `NEXT_TAG`. Nothing here reads or writes it.
+    static TAG_RUN: [std::cell::Cell<u64>; 2] = const { [std::cell::Cell::new(0), std::cell::Cell::new(0)] };
+}
+
+/// Where this thread's run of tags is: two words, the next tag and where the run ends, which stay
+/// where they are while the thread runs.
+pub(crate) fn tag_run() -> usize {
+    TAG_RUN.with(|run| std::ptr::from_ref(run).addr())
+}
+
+/// Where the count of tags is, for native code to take one with an atomic add of its own, the old
+/// value being the tag, as `new_tag` takes one: no call an item added to a `Table`.
+pub(crate) fn tag_count() -> usize {
+    std::ptr::from_ref(&NEXT_TAG).addr()
+}
+
+/// A tag no item has had.
 pub(crate) fn new_tag() -> u64 {
     NEXT_TAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-impl Default for Table {
-    fn default() -> Table {
-        Table::new(Vec::new())
-    }
-}
-
-/// Maps are the same when their slots are: where one's looking for a free slot is no part of it.
+/// Maps are the same when the same slots hold the same items, as `==` has it: where one's looking for
+/// a free slot, and the tags its `Id`s were handed out with, are no part of it.
 impl PartialEq for Table {
     fn eq(&self, other: &Table) -> bool {
-        self.slots == other.slots
+        self.slots.len() == other.slots.len()
+            && self.slots.iter().zip(&other.slots).all(|(one, another)| one.value == another.value)
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Slot {
-    pub(crate) generation: u32,
+    /// The tag of the `Id` handed out for its item, or 0 once it's taken out.
+    pub(crate) tag: u64,
     pub(crate) value: Option<Value>,
 }
 
@@ -181,30 +195,24 @@ impl Id {
 }
 
 impl Table {
-    /// A `Table` with a tag of its own.
     pub(crate) fn new(slots: Vec<Slot>) -> Table {
-        Table::tagged(slots, new_tag())
+        Table { slots }
     }
 
-    pub(crate) fn tagged(slots: Vec<Slot>, tag: u64) -> Table {
-        Table { slots, tag }
-    }
-
+    /// The item `id` names: its slot holds the tag it was handed out with.
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
-        if id.tag != self.tag {
-            return None;
-        }
         self.slots
             .get(id.at())
-            .filter(|slot| slot.generation == id.generation)
+            .filter(|slot| id.tag != 0 && slot.tag == id.tag)
             .and_then(|slot| slot.value.as_ref())
     }
 
     /// Live entries, in slot order.
     pub(crate) fn entries(&self) -> impl Iterator<Item = (Id, &Value)> {
-        self.slots.iter().enumerate().filter_map(|(at, slot)| {
-            slot.value.as_ref().map(|value| (Id::new(at, slot.generation, self.tag), value))
-        })
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(at, slot)| slot.value.as_ref().map(|value| (Id::new(at, 0, slot.tag), value)))
     }
 }
 

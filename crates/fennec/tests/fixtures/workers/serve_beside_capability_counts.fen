@@ -1,7 +1,8 @@
-# A launched task serves while the program's thread keeps counting the `Stdout` its rounds hold, as
-# each task it launches after takes an owner of it. A server in a task copies what its rounds are
-# given, and a block every thread can read, as a plain capability's is, is taken as it is, its count
-# not read: its owner may be changing it. Run under ThreadSanitizer, which once found the copy
+# A launched task serves while the program's thread keeps counting the `Stdout` its rounds hold, and
+# the `Net` the tasks it launches after use, as each of them takes an owner of both. A server in a
+# task copies what its rounds are given, and a task's `net.listen` reads its `Net`. A block every
+# thread can read, as a plain capability's is, is taken and read as it is, its count not read: its
+# owner may be changing it. Run under ThreadSanitizer, which once found the copy, and the read,
 # reading the count the program's thread was writing.
 from std.concurrent import Crashed
 from std.net import Connection, NetError, Server
@@ -20,13 +21,26 @@ def serving(server: Server, stdout: Stdout):
     for conn in parallel(server):
         answered(conn, stdout=stdout)
 
+## Listens on a port of its own, which reads its `Net`, and says so.
+def listened(net: Net, number: int, stdout: Stdout) fails NetError:
+    with net.listen(0)? as _:
+        stdout.print("task", number)
+
+## Listens on ports of its own again and again, beside the tasks `main` launches meanwhile.
+def listens(net: Net, stdout: Stdout) fails NetError:
+    for _ in range(30):
+        with net.listen(0)? as _:
+            pass
+    stdout.print("listened")
+
 def main(net: Net, stdout: Stdout) fails NetError | Crashed:
     with net.listen(0)? as server:
         port = server.port
         with launch(() => serving(server, stdout=stdout), stop_after=100ms)?:
-            for n in range(50):
-                with launch(() => stdout.print("task", n))?:
-                    pass
+            with launch(() => listens(net, stdout)?)?:
+                for n in range(50):
+                    with launch(() => listened(net, n, stdout)?)?:
+                        pass
             with net.connect("127.0.0.1", port)? as asking:
                 asking.write("r0\n")?
                 stdout.print(asking.read_line()? else "nothing")

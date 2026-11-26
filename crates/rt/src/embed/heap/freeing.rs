@@ -91,9 +91,8 @@ fn free_plain_list(state: &mut State, address: u64) -> bool {
         return false;
     }
     let shapes = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
-    let texts_here = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
     let Some((block, taken)) =
-        usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, shapes, texts_here))
+        usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, shapes))
     else {
         return false;
     };

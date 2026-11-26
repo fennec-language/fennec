@@ -1524,16 +1524,21 @@ impl Heap {
     /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
     /// `None`, having taken nothing, for any other block.
     ///
-    /// A list of strings' headers is taken too when `texts_here`, which says this thread counts
-    /// every block it can reach, whatever its strings hold: what they hold are strings, which
-    /// hold nothing, and the caller lets go of them (`Taken::Texts`).
+    /// A list of strings' headers some of which hold blocks is taken too when this thread counts
+    /// every block it can reach: what they hold are strings, which hold nothing, and the caller
+    /// lets go of them (`Taken::Texts`). That's asked only of such a list, as every block freed
+    /// comes here: asked of each, it cost the HTTP bench 1% more instructions a request.
     pub(super) fn take_plain_list(
         &mut self,
         at: usize,
         (first_list, str_shape): (u64, u64),
-        texts_here: bool,
     ) -> Option<(Box<[u64]>, Taken)> {
         let (empty_items, text_items) = (&self.empty_items, &self.text_items);
+        // `holds_all`, asked of the fields it reads, as the table is borrowed meanwhile.
+        let (lent, reading, behind) = (&self.lent, &self.reading, &self.behind);
+        let texts_here = || {
+            !super::threads::counted_elsewhere() && lent.is_none() && reading.is_empty() && behind.is_empty()
+        };
         let mut taken = Taken::Plain;
         let block = self.blocks.take_if(at, |block| {
             // A string, which holds no other block, or a list of a kind whose items hold nothing,
@@ -1556,11 +1561,14 @@ impl Heap {
                                 if !text_items.get(number).is_some_and(|text| *text) {
                                     return false;
                                 }
-                                if texts_here {
+                                if all_inline(block) {
+                                    return true;
+                                }
+                                if texts_here() {
                                     taken = Taken::Texts;
                                     return true;
                                 }
-                                all_inline(block)
+                                false
                             })
                 })
         })?;

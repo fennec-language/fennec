@@ -141,6 +141,7 @@ jobs:
         if: always()
         with:
           name: profile-${{ inputs.kernel }}-${{ matrix.os }}
+          retention-days: 7
           path: |
             profile/*.txt
             profile/*.err

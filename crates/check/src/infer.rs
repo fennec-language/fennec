@@ -146,6 +146,38 @@ impl Checker {
         }
     }
 
+    /// Whether `actual`, which fits `expected`, is also all that `expected` can hold, as what's
+    /// written through has to be: a `list[int]` passed with `ref` where a `list[int?]` goes could
+    /// be given a `None` it can't hold. Something already reported as unknown is the same as any,
+    /// and a function named as a value is the same as the function type it fits.
+    pub(crate) fn holds_the_same(&mut self, expected: &Type, actual: &Type) -> bool {
+        let (expected, actual) = (self.settled(expected), self.settled(actual));
+        match (&expected, &actual) {
+            (Type::Unknown | Type::Var(_), _) | (_, Type::Unknown | Type::Var(_)) => true,
+            _ if expected == actual => true,
+            (Type::Arrow(..), Type::Function(_)) | (Type::Function(_), Type::Arrow(..)) => {
+                self.fits(&expected, &actual) && self.fits(&actual, &expected)
+            }
+            (Type::List(a), Type::List(b))
+            | (Type::Buffer(a), Type::Buffer(b))
+            | (Type::Set(a), Type::Set(b))
+            | (Type::Id(a), Type::Id(b))
+            | (Type::Table(a), Type::Table(b))
+            | (Type::Optional(a), Type::Optional(b)) => self.holds_the_same(a, b),
+            (Type::Array(a, n), Type::Array(b, m)) => n == m && self.holds_the_same(a, b),
+            (Type::Dict(k1, v1), Type::Dict(k2, v2)) | (Type::Result(k1, v1), Type::Result(k2, v2)) => {
+                self.holds_the_same(k1, k2) && self.holds_the_same(v1, v2)
+            }
+            (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
+                a.iter().zip(b).all(|(a, b)| self.holds_the_same(a, b))
+            }
+            (Type::Generic(n1, a), Type::Generic(n2, b)) if n1 == n2 && a.len() == b.len() => {
+                a.iter().zip(b).all(|(a, b)| self.holds_the_same(a, b))
+            }
+            _ => false,
+        }
+    }
+
     /// Whether the function `key` can go where a `(params) -> returns` is wanted. A generic
     /// one, or one with a `mut` parameter, can't: a call through the type can't say which types
     /// it stands for or pass anything `mut`.

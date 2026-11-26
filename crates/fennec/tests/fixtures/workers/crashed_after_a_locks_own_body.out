@@ -1,0 +1,5 @@
+went 1 2 1 row 0, a text long enough for a block
+crashed 40 42 1 row 39, a text long enough for a block
+went 2 44 3 row 1, a text long enough for a block
+crashed 300 344 3 row 299, a text long enough for a block
+went 1 345 4 row 0, a text long enough for a block

@@ -185,6 +185,44 @@ pub extern "C" fn conn_write(handle: i64, data: i64, timeout_ns: i64, start: i64
     word_for(answer, |()| 0)
 }
 
+/// `fennec_conn_write_parts(conn, head, body, timeout_ns, start, end)`: `conn._write_parts(head,
+/// body)`, `head` a `str`'s block and `body` a `bytes`' block, sent in one write as
+/// `conn.write(head.encode() + body)` was, with no block made for the two joined. Gives back 0
+/// once it's all sent, or its failure.
+pub extern "C" fn conn_write_parts(
+    handle: i64,
+    head: i64,
+    body: i64,
+    timeout_ns: i64,
+    start: i64,
+    end: i64,
+) -> i64 {
+    let call = Call::new("_write_parts", timeout_ns, (start, end));
+    // Copied out first, into one buffer: the heap isn't borrowed while the write waits.
+    let (parts, head_bytes) = with(|state| {
+        let block = |address: i64| u64::try_from(address).ok().and_then(|at| state.heap.block(at));
+        let head = block(head).map(super::heap::block_text).unwrap_or_default();
+        let body = block(body).map(super::bytes::data_of).unwrap_or_default();
+        let mut parts = Vec::with_capacity(head.len() + body.len());
+        parts.extend_from_slice(head.as_bytes());
+        parts.extend_from_slice(&body);
+        Some((parts, head.len()))
+    })
+    .unwrap_or_default();
+    let given = || {
+        let (head, body) = parts.split_at(head_bytes.min(parts.len()));
+        vec![Value::str(&String::from_utf8_lossy(head)), Value::Bytes(Rc::from(body))]
+    };
+    let answer = answered(
+        handle,
+        &call,
+        || served_write(handle, &parts, call.timeout).map(Ok),
+        given,
+        (|done| done_or_failed(done.map(|()| Value::Unit)), |value| inside_ok(value).map(|_| ())),
+    );
+    word_for(answer, |()| 0)
+}
+
 /// `fennec_conn_reads_within(conn, after_ns)`: `conn._reads_within(after)`, after which the rest of
 /// a request has to come within `after` of now. Gives back 0.
 pub extern "C" fn conn_reads_within(handle: i64, after_ns: i64) -> i64 {

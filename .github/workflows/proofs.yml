@@ -166,12 +166,14 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-report
+          retention-days: 7
           path: nightly.md
       - name: Keep what was found
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proofs-found
+          retention-days: 7
           path: |
             found
             tests.txt
@@ -218,6 +220,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tsan-found
+          retention-days: 7
           path: |
             found
             tsan.txt
@@ -287,6 +290,7 @@ jobs:
         if: always()
         with:
           name: soak-${{ matrix.program }}-${{ matrix.in }}
+          retention-days: 7
           path: soak.md
           if-no-files-found: ignore
 
@@ -323,6 +327,7 @@ jobs:
         if: always()
         with:
           name: big-codebase
+          retention-days: 7
           path: big-codebase.md
           if-no-files-found: ignore
 

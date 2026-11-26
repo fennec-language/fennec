@@ -30,6 +30,8 @@ def main(stdout: Stdout):
     stdout.print(target.health + 1)
 ```
 
+What's passed with `ref` has to hold all the parameter does, not only something that fits it, since the function can put in anything the parameter holds: a `list[int]` can't go where `ref items: list[int?]` does, as a `None` could be put in it, and a `Crate` can't go where `ref shape: Crate | Heap` does. A name declared as the whole type can, however it's narrowed where it's passed. It's a compile error that says what could be put in. Built.
+
 A local `ref target = units[target_id]` links a name to a place for several changes in a row. It lasts until its last use, inside its block. While it's alive, nothing else may change that container, and a second `ref` into it is refused, but reading it is fine and sees the change. Its index is worked out once, at the `ref`. It's checked at compile time and costs nothing at run time. There's no scoped `with units[target_id] as ref target:`. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
 
 ## What you can declare

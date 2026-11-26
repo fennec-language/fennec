@@ -1,0 +1,9 @@
+def add_missing(ref items: list[int?]):
+    items.append(None)
+    return
+
+def main(stdout: Stdout):
+    mut numbers = [1, 2]
+    add_missing(ref numbers)
+    stdout.print(numbers)
+    return

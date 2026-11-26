@@ -47,6 +47,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_f32_header",
     "fennec_float_header",
     "fennec_code_header",
+    // A block of bytes for native code to fill, as `bytes()` is, given by the heap: it can't fail.
+    "fennec_bytes_new",
     // A block freed whose type can't hold a generator that closes something when it's let go
     // partway, as the compiler works out: it runs no program code. Any generator it finds others
     // let go of waits for `fennec_free`, which can fail. A string's block holds nothing at all.
@@ -594,6 +596,7 @@ export! {
     fennec_file_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::file_call(a0, a1, a2, a3, a4);
     fennec_socket_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::socket_call(a0, a1, a2, a3, a4);
     fennec_conn_write(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => conn_calls::conn_write(a0, a1, a2, a3, a4);
+    fennec_conn_write_parts(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64 => conn_calls::conn_write_parts(a0, a1, a2, a3, a4, a5);
     fennec_conn_reads_within(a0: i64, a1: i64) -> i64 => conn_calls::conn_reads_within(a0, a1);
     fennec_conn_draining(a0: i64) -> i64 => conn_calls::conn_draining(a0);
     fennec_conn_room_for_body(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => conn_calls::conn_room_for_body(a0, a1, a2, a3);

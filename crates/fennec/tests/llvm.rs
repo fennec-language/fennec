@@ -2645,24 +2645,36 @@ def main(stdout: Stdout):
 
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    prints_built(name, source, wanted, false)
+}
+
+/// What [`prints_in_both_builds`] checks, and the same of a dev build checking every proof, so a
+/// proof the program breaks stops it in the gate rather than only in the nightly run. A lock's
+/// programs are built this way: its end checks that nothing is still out of its place (#2516).
+fn prints_built_checking_proofs_too(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    prints_built(name, source, wanted, true)
+}
+
+fn prints_built(name: &str, source: &str, wanted: &str, checking_too: bool) -> std::io::Result<()> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
     let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
     let output = output.to_string_lossy().into_owned();
-    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
-        let args: Vec<&str> = ["build"]
-            .into_iter()
-            .chain(how.iter().copied())
-            .chain([program.as_str(), "-o", &output])
-            .collect();
-        let built = fennec(&args, &dir)?;
+    let ways = [(&["--llvm"][..], false), (&["--llvm", "--release"][..], false), (&["--llvm"][..], true)];
+    for (how, checking) in ways.into_iter().filter(|(_, checking)| checking_too || !checking) {
+        let mut command = crate::executables::fennec_command();
+        command.arg("build").args(how).args([program.as_str(), "-o", &output]).env("FENNEC_HOME", &dir);
+        if checking {
+            command.env("FENNEC_CHECK_PROOFS", "1");
+        }
+        let built = command.output_before(FENNEC_DEADLINE)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&output).output_within()?;
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
             wanted,
-            "{how:?}: {}",
+            "{how:?}, checking proofs {checking}: {}",
             String::from_utf8_lossy(&ran.stderr)
         );
     }
@@ -3687,7 +3699,7 @@ fn random_changes_under_a_lock_are_undone_by_a_failure() -> std::io::Result<()> 
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_undo_by_failure",
         include_str!("fixtures/lock_undo_by_failure.fen"),
         "wrong 0 crashed True kept True\n",
@@ -3701,7 +3713,7 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_undo_by_crash",
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
@@ -3720,7 +3732,7 @@ fn a_crash_in_a_lock_of_two_values_puts_both_back_whatever_their_order() -> std:
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "crash_in_a_lock_named_against_its_order",
         include_str!("fixtures/workers/crash_in_a_lock_named_against_its_order.fen"),
         include_str!("fixtures/workers/crash_in_a_lock_named_against_its_order.out"),
@@ -3893,7 +3905,7 @@ fn appends_in_a_locks_own_body_change_a_dicts_lists_where_they_are() -> std::io:
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "appended_in_a_locks_body",
         APPENDED_IN_A_LOCKS_BODY,
         "301 300 301\n301 301 locked 299, a text long enough for a block of its own\n",
@@ -3982,10 +3994,14 @@ def main(stdout: Stdout):
 ///   appended text out of range or multiplying past an int's range;
 /// - a failure leaving the lock, after appends written straight in it and through a `ref` method
 ///   failing partway;
-/// - a `for ref` loop over the lock's list, failing or crashing partway.
+/// - a `for ref` loop over the lock's list, failing or crashing partway;
+/// - a task crashing after the lock's block, in the function that held it: the lock's end leaves
+///   nothing out of its place for the crash to write over the shared value (#2516). It
+///   segfaulted at the next lock, as the lock's end, written before the loop's body, took the
+///   list item out again.
 ///
-/// Each prints what the reference evaluator prints, dev and release, on one thread and on four,
-/// with nothing left.
+/// Each prints what the reference evaluator prints, dev and release and dev checking every proof,
+/// on one thread and on four, with nothing left.
 #[test]
 fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -4012,19 +4028,25 @@ fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::
             include_str!("fixtures/workers/failed_in_a_for_ref_in_a_locks_own_body.fen"),
             include_str!("fixtures/workers/failed_in_a_for_ref_in_a_locks_own_body.out"),
         ),
+        (
+            "crashed_after_a_locks_own_body",
+            include_str!("fixtures/workers/crashed_after_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/crashed_after_a_locks_own_body.out"),
+        ),
     ] {
         let dir = folder(name)?;
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source)?;
         let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
         let output = executable.to_string_lossy().into_owned();
-        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
-            let args: Vec<&str> = ["build"]
-                .into_iter()
-                .chain(how.iter().copied())
-                .chain([program.as_str(), "-o", &output])
-                .collect();
-            let built = fennec(&args, &dir)?;
+        let ways = [(&["--llvm"][..], false), (&["--llvm", "--release"][..], false), (&["--llvm"][..], true)];
+        for (how, checking) in ways {
+            let mut command = crate::executables::fennec_command();
+            command.arg("build").args(how).args([program.as_str(), "-o", &output]).env("FENNEC_HOME", &dir);
+            if checking {
+                command.env("FENNEC_CHECK_PROOFS", "1");
+            }
+            let built = command.output_before(FENNEC_DEADLINE)?;
             assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
             for threads in ["1", "4"] {
                 let ran = Command::new(&executable)
@@ -4033,10 +4055,19 @@ fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::
                     .output_within()?;
                 let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
                 let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
-                assert_eq!(printed, wanted, "{name} {how:?}, {threads} threads: {errors}");
-                assert!(ran.status.success(), "{name} {how:?}, {threads} threads: {errors}");
+                assert_eq!(
+                    printed, wanted,
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {errors}"
+                );
+                assert!(
+                    ran.status.success(),
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {errors}"
+                );
                 let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
-                assert!(counts.ends_with(" live 0"), "{name} {how:?}, {threads} threads: {counts}");
+                assert!(
+                    counts.ends_with(" live 0"),
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {counts}"
+                );
             }
         }
         std::fs::remove_dir_all(&dir)?;
@@ -4335,7 +4366,7 @@ fn a_struct_of_three_fields_changed_in_place_keeps_only_what_ended_normally() ->
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_rollback_three_fields",
         include_str!("fixtures/workers/lock_rollback_three_fields.fen"),
         include_str!("fixtures/workers/lock_rollback_three_fields.out"),
@@ -4350,7 +4381,7 @@ fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_undo_in_place",
         include_str!("fixtures/lock_undo_in_place.fen"),
         include_str!("fixtures/lock_undo_in_place.out"),
@@ -4365,7 +4396,7 @@ fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Resu
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_plain_saves",
         include_str!("fixtures/lock_plain_saves.fen"),
         "10 24500 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 False\n",
@@ -6357,7 +6388,7 @@ fn a_local_ref_in_a_lock_reads_and_is_rolled_back() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "local_ref_in_lock",
         LOCAL_REF_IN_LOCK,
         "Bag(items=[2, 2], counts={})\n5\nfailed: stop\nBag(items=[4, 2], counts={})\n",
@@ -6403,6 +6434,34 @@ def main(stdout: Stdout):
     lock b as held:
         stdout.print(held)
 "#;
+
+/// A `list[int]` passed with `ref` where a `list[int?]` is changed is refused by the checker,
+/// saying what the function could put in, where it once checked and stopped the build at the IR
+/// validator, with "the IR isn't sound" (#2596).
+#[test]
+fn a_ref_argument_that_holds_less_is_refused_before_the_ir() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("ref-holds-less")?;
+    let program = dir.join("ref_holds_less.fen");
+    std::fs::write(
+        &program,
+        "def add_missing(ref items: list[int?]):\n    items.append(None)\n    return\n\n\
+         def main(stdout: Stdout):\n    mut numbers = [1, 2]\n    add_missing(ref numbers)\n    \
+         total = numbers[2] + 1\n    stdout.print(numbers, total)\n    return\n",
+    )?;
+    let built = fennec(
+        &["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("ref_holds_less").to_string_lossy()],
+        &dir,
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    let said = String::from_utf8_lossy(&built.stderr).into_owned();
+    assert!(!built.status.success(), "it built");
+    assert!(said.contains("so it could put in what this, a list[int], can't hold"), "{said}");
+    assert!(!said.contains("the IR isn't sound"), "{said}");
+    Ok(())
+}
 
 /// `ref unit = world.units[actor]` is the item where it is: a change through it is a change there,
 /// read back through the list and through the name, its index worked out once at the `ref`, and
@@ -6913,14 +6972,14 @@ fn a_failure_inside_a_lock_in_a_with_rolls_the_lock_back() -> std::io::Result<()
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_in_a_with_rolls_back",
         LOCK_IN_A_WITH_ROLLS_BACK,
         "failed fail\nOops(code=1)\nfailed try\nOops(code=2)\nOops(code=3)\n10 Bag.Full(count=6)\n",
     )?;
     // A `ref` case in a source's body, lowered a round after its lock was, the lock already written
     // as the lowering writes one.
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_in_a_source_s_case_rolls_back",
         LOCK_IN_A_SOURCE_S_CASE,
         "Oops(code=4)\n10\n",
@@ -7052,7 +7111,7 @@ fn a_failure_leaves_what_s_inside_a_ref_case_once_before_putting_it_back() -> st
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_in_ref_case_failed_deep",
         LOCK_IN_REF_CASE,
         "71\n[]\nBag.Full(counts=[71, 2])\n",
@@ -22196,7 +22255,7 @@ fn a_failure_out_of_a_lock_puts_back_every_kind_of_write() -> std::io::Result<()
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_failure_every_write",
         include_str!("fixtures/lock_failure_every_write.fen"),
         "kinds that kept a change: 0\n",
@@ -22210,7 +22269,7 @@ fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_failure_enum_fields",
         include_str!("fixtures/lock_failure_enum_fields.fen"),
         "kinds that kept a change: 0\n",
@@ -35606,6 +35665,97 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
         assert!(made_often - made_once <= 999, "with a task: {task}: {made_once} against {made_often}");
     }
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A constant of `bytes([])`, or of `bytes()`, can't fail, so a program with a task keeps it, made
+/// once, where it was made again at every read: `bytes` counted as able to fail whatever it was
+/// given, which kept std's HTTP from sharing an empty body (#2579). One of `bytes` of a list
+/// from anywhere else may hold a number that isn't a byte, so it's still made at each read, which
+/// is how a constant that can fail keeps a program with threads from failing before it starts.
+#[test]
+fn a_constant_of_empty_bytes_is_kept_with_threads() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("bytes_kept")?;
+    let allocations = |calls: u32, constant: &str| -> std::io::Result<(String, u64)> {
+        let source = format!(
+            "from std.concurrent import Crashed\n\ndef numbers() -> list[int]:\n    return [7, 8]\n\n\
+             DATA = {constant}\n\ndef idle():\n    pass\n\n\
+             def main(stdout: Stdout) fails Crashed:\n    with launch(() => idle())?:\n        pass\n    \
+             mut total = 0\n    for _ in range({calls}):\n        total += len(DATA)\n    stdout.print(total)\n"
+        );
+        let name = format!("calls{calls}_{}", constant.len());
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(&name);
+        let built = fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let made = said
+            .split_whitespace()
+            .skip_while(|word| *word != "allocations")
+            .nth(1)
+            .and_then(|count| count.parse().ok())
+            .unwrap_or_else(|| panic!("no counts: {said}"));
+        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), made))
+    };
+    for (constant, each, kept) in [
+        ("bytes([])", 0, true),
+        ("bytes()", 0, true),
+        ("bytes(numbers())", 2, false),
+        // A comprehension's list is made empty and then filled: its bytes are its items.
+        ("bytes([11 for _ in range(4)])", 4, false),
+    ] {
+        let (once, made_once) = allocations(1, constant)?;
+        let (often, made_often) = allocations(1000, constant)?;
+        assert_eq!(once, format!("{each}\n"), "{constant}");
+        assert_eq!(often, format!("{}\n", each * 1000), "{constant}");
+        if kept {
+            assert!(made_often - made_once < 10, "{constant}: {made_once} against {made_often}");
+        } else {
+            assert!(made_often - made_once >= 999, "{constant}: {made_once} against {made_often}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A list made empty and then filled is not empty bytes: `bytes(...)` of it gives every item,
+/// whichever way it was filled. Each form makes the list with `[]` or `list[int]()` and then
+/// fills it, as a comprehension's lowering does, which once had a list "written once as `[]`"
+/// taken for `bytes([])`, and HMAC keys came out empty.
+#[test]
+fn bytes_of_a_list_filled_after_it_was_made_empty_holds_its_items() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "bytes_filled",
+        r"def filled(ref items: list[int]):
+    items.append(9)
+    items.append(8)
+
+def main(stdout: Stdout):
+    comprehension = bytes([11 for _ in range(3)])
+    mut looped = list[int]()
+    for n in range(4):
+        looped.append(n)
+    mut extended: list[int] = []
+    extended.extend([5, 6])
+    mut by_ref: list[int] = []
+    filled(ref by_ref)
+    mut added: list[int] = []
+    added = added + [7]
+    stdout.print(list(comprehension), list(bytes(looped)), list(bytes(extended)), list(bytes(by_ref)), list(bytes(added)), list(bytes([])))
+",
+    )?;
+    assert_eq!(printed, "[11, 11, 11] [0, 1, 2, 3] [5, 6] [9, 8] [7] []\n");
     Ok(())
 }
 

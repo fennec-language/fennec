@@ -23,6 +23,7 @@ on:
       - crates/fennec/src/aot.rs
       - crates/llvm/src/build.rs
   workflow_dispatch:
+  # Each night, unless a run on main's commit already passed (`release-passed.sh`).
   schedule:
     - cron: "11 5 * * *"
 
@@ -30,6 +31,30 @@ permissions:
   contents: read
 
 jobs:
+  # A night whose commit a release run already passed on, which is most nights main didn't move,
+  # builds nothing: every job after this one waits on it. A tag, a pull request and a run by hand
+  # always build.
+  needed:
+    name: Anything to build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      build: ${{ steps.passed.outputs.passed != 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - id: passed
+        env:
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: echo "passed=$(.github/scripts/release-passed.sh)" >> "$GITHUB_OUTPUT"
+
   # What a release build on Linux links a program with to make one that runs on its own: the
   # runtime libraries built for musl, and musl's start-up files and C library. Built on Ubuntu,
   # since AlmaLinux has no C compiler for musl, and nothing here depends on the machine's glibc.
@@ -41,6 +66,8 @@ jobs:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    needs: needed
+    if: needs.needed.outputs.build == 'true'
     runs-on: ${{ matrix.os }}
     # Ubuntu's, pinned, with its compilers pinned, so a rebuild before signing has the same ones
     # (`rebuild-release.sh`). A pin Ubuntu no longer has fails here, and is moved on.
@@ -68,6 +95,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: musl-${{ matrix.target }}
+          retention-days: 1
           path: musl
 
   build:
@@ -177,6 +205,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.copy }}-${{ matrix.platform.target }}
+          retention-days: 1
           path: |
             ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.ARCHIVE }}
             ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.LAUNCHER_ARCHIVE }}
@@ -220,6 +249,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manifest
+          retention-days: 1
           path: manifest
 
   # A dry run of a release, as a person gets one: the launcher's archive unpacked, and the

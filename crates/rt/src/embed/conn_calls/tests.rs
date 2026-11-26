@@ -195,9 +195,27 @@ fn write(conn: i64, data: &[u8], text: bool) -> Got {
     if word == 0 { Got::Done } else { failure_of(word) }
 }
 
+/// `conn._write_parts(head, body)`, typed or named, as [`write`] is.
+fn write_parts(conn: i64, head: &str, body: &[u8]) -> Got {
+    if !TYPED.load(Ordering::SeqCst) {
+        return got_of(named(
+            conn,
+            "Connection._write_parts",
+            &[Value::str(head), Value::Bytes(Rc::from(body))],
+        ));
+    }
+    let (head_block, body_block) = with(|state| (heap::text_address(state, head), bytes::make(state, body)));
+    let word = conn_write_parts(conn, head_block, body_block, NO_TIMEOUT, 0, 0);
+    with(|state| {
+        heap::release(state, head_block.cast_unsigned());
+        heap::release(state, body_block.cast_unsigned());
+    });
+    if word == 0 { Got::Done } else { failure_of(word) }
+}
+
 /// A round, as std.net's loop is: each request's head read in one call, with the whole request
 /// to come within 5 s, a POST's body read whole, and an answer written, a GET's as text and a
-/// POST's as bytes. A head that isn't one is answered with its case, and a failure with its case,
+/// POST's as a head and a body in one write. A head that isn't one is answered with its case, and a failure with its case,
 /// and either ends the round, as the stream's end does.
 extern "C" fn http_body(_env: i64, conn: i64, _thread: i64) -> i64 {
     let mut saw = Vec::new();
@@ -225,10 +243,9 @@ extern "C" fn http_body(_env: i64, conn: i64, _thread: i64) -> i64 {
                 let read = body(conn, length, 5 * SECOND);
                 saw.push(format!("{read:?}"));
                 let Got::Body(read) = read else { break };
-                let mut answer = format!("got {first} with ").into_bytes();
-                answer.extend(read);
+                let mut answer = read;
                 answer.push(b'\n');
-                write(conn, &answer, false)
+                write_parts(conn, &format!("got {first} with "), &answer)
             }
             _ => write(conn, format!("got {first}\n").as_bytes(), true),
         };

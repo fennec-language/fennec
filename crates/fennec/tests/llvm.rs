@@ -21907,7 +21907,8 @@ def main(net: Net, stdout: Stdout):
     drop(server);
     std::fs::remove_dir_all(&dir)?;
     let refused = "HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line";
-    let answered = |path: &str| format!("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{path}");
+    let answered =
+        |path: &str| format!("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{path}");
     let mut wanted = vec![refused.to_owned(); 7];
     wanted.extend([answered("/a"), answered("/b")]);
     assert_eq!(heard, wanted);

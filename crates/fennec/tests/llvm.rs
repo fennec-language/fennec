@@ -13054,6 +13054,35 @@ fn an_f_string_added_to_a_text_goes_on_its_end() -> std::io::Result<()> {
     )
 }
 
+/// An f-string's literal pieces go on a text with their bytes and characters known where it is
+/// built, and an int's with its characters taken as its bytes: short ones as headers, ASCII or not
+/// and up to exactly 23 bytes, and longer ones from their blocks. Each length and slice counts
+/// characters as `+` does, onto an inline text and onto a block.
+#[test]
+fn an_f_strings_known_pieces_go_on_counted() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "f_string_known_pieces",
+        r#"def main(stdout: Stdout):
+    mut out = ""
+    n = -9223372036854775807 - 1
+    for at in range(3):
+        out += f"<{at}>é日{n}|exactly twenty-three!|{at * -7}twenty-four bytes long.|日本語の文字で!!{at}|a literal of more than twenty-three bytes, ünï🦊|"
+    stdout.print(len(out), out[0:3], out[len(out) - 3:len(out)], out[60:70])
+    stdout.print(out)
+    mut short = "ab"
+    short += f"{5}é"
+    stdout.print(len(short), short, short[2:4])
+    mut plain = ""
+    plain += f"x{12}y"
+    stdout.print(len(plain), plain)
+"#,
+        "399 <0> ï🦊|  bytes lon\n<0>é日-9223372036854775808|exactly twenty-three!|0twenty-four bytes long.|日本語の文字で!!0|a literal of more than twenty-three bytes, ünï🦊|<1>é日-9223372036854775808|exactly twenty-three!|-7twenty-four bytes long.|日本語の文字で!!1|a literal of more than twenty-three bytes, ünï🦊|<2>é日-9223372036854775808|exactly twenty-three!|-14twenty-four bytes long.|日本語の文字で!!2|a literal of more than twenty-three bytes, ünï🦊|\n4 ab5é 5é\n4 x12y\n",
+    )
+}
+
 const F_STRINGS_IN_ONE_GO: &str = r#"struct Point:
     x: int
     y: int

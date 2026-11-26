@@ -671,6 +671,8 @@ jobs:
         run: .github/scripts/test-rerun-no-runner.sh
       - name: A scheduled run leaving a covered commit to its push run, against a GitHub answering from files
         run: .github/scripts/test-covered-by-push.sh
+      - name: Deploying only the site or redirect that differs from what's live, on a throwaway site
+        run: .github/scripts/test-site-deploys.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
         run: .github/scripts/test-nightly-report.sh
       - name: A mutants run's counts, a timeout neither caught nor missed, and one where most timed out failing

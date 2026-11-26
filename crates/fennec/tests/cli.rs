@@ -7183,10 +7183,12 @@ fn aged(path: &Path, seconds: u64) -> std::io::Result<()> {
     std::fs::File::options().write(true).open(path)?.set_modified(used)
 }
 
-/// An empty home reads the standard library's parse and the runtime library's stamp from the
-/// toolchain's store, which depend only on this build of Fennec and the library, and keeps
-/// neither itself: the first home to work them out keeps them there for every home after. With the
-/// store turned off, a home works both out again, as every empty home once did.
+/// An empty home reads the standard library's parse and what each runtime library is, its stamp
+/// and the hash of its bytes, from the toolchain's store, which depend only on this build of Fennec
+/// and the libraries, and keeps neither itself: the first home to work them out keeps them there
+/// for every home after. With the store turned off, a home works both out again, as every empty
+/// home once did. Each runtime library beside `fennec` is noted, as a build's key holds each
+/// (#2593).
 #[test]
 fn an_empty_home_reads_std_and_the_runtimes_stamp_from_the_toolchains_store() -> std::io::Result<()> {
     use crate::executables::Within as _;
@@ -7225,18 +7227,23 @@ fn an_empty_home_reads_std_and_the_runtimes_stamp_from_the_toolchains_store() ->
             })
             .sum()
     };
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let runtimes = ["libfennec_runtime.a", "libfennec_runtime_threads.a"]
+        .into_iter()
+        .filter(|name| fennec.with_file_name(name).is_file())
+        .count();
     let first = run("first", &store)?;
     assert_eq!(text(&first.stdout), "hello\n", "{}", text(&first.stderr));
     assert_eq!(
-        (entries(&store, "prelude"), entries(&store, "runtime-stamps")),
-        (1, 1),
+        (entries(&store, "prelude"), entries(&store, "runtime-identities")),
+        (1, runtimes),
         "the first home fills the store"
     );
     let second = run("second", &store)?;
     assert_eq!(text(&second.stdout), "hello\n", "{}", text(&second.stderr));
     let second_home = dir.join("second");
     assert_eq!(
-        (entries(&second_home, "prelude"), entries(&second_home, "runtime-stamps")),
+        (entries(&second_home, "prelude"), entries(&second_home, "runtime-identities")),
         (0, 0),
         "an empty home reads both from the store"
     );
@@ -7244,7 +7251,7 @@ fn an_empty_home_reads_std_and_the_runtimes_stamp_from_the_toolchains_store() ->
     let off = run("off", Path::new(""))?;
     assert_eq!(text(&off.stdout), "hello\n", "{}", text(&off.stderr));
     let off_home = dir.join("off");
-    assert_eq!((entries(&off_home, "prelude"), entries(&off_home, "runtime-stamps")), (1, 1));
+    assert_eq!((entries(&off_home, "prelude"), entries(&off_home, "runtime-identities")), (1, runtimes));
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

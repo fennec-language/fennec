@@ -406,6 +406,109 @@ fn a_stop_cuts_a_socket_read_short() {
     finish();
 }
 
+/// A pool of one worker that gets no stack for a task, so each it starts runs where it is, as a
+/// plain call, and can't park.
+fn stackless() -> &'static Pool {
+    static POOL: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+            start(tables(), crate::Inputs::default());
+            crate::embed::serve::refuse_stacks_here(true);
+        });
+        crate::embed::parallel::with_setup(1, &setup)
+    })
+}
+
+/// What a stackless task's wait came to: 1 if it was stopped and failed as stopped, 2 if something
+/// else ended it, 3 if it could park after all, which the test isn't about.
+fn stackless_wait(ended: bool) -> i64 {
+    if crate::embed::serve::can_park() {
+        3
+    } else if ended && super::super::super::failed() {
+        1
+    } else {
+        2
+    }
+}
+
+static STACKLESS_SERVER: AtomicI64 = AtomicI64::new(0);
+static STACKLESS_ACCEPT: AtomicI64 = AtomicI64::new(0);
+
+/// Waits as long as it takes for a connection, where it can't park.
+extern "C" fn accepts_without_a_stack(_env: i64, _thread: i64) -> i64 {
+    let accepted = crate::stdlib::net::accepted_within(STACKLESS_SERVER.load(Ordering::SeqCst), None);
+    STACKLESS_ACCEPT.store(stackless_wait(accepted.is_err()), Ordering::SeqCst);
+    ENDED
+}
+
+static STACKLESS_SOCKET: AtomicI64 = AtomicI64::new(0);
+static STACKLESS_RECEIVE: AtomicI64 = AtomicI64::new(0);
+
+/// Waits a minute for a packet, where it can't park.
+extern "C" fn receives_without_a_stack(_env: i64, _thread: i64) -> i64 {
+    let socket = STACKLESS_SOCKET.load(Ordering::SeqCst);
+    let received = crate::stdlib::net::received_within(socket, Duration::from_secs(60));
+    STACKLESS_RECEIVE.store(stackless_wait(received.is_err()), Ordering::SeqCst);
+    ENDED
+}
+
+/// Ends the task's wait with `release` if its stop hasn't within ten seconds, so a stop that does
+/// nothing fails the test rather than holding it for good.
+fn stopped_or_released(task: i64, release: impl FnOnce() + Send + 'static) -> Duration {
+    let over = Arc::new(AtomicBool::new(false));
+    let watching = Arc::clone(&over);
+    let releasing = std::thread::spawn(move || {
+        let started = Instant::now();
+        while !watching.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !watching.load(Ordering::SeqCst) {
+            release();
+        }
+    });
+    let started = Instant::now();
+    let mut failure = 0;
+    assert_eq!(launch_end(task, SECONDS / 20, 0, &mut failure), ENDED);
+    let took = started.elapsed();
+    over.store(true, Ordering::SeqCst);
+    releasing.join().unwrap();
+    took
+}
+
+/// A stop ends a wait for a connection by a task that can't park, which holds its thread while it
+/// waits in that thread's own poll. Nothing woke that poll, so the task waited on until a
+/// connection came, for good with no timeout (#1803).
+#[test]
+fn a_stop_ends_a_wait_for_a_connection_by_a_task_that_cant_park() {
+    begin();
+    let (server, port) = crate::stdlib::net::listened();
+    STACKLESS_SERVER.store(server, Ordering::SeqCst);
+    let task = launch_on(stackless(), accepts_without_a_stack, 0);
+    assert_ne!(task, 0);
+    let took = stopped_or_released(task, move || drop(std::net::TcpStream::connect(("127.0.0.1", port))));
+    assert_eq!(STACKLESS_ACCEPT.load(Ordering::SeqCst), 1, "the stop didn't end the accept");
+    assert!(took < Duration::from_secs(5), "the stop took {took:?}");
+    finish();
+}
+
+/// A stop ends a wait for a packet by a task that can't park, as it ends a wait for a connection
+/// (#1803).
+#[test]
+fn a_stop_ends_a_wait_for_a_packet_by_a_task_that_cant_park() {
+    begin();
+    let (socket, port) = crate::stdlib::net::udp_bound();
+    STACKLESS_SOCKET.store(socket, Ordering::SeqCst);
+    let task = launch_on(stackless(), receives_without_a_stack, 0);
+    assert_ne!(task, 0);
+    let took = stopped_or_released(task, move || {
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        drop(sender.send_to(b"late", ("127.0.0.1", port)));
+    });
+    assert_eq!(STACKLESS_RECEIVE.load(Ordering::SeqCst), 1, "the stop didn't end the receive");
+    assert!(took < Duration::from_secs(5), "the stop took {took:?}");
+    finish();
+}
+
 static READ_THROUGH_A_COPY: AtomicI64 = AtomicI64::new(0);
 static SILENT_TO_A_COPY: AtomicI64 = AtomicI64::new(0);
 

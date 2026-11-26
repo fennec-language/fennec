@@ -2357,7 +2357,8 @@ impl Drop for BlockedRead {
 }
 
 /// Ends the read the launched task with this stop is blocked in, if it's in one, by shutting its
-/// socket: the read then finds the task stopped.
+/// socket: the read then finds the task stopped. Then wakes every wait it's in in a poll of its
+/// thread's own, for a connection, a listener or a UDP socket, which then finds it stopped too.
 #[cfg(any(test, feature = "threads"))]
 pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
     let stop = Arc::as_ptr(stop).addr();
@@ -2367,6 +2368,49 @@ pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
         // A read waiting in a poll of its thread's own is told, as a poll isn't told of a
         // shutdown from this side on every system.
         wake_waits(stream);
+    }
+    drop(blocked);
+    let waits = OWN_POLL_WAITS.lock().unwrap_or_else(PoisonError::into_inner);
+    for (_, _, waker) in waits.iter().filter(|(task, ..)| *task == stop) {
+        // A waker that can't wake leaves the wait to its deadline, as before there was one.
+        let _ = waker.wake();
+    }
+}
+
+/// The waits launched tasks are in in a poll of their threads' own, each by its task's stop and
+/// its wait's number, with the poll's waker. A task that can't park waits this way on a listener
+/// or a UDP socket, holding its thread, so nothing run there can end the wait: its stop wakes it.
+#[cfg(any(test, feature = "threads"))]
+static OWN_POLL_WAITS: Mutex<Vec<(usize, u64, Arc<mio::Waker>)>> = Mutex::new(Vec::new());
+
+/// A launched task's wait in a poll of its thread's own, noted under its stop while it lasts.
+#[cfg(any(test, feature = "threads"))]
+struct StoppableWait {
+    noted: Option<(usize, u64)>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl StoppableWait {
+    /// Notes wait `number`, woken by `waker`, under this task's stop, if this is a task's.
+    fn noted(number: u64, waker: &Arc<mio::Waker>) -> StoppableWait {
+        let stop = crate::embed::threads::task_stop().map(|stop| Arc::as_ptr(&stop).addr());
+        if let Some(stop) = stop {
+            let note = (stop, number, Arc::clone(waker));
+            OWN_POLL_WAITS.lock().unwrap_or_else(PoisonError::into_inner).push(note);
+        }
+        StoppableWait { noted: stop.map(|stop| (stop, number)) }
+    }
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Drop for StoppableWait {
+    fn drop(&mut self) {
+        if let Some((stop, number)) = self.noted {
+            let mut waits = OWN_POLL_WAITS.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = waits.iter().position(|(task, wait, _)| *task == stop && *wait == number) {
+                waits.swap_remove(at);
+            }
+        }
     }
 }
 
@@ -2426,12 +2470,14 @@ thread_local! {
 
 /// Waits on this thread until `stream`'s socket may be ready for `interest`, `deadline` passes,
 /// or the connection's closed or shut from here: for a thread that can't park, on a socket that
-/// doesn't block. True once `deadline` has passed. It may come back early with nothing ready,
-/// and whoever called tries again.
+/// doesn't block. True once `deadline` has passed, or the launched task waiting has been stopped,
+/// which then fails as stopped. It may come back early with nothing ready, and whoever called
+/// tries again.
 ///
 /// The poll is the thread's own and is told of a copy of the socket, which has a descriptor of
 /// its own, so it shares nothing with a task parked on the same connection on a worker's poll.
-/// The wait is noted on the connection, as a parked task's is, so a close wakes it.
+/// The wait is noted on the connection, as a parked task's is, so a close wakes it, and under its
+/// task's stop, if a launched task's waiting, so a stop wakes it (#1803).
 ///
 /// With no poll or no copy to be had, it sleeps a millisecond and says to look again. **That's a
 /// retry**, and what's left when the system is out of descriptors, which nothing here can make.
@@ -2441,8 +2487,8 @@ fn wait_in_own_poll(stream: &Stream, interest: mio::Interest, deadline: Option<I
 }
 
 /// `wait_in_own_poll` on `socket`. With `noted`, the wait is noted on that connection, and is over
-/// at once if it's closed already. Without, nothing wakes it but the socket and its deadline, as
-/// for the last reads of a connection that's closing.
+/// at once if it's closed already. Without, nothing wakes it but the socket, its deadline and its
+/// task's stop, as for the last reads of a connection that's closing.
 #[cfg(any(test, feature = "threads"))]
 fn own_poll_wait(
     socket: &dyn Polled,
@@ -2465,11 +2511,16 @@ fn own_poll_wait(
             let note = Wait { number: wait, wake, on_the_socket: false };
             waiting.lock().unwrap_or_else(PoisonError::into_inner).push(note);
         }
-        if !noted.is_some_and(|(closed, _)| closed.load(Ordering::SeqCst)) {
+        // Noted under its stop first, and then a look at whether it's stopped already, as a stop
+        // that came before the note woke nobody: a stop either finds the note or is seen here.
+        let stoppable = StoppableWait::noted(wait, &own.waker);
+        let closed = noted.is_some_and(|(closed, _)| closed.load(Ordering::SeqCst));
+        if !closed && !crate::embed::threads::stopped() {
             let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
             // Interrupted, or woken for a wait that's over: either way whoever called looks again.
             let _ = own.poll.poll(&mut own.events, left);
         }
+        drop(stoppable);
         if let Some((_, waiting)) = noted {
             let mut parked = waiting.lock().unwrap_or_else(PoisonError::into_inner);
             parked.retain(|noted| noted.number != wait);
@@ -2484,7 +2535,7 @@ fn own_poll_wait(
         let left = deadline.map_or(moment, |deadline| deadline.saturating_duration_since(Instant::now()));
         std::thread::sleep(left.min(moment));
     }
-    deadline.is_some_and(|deadline| deadline <= Instant::now())
+    crate::embed::serve::cut_short() || deadline.is_some_and(|deadline| deadline <= Instant::now())
 }
 
 /// For tests: how many of them are having sockets park on a copy on every platform, as Windows
@@ -2691,15 +2742,17 @@ fn taken(listener: &TcpListener) -> std::io::Result<(TcpStream, std::net::Socket
 /// ends the wait.
 ///
 /// The listener is made not to block the first time, and never switched back. A thread that
-/// can't park, waiting as long as it takes on a listener no task has used, still waits in the
-/// kernel as it always has.
+/// can't park and isn't a launched task's, waiting as long as it takes on a listener no task has
+/// used, still waits in the kernel as it always has. A launched task's waits on the poll, which its
+/// stop wakes: nothing would end a wait in the kernel (#1803).
 #[cfg(any(test, feature = "threads"))]
 fn accept_on_a_poll(
     listening: &Listening,
     timeout: Option<Duration>,
 ) -> Result<(TcpStream, std::net::SocketAddr), Failure> {
     let (listener, waits) = (&listening.listener, &listening.waits);
-    if !task_parks() && timeout.is_none() && !waits.never_blocks.load(Ordering::SeqCst) {
+    let stoppable = crate::embed::threads::task_stop().is_some();
+    if !task_parks() && !stoppable && timeout.is_none() && !waits.never_blocks.load(Ordering::SeqCst) {
         return taken(listener).map_err(|error| Failure::of(&error, None));
     }
     waits.never_blocking(|| listener.set_nonblocking(true))?;

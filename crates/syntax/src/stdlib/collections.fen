@@ -1,4 +1,4 @@
-from std.intrinsics import id_at, id_key, id_of_key, id_tag, table_of_slots, table_slots, table_tag, table_tagged, type_name
+from std.intrinsics import id_at, id_key, id_of_key, id_tag, table_of_slots, table_slot_tags, table_slots, type_name
 
 ## A double-ended queue: adding or removing at either end is quick however long it gets.
 ## For breadth-first searches, event queues and undo histories.
@@ -1253,9 +1253,10 @@ export struct Graph[N, E]:
         )
 
     ## Where a node is in the graph's own lists: its slot in the `Table`, since nothing's ever
-    ## taken out of it. An ID from another graph stops the program.
+    ## taken out of it. An ID from another graph stops the program, and so does one a copy of this
+    ## graph added after the copy was made.
     def _place(self, id: Id[N]) -> int:
-        assert id_tag(id) == table_tag(self._nodes)
+        assert id in self._nodes
         return id_key(id) >> 32
 
 extend SortedMap[K: Ordered & Serializable, V: Serializable]:
@@ -1324,11 +1325,11 @@ extend Id[T]:
             generation = src.value[int]()?
             if slot < 0 or generation < 0 or generation > 4294967295:
                 fail src.here("is out of range")
-            src.saw_id(kind, slot)
+            src.saw_id(kind, slot, generation)
             return id_of_key[T]((slot << 32) | generation, src.tag(kind))
         position = src.value[int]()?
         if position < 0: fail src.here("is out of range")
-        src.saw_id(kind, position)
+        src.saw_id(kind, position, -1)
         return id_at[T](position, src.tag(kind))
 
 extend Table[T]:
@@ -1343,14 +1344,14 @@ extend Table[T]:
 extend Table[T: Serializable]:
     def serialize(self, ref out: Serializer):
         if out.exact():
-            out.slots(type_name[T](), table_tag(self), table_slots(self), self.values())
+            out.slots(type_name[T](), table_slot_tags(self), table_slots(self), self.values())
             return
         mut ids = list[Id[T]]()
         mut items = list[T]()
         for id, item in self.items():
             ids.append(id)
             items.append(item)
-        out.table(type_name[T](), table_tag(self), ids, items)
+        out.table(type_name[T](), ids, items)
 
 extend Table[T: Deserializable]:
     def deserialize(ref src: Deserializer) -> Table[T] fails ParseError:
@@ -1368,14 +1369,14 @@ extend Table[T: Deserializable]:
             if live != len(items):
                 used = "1 slot" if live == 1 else f"{live} slots"
                 fail src.here(f"has {used} in use but {len(items)} items")
-            src.saw_table(kind, len(slots))
+            src.saw_table(kind, len(slots), slots)
             return table_of_slots[T](src.tag(kind), slots, items)
         items = src.value[list[T]]()?
-        mut table = table_tagged[T](src.tag(kind))
-        for item in items:
-            _ = table.add(item)
-        src.saw_table(kind, len(items))
-        return table
+        src.saw_table(kind, len(items), list[int]())
+        # Each item in a slot of its own at generation 0, under the load's tag, which every `Id`
+        # loaded with it has.
+        firsts = [0 for _ in items]
+        return table_of_slots[T](src.tag(kind), firsts, items)
 
 ## `Table`'s methods the compiler gives. Each is declared here for its signature and its doc, and a
 ## test holds it to the checker's own.

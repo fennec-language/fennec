@@ -138,24 +138,28 @@ impl Interp {
         span: Span,
     ) -> Run<()> {
         let kind = Value::Str(Text::from(type_name(item)));
-        let tag = Value::Int(tag_int(table.tag)?);
         let items: Vec<Value> = table.live().map(|(_, held)| held.clone()).collect();
         let exact = matches!(self.ask(out, "exact", Vec::new(), Vec::new(), span)?, Value::Bool(true));
         if exact {
-            // A slot in use holds its generation, and one taken out -1 less it.
-            let slots = table
+            // A slot in use is 0, and one taken out -1, as `table_slots` gives them.
+            let slots =
+                table.slots.iter().map(|slot| Value::Int(if slot.item.is_some() { 0 } else { -1 })).collect();
+            // Each slot's tag, which says which `Id`s can be saved as their slot and generation.
+            let tags = table
                 .slots
                 .iter()
-                .map(|slot| {
-                    let generation = i64::from(slot.generation);
-                    Value::Int(if slot.item.is_some() { generation } else { -1 - generation })
-                })
-                .collect();
-            let given = vec![kind, tag, Value::List(Held::new(slots)), Value::List(Held::new(items))];
+                .map(|slot| tag_int(slot.tag).map(Value::Int))
+                .collect::<Run<Vec<Value>>>()?;
+            let given = vec![
+                kind,
+                Value::List(Held::new(tags)),
+                Value::List(Held::new(slots)),
+                Value::List(Held::new(items)),
+            ];
             return self.tell(out, "slots", given, vec![item.clone()], span);
         }
         let ids = table.live().map(|(id, _)| Value::Id(id)).collect();
-        let given = vec![kind, tag, Value::List(Held::new(ids)), Value::List(Held::new(items))];
+        let given = vec![kind, Value::List(Held::new(ids)), Value::List(Held::new(items))];
         self.tell(out, "table", given, vec![item.clone()], span)
     }
 
@@ -343,14 +347,16 @@ impl Interp {
                 return self.failed_here(src, format!("has {used} in use but {} items", items.len()), span);
             }
             let count = Value::Int(super::as_int(words.len()));
-            self.ask(src, "saw_table", vec![kind.clone(), count], Vec::new(), span)?;
+            let seen = Value::List(Held::new(words.iter().map(|word| Value::Int(*word)).collect()));
+            self.ask(src, "saw_table", vec![kind.clone(), count, seen], Vec::new(), span)?;
             let tag = self.read_tag(src, kind, span)?;
             let mut items = items.into_inner().into_iter();
             let mut table = crate::value::Table::new(tag);
+            // A slot in use gets the load's tag, which its `Id`s have, and one taken out none.
             for word in words {
-                let generation = u32::try_from(if word >= 0 { word } else { -1 - word }).unwrap_or(u32::MAX);
                 let held = if word >= 0 { items.next() } else { None };
-                table.slots.push(crate::value::Slot { generation, item: held });
+                let slot_tag = if held.is_some() { tag } else { 0 };
+                table.slots.push(crate::value::Slot { tag: slot_tag, item: held });
             }
             return Ok(Value::Table(Box::new(table)));
         }
@@ -363,9 +369,10 @@ impl Interp {
         let tag = self.read_tag(src, kind.clone(), span)?;
         let mut table = crate::value::Table::new(tag);
         for held in items.into_inner() {
-            table.add(held);
+            table.add(held, tag);
         }
-        self.ask(src, "saw_table", vec![kind, Value::Int(super::as_int(count))], Vec::new(), span)?;
+        let seen = Value::List(Held::new(Vec::new()));
+        self.ask(src, "saw_table", vec![kind, Value::Int(super::as_int(count)), seen], Vec::new(), span)?;
         Ok(Value::Table(Box::new(table)))
     }
 
@@ -383,7 +390,13 @@ impl Interp {
             if slot < 0 || !(0..=4_294_967_295).contains(&generation) {
                 return self.failed_here(src, "is out of range".to_owned(), span);
             }
-            self.ask(src, "saw_id", vec![kind.clone(), Value::Int(slot)], Vec::new(), span)?;
+            self.ask(
+                src,
+                "saw_id",
+                vec![kind.clone(), Value::Int(slot), Value::Int(generation)],
+                Vec::new(),
+                span,
+            )?;
             let tag = self.read_tag(src, kind, span)?;
             let slot = usize::try_from(slot).unwrap_or(usize::MAX);
             let generation = u32::try_from(generation).unwrap_or(u32::MAX);
@@ -393,7 +406,7 @@ impl Interp {
         if position < 0 {
             return self.failed_here(src, "is out of range".to_owned(), span);
         }
-        self.ask(src, "saw_id", vec![kind.clone(), Value::Int(position)], Vec::new(), span)?;
+        self.ask(src, "saw_id", vec![kind.clone(), Value::Int(position), Value::Int(-1)], Vec::new(), span)?;
         let tag = self.read_tag(src, kind, span)?;
         let slot = usize::try_from(position).unwrap_or(usize::MAX);
         Ok(Value::Id(crate::value::Id { slot, generation: 0, tag }))

@@ -23,7 +23,8 @@ fennec-parked.workspace = true
 fennec-re.workspace = true
 fennec-syntax.workspace = true
 # Only to reset a test connection rather than close it, which std can't yet.
-socket2.workspace = true
+# `all` for `set_tcp_cork`, which a scripted server sends its last bytes and its close with.
+socket2 = { workspace = true, features = ["all"] }
 
 [lints]
 workspace = true

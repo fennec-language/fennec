@@ -19,7 +19,6 @@ use fennec_syntax::Span;
 
 use super::*;
 use crate::embed::{Tables, bytes, capabilities, finish, heap, start};
-use crate::packed::Element;
 
 /// What tells a run of itself what to do: record or replay, into or from which log, the named
 /// calls or the typed ones, and where to say what it saw.
@@ -32,15 +31,14 @@ const SECOND: i64 = 1_000_000_000;
 /// The head's limits: bytes in all, header lines, blank lines before it.
 const LIMITS: (i64, i64, i64) = (120, 3, 2);
 
-/// Strings, and lists of them as element 0.
+/// The tables every test that serves gives its workers, whose lists of strings are element
+/// [`LINES`]: the rounds run on a server's worker, started with whichever test's tables came first.
 fn tables() -> Tables {
-    Tables {
-        shapes: vec![Rc::new(Element::Str)],
-        elements: vec![Rc::new(Element::Str)],
-        str_shape: 0,
-        ..Tables::default()
-    }
+    crate::embed::parallel::test_worker_tables()
 }
+
+/// The element a list of a head's lines is, in [`tables`].
+const LINES: i64 = 1;
 
 /// Whether the rounds call the typed exports, rather than by name.
 static TYPED: AtomicBool = AtomicBool::new(false);
@@ -121,7 +119,7 @@ fn read_head(conn: i64, timeout_ns: i64) -> Got {
         return got_of(named(conn, "Connection._read_head.timeout", &args));
     }
     let mut list = 0;
-    match conn_read_head(conn, bytes, lines, blank, timeout_ns, 0, &mut list, 0, 0) {
+    match conn_read_head(conn, bytes, lines, blank, timeout_ns, LINES, &mut list, 0, 0) {
         0 => {
             let lines = with(|state| {
                 let Value::List(lines) = heap::read_block(state, list.cast_unsigned()).unpacked() else {
@@ -284,7 +282,7 @@ fn clients(address: SocketAddr) -> Vec<Vec<u8>> {
 /// Serves `http_body` until the clients are done, if there are any: what the clients got back,
 /// and what the rounds saw.
 fn served(with_clients: bool) -> (Vec<Vec<u8>>, Vec<String>) {
-    crate::embed::parallel::set_worker_setup(Box::new(|| start(tables(), crate::Inputs::default())));
+    crate::embed::parallel::set_test_worker_setup();
     start(tables(), crate::Inputs::default());
     let listened =
         crate::stdlib::net::real_net("_listen", &[Value::Int(0)], None, Span::default()).expect("a server");
@@ -294,17 +292,17 @@ fn served(with_clients: bool) -> (Vec<Vec<u8>>, Vec<String>) {
     else {
         panic!("a server with no port")
     };
-    let port = *port;
+    let (port, handle) = (*port, *handle);
     let client = with_clients.then(|| {
         std::thread::spawn(move || {
             let address: SocketAddr = format!("127.0.0.1:{port}").parse().expect("an address");
             let got = std::panic::catch_unwind(|| clients(address));
-            // Stopped however the clients did, so a failure can't leave the server running.
-            crate::embed::serve::stop_servers();
+            // Closed however the clients did, so a failure can't leave the server running.
+            crate::embed::serve::close_when_served(handle);
             got.expect("the clients ran")
         })
     });
-    crate::embed::serve::net_serve(*handle, http_body, 0);
+    crate::embed::serve::net_serve(handle, http_body, 0);
     let got = client.map(|client| client.join().expect("the clients ran")).unwrap_or_default();
     finish();
     let saw = std::mem::take(&mut *ROUNDS_SAW.lock().unwrap_or_else(std::sync::PoisonError::into_inner));

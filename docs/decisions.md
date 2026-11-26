@@ -1760,6 +1760,9 @@ The commit before removal gets a tag, so the old engines can still be found. Bui
 **A release build optimizes what it uses of the runtime together with the program, so runtime calls can inline.** The runtime's own LLVM bitcode ships beside `fennec`, and a release links only the runtime's C parts (mimalloc and the compiler's helpers) afterwards. Development builds are unchanged.
 *Why:* It takes about 1.3% off a kernel's instructions on Arm, up to 4%, for release builds that take about 20 seconds instead of one, which release builds can afford.
 
+**The runtime's bitcode is stamped with the build of Fennec it's from, as the runtime library is, and a release refuses bitcode that isn't stamped with its own build** before it looks in the store; the store's key, and the key of a build of unchanged files, name the bitcode by that stamp (#2565). Bitcode packs a string's bytes into bits but keeps names as written, so the stamp is also in the name of the static that holds it. Unlike a library from before stamps, unstamped bitcode is refused too.
+*Why:* Bitcode from other source linked without a word and gave wrong answers, and a program built with other bitcode was handed back from the store, which once had a benchmark measure a stale runtime.
+
 Every build and the language server share one build engine and store, described under Builds.
 
 ## Builds

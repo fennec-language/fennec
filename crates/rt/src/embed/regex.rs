@@ -14,6 +14,7 @@ use fennec_syntax::{Diagnostic, Span};
 
 use super::heap::{IMMORTAL, NEVER_FREED_COUNT, TEXT_HEADER_WORDS, mark_never_freed, text_address};
 use super::lists::{list_of_strings, list_of_words};
+use super::text::{block_of, bytes_of};
 use super::{State, attempt, span, with};
 use crate::stdlib::re::{LONGEST_KEPT, chars, invalid, replaced};
 
@@ -43,18 +44,48 @@ fn with_text<R>(
     bytes.clear();
     if let Some(block) = u64::try_from(address).ok().and_then(|at| state.heap.block(at)) {
         let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
-        let words = block.get(TEXT_HEADER_WORDS..).unwrap_or_default().iter().take(length.div_ceil(8));
-        // A text too long to keep gets room for all of it at once, as it always did: grown as it's
-        // copied, it could end with room for twice the text.
-        if words.len() * 8 > KEPT_BYTES {
-            bytes.reserve_exact(words.len() * 8);
-        }
-        for word in words {
-            bytes.extend_from_slice(&word.to_le_bytes());
-        }
-        bytes.truncate(length);
+        copy_words(&mut bytes, block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), length);
     }
-    // A string's block always holds UTF-8: anything else reads as empty, as it always did.
+    read_copy(state, kept, bytes, work)
+}
+
+/// [`with_text`] for a string given as its header's words, read where its bytes are: in the
+/// header itself when it's inline, or in its block.
+fn with_header_text<R>(
+    state: &mut State,
+    kept: &'static std::thread::LocalKey<Cell<String>>,
+    words: [u64; 3],
+    work: impl FnOnce(&mut State, &str) -> R,
+) -> R {
+    let mut bytes = kept.take().into_bytes();
+    bytes.clear();
+    let (held, length) = bytes_of(state, &words);
+    copy_words(&mut bytes, held, length);
+    read_copy(state, kept, bytes, work)
+}
+
+/// Copies the first `length` bytes of `words` onto `bytes`.
+fn copy_words(bytes: &mut Vec<u8>, words: &[u64], length: usize) {
+    let words = words.iter().take(length.div_ceil(8));
+    // A text too long to keep gets room for all of it at once, as it always did: grown as it's
+    // copied, it could end with room for twice the text.
+    if words.len() * 8 > KEPT_BYTES {
+        bytes.reserve_exact(words.len() * 8);
+    }
+    for word in words {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(length);
+}
+
+/// Runs `work` with `bytes` as a `str`, then gives their room back to `kept` if it's small enough.
+fn read_copy<R>(
+    state: &mut State,
+    kept: &'static std::thread::LocalKey<Cell<String>>,
+    bytes: Vec<u8>,
+    work: impl FnOnce(&mut State, &str) -> R,
+) -> R {
+    // A string always holds UTF-8: anything else reads as empty, as it always did.
     let text = String::from_utf8(bytes).unwrap_or_default();
     let result = work(state, &text);
     if text.capacity() <= KEPT_BYTES {
@@ -66,9 +97,11 @@ fn with_text<R>(
 /// How many patterns `RECENT` holds.
 const MOST_RECENT: usize = 8;
 
-/// A pattern used lately: the block its text was last read from, that text, and what it compiled to.
+/// A pattern used lately: the block its text was last read from, or the inline header that held it,
+/// that text, and what it compiled to.
 struct Recent {
     address: u64,
+    inline: Option<[u64; 3]>,
     text: String,
     regex: Rc<fennec_re::Regex>,
 }
@@ -124,9 +157,41 @@ fn compiled(state: &mut State, pattern: i64) -> Result<Rc<fennec_re::Regex>, fen
                 if recent.len() >= MOST_RECENT {
                     recent.remove(0);
                 }
-                recent.push(Recent { address, text: text.to_owned(), regex: Rc::clone(&regex) });
+                recent.push(Recent {
+                    address,
+                    inline: None,
+                    text: text.to_owned(),
+                    regex: Rc::clone(&regex),
+                });
             });
         }
+        Ok(regex)
+    })
+}
+
+/// The pattern a header holds, compiled once and kept. One in a block is found as [`compiled`]
+/// finds it. An inline one, as every pattern of 23 bytes or fewer is, is found by its three words,
+/// which hold all of its text, so nothing is read, made or compared beyond them.
+fn compiled_header(state: &mut State, words: [u64; 3]) -> Result<Rc<fennec_re::Regex>, fennec_re::Error> {
+    if let Some(address) = block_of(&words) {
+        return compiled(state, address.cast_signed());
+    }
+    let found = RECENT.with_borrow(|recent| {
+        recent.iter().rev().find(|kept| kept.inline == Some(words)).map(|kept| Rc::clone(&kept.regex))
+    });
+    if let Some(regex) = found {
+        return Ok(regex);
+    }
+    with_header_text(state, &PATTERN, words, |state, text| {
+        let regex = state.regexes.compiled(text)?;
+        RECENT.with_borrow_mut(|recent| {
+            if recent.len() >= MOST_RECENT {
+                recent.remove(0);
+            }
+            let kept =
+                Recent { address: 0, inline: Some(words), text: text.to_owned(), regex: Rc::clone(&regex) };
+            recent.push(kept);
+        });
         Ok(regex)
     })
 }
@@ -150,11 +215,13 @@ pub extern "C" fn problem(pattern: i64) -> i64 {
     })
 }
 
-/// How many groups a pattern has, not counting the whole match: what says how many numbers
-/// `find_all` and `find` give for each match. -1 for a pattern that isn't valid.
-pub extern "C" fn groups(pattern: i64) -> i64 {
+/// How many groups a pattern has, not counting the whole match, the pattern given as its header's
+/// words: what says how many numbers `find_all` and `find` give for each match. -1 for a pattern
+/// that isn't valid.
+pub extern "C" fn groups(p0: u64, p1: u64, p2: u64) -> i64 {
     with(|state| {
-        compiled(state, pattern).ok().and_then(|regex| i64::try_from(regex.groups()).ok()).unwrap_or(-1)
+        let regex = compiled_header(state, [p0, p1, p2]).ok();
+        regex.and_then(|regex| i64::try_from(regex.groups()).ok()).unwrap_or(-1)
     })
 }
 
@@ -263,16 +330,30 @@ pub extern "C" fn find_all(pattern: i64, whole: i64, ints: i64, start: i64, end:
     })
 }
 
-/// `search` (0), `match` (1) or `fullmatch` (2): where the match is, or an empty list.
-pub extern "C" fn find(pattern: i64, whole: i64, kind: i64, ints: i64, start: i64, end: i64) -> i64 {
+/// `search` (0), `match` (1) or `fullmatch` (2): where the match is, or an empty list. The pattern
+/// and the text come as their headers' words and are read where they are, so a search makes no block
+/// for either.
+pub extern "C" fn find(
+    p0: u64,
+    p1: u64,
+    p2: u64,
+    t0: u64,
+    t1: u64,
+    t2: u64,
+    kind: i64,
+    ints: i64,
+    start: i64,
+    end: i64,
+) -> i64 {
     attempt(|state: &mut State| {
-        let regex = compiled_at(state, pattern, span(start, end))?;
+        let regex =
+            compiled_header(state, [p0, p1, p2]).map_err(|error| invalid(&error, span(start, end)))?;
         let anchor = match kind {
             1 => Anchor::Start,
             2 => Anchor::Both,
             _ => Anchor::Search,
         };
-        let places = with_text(state, &SEARCHED, whole, |_, whole| {
+        let places = with_header_text(state, &SEARCHED, [t0, t1, t2], |_, whole| {
             let mut places = Vec::new();
             if let Some(captures) = regex.find_at(whole, 0, anchor) {
                 push_places(whole, &captures, &mut (0, 0), &mut places);
@@ -306,8 +387,9 @@ pub extern "C" fn split(pattern: i64, whole: i64, strings: i64, start: i64, end:
 mod tests {
     use std::rc::Rc;
 
+    use super::super::text;
     use super::super::{Tables, finish, heap, start, with};
-    use super::{IMMORTAL, KEPT_BYTES, SEARCHED, compiled, find, holds_text, with_text};
+    use super::{IMMORTAL, KEPT_BYTES, SEARCHED, compiled, compiled_header, find, holds_text, with_text};
     use crate::packed::Element;
 
     /// How much room the searched text's buffer keeps between calls.
@@ -363,6 +445,23 @@ mod tests {
         assert!(failure.is_none());
     }
 
+    /// A short pattern, held inline, is found again by its header's words: the same compiled pattern
+    /// each time, and another pattern's words never taken for it.
+    #[test]
+    fn an_inline_pattern_is_found_again_by_its_words() {
+        start(Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() }, crate::Inputs::default());
+        let found = with(|state| {
+            let (todo, other) = (text::header(state, r"TODO\((\w+)\)"), text::header(state, "(a)(b)"));
+            [todo, todo, other].map(|words| compiled_header(state, words).ok())
+        });
+        let found: Vec<_> = found.into_iter().flatten().collect();
+        let [one, two, three] = found.as_slice() else { return assert_eq!(found.len(), 3) };
+        assert!(Rc::ptr_eq(one, two) && !Rc::ptr_eq(one, three));
+        assert_eq!((one.groups(), three.groups()), (1, 2));
+        let (_, failure, _) = finish();
+        assert!(failure.is_none());
+    }
+
     /// Searches that find nothing give back one kept empty list, the same each time, which letting go
     /// doesn't free; a run started afresh gets one in its own heap, never one kept from a run that's
     /// ended.
@@ -384,13 +483,12 @@ mod tests {
         let mut made = Vec::new();
         for _ in 0..2 {
             start(tables(), crate::Inputs::default());
-            let (pattern, line) = with(|state| {
-                (
-                    heap::text_address(state, r"TODO\((\w+)\)"),
-                    heap::text_address(state, "nothing to do on this line"),
-                )
+            // A short pattern, held inline, and a line long enough for a block of its own.
+            let ([p0, p1, p2], [t0, t1, t2]) = with(|state| {
+                (text::header(state, r"TODO\((\w+)\)"), text::header(state, "nothing to do on this line"))
             });
-            let (first, again) = (find(pattern, line, 0, 0, 0, 0), find(pattern, line, 0, 0, 0, 0));
+            let search = || find(p0, p1, p2, t0, t1, t2, 0, 0, 0, 0);
+            let (first, again) = (search(), search());
             assert_eq!(first, again);
             assert!(kept_empty(first), "{first} isn't a kept empty list");
             made.push(first);

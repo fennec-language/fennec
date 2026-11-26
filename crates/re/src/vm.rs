@@ -188,12 +188,36 @@ pub(crate) fn run(program: &Program, text: &str, start: usize, anchor: Anchor) -
         .unwrap_or_else(|| search(&mut Scratch::new(), program, text, start, anchor))
 }
 
+/// [`Anchor`]s as numbers, for [`search_as`]'s copies.
+const SEARCH: u8 = 0;
+const START: u8 = 1;
+const BOTH: u8 = 2;
+
+/// [`search_as`] for `anchor`. Each anchor gets a copy of its own, its tests at each position
+/// folded away, as a program calling the engine with one anchor gets: one copy for every exported
+/// call would test the anchor again at every position.
+#[inline]
 fn search(
     scratch: &mut Scratch,
     program: &Program,
     text: &str,
     start: usize,
     anchor: Anchor,
+) -> Option<Captures> {
+    match anchor {
+        Anchor::Search => search_as::<SEARCH>(scratch, program, text, start),
+        Anchor::Start => search_as::<START>(scratch, program, text, start),
+        Anchor::Both => search_as::<BOTH>(scratch, program, text, start),
+    }
+}
+
+/// The match the pattern prefers from `start`, anchored as `ANCHOR`, one of [`SEARCH`], [`START`]
+/// and [`BOTH`], says.
+fn search_as<const ANCHOR: u8>(
+    scratch: &mut Scratch,
+    program: &Program,
+    text: &str,
+    start: usize,
 ) -> Option<Captures> {
     let Scratch { current, next, slots, found } = scratch;
     let width = (program.groups + 1) * 2;
@@ -204,12 +228,12 @@ fn search(
     let mut matched = false;
     let mut pos = start;
     loop {
-        if !matched && (anchor == Anchor::Search || pos == start) {
+        if !matched && (ANCHOR == SEARCH || pos == start) {
             slots.fill(None);
             current.add(program, 0, slots, text, pos);
         }
         // With no thread alive, only a search that hasn't matched yet can still start one.
-        if current.list.is_empty() && (matched || anchor != Anchor::Search) {
+        if current.list.is_empty() && (matched || ANCHOR != SEARCH) {
             break;
         }
         let c = text.get(pos..).and_then(|rest| rest.chars().next());
@@ -217,7 +241,7 @@ fn search(
         for (at, pc) in current.list.iter().enumerate() {
             let takes = match (program.insts.get(*pc), c) {
                 (Some(Inst::Match), _) => {
-                    if anchor == Anchor::Both && pos != text.len() {
+                    if ANCHOR == BOTH && pos != text.len() {
                         continue;
                     }
                     // Threads after this one are ones the pattern likes less.

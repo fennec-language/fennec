@@ -1526,7 +1526,7 @@ impl Heap {
     /// list of strings' headers for the caller to let go of (`Taken::Texts`), or any other, for the
     /// walk that frees what it holds (`Taken::Walked`). Lists' shapes start at `first_list`. `None`,
     /// having taken nothing, when it isn't in this table. A block that wasn't plain was looked up
-    /// again by the walk: 107,000 of api_handler's 464,000 frees.
+    /// again by the walk: 107,000 of `api_handler`'s 464,000 frees.
     ///
     /// A list of strings' headers is `Taken::Texts` when `texts_here`, which says this thread
     /// counts every block it can reach, whatever its strings hold: what they hold are strings,

@@ -17,10 +17,8 @@ use fennec_rt::embed::{
     notes, numbers, parallel, regex, serve, strings, temps, text, threads,
 };
 
-/// The build of Fennec this library is from, after a marker, which `fennec` reads out of the
-/// library's file to tell one built from other source. Kept by `#[used]`, since nothing calls it.
-#[used]
-static BUILD_STAMP: &str = concat!("fennec-runtime-build:", env!("FENNEC_BUILD"));
+// The build of Fennec this library is from, in a static named for it: see `build.rs`.
+include!(concat!(env!("OUT_DIR"), "/stamp.rs"));
 
 /// The exported functions that never fail: none of them sets the flag `fennec_aot_failed_flag`
 /// gives the address of. Generated code has to check that flag after calling any other, and may

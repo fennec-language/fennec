@@ -188,7 +188,8 @@ def main(net: Net, stdout: Stdout) fails NetError:
     /// and what it reaches: a handler given to `serve` by name, one a `Router` keeps in its list,
     /// a sort's key, which a builtin calls with no call of its own, a generator a handler walks, and
     /// a `def str` the runtime calls to print a list's items. A function only `main` calls still
-    /// doesn't.
+    /// doesn't. The generator's own loop ticks; a turn that yields leaves its resume, and the loop
+    /// walking it ticks for that turn.
     #[test]
     fn a_handler_given_to_serve_or_kept_by_a_router_ticks() -> Result<(), String> {
         let source = "\
@@ -209,7 +210,10 @@ struct Ring:
     def iter(self) -> Iterator[int]:
         mut at = 0
         while at < len(self.slots):
-            yield self.slots[at]
+            mut skipped = 0
+            while skipped < at:
+                skipped += 1
+            yield self.slots[at] + skipped
             at += 1
 
 def count(limit: int) -> int:
@@ -298,6 +302,55 @@ def rank(word: str) -> int:
         let texts_alone = texts(&alone)?;
         let names: Vec<&str> = texts_alone.iter().map(|(function, _)| function.as_str()).collect();
         assert!(!ticking(&texts_alone, "count") && !ticking(&texts_alone, "rank"), "{names:?}");
+        Ok(())
+    }
+
+    /// A turn of a loop ticks once, on its jump back to its start, however many blocks it goes
+    /// through: a `for` loop whose body tests a byte and goes on to its step, and a `while` loop's
+    /// `continue`, which is a second way back. Each block numbered before the one jumping to it
+    /// ticked once, and a byte loop in a server's round ticked three times a turn.
+    #[test]
+    fn a_loops_turn_ticks_once() -> Result<(), String> {
+        use std::collections::BTreeSet;
+        let source = "\
+from std.net import NetError
+
+def first_space(words: list[int]) -> int:
+    for at in range(len(words)):
+        if words[at] == 32:
+            return at
+    return -1
+
+def odd_total(limit: int) -> int:
+    mut turns = 0
+    mut total = 0
+    while turns < limit:
+        turns += 1
+        if turns % 2 == 0:
+            continue
+        total += turns
+    return total
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            conn.write(f\"{first_space([len(line)])} {odd_total(len(line))}\\n\")?
+";
+        let texts = texts(source)?;
+        // Each unit that calls a function has its own copy of it, so each copy is counted alone.
+        let ticks = |name: &str| -> BTreeSet<usize> {
+            texts
+                .iter()
+                .flat_map(|(_, text)| text.split("\ndefine "))
+                .filter(|defined| {
+                    defined.lines().next().is_some_and(|line| line.contains(&format!("@\"f_{name}\"(")))
+                })
+                .map(|defined| defined.matches("call i64 @fennec_task_tick()").count())
+                .collect()
+        };
+        assert_eq!(ticks("first_space"), BTreeSet::from([1]), "the `for` loop's step is its one way back");
+        assert_eq!(ticks("odd_total"), BTreeSet::from([2]), "a `while` loop's end and its `continue`");
         Ok(())
     }
 }

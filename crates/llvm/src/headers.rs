@@ -844,8 +844,15 @@ impl Emit<'_, '_, '_> {
     /// when the block is alone and has room, its characters counted where they are, and anything
     /// else goes as [`Self::append_text`] does.
     pub(crate) fn append_header(&mut self, block: &str, more: &str) -> String {
+        self.append_header_known(block, more, false)
+    }
+
+    /// [`Self::append_header`], with `ascii` saying `more` is known to be inline and ASCII, as a
+    /// number's text is: nothing tests whether it's inline, and its characters are its bytes,
+    /// with none counted.
+    pub(crate) fn append_header_known(&mut self, block: &str, more: &str, ascii: bool) -> String {
         use fennec_rt::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
-        let in_block = self.header_in_block(more);
+        let in_block = if ascii { "false".to_owned() } else { self.header_in_block(more) };
         let more_length = self.inline_length(more);
         let at = |emit: &mut Self, offset: i32| emit.offset(block, offset.unsigned_abs());
         let alone = self.alone(block);
@@ -896,7 +903,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&copied);
         self.line(&format!("store i64 {total}, ptr {length_at}"));
         let chars_at = at(self, TEXT_CHARS);
-        let counted = self.inline_chars(more, &more_length);
+        let counted = if ascii { more_length.clone() } else { self.inline_chars(more, &more_length) };
         let (chars, more_chars) = (self.temp(), self.temp());
         self.line(&format!("{chars} = load i64, ptr {chars_at}"));
         self.line(&format!("{more_chars} = add i64 {chars}, {counted}"));

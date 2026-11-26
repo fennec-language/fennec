@@ -16,6 +16,10 @@ on:
       - .cargo/config.toml
       - THIRD-PARTY.md
       - .github/scripts/musl-runtime.sh
+      - .github/scripts/release-build.sh
+      - .github/scripts/release-env.sh
+      - .github/scripts/release-container.sh
+      - .github/scripts/pack.sh
       - crates/fennec/src/aot.rs
       - crates/llvm/src/build.rs
   workflow_dispatch:
@@ -27,9 +31,8 @@ permissions:
 
 jobs:
   # What a release build on Linux links a program with to make one that runs on its own: the
-  # runtime libraries built for musl, and musl's start-up files and C library. Built on the
-  # runner's own Ubuntu, since AlmaLinux has no C compiler for musl, and nothing here depends on
-  # the machine's glibc.
+  # runtime libraries built for musl, and musl's start-up files and C library. Built on Ubuntu,
+  # since AlmaLinux has no C compiler for musl, and nothing here depends on the machine's glibc.
   musl:
     name: Runtime for musl (${{ matrix.target }})
     strategy:
@@ -39,16 +42,29 @@ jobs:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
+    # Ubuntu's, pinned, with its compilers pinned, so a rebuild before signing has the same ones
+    # (`rebuild-release.sh`). A pin Ubuntu no longer has fails here, and is moved on.
+    container: "ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b"
     timeout-minutes: 60
     permissions:
       contents: read
     steps:
+      # Git first, so the checkout is one; what's built with comes after, from the checkout.
+      - name: Install git
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates git
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install musl's C compiler
-        run: .github/scripts/apt.sh musl-tools
-      - run: .github/scripts/musl-runtime.sh musl
+      - name: Install what it's built with
+        shell: bash
+        run: |
+          .github/scripts/release-container.sh ubuntu
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build it
+        shell: bash
+        run: |
+          source .github/scripts/release-env.sh "$(uname -m)-unknown-linux-musl"
+          .github/scripts/musl-runtime.sh musl
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: musl-${{ matrix.target }}
@@ -85,168 +101,38 @@ jobs:
       run:
         working-directory: ${{ matrix.copy == 'rebuild' && 'second-copy' || '.' }}
     steps:
-      # A container has none of the runner's tools: a C compiler for mimalloc, git, and rustup,
-      # which takes the toolchain `rust-toolchain.toml` names when it's first used.
-      - name: Set up the container
+      # A container has none of the runner's tools. Git first, so the checkout is one; what's
+      # built with comes after, from the checkout, at the versions it pins.
+      - name: Install git in the container
         if: matrix.platform.container
         # Before the checkout, so not in the second copy's folder, which isn't there yet.
         working-directory: .
-        run: |
-          dnf install -y -q gcc gcc-c++ make git tar gzip findutils diffutils
-          curl -sSfL --retry 3 https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        run: dnf install -y -q git
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: ${{ matrix.copy == 'rebuild' && 'second-copy' || '' }}
-      # The same commit builds the same bytes wherever it's checked out and whenever. C's
-      # `__DATE__` is the commit's, and no path of this machine's is left in what's built: not in
-      # what's compiled from C, through flags for this target that add to `.cargo/config.toml`'s.
-      - name: Build the same wherever and whenever
-        shell: bash
-        env:
-          TARGET: ${{ matrix.platform.target }}
+      - name: Install what it's built with in the container
+        if: matrix.platform.container
         run: |
-          # In a container the checkout is someone else's, which git won't read without being told.
-          epoch="$(git -c safe.directory="$PWD" log -1 --format=%ct)"
-          [ -n "$epoch" ] || { echo "::error::couldn't tell when the commit was made"; exit 1; }
-          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
-          if [ "$RUNNER_OS" = Windows ]; then
-            # The compiler sees Windows' own paths, like `D:\a\fennec\fennec`.
-            here="$(cygpath -w "$PWD")"
-            cargo_home="$(cygpath -w "${CARGO_HOME:-$USERPROFILE/.cargo}")"
-            rustup_home="$(cygpath -w "${RUSTUP_HOME:-$USERPROFILE/.rustup}")"
-            # And the linker writes no time into the program's header.
-            echo "RUSTFLAGS=-C target-feature=+crt-static -C link-arg=-Wl,--no-insert-timestamp --remap-path-prefix=$here=/fennec --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup" >> "$GITHUB_ENV"
-          else
-            cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-            flags="--remap-path-prefix=$PWD=/fennec --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup"
-            # macOS's linker names a program by a hash of it before it's stripped, which notes
-            # where each object it linked was and when it was made: the checkout's path is taken
-            # out of those, and their times are zero.
-            if [ "$RUNNER_OS" = macOS ]; then
-              flags="$flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/"
-              echo "ZERO_AR_DATE=1" >> "$GITHUB_ENV"
-              # The runtime's C parts are built for the macOS a program is built for, as LLVM's
-              # code is, rather than for the runner's SDK.
-              echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
-            fi
-            echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
-            echo "CFLAGS_${TARGET//-/_}=-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$PWD=/fennec" >> "$GITHUB_ENV"
-          fi
+          .github/scripts/release-container.sh alma
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Use Rust's gnullvm toolchain and llvm-mingw
         if: runner.os == 'Windows'
         shell: bash
         run: .github/scripts/windows.sh toolchain
-      # Installed by name before any other `rustup` command, which would otherwise install it on
-      # the way, as rustup is deprecating. After the line above, on Windows it's gnullvm's.
-      - name: Install the toolchain `rust-toolchain.toml` names
-        run: rustup toolchain install
-      - run: rustup target add ${{ matrix.platform.target }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: runner.os == 'Linux'
         with:
           name: musl-${{ matrix.platform.target }}
           path: ${{ matrix.copy == 'rebuild' && 'second-copy/musl' || 'musl' }}
-      # `fennec build` links executables against the runtime library, shipped next to `fennec`.
-      - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.platform.target }}
-      # The launcher people install as `fennec`, with the two programs it hands work to, built on its
-      # own so it gets none of the toolchain's features.
-      - run: cargo build --release --locked -p fennec-launcher --bins --target ${{ matrix.platform.target }}
-      # The runtime with threads, for programs that use `parallel`, also next to `fennec`. Built
-      # on its own, in a folder of its own: built with the others, Cargo would give all of them
-      # `threads`.
-      - name: Build the runtime library with threads
+      # The same commit builds the same bytes wherever it's checked out and whenever, here and
+      # in a rebuild before signing, which runs this same script (`rebuild-release.sh`).
+      - name: Build and pack the archives
         shell: bash
         env:
           TARGET: ${{ matrix.platform.target }}
-        run: |
-          cargo rustc --release --locked -p fennec-runtime --features threads --target "$TARGET" --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-          cp "target/threads/$TARGET/release/libfennec_runtime.a" "target/$TARGET/release/libfennec_runtime_threads.a"
-          cp "$(find "target/threads/$TARGET/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/$TARGET/release/libfennec_runtime_threads.bc"
-      # A release build puts what it uses of the runtime in the program's own unit, from this.
-      - name: Build the runtime's bitcode
-        shell: bash
-        env:
-          TARGET: ${{ matrix.platform.target }}
-        run: |
-          cargo rustc --release --locked -p fennec-runtime --target "$TARGET" --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-          cp "$(find "target/$TARGET/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/$TARGET/release/libfennec_runtime.bc"
-      # LLVM's tools for the target's own machine, as `fennec` runs them. An archive lays them out
-      # as the toolchain does, which is where `fennec` looks: see `Tools::find`.
-      - name: Install LLVM's tools for this platform
-        if: runner.os != 'Windows'
-        shell: bash
-        env:
-          TARGET: ${{ matrix.platform.target }}
-        run: |
-          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
-          rustup toolchain install "$channel-$TARGET" --profile minimal --component llvm-tools-preview --force-non-host --no-self-update
-          echo "TOOLCHAIN=$(rustup show home)/toolchains/$channel-$TARGET" >> "$GITHUB_ENV"
-      - name: Package
-        shell: bash
-        env:
-          TARGET: ${{ matrix.platform.target }}
-        run: |
-          # Named by the version it builds as, which a tag has to match: the launcher takes an
-          # archive only when its folder inside is named as the file is, by that version.
-          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
-          name="fennec-v${version}-${TARGET}"
-          mkdir "$name"
-          cp README.md LICENSE-MIT LICENSE-APACHE RUNTIME-LIBRARY-EXCEPTION THIRD-PARTY.md "$name/"
-          from="target/${TARGET}/release"
-          for runtime in libfennec_runtime libfennec_runtime_threads; do
-            cp "$from/$runtime.a" "$from/$runtime.bc" "$name/"
-          done
-          mkdir -p "$name/licenses"
-          if [ "$RUNNER_OS" = Windows ]; then
-            cp "$from/fennec.exe" "$name/"
-            # LLVM's tools from Rust's MSVC toolchain, LLD, and the libraries it links.
-            .github/scripts/windows.sh folder "$name/llvm"
-            TOOLCHAIN="$(rustup show home)/toolchains/$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)-x86_64-pc-windows-msvc"
-            cp licenses/mingw-w64-runtime.txt "$name/licenses/"
-          else
-            cp "$from/fennec" "$name/"
-            # Which protocol its build daemon speaks, as what version and build, so the launcher can
-            # ask that daemon for a plain `fennec run` itself (`fennec_daemon::PROTOCOL_FILE`).
-            "$from/fennec" daemon protocol > "$name/daemon-protocol"
-            tools="$TOOLCHAIN/lib/rustlib/$TARGET"
-            mkdir -p "$name/llvm/bin" "$name/llvm/lib"
-            # LLVM's `ar` takes the runtime's Rust out of its library, so building needs no `ar` from
-            # the machine. On Linux LLD links a program too, so it needs no C compiler or linker
-            # either; a Mac links through Xcode's command line tools.
-            cp "$tools"/bin/{opt,llc,llvm-link,llvm-ar} "$name/llvm/bin/"
-            if [ "$RUNNER_OS" = Linux ]; then
-              cp "$tools/bin/rust-lld" "$name/llvm/bin/"
-            fi
-            # The tools share LLVM from a library of their own, which they find in `../lib`.
-            cp "$TOOLCHAIN"/lib/libLLVM* "$name/llvm/lib/"
-          fi
-          # On Linux, what a release build links a program with to make one that runs on its own.
-          # Its programs hold musl's notices themselves, and the archive has them too.
-          if [ -d musl ]; then
-            cp -R musl "$name/musl"
-            cp licenses/musl.txt "$name/licenses/"
-          fi
-          licenses="$TOOLCHAIN/share/doc/rust/licenses"
-          cp "$licenses/Apache-2.0.txt" "$licenses/LLVM-exception.txt" "$licenses/NCSA.txt" "$name/licenses/"
-          cp "$TOOLCHAIN/share/doc/rust/COPYRIGHT.html" "$name/licenses/rust-COPYRIGHT.html"
-          archive="$(.github/scripts/pack.sh "$name")"
-          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
-          echo "PACKAGED=$name" >> "$GITHUB_ENV"
-          ls -l "$archive"
-          # The launcher's archive: its three programs in one folder named as the file is, which
-          # `fennec self update` puts in `~/.fennec/bin`, and the notices they're shipped with.
-          exe=""
-          if [ "$RUNNER_OS" = Windows ]; then exe=".exe"; fi
-          launcher="fennec-launcher-v${version}-${TARGET}"
-          mkdir "$launcher"
-          cp LICENSE-MIT LICENSE-APACHE THIRD-PARTY.md "$launcher/"
-          cp "$from/fennec-launcher$exe" "$launcher/fennec$exe"
-          cp "$from/fennec-setup$exe" "$from/fennec-fetch$exe" "$launcher/"
-          launcher_archive="$(.github/scripts/pack.sh "$launcher")"
-          echo "LAUNCHER_ARCHIVE=$launcher_archive" >> "$GITHUB_ENV"
-          ls -l "$launcher_archive"
+        run: .github/scripts/release-build.sh "$TARGET"
       # What a user gets: the archive's own tools, with Rust's toolchain, llvm-mingw and Visual
       # Studio out of reach and a Fennec home with nothing in it. On macOS and Linux, `cc` is still
       # the system's, which links; on Windows, the archive's own LLD links.

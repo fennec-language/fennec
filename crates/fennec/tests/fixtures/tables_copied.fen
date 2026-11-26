@@ -1,0 +1,111 @@
+# No two items ever have the same Id, in any copy of a Table, however it was made (#2424). Every
+# item added has an Id of its own, so an Id made before a copy finds its item in both copies, and
+# one made after finds it only in the copy it was made in. The five ways a Table is copied or put
+# back: a copy changed, a Table sent on a channel, one a launched task is given, one read out of
+# a lock, and a lock that fails and puts it back as it was. Each program here is one Fable 5.2
+# ran on main, where each pair of Ids was the same and each found the other's item.
+from std.collections import Id, Table
+from std.concurrent import Closed, Crashed, Sender, channel
+
+error Undone:
+    made: Id[Unit]
+
+struct Unit:
+    health: int
+
+struct World:
+    units: Table[Unit]
+
+def found(units: Table[Unit], id: Id[Unit]) -> bool:
+    return units.get(id) is not None
+
+# A copy, each adding; a slot taken out and used again in each; and a copy of a copy.
+def copies(stdout: Stdout):
+    mut first = Table[Unit]()
+    before = first.add(Unit(health=1))
+    gone = first.add(Unit(health=2))
+    mut second = first
+    first_id = first.add(Unit(health=10))
+    second_id = second.add(Unit(health=20))
+    stdout.print("copies:", first_id == second_id, found(first, second_id), found(second, first_id))
+    stdout.print("made before the copy:", first[before].health, second[before].health)
+    _ = first.remove(gone)
+    _ = second.remove(gone)
+    first_again = first.add(Unit(health=11))
+    second_again = second.add(Unit(health=21))
+    stdout.print(
+        "a slot used again in each:",
+        first_again == second_again,
+        found(first, second_again),
+        found(second, first_again),
+        found(first, gone),
+    )
+    mut third = second
+    third_id = third.add(Unit(health=30))
+    later = second.add(Unit(health=22))
+    stdout.print("a copy of a copy:", third_id == later, found(third, later), found(second, third_id))
+    stdout.print("made before it:", found(third, second_id), third[before].health)
+    stdout.print("ids find their items:", all(found(third, id) for id in third.ids()), len(first), len(second), len(third))
+
+# Adds an item to the Table it was given, and sends back its Id.
+def adds_one(units: Table[Unit], back: Sender[Id[Unit]]) fails Closed:
+    mut mine = units
+    back.send(mine.add(Unit(health=30)))?
+
+# A Table sent on a channel, and one a launched task is given.
+def sent(stdout: Stdout) fails Closed | Crashed:
+    mut first = Table[Unit]()
+    before = first.add(Unit(health=1))
+    with channel[Table[Unit]](size=1) as pipe:
+        pipe.send(first)?
+        mut second = pipe.receive() else fail Closed()
+        first_id = first.add(Unit(health=10))
+        second_id = second.add(Unit(health=20))
+        stdout.print("through a channel:", first_id == second_id, found(first, second_id), found(second, first_id))
+        stdout.print("made before it was sent:", second[before].health)
+    mut third = Table[Unit]()
+    _ = third.add(Unit(health=2))
+    with channel[Id[Unit]](size=1) as replies:
+        back = replies.sender()
+        with launch(() => adds_one(third, back)?)?:
+            pass
+        task_id = replies.receive() else fail Closed()
+        own_id = third.add(Unit(health=40))
+        stdout.print("a task's copy:", task_id == own_id, found(third, task_id))
+
+# The shared Table, read out of a lock.
+def taken(world: shared World) -> Table[Unit]:
+    lock world as held:
+        return held.units
+
+# Adds an item to the shared Table and gives back its Id.
+def added(world: shared World, health: int) -> Id[Unit]:
+    lock world as ref held:
+        return held.units.add(Unit(health=health))
+
+# Adds an item to the shared Table and fails with its Id, which puts the Table back as it was.
+def added_and_undone(world: shared World) fails Undone:
+    lock world as ref held:
+        fail Undone(made=held.units.add(Unit(health=111)))
+
+# A Table read out of a lock, and a lock that fails.
+def locked(stdout: Stdout):
+    shared world = World(units=Table[Unit]())
+    _ = added(world, health=1)
+    mut mine = taken(world)
+    own_id = mine.add(Unit(health=10))
+    shared_id = added(world, health=20)
+    lock world as held:
+        stdout.print("out of a lock:", own_id == shared_id, found(held.units, own_id), found(mine, shared_id))
+    # Its Id comes out with its failure, past the lock, which has put the Table back.
+    mut undone = list[Id[Unit]]()
+    added_and_undone(world) except Undone(made):
+        undone.append(made)
+    next_id = added(world, health=222)
+    lock world as held:
+        stdout.print("a lock that failed:", len(held.units), undone[0] == next_id, found(held.units, undone[0]))
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    copies(stdout)
+    sent(stdout)?
+    locked(stdout)

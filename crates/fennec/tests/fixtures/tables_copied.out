@@ -1,0 +1,11 @@
+copies: False False False
+made before the copy: 1 1
+a slot used again in each: False False False False
+a copy of a copy: False False False
+made before it: True 1
+ids find their items: True 3 4 4
+through a channel: False False False
+made before it was sent: 1
+a task's copy: False False
+out of a lock: False False False
+a lock that failed: 3 False False

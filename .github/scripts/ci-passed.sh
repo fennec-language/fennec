@@ -24,15 +24,9 @@ summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
   --jq '.jobs[] | [(.id | tostring), .name, (.conclusion // "unfinished"), (.runner_name // ""), (.steps | length | tostring)] | join("|")')
 
-# Whether the job never got a runner: cancelled with none and no steps, and its check says GitHub
-# couldn't find one. A job cancelled before it started, as when the run was, has no such note.
-never_ran() {
-  local id=$1 conclusion=$2 runner=$3 steps=$4
-  local said
-  [ "$conclusion" = cancelled ] && [ -z "$runner" ] && [ "$steps" = 0 ] || return 1
-  said=$(gh api "repos/$GITHUB_REPOSITORY/check-runs/$id/annotations" --jq '.[].message') || return 1
-  grep -q 'was not acquired by Runner' <<< "$said"
-}
+# Whether the job never got a runner.
+# shellcheck source=.github/scripts/no-runner.sh
+source "$(dirname "$0")/no-runner.sh"
 
 # A macOS job of a pull request that never got a runner only warns.
 macos='(macos-latest, [^)]*\)|x86-64 macOS \([^)]*\))$'

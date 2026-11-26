@@ -34,10 +34,9 @@ pub(crate) enum Saved {
     /// An enum's case with no fields.
     Case(String),
     CaseRecord(String, Vec<(FieldName, Saved)>),
-    /// A `Table` of items of the type named `kind`: its tag, and each item with its `Id`.
+    /// A `Table` of items of the type named `kind`: each item with its `Id`.
     Table {
         kind: String,
-        tag: u64,
         ids: Vec<Id>,
         items: Vec<Saved>,
     },
@@ -121,7 +120,7 @@ impl Interp {
                     ids.push(id);
                     items.push(self.saved(item, inner)?);
                 }
-                Saved::Table { kind: type_name(inner), tag: table.tag, ids, items }
+                Saved::Table { kind: type_name(inner), ids, items }
             }
             (Type::Id(inner), Value::Id(id)) => Saved::Id { kind: type_name(inner), id: *id },
             (Type::Named(name), Value::Instance(_)) if self.own_method(name, "serialize").is_some() => {
@@ -509,8 +508,8 @@ struct FoundId {
 #[derive(Default)]
 struct Finder {
     positions: Positions,
-    /// Where each `Table` is, and its tag, by the name of its items' type.
-    tables: HashMap<String, (String, u64)>,
+    /// Where each `Table` is, by the name of its items' type.
+    tables: HashMap<String, String>,
     ids: Vec<FoundId>,
     path: Vec<String>,
     problem: Option<String>,
@@ -559,8 +558,8 @@ impl Finder {
                     self.path.pop();
                 }
             }
-            Saved::Table { kind, tag, ids, items } => {
-                self.table(kind, *tag, ids);
+            Saved::Table { kind, ids, items } => {
+                self.table(kind, ids);
                 self.sequence(items);
             }
             Saved::Id { kind, id } => {
@@ -584,9 +583,9 @@ impl Finder {
         }
     }
 
-    fn table(&mut self, kind: &str, tag: u64, ids: &[Id]) {
+    fn table(&mut self, kind: &str, ids: &[Id]) {
         let here = self.here();
-        if let Some((there, _)) = self.tables.get(kind) {
+        if let Some(there) = self.tables.get(kind) {
             if self.problem.is_none() {
                 self.problem = Some(format!(
                     "{there} and {here} are both a `Table[{kind}]`, so an Id can't say which it's in"
@@ -594,7 +593,7 @@ impl Finder {
             }
             return;
         }
-        self.tables.insert(kind.to_owned(), (here, tag));
+        self.tables.insert(kind.to_owned(), here);
         let positions =
             ids.iter().enumerate().map(|(at, id)| ((id.slot, id.generation, id.tag), at)).collect();
         self.positions.insert(kind.to_owned(), positions);
@@ -616,12 +615,13 @@ impl Finder {
             if found.optional {
                 continue;
             }
-            let (there, tag) = self.tables.get(kind).cloned().unwrap_or_else(|| ("its Table".to_owned(), 0));
-            if found.key.2 != tag {
-                return Some(format!("{} is an Id from another `Table[{kind}]` than {there}", found.at));
-            }
+            let there = self.tables.get(kind).cloned().unwrap_or_else(|| "its Table".to_owned());
+            // By its own tag, the one its `add` took, which only its item's slot holds.
             if !positions.contains_key(&found.key) {
-                return Some(format!("{} is an Id of something that's been taken out of {there}", found.at));
+                return Some(format!(
+                    "{} is an Id that finds nothing in {there}: its item was taken out, or it's from another `Table[{kind}]`",
+                    found.at
+                ));
             }
         }
         None

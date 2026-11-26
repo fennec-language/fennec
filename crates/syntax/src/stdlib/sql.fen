@@ -220,10 +220,10 @@ struct SqlRowReader:
     def here(self, message: str) -> ParseError:
         return self._bad(message)
 
-    def saw_id(ref self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int, generation: int):
         pass
 
-    def saw_table(ref self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
         pass
 
     def tag(ref self, kind: str) -> int:

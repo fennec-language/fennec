@@ -25,6 +25,8 @@ const LIST: i64 = 3;
 const EVENT: i64 = 4;
 /// A numbered event, a struct holding an enum.
 const SAID: i64 = 5;
+/// Three lines and a number, ten words: wider than a message holds in place.
+const PAGE: i64 = 6;
 
 fn event() -> Element {
     let field = |name: &str, element: Element| (Rc::from(name), element);
@@ -59,6 +61,15 @@ fn tables() -> Tables {
         name: Rc::from("Said"),
         fields: vec![(Rc::from("seq"), Element::Int), (Rc::from("event"), event())],
     };
+    let page = Element::Struct {
+        name: Rc::from("Page"),
+        fields: vec![
+            (Rc::from("first"), Element::Text),
+            (Rc::from("second"), Element::Text),
+            (Rc::from("third"), Element::Text),
+            (Rc::from("number"), Element::Int),
+        ],
+    };
     let elements = vec![
         Rc::new(string),
         Rc::new(message),
@@ -66,6 +77,7 @@ fn tables() -> Tables {
         Rc::new(Element::List(Rc::new(Element::Str))),
         Rc::new(event()),
         Rc::new(said),
+        Rc::new(page),
     ];
     Tables { shapes: vec![Rc::new(Element::Str)], elements, str_shape: 0, ..Tables::default() }
 }
@@ -145,6 +157,33 @@ fn a_flat_message_goes_as_copies_and_comes_out_whole() {
     // Now the receiver's, each with one owner.
     assert_eq!(blocks(), before + 2);
     assert_eq!((count(room_copy), count(said_copy)), (1, 1));
+    channel_free(channel);
+    finish();
+}
+
+/// A message wider than one holds in place, naming three blocks, goes boxed and comes out whole:
+/// its first copy held in place and the others in a list.
+#[test]
+fn a_message_too_wide_to_hold_in_place_goes_boxed_and_comes_out_whole() {
+    begin();
+    let channel = channel_new(1);
+    let lines = ["the first line, far longer than a header", "the second line, far longer too", "short"];
+    let headers = lines.map(|line| with(|state| crate::embed::text::header(state, line)));
+    let sent: Vec<u64> = headers.iter().flatten().copied().chain([9]).collect();
+    let before = blocks();
+    fill(&sent);
+    assert_eq!(channel_send_words(channel, PAGE, 10, 0, FOREVER), DONE);
+    fill(&[0; 10]);
+    assert_eq!(channel_receive_words(channel, PAGE, 10, FOREVER), DONE);
+    let got = filled(10);
+    assert_eq!(got.get(9), Some(&9));
+    for (at, line) in lines.iter().enumerate() {
+        let header = [got[at * 3], got[at * 3 + 1], got[at * 3 + 2]];
+        assert_eq!(with(|state| crate::embed::text::text_of(state, &header)), *line);
+    }
+    assert!(got[0] != sent[0] && got[3] != sent[3], "each long line is a copy");
+    assert_eq!(&got[6..9], &sent[6..9], "the short one goes as it is");
+    assert_eq!(blocks(), before + 2, "the receiver's two copies");
     channel_free(channel);
     finish();
 }
@@ -249,7 +288,7 @@ fn a_receive_out_of_time_says_so_and_takes_nothing() {
 fn only_flat_kinds_are_flat() {
     let tables = tables();
     let flat: Vec<bool> = tables.elements.iter().map(|element| element.is_flat_message()).collect();
-    assert_eq!(flat, vec![true, true, true, false, true, true]);
+    assert_eq!(flat, vec![true, true, true, false, true, true, true]);
     let listing = Element::Enum {
         name: Rc::from("Listing"),
         cases: vec![

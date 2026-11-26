@@ -864,6 +864,57 @@ fn printing_inside_a_parallel_loop_is_a_hint_about_order() {
     }
 }
 
+/// A `T??` written by hand, in a parameter's, a return's or a field's type, an enum case's, an
+/// interface's, a method's or a type alias, or inside another type there, holds two kinds of
+/// nothing told apart only by counting `?`: each is flagged once, with an enum to write instead. An
+/// alias of an optional written with a `?` after it is one too.
+#[test]
+fn an_optional_of_an_optional_written_by_hand_is_flagged() {
+    for (source, written) in [
+        ("def f(held: int??) -> int:\n    return 0\n", "int??"),
+        ("def f() -> str??:\n    return None\n", "str??"),
+        ("struct Cache:\n    held: int??\n", "int??"),
+        ("enum Reading:\n    Read(value: int??)\n    Unread\n", "int??"),
+        ("def f(found: list[int??]) -> int:\n    return 0\n", "int??"),
+        ("def f(found: int???) -> int:\n    return 0\n", "int???"),
+        ("struct Cache:\n    held: int\n\n    def get(self) -> int??:\n        return None\n", "int??"),
+        ("interface Store:\n    def get(self, key: str) -> int??\n", "int??"),
+        ("type Twice = int??\n", "int??"),
+        ("type Seen = int?\n\ndef f(held: Seen?) -> int:\n    return 0\n", "Seen?"),
+        ("type Seen = int?\ntype Again = Seen\n\ndef f(held: Again?) -> int:\n    return 0\n", "Again?"),
+    ] {
+        let found = found(source).unwrap();
+        let flagged: Vec<_> = found.iter().filter(|lint| lint.rule == "optional-of-optional").collect();
+        assert_eq!(flagged.len(), 1, "{source}");
+        let message = flagged[0].message();
+        assert!(message.starts_with(&format!("`{written}` is an optional of an optional")), "{message}");
+        let help = flagged[0].diagnostic.help.as_deref().unwrap_or_default();
+        assert!(
+            help.contains("`enum Reading:` with the cases `Unread`, `Blank` and `Read(value: int)`"),
+            "{help}"
+        );
+    }
+    // One in a parameter and one in the return: two.
+    let both = "def f(held: int??) -> int??:\n    return held\n";
+    assert_eq!(all_rules(both).iter().filter(|rule| **rule == "optional-of-optional").count(), 2);
+}
+
+/// A `T??` that isn't written is never flagged: from generics, like `pop()` on a `list[int?]` or a
+/// field `T?` of a `Box[int?]`, an inferred local, or an alias of an optional written without a
+/// `?` after it.
+#[test]
+fn an_optional_of_an_optional_from_generics_or_inference_is_not_flagged() {
+    for source in [
+        "def f(found: list[int?]) -> int?:\n    held = found.pop()\n    return held else None\n",
+        "struct Box[T]:\n    held: T?\n\ndef f(boxed: Box[int?]) -> int?:\n    return boxed.held else None\n",
+        "def first[T](items: list[T]) -> T?:\n    return items[0] if len(items) > 0 else None\n",
+        "type Seen = int?\n\ndef f(held: Seen) -> list[Seen]:\n    return [held]\n",
+        "def f(held: int?) -> dict[str, int?]:\n    return {\"a\": held}\n",
+    ] {
+        assert!(!all_rules(source).contains(&"optional-of-optional"), "{source}");
+    }
+}
+
 #[test]
 fn a_condition_tested_twice_cant_run_the_second_time() {
     let source = "def f(a: int):\n    if a > 0:\n        g()\n    elif a < 0:\n        h()\n    elif a > 0:\n        i()\n";
@@ -994,7 +1045,7 @@ fn an_unused_index_needs_no_enumerate() {
 
 #[test]
 fn a_loop_that_leaves_with_else_stays_a_loop() {
-    let source = "def f(texts: list[str]) -> list[int]:\n    mut found = []\n    for text in texts:\n        found.append(int(text) else continue)\n    return found\n";
+    let source = "def f(texts: list[str]) -> list[int]:\n    mut found = []\n    for text in texts:\n        found.append(int.parse(text) else continue)\n    return found\n";
     assert_eq!(rules(source), NONE);
 }
 

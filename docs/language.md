@@ -211,9 +211,9 @@ units[unit_id].health -= 1                         # sure: stops loudly if wrong
 
 `units.update(unit_id, value)` puts a new value at a live `Id` and gives `True`, or gives `False` if it's gone.
 
-Tables are for large, flat data. An `Id` is an index, a generation and a tag for its table, so it finds the right thing or nothing.
+Tables are for large, flat data. An `Id` is an index and the tag its `add` took, so it finds the right thing or nothing.
 
-A copy of a `Table` keeps its tag, so an `Id` from before the copy works in both, and generations are unique across copies, so an item added to one copy can't be found through the other. Not built yet: today an item added to each copy can get the same `Id`.
+An `Id` made before a copy of a `Table` works in both copies, and one made after works only in the copy it was made in. Each `add` gives its `Id` a tag no other `Id` has, which the item's slot keeps, so an `Id` finds its item or nothing however the `Table` was copied: changed after a copy, sent to a task, read out of a lock, or put back by a failed `lock ... as ref`. A program never sees a tag: an `Id` doesn't print it, and two can't be ordered. Built.
 
 An `Id` is local to its process's `Table`. To name something across servers, send a key of your own, like a player's name, and let each server find its own `Id` from it. An `Id` from another `Table` finds nothing.
 
@@ -606,6 +606,7 @@ back = json.loads[World](text)?
 - An `f32` is saved as the `f32` it is: JSON writes its own shortest text and reads text straight to the nearest `f32`, rounded once, and `std.pack` writes its 4 bytes. Each `f32` NaN packs as the one quiet NaN, as a float's does. A `float` field loads an `f32` saved before, exactly, and an `f32` field doesn't load a `float`, which it would round. TOML reads its numbers as floats, so an `f32` there is its float rounded. The other sized numbers aren't saved yet.
 - A generic function writes a `T: Serializable` and reads a `T: Deserializable`, as `def answer[T: Serializable](status: int, value: T) -> str: return json.dumps(value)`. Each call's own type is checked against the format where the call is: `answer(200, value=set[int]())` is refused there, as JSON can't hold a set, and so is a call that hands its own type parameter on to one.
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it.
+- Saved slot for slot, as `pack.dumps(value, exact=True)` does, a `Table` keeps its slots, so a load hands out the same `Id`s after it. An `Id` saves as its slot only where it finds its item. One whose item has gone saves as missing when it's optional, and otherwise stops the save, since after the load it would find whatever is in its slot. A load refuses an `Id` whose generation isn't its slot's, as one saved after its item went by a version that kept them. Built.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`.
 - A JSON `null` is a value, and a field left out is missing. A default fills only a field left out. So a field that isn't optional fails on `null`, as in "`x` should be an int, but it's null", default or not. An optional field holds `None` for `null` even when its default is something else, so `dumps` then `loads` gives back what was saved. A field left out takes its default, or `None` if it's optional, and otherwise fails as "`x` is missing". SQL's `NULL` reads the same way.
 - A `T??`, an optional holding an optional, can't be saved as JSON, since `null` can't tell `None` from an optional holding `None`: that's a compile error. Built, for every format.
@@ -616,7 +617,7 @@ back = json.loads[World](text)?
 Loading is safe on untrusted input:
 
 - A load always makes fresh values, never a link to anything already in the program.
-- Every `Id` resolves within its own document, and each `Table` carries a tag that's never reused, so an `Id` from one `Table` finds nothing in another of the same type.
+- Every `Id` resolves within its own document, and every `Id` a program makes carries a tag no other has, so an `Id` from one `Table` finds nothing in another of the same type.
 - `where` rules run again on load, so a value that breaks one fails the load.
 - Unknown fields are refused unless `extra=` says otherwise: `json.loads[Settings](text, extra=.Ignore)`. TOML always refuses them. Not built yet: `extra=` for TOML. `std.pack` loads data from an earlier version of a type by its fields' names: a field the data has and the type doesn't is passed over, a field the type has and the data doesn't takes its default, and one with no default fails the load, naming it. Cases and union members are found by name too, and an `int` field that's a `float` now reads as one. Each value from `dumps` carries its type's layout, its field and case names. A `pack.Packer` writes many values with each layout once, and `pack.Unpacker` reads them back, from a file or fed from a stream. `fennec update` locks a kit's layouts in `pack.lock`, and a locked type's single values leave the layout out, as short as before layouts. `docs/pack.md` pins the format byte for byte, its header, shape hash and layout, with test vectors.
 - JSON and TOML refuse what they'd have to guess at: a number too big for a float, a struct's field given twice, a dict's key given twice, and a dict's int key written any way but its plain digits, or not in quotes. A key given twice fails, naming it, as in "the text has `a` twice", never letting the last copy win, since two readers that disagree on which copy wins let a value past a check. `std.pack` refuses it too.

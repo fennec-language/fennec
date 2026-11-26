@@ -4,4 +4,4 @@ error: `n` should be an int, but this is a str
 5 |     stdout.print(double("4"))
   |                         ^^^
   |
-  = help: read the text as a number, as `int(text)?`, or write a number
+  = help: read the text as a number, as `int.parse(text)?`, or write a number

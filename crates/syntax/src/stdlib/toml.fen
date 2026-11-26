@@ -1033,11 +1033,11 @@ struct TomlReader:
     def here(self, message: str) -> ParseError:
         return ParseError(message=f"{self._where()} {message}", line=0, column=0)
 
-    def saw_id(ref self, kind: str, position: int):
-        self._ids.id(kind, self._where(), position)
+    def saw_id(ref self, kind: str, position: int, generation: int):
+        self._ids.id(kind, self._where(), position, generation)
 
-    def saw_table(ref self, kind: str, count: int):
-        self._ids.table(kind, self._where(), count)
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
+        self._ids.table(kind, self._where(), count, words)
 
     def tag(ref self, kind: str) -> int:
         found = self._tags.get(kind) else 0
@@ -1286,13 +1286,19 @@ struct TomlWriter:
         outer.add(self._members.pop(-1), self._done)
         self._done = .Table(table=outer)
 
-    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+    def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T]):
         self.sequence(items)
 
     def exact(self) -> bool:
         return False
 
-    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+    def slots[T: Serializable](
+        ref self,
+        kind: str,
+        tags: list[int],
+        slots: list[int],
+        items: list[T],
+    ):
         # Never asked for: `exact` says no.
         pass
 

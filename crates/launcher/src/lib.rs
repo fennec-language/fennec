@@ -203,27 +203,48 @@ pub const PROGRAMS: [&str; 3] = ["fennec", "fennec-setup", "fennec-fetch"];
 /// # Errors
 ///
 /// When it can't be run.
-#[cfg(unix)]
 pub fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<std::process::ExitCode, String> {
-    use std::os::unix::process::CommandExt as _;
-    let err = toolchain(command, args, offline).arg0("fennec").exec();
-    Err(format!("couldn't run {}: {err}", command.display()))
+    handed(toolchain(command, args, offline), command)
 }
 
-/// Runs `command`, with the arguments, and exits as it does. Ctrl-C reaches every program in the
-/// console, so the launcher lets it go by and waits: the program decides what it means, and the
-/// launcher exits as it does, rather than leaving it running behind a prompt.
+/// Where a linked build handed `new` is told the name it's linked as, so the kit it makes asks for
+/// it by that name: there's no release of its version to run.
+pub const LINKED_AS: &str = "FENNEC_LINKED_AS";
+
+/// Hands `new` to the toolchain `version`, as `hand_off` does, telling a linked build the name
+/// it's linked as.
 ///
 /// # Errors
 ///
 /// When it can't be run.
+pub fn hand_off_new(
+    command: &Path,
+    args: &[String],
+    offline: bool,
+    version: &str,
+) -> Result<std::process::ExitCode, String> {
+    let mut toolchain = toolchain(command, args, offline);
+    if kit::linked_name(version) {
+        toolchain.env(LINKED_AS, version);
+    }
+    handed(toolchain, command)
+}
+
+#[cfg(unix)]
+fn handed(mut toolchain: std::process::Command, command: &Path) -> Result<std::process::ExitCode, String> {
+    use std::os::unix::process::CommandExt as _;
+    let err = toolchain.arg0("fennec").exec();
+    Err(format!("couldn't run {}: {err}", command.display()))
+}
+
+/// Runs the toolchain, and exits as it does. Ctrl-C reaches every program in the console, so the
+/// launcher lets it go by and waits: the program decides what it means, and the launcher exits as
+/// it does, rather than leaving it running behind a prompt.
 #[cfg(not(unix))]
-pub fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<std::process::ExitCode, String> {
+fn handed(mut toolchain: std::process::Command, command: &Path) -> Result<std::process::ExitCode, String> {
     ctrlc::set_handler(|| {})
         .map_err(|err| format!("couldn't let Ctrl-C through to the toolchain: {err}"))?;
-    let status = toolchain(command, args, offline)
-        .status()
-        .map_err(|err| format!("couldn't run {}: {err}", command.display()))?;
+    let status = toolchain.status().map_err(|err| format!("couldn't run {}: {err}", command.display()))?;
     Ok(status
         .code()
         .and_then(|code| u8::try_from(code).ok())

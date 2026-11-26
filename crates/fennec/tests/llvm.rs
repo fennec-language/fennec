@@ -3357,7 +3357,7 @@ def show(stdout: Stdout, units: list[Unit]):
         stdout.print(one.hp, one.tags, one.inner.tags, one.name)
 
 def ruled_at(size: int) -> Ruled:
-    return Ruled(size, []).expect("a size that's allowed")
+    return Ruled(size, [])
 
 def swap_ends(ref a: list[int], ref b: list[int]):
     a.append(len(b))
@@ -5324,7 +5324,7 @@ def main(stdout: Stdout):
     mut outer = Outer(crowd)
     outer.crowd.numbers = [number + 1 for number in outer.crowd.numbers]
     stdout.print(outer.crowd.numbers, crowd.numbers)
-    mut ruled = Ruled([3, 1, 2]).expect("a list with something in it")
+    mut ruled = Ruled([3, 1, 2])
     ruled.numbers = [number + 10 for number in ruled.numbers]
     stdout.print(ruled.numbers)
 
@@ -24320,6 +24320,64 @@ fn a_stale_threads_runtime_fails_the_build_rather_than_running_on_one_thread() -
     Ok(())
 }
 
+/// A release build by a `fennec` whose runtime bitcode is from another build, or stamped with no
+/// build, fails saying so, before the store is looked in: such bitcode once linked without a word
+/// and gave wrong answers, or a program built with other bitcode was handed back from the store.
+/// The stamp in bitcode is in a static's name, which bitcode keeps as written.
+#[test]
+fn release_bitcode_from_another_build_is_refused_before_the_store() -> std::io::Result<()> {
+    if !ready() || !runtime_built() || !crate::executables::runtime_beside_fennec() {
+        return Ok(());
+    }
+    let dir = folder("bitcode-stale")?;
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let mine = dir.join("bin");
+    std::fs::create_dir_all(&mine)?;
+    let fennec_here = mine.join(fennec.file_name().unwrap_or_default());
+    if std::fs::hard_link(fennec, &fennec_here).is_err() {
+        std::fs::copy(fennec, &fennec_here)?;
+    }
+    let plain = fennec.with_file_name(crate::executables::runtime_file());
+    std::fs::copy(&plain, mine.join(crate::executables::runtime_file()))?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n")?;
+    let release = || {
+        Command::new(&fennec_here)
+            .args([
+                "build",
+                "--llvm",
+                "--release",
+                &program.to_string_lossy(),
+                "-o",
+                &dir.join("hello").to_string_lossy(),
+            ])
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)
+    };
+    // With no bitcode, a release links the runtime library, and the program is kept in the store.
+    let first = release()?;
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let bitcode = mine.join("libfennec_runtime.bc");
+    let stale =
+        [b"BC\xc0\xde_RNvCs0_14fennec_runtime84".as_slice(), b"RUNTIME_BUILD_", b"STAMP_", &[b'0'; 64]]
+            .concat();
+    let unstamped = b"BC\xc0\xde bitcode from before stamps".to_vec();
+    let mut said = Vec::new();
+    for (bytes, why) in
+        [(stale, "is from another build of Fennec"), (unstamped, "is stamped with no build of Fennec")]
+    {
+        std::fs::write(&bitcode, bytes)?;
+        let built = release()?;
+        said.push((built.status.success(), String::from_utf8_lossy(&built.stderr).into_owned(), why));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    for (built, said, why) in said {
+        assert!(!built, "built with stale bitcode: {said}");
+        assert!(said.contains("libfennec_runtime.bc") && said.contains(why), "{said}");
+    }
+    Ok(())
+}
+
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
 /// std's collections among them, so a program reading and writing them builds natively.
 #[test]
@@ -27768,7 +27826,8 @@ def main(stdout: Stdout):
         unit = back.units[id]
         target = unit.target
         stdout.print(unit.name, back.units[target].name if target is not None else "-")
-    # Slot for slot: the same slots and generations, and the Id whose item has gone still gone.
+    # Slot for slot: the same slots, and the Id whose item has gone saved as missing, since a
+    # load gives every slot one tag and it would find what's in its slot.
     exact = pack.dumps(world, exact=True)
     mut same = pack.loads[World](exact) except ParseError(): World()
     stdout.print(len(exact), exact[3], len(same.units), same.units[same.selected[1]].name)
@@ -27804,8 +27863,8 @@ def main(stdout: Stdout):
 "#;
 
 /// `std.pack` saves a `Table` as JSON does, by position, with an `Id` whose item has gone saved
-/// as missing, and with `exact=True` slot for slot: the gone `Id` still gone, and the next `add`
-/// in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
+/// as missing, and with `exact=True` slot for slot: the gone `Id` saved as missing there too, and
+/// the next `add` in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
 /// no truncation or changed byte crashes a load in either mode.
 #[test]
 fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
@@ -27815,7 +27874,7 @@ fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
     let printed = printed_by("pack_tables", PACK_TABLES)?;
     assert_eq!(
         printed,
-        "84 2 True True\nvex -\nkit vex\n95 88 2 kit\nTrue False\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[0]` is item 10 of `units`, which has only 3\nthe data ends too soon, at byte 75\ntruncated 0 changed 2520\ntruncated 0 changed 2850\n"
+        "84 2 True True\nvex -\nkit vex\n91 88 2 kit\nFalse True\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[1]` is item 10 of `units`, which has only 3\na number is written in more bytes than it needs, at byte 71\ntruncated 0 changed 2520\ntruncated 0 changed 2730\n"
     );
     Ok(())
 }
@@ -29407,6 +29466,57 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// Copies of a `Table` never hand out an `Id` that finds the other copy's item (#2424): each `add`
+/// takes a tag no `Id` has had, which its slot keeps. Two copies each adding, an `Id` from before
+/// the copy found in both, both copies taking an item out and adding again into its slot, a copy of
+/// a copy, and the `Id`s `ids()` and `items()` give, each the one `add` gave. In dev and release.
+#[test]
+fn copies_of_a_table_never_hand_out_one_id() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_copies_keep_ids_apart",
+        include_str!("fixtures/table_copies_keep_ids_apart.fen"),
+        include_str!("fixtures/table_copies_keep_ids_apart.out"),
+    )
+}
+
+/// A `Table` saved slot for slot keeps its slots, and an `Id` saves as its slot only where it finds
+/// its item: one whose item has gone saves as missing when it's optional, and stops the save when it
+/// isn't, since after the load it would find whatever is in its slot. A load refuses an `Id` whose
+/// generation isn't its slot's, as main saved one before (#2424). In dev and release.
+#[test]
+fn a_table_saved_exactly_keeps_no_id_whose_item_has_gone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_saved_exactly",
+        include_str!("fixtures/table_saved_exactly.fen"),
+        include_str!("fixtures/table_saved_exactly.out"),
+    )?;
+    let program = "from std import pack\nfrom std.collections import Id, Table\n\nstruct Unit:\n    hp: int\n\nstruct Saved:\n    units: Table[Unit]\n    chosen: Id[Unit]\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    stale = units.add(Unit(hp=1))\n    _ = units.remove(stale)\n    data = pack.dumps(Saved(units=units, chosen=stale), exact=True)\n    stdout.print(len(data))\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("table_saved_exactly_stale")?;
+        let (at, executable) = (dir.join("stale.fen"), dir.join("stale"));
+        std::fs::write(&at, program)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([at.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        let why = "`chosen` is an Id that finds nothing in `units`: its item was taken out, or it's from another `Table[Unit]`";
+        assert!(said.contains(why), "{how:?}: {said}");
+    }
+    Ok(())
+}
+
 /// An item taken out of a `Table` to change in place never changes a copy of the `Table`: it's
 /// made alone before the item is taken. A copy kept as a local, as a field of a copied struct,
 /// by a caller passing it as `ref`, and by another task, of items holding a dict and of plain
@@ -29545,6 +29655,23 @@ fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
     Ok(())
 }
 
+/// No two items ever have the same `Id`, in any copy of a `Table`, however it was made (#2424): a copy
+/// changed, one sent on a channel, one a launched task is given, one read out of a lock, and a lock
+/// that fails and puts the `Table` back. An `Id` made before a copy finds its item in both, and one
+/// made after only where it was made. It prints what the reference evaluator prints, in both
+/// builds, with nothing left.
+#[test]
+fn no_two_items_have_the_same_id_in_any_copy_of_a_table() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/tables_copied.fen");
+    let wanted = include_str!("fixtures/tables_copied.out");
+    prints_in_both_builds("tables_copied", source, wanted)?;
+    assert!(counts_of("tables_copied_counts", source)?.ends_with(" live 0"));
+    Ok(())
+}
+
 /// An item read out of a `Table` by `Id`, changed and put back by the same `Id`, goes back where it
 /// was read, with no second lookup, and a build that checks proofs looks it up again and checks
 /// it's the same place. A call, a closure or a task given the `Table` in between, or the key read
@@ -29576,13 +29703,18 @@ fn an_item_taken_by_id_goes_back_where_it_was_read_unless_something_reaches_the_
     let ran = Command::new(&executable).output_within()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
     std::fs::remove_dir_all(&dir)?;
-    // A removed item's `Id`, and another `Table`'s, each stop the program at the read, on line 7.
+    // A removed item's `Id`, and another `Table`'s, each stop the program at the read, on line 7,
+    // saying the same: a `Table` can't tell them apart.
     for (name, made, why) in [
-        ("removed", "_ = units.remove(id)", "this Id refers to something that's been removed"),
+        (
+            "removed",
+            "_ = units.remove(id)",
+            "this Id finds nothing in this Table: its item was taken out, or it's from another Table",
+        ),
         (
             "another",
             "mut other = Table[Unit]()\n    id = other.add(Unit(health=1))",
-            "this Id is from another Table",
+            "this Id finds nothing in this Table: its item was taken out, or it's from another Table",
         ),
     ] {
         let program = format!(
@@ -29644,7 +29776,7 @@ fn an_item_put_back_twice_from_one_read_looks_it_up_each_time() -> std::io::Resu
         let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
         std::fs::remove_dir_all(&dir)?;
         assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
-        let why = "this Id refers to something that's been removed";
+        let why = "this Id finds nothing in this Table: its item was taken out, or it's from another Table";
         assert!(said.contains(why) && said.contains("twice.fen:11:"), "{how:?}: {said}");
     }
     Ok(())
@@ -36421,10 +36553,10 @@ struct Words:
     def here(self, message: str) -> ParseError:
         return ParseError(message=message, line=0, column=0)
 
-    def saw_id(ref self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int, generation: int):
         pass
 
-    def saw_table(ref self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
         pass
 
     def tag(ref self, kind: str) -> int:

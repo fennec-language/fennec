@@ -70,39 +70,51 @@ fn let_go(address: i64) {
             free_waiting(state);
         }
         let address = u64::try_from(address).unwrap_or(0);
-        if !free_plain_list(state, address) {
+        if !free_taken(state, address) {
             free_block(state, address);
         }
     });
 }
 
-/// Frees a string or a list whose items hold nothing of this thread's, the most usual blocks let
-/// go of: out of the table and kept for reuse, with nothing to walk. A string's place kept in it,
-/// and the runtime's copy of its text, are forgotten, as [`free_block`] does. False, having done
-/// nothing, for any other block, which [`free_block`] frees.
+/// Frees a block of this thread's own table, taken out with one look: a string or a list whose
+/// items hold nothing of this thread's, the most usual blocks let go of, kept for reuse with
+/// nothing to walk, and any other given to the walk out of the table already, as a freed block's
+/// children are. A string's place kept in it, and the runtime's copy of its text, are forgotten,
+/// as [`free_queued`] does. False, having done nothing, for a block another thread holds, or one
+/// that isn't in this table, which [`free_block`] frees by its address.
 ///
 /// A list of strings, as `split` makes, is freed here too when this thread counts every block it
 /// can reach, letting go of each string held in a block as it reads its header
 /// ([`let_go_of_texts`]). Freed as any list is, it cost `log_crunch` about 1,400 instructions a
 /// line, more than making it: what its items hold looked up by plan, item by item, through the
 /// queue every freed block takes.
-fn free_plain_list(state: &mut State, address: u64) -> bool {
+fn free_taken(state: &mut State, address: u64) -> bool {
     if crate::embed::threads::held_elsewhere(address) {
         return false;
     }
     let shapes = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
     let texts_here = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
     let Some((block, taken)) =
-        usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, shapes, texts_here))
+        usize::try_from(address).ok().and_then(|at| state.heap.take_to_free(at, shapes, texts_here))
     else {
         return false;
     };
-    if shape_word(&block) == Some(shapes.1) {
-        forget_string(state, address);
-    } else if taken == Taken::Texts {
-        let_go_of_texts(state, &block);
+    match taken {
+        Taken::Walked => return free_walked(state, block),
+        Taken::Texts => let_go_of_texts(state, &block),
+        Taken::Plain if shape_word(&block) == Some(shapes.1) => forget_string(state, address),
+        Taken::Plain => {}
     }
     state.heap.recycle(block);
+    true
+}
+
+/// [`free_taken`], for a block that holds what has to be walked: queued, out of the table
+/// already, as a freed block's children are, and freed by the walk.
+#[inline(never)]
+fn free_walked(state: &mut State, block: Box<[u64]>) -> bool {
+    state.heap.taken.push(block);
+    free_queued(state);
     true
 }
 

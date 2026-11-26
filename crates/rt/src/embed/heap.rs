@@ -1528,16 +1528,21 @@ impl Heap {
     /// having taken nothing, when it isn't in this table. A block that wasn't plain was looked up
     /// again by the walk: 107,000 of `api_handler`'s 464,000 frees.
     ///
-    /// A list of strings' headers is `Taken::Texts` when `texts_here`, which says this thread
-    /// counts every block it can reach, whatever its strings hold: what they hold are strings,
-    /// which hold nothing.
+    /// A list of strings' headers some of which hold blocks is `Taken::Texts` when this thread
+    /// counts every block it can reach: what they hold are strings, which hold nothing. That's
+    /// asked only of such a list, as every block freed comes here: asked of each, it cost the HTTP
+    /// bench 1% more instructions a request.
     pub(super) fn take_to_free(
         &mut self,
         at: usize,
         (first_list, str_shape): (u64, u64),
-        texts_here: bool,
     ) -> Option<(Box<[u64]>, Taken)> {
         let (empty_items, text_items) = (&self.empty_items, &self.text_items);
+        // `holds_all`, asked of the fields it reads, as the table is borrowed meanwhile.
+        let (lent, reading, behind) = (&self.lent, &self.reading, &self.behind);
+        let texts_here = || {
+            !super::threads::counted_elsewhere() && lent.is_none() && reading.is_empty() && behind.is_empty()
+        };
         let mut taken = Taken::Walked;
         let block = self.blocks.take_if(at, |block| {
             // A string, which holds no other block, or a list of a kind whose items hold nothing,
@@ -1560,11 +1565,14 @@ impl Heap {
                                 if !text_items.get(number).is_some_and(|text| *text) {
                                     return false;
                                 }
-                                if texts_here {
+                                if all_inline(block) {
+                                    return true;
+                                }
+                                if texts_here() {
                                     taken = Taken::Texts;
                                     return true;
                                 }
-                                all_inline(block)
+                                false
                             })
                 });
             if plain && taken == Taken::Walked {

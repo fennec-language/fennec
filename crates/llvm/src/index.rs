@@ -479,6 +479,7 @@ fn what_number(what: What) -> u8 {
         What::WaitingClosures => 16,
         What::Abandons => 17,
         What::Layout => 18,
+        What::Recurs => 19,
     };
     debug_assert_eq!(what_of(number), Some(what), "`what_of` reads {what:?}'s number back as another");
     number
@@ -506,6 +507,7 @@ fn what_of(number: u8) -> Option<What> {
         16 => What::WaitingClosures,
         17 => What::Abandons,
         18 => What::Layout,
+        19 => What::Recurs,
         _ => return None,
     })
 }

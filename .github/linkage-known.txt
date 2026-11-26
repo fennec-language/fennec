@@ -10,9 +10,10 @@ linux fs tls | the two functions of rustls's that a hello world links too, the n
 linux hello tls | two of rustls's functions a vtable holds: a TLS payload's drop and `StreamOwned`'s `is_write_vectored` (#1772)
 #
 # A hello world built for release is held to these sizes, in bytes, as the gate builds it on a Mac
-# and CI on Linux and Windows. Each is what it was measured at, with room to spare: lower it when a
+# and CI on Linux and Windows: on Linux and Windows its file's, and on macOS what its sections and
+# `__LINKEDIT` hold, without the 16 KB pages' padding (`linkage-check.sh`). Each is what it was measured at, with room to spare: lower it when a
 # cut lands, and raise it only knowing what grew.
 # system size hello bytes | measured
-macos size hello 1300000 | 1,232,088 on 2026-11-14, from the gate's dev build of fennec on arm64
+macos size hello 1340000 | 1,269,146 on 2026-11-26 at 2afb515ab, from the gate's dev build of fennec on arm64: its sections and `__LINKEDIT`, without the pages' padding (the file was 1,285,272)
 linux size hello 1050000 | 942,288 on 2026-11-14 in CI on x86-64, and 1,004,464 on aarch64, each from a release build of fennec
 windows size hello 1500000 | 1,402,368 on 2026-11-16 in CI at 8e810c58c, from the dev build of fennec; 1,377,792 that morning

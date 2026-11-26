@@ -17,10 +17,8 @@ use fennec_rt::embed::{
     notes, numbers, parallel, regex, serve, strings, temps, text, threads,
 };
 
-/// The build of Fennec this library is from, after a marker, which `fennec` reads out of the
-/// library's file to tell one built from other source. Kept by `#[used]`, since nothing calls it.
-#[used]
-static BUILD_STAMP: &str = concat!("fennec-runtime-build:", env!("FENNEC_BUILD"));
+// The build of Fennec this library is from, in a static named for it: see `build.rs`.
+include!(concat!(env!("OUT_DIR"), "/stamp.rs"));
 
 /// The exported functions that never fail: none of them sets the flag `fennec_aot_failed_flag`
 /// gives the address of. Generated code has to check that flag after calling any other, and may
@@ -468,10 +466,10 @@ export! {
     fennec_list_sort_by_keys_with(a0: i64, a1: i64, a2: extern "C" fn(i64, i64) -> i64) => lists::sort_by_keys_with(a0, a1, a2);
     fennec_regex_problem(a0: i64) -> i64 => regex::problem(a0);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);
-    fennec_regex_groups(a0: i64) -> i64 => regex::groups(a0);
+    fennec_regex_groups(a0: u64, a1: u64, a2: u64) -> i64 => regex::groups(a0, a1, a2);
     fennec_regex_replace(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => regex::replace(a0, a1, a2, a3, a4);
     fennec_regex_find_all(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => regex::find_all(a0, a1, a2, a3, a4);
-    fennec_regex_find(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64 => regex::find(a0, a1, a2, a3, a4, a5);
+    fennec_regex_find(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: i64, a7: i64, a8: i64, a9: i64) -> i64 => regex::find(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
     fennec_regex_split(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => regex::split(a0, a1, a2, a3, a4);
     fennec_list_with_room(a0: i64, a1: i64) -> i64 => lists::with_room(a0, a1);
     fennec_float_spec_text(a0: f64, a1: i64, a2: i64, a3: i64) -> i64 => strings::float_spec_text(a0, a1, a2, a3);

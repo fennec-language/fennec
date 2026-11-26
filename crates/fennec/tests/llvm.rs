@@ -10748,6 +10748,66 @@ fn a_program_built_for_a_heap_audit_is_checked_as_it_ends() -> std::io::Result<(
     std::fs::remove_dir_all(&dir)
 }
 
+/// A program whose `main` fails ends as it should under a heap audit, with nothing left: the
+/// message it stops with is let go of once the runtime has its text, and so is what the error's
+/// `message()` gave. Both were left counted once and held by nothing (#2577). It's checked for an
+/// error shown as its raw value, one that says a long string it holds, one whose message is made,
+/// and one that comes up through a call, which says its call chain.
+#[test]
+fn a_failing_main_leaves_nothing_for_the_heap_audit() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let small = "error Small:\n    value: int\n\n";
+    let shapes = [
+        ("raw", format!("{small}def main() fails Small:\n    fail Small(value=1)\n"), "Small(value=1)"),
+        (
+            "held",
+            "error Small:\n    why: str\n\n    def message(self) -> str:\n        return self.why\n\n\
+             def main() fails Small:\n    fail Small(why=\"a reason long enough to need a block of its own\")\n"
+                .to_owned(),
+            "a reason long enough to need a block of its own",
+        ),
+        (
+            "made",
+            "error Small:\n    value: int\n\n    def message(self) -> str:\n        return f\"too small: {self.value}\"\n\n\
+             def main() fails Small:\n    fail Small(value=1)\n"
+                .to_owned(),
+            "too small: 1",
+        ),
+        (
+            "called",
+            format!(
+                "{small}def checked(value: int) -> int fails Small:\n    if value < 0: fail Small(value=value)\n    \
+                 return value * 2\n\ndef main(stdout: Stdout) fails Small:\n    stdout.print(checked(-2)?)\n"
+            ),
+            "Small(value=-2)",
+        ),
+    ];
+    let dir = folder("failing_main_audited")?;
+    for (name, source, shown) in shapes {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ended = Command::new(&executable).env("FENNEC_AUDIT", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ended.stderr);
+        assert_eq!(ended.status.code(), Some(1), "{name}: {said}");
+        assert!(said.contains(&format!("error: `main` failed: {shown}")), "{name}: {said}");
+        assert!(!said.contains("heap audit"), "{name}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A message a task reads with `for ... in inbox` stays its own while it makes other values: a
 /// struct's text and an enum case's text and list, checked with `==` after fifty other texts are
 /// made, where a text freed under it read as one of those. Fable's thread-crossing reproducer, and

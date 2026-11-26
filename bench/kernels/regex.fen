@@ -21,7 +21,7 @@ def main(stdout: Stdout):
         "aggg[acg]aaa|ttt[cgt]ccct",
     ]
     for pattern in patterns:
-        found = Regex(pattern).expect("the pattern is valid").find_all(dna)
+        found = Regex(pattern).find_all(dna)
         stdout.print(pattern, len(found))
     mut text = dna
     for pattern, with_text in [
@@ -30,6 +30,6 @@ def main(stdout: Stdout):
         ("a[NSt]|BY", "<2>"),
         ("<[^>]*>", "|"),
     ]:
-        text = Regex(pattern).expect("the pattern is valid").replace(text, with_text)
+        text = Regex(pattern).replace(text, with_text)
     stdout.print(len(text))
     stdout.print(len(Regex("ta+c").replace(dna, "x")))

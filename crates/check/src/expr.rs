@@ -1290,7 +1290,7 @@ impl FnCx<'_> {
             );
         }
         if except && !matches!(self.checker.settled(&value), Type::Result(..) | Type::Unknown) {
-            self.nothing_to_except(&value, written);
+            self.nothing_to_except(&value, value_expr);
         }
         if except
             && let Type::Result(made, _) = self.checker.settled(&value)

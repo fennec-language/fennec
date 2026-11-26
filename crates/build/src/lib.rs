@@ -23,7 +23,8 @@ mod unsaved;
 mod verdict;
 
 pub use cache::{
-    CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, HOLDS, KEPT_RECENT, UNUSED_BUILD, VERSION, set_time,
+    CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, HOLDS, KEPT_RECENT, RUN_PREFIX, UNUSED_BUILD,
+    VERSION, set_time,
 };
 pub use cancel::{cancel, cancelled, clear_cancel};
 pub use changes::{Change, Kind, changes};

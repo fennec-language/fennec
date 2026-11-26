@@ -65,6 +65,8 @@ pub(crate) fn run_logged(
 /// if `tested`, and shows the lint errors it has. Or else how the command ends, once it's said why:
 /// a test failed, or the program doesn't check or can't be built.
 pub(crate) fn prepared(path: &str, tested: bool, executable: &std::path::Path) -> Result<(), ExitCode> {
+    // In the build daemon, the kit's files are looked at once, here, for what it holds of them.
+    crate::held::begin(path);
     if tested && let Some(failed) = crate::test::before_a_run(path) {
         return Err(failed);
     }
@@ -114,10 +116,16 @@ fn built(
     let trusted = crate::kept::analyses_found_wrong() != u64::MAX;
     let ready = trusted
         && started_from.as_ref().is_some_and(|(cache, name)| {
-            cache
-                .read(RUN_ROOTS, name)
-                .and_then(|root| String::from_utf8(root).ok())
-                .is_some_and(|root| crate::aot::stored_executable(cache, &root, executable).is_some())
+            // The build daemon holds it with the image, or it's read from where it was noted.
+            let root = crate::held::root(path, name)
+                .or_else(|| cache.read(RUN_ROOTS, name).and_then(|root| String::from_utf8(root).ok()));
+            root.is_some_and(|root| {
+                let stored = crate::aot::stored_executable(cache, &root, executable).is_some();
+                if stored {
+                    crate::held::note_root(path, name, &root);
+                }
+                stored
+            })
         });
     if !ready {
         let (program, checked) = match reached {
@@ -149,6 +157,7 @@ fn built(
                 "keep which program a run built",
                 cache.write(RUN_ROOTS, name, root.as_bytes()),
             );
+            crate::held::note_root(path, name, root);
         }
     }
     Ok(None)

@@ -151,6 +151,47 @@ pub fn embedded_name(path: &Path) -> String {
 /// What starts the name of a file `embed` read.
 pub const EMBEDDED: &str = "embed:";
 
+/// A folder `embed_folder` reads, from one listing of it: the names it reads, sorted, leaving out
+/// hidden ones, and what it's noted as, so the caches look at it as it does.
+///
+/// The note says what each name is, since what's read through a link is noted by where it led: a
+/// link pointed elsewhere, a link made a file, or a folder made a file, is seen here, in the folder.
+/// Each name is a letter for what it is, `f` a file, `d` a folder or `l` a link, then the name and
+/// a zero byte, and for a link where it leads and a zero byte. No name or target holds a zero byte,
+/// so no note reads two ways, whatever a name holds.
+///
+/// # Errors
+/// When the folder, or where a link in it leads, can't be read.
+pub fn folder_listing(folder: &Path) -> std::io::Result<(Vec<String>, Vec<u8>)> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let Ok(name) = entry.file_name().into_string() else { continue };
+        if !name.starts_with('.') {
+            found.push((name, entry.file_type()?));
+        }
+    }
+    found.sort_by(|(one, _), (other, _)| one.cmp(other));
+    let mut noted = Vec::new();
+    for (name, kind) in &found {
+        let letter = if kind.is_symlink() {
+            b'l'
+        } else if kind.is_dir() {
+            b'd'
+        } else {
+            b'f'
+        };
+        noted.push(letter);
+        noted.extend_from_slice(name.as_bytes());
+        noted.push(0);
+        if kind.is_symlink() {
+            noted.extend_from_slice(std::fs::read_link(folder.join(name))?.as_os_str().as_encoded_bytes());
+            noted.push(0);
+        }
+    }
+    Ok((found.into_iter().map(|(name, _)| name).collect(), noted))
+}
+
 /// Where loading starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entry {

@@ -1495,7 +1495,7 @@ mod tests {
         }
         assert!(refused <= 10, "the oracle refused {refused} of 25 pools");
         // The builds meet them all in one program, as two builds take far less than fifty.
-        if !(crate::llvm::ready().is_ok() && crate::llvm::threads_runtime_here()) {
+        if !crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}")) {
             return;
         }
         let program = Program { body, threadless: false };

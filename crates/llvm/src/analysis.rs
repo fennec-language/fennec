@@ -4877,9 +4877,13 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
     // A connection's or server's method runs in the runtime too.
     capability
         // `u8(x)` stops the program when `x` doesn't fit, and `f32(x)` when a float is past an
-        // `f32`'s largest.
+        // `f32`'s largest: never one written out that fits, as `f32(9.8)`.
         || fennec_check::Num::named(name).is_some_and(|num| {
-            !num.is_float() || args.first().and_then(|first| function.type_of(first)) == Some(Type::Float)
+            !num.is_float()
+                || match args.first() {
+                    Some(Operand::Float(x)) => fennec_check::past_f32(*x),
+                    first => first.and_then(|first| function.type_of(first)) == Some(Type::Float),
+                }
         })
         // A stop can cut a channel's wait short.
         || matches!(

@@ -330,7 +330,9 @@ impl Emit<'_, '_, '_> {
             Kind::U64 => "uitofp i64",
             _ => {
                 let nearest = self.rounded_to_f32(&number);
-                if kind == Kind::Float {
+                // A float written out that fits, as `f32(9.8)`, has nothing to check.
+                let fits = matches!(value, Operand::Float(x) if !fennec_check::past_f32(*x));
+                if kind == Kind::Float && !fits {
                     self.stop_past_f32((&number, &nearest), value, span)?;
                 }
                 return self.assign(dest, &nearest);

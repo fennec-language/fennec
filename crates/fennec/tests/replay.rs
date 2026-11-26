@@ -1264,6 +1264,51 @@ fn copied_tables_replay_as_they_ran_on_four_threads_and_one() -> std::io::Result
     Ok(())
 }
 
+/// `main` printing before and after receives that time out, which a recording waits out and a
+/// replay doesn't.
+const KEPT_TO_THE_END: &str = "from std.concurrent import Closed, Timeout, channel
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=1) as jobs:
+        stdout.print(\"before the wait\")
+        first = jobs.receive_within(1ms) except Timeout(): -1
+        stdout.print(\"after the wait\", first)
+        second = jobs.receive_within(1ms) except Timeout(): -2
+        stdout.print(\"at the end\", second)
+";
+
+/// The same, with a `parallel` loop printing from its pieces between, run on `main`'s thread.
+const KEPT_BEFORE_A_RANGE: &str = "from std.concurrent import Closed, Timeout, channel
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=1) as jobs:
+        stdout.print(\"before the wait\")
+        first = jobs.receive_within(1ms) except Timeout(): -1
+        stdout.print(\"after the wait\", first)
+        for item in parallel([1, 2, 3]):
+            stdout.print(\"piece\", item)
+        stdout.print(\"after the pieces\")
+        second = jobs.receive_within(1ms) except Timeout(): -2
+        stdout.print(\"at the end\", second)
+";
+
+/// What a thread printed comes out in a replay in its recording's bursts, though a replay waits less.
+/// A wait writes what its thread printed first, and a receive its recording says timed out gives up
+/// at once, without waiting. So a replay kept bytes its recording wrote at the wait, and
+/// - kept them to the end, where they came out past the bursts, so it ended asking for one;
+/// - or wrote them when a range run on the same thread wrote, as the range's, so the burst of
+///   `main`'s was never filled, and nothing after it came out.
+///
+/// The nightly's determinism run found both in its random programs.
+#[test]
+fn what_a_thread_kept_past_a_wait_a_replay_skips_comes_out_as_recorded() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("kept-to-the-end", KEPT_TO_THE_END, 2, 0)?;
+    replays_at_one_four_and_sixteen("kept-before-a-range", KEPT_BEFORE_A_RANGE, 2, 0)
+}
+
 /// A replay that can't follow its recording says where it first couldn't, once, and ends. Here
 /// `main` takes a lock its recording didn't. A replay of that waited out its patience, crashed, and
 /// then its connection's cleanup asked for a close where the recording read a line: the replay said

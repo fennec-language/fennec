@@ -1,0 +1,19 @@
+# As s04, the failure coming out of the call after the loop.
+error Small:
+    value: int
+
+def checked(value: int) -> int fails Small:
+    if value < 0: fail Small(value=value)
+    return value * 2
+
+def scan(starts: list[int], order: list[int], wanted: int) -> int fails Small:
+    mut added = 0
+    for at in range(starts[0], starts[1]):
+        added += checked(order[at])?
+        if order[at] == wanted:
+            return added + checked(order[at] - 100)?
+    return checked(added - 5)?
+
+def main(stdout: Stdout) fails Small:
+    stdout.print(scan([0, 2], order=[1, 2, 3], wanted=9)?)
+    stdout.print(scan([0, 1], order=[1, 2, 3], wanted=9)?)

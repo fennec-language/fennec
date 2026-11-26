@@ -1,0 +1,29 @@
+# A Table's item taken out, changed and put back inside the loop written twice, as a game's
+# per-unit update does, with a way out of the loop after the item is taken.
+from std.collections import Id, Table
+
+struct Unit:
+    health: int
+    bag: dict[str, int]
+
+def scan(ref units: Table[Unit], ids: list[Id[Unit]], starts: list[int], order: list[int]) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        mut unit = units[ids[order[at]]]
+        unit.health += 10
+        if unit.health > 25:
+            unit.bag["over"] = at
+            total += 100
+        units[ids[order[at]]] = unit
+        if total > 150: break
+        total += 1
+    return total
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for health in [1, 2, 3]:
+        ids.append(units.add(Unit(health=health, bag={})))
+    stdout.print(scan(ref units, ids=ids, starts=[0, 6], order=[0, 1, 2, 1, 1, 0]))
+    for unit in units:
+        stdout.print(unit.health, unit.bag)

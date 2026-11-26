@@ -231,6 +231,155 @@ mod tests {
             .collect())
     }
 
+    /// A read whose index counts between two items of a list nothing changes, as a counting sort's
+    /// buckets are read, has those items checked once on the way in: where every item is from 0
+    /// to the read list's length the read takes no check, and otherwise it's checked as before. A
+    /// list the function can change, through `ref`, isn't checked once, and keeps every check.
+    #[test]
+    fn a_read_between_two_items_of_a_list_checked_once_keeps_no_check() -> Result<(), String> {
+        let body = "def go(xs: list[float], cells: list[int], starts: list[int], order: list[int]) -> int:\n    mut touched = 0\n    for ball in range(len(xs)):\n        cell = cells[ball]\n        for near in range(cell, cell + 3):\n            for at in range(starts[near], starts[near + 1]):\n                other = order[at]\n                if other <= ball: continue\n                if xs[other] > xs[ball]:\n                    touched += 1\n    return touched\n";
+        let (units, _, _) = crate::emit(&lowered(body)?)?;
+        let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+        assert_eq!(text.matches("call i64 @llvm.umax.i64(").count(), 1, "{text}");
+        // The loop over the bucket is written twice, and its way in picks by the check.
+        let picks = text
+            .lines()
+            .filter(|line| {
+                line.rsplit_once(", label %bb").is_some_and(|(first, second)| {
+                    first
+                        .rsplit_once("label %bb")
+                        .is_some_and(|(_, copy)| copy.strip_suffix('v') == second.split(',').next())
+                })
+            })
+            .count();
+        assert_eq!(picks, 1, "{text}");
+        let copied = text.lines().filter(|line| line.starts_with("bb") && line.ends_with("v:")).count();
+        assert!(copied > 0, "{text}");
+        // The second copy is the first, renamed, with only the way the read leaning on the check
+        // takes turned: `br i1 true` to no check, where the first has `br i1 false` to its check.
+        // Its blocks are the IR's and the emitter's own within them, as many as the first's.
+        let compared = same_copies(text);
+        assert!(compared.as_ref().is_ok_and(|blocks| *blocks > copied), "{compared:?}\n{text}");
+        assert_eq!(text.matches("br i1 true, label %ranged").count(), 1, "{text}");
+        // Each of these leaves the read with nothing to check once: the bucket list can change;
+        // the count starts at a number that may be below 0, or ends at an item of another list; or
+        // the read list's length can change.
+        let ref_order =
+            "def go(xs: list[float], cells: list[int], starts: list[int], ref order: list[int]) -> int:";
+        let unchecked = [
+            body.replace("starts: list[int]", "ref starts: list[int]")
+                .replace("    mut touched = 0\n", "    mut touched = 0\n    starts[0] = 0\n"),
+            body.replace("range(starts[near], starts[near + 1])", "range(near - 3, starts[near + 1])"),
+            body.replace("range(starts[near], starts[near + 1])", "range(starts[near], cells[near + 1])"),
+            body.replace(
+                "def go(xs: list[float], cells: list[int], starts: list[int], order: list[int]) -> int:",
+                ref_order,
+            )
+            .replace("    return touched", "    order.append(1)\n    return touched"),
+        ];
+        for changed in unchecked {
+            let (units, _, _) = crate::emit(&lowered(&changed)?)?;
+            let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+            assert_eq!(text.matches("@llvm.umax.i64(").count(), 0, "{changed}\n{text}");
+        }
+        Ok(())
+    }
+
+    /// A bucket loop inside a `while`, as a worklist goes round buckets, is entered again and again,
+    /// and the check of its list is made only the first time: its block tests a flag saying it's
+    /// been made, and walks the list only when it hasn't. The list can't change in the function,
+    /// so what the first check found holds. Made each time, a list of 60 buckets walked for each
+    /// bucket ran four times the instructions of checking each read (Fable's `p4`).
+    #[test]
+    fn a_bucket_loop_entered_again_checks_its_list_once_a_call() -> Result<(), String> {
+        let body = "def go(starts: list[int], order: list[int], rounds: int) -> int:\n    mut total = 0\n    mut cell = 0\n    mut round = 0\n    while round < rounds:\n        for at in range(starts[cell], starts[cell + 1]):\n            total += order[at]\n        cell += 1\n        if cell == len(starts) - 1:\n            cell = 0\n            round += 1\n    return total\n";
+        let (units, _, _) = crate::emit(&lowered(body)?)?;
+        let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+        assert_eq!(text.matches("call i64 @llvm.umax.i64(").count(), 1, "{text}");
+        // The walk is only on the way the mark sends a call that hasn't made the check yet.
+        let (before, after) = text.split_once("call i64 @llvm.umax.i64(").ok_or("no walk")?;
+        let tried = before.rfind("range_try").ok_or("no test of the mark before the walk")?;
+        let marked = before.get(..tried).unwrap_or_default();
+        assert!(marked.contains(", label %range_kept"), "{text}");
+        assert!(after.contains("store i1 %"), "{text}");
+        Ok(())
+    }
+
+    /// Compares the two copies of each loop written twice in a function's LLVM text: every block of
+    /// the second, its names' `v` taken off and its `checked once` branch turned back, has to be the
+    /// first's block of the same name, but for the note on a loop's own back jump. Gives back how
+    /// many blocks the second copy has, or the first that differs.
+    fn same_copies(text: &str) -> Result<usize, String> {
+        let mut blocks: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        let mut current = String::new();
+        for line in text.lines() {
+            // The function's end, after which come the module's notes.
+            if line == "}" {
+                current.clear();
+                continue;
+            }
+            if let Some(label) = line.strip_suffix(':')
+                && !line.starts_with(' ')
+            {
+                label.clone_into(&mut current);
+                continue;
+            }
+            let line = line.split_once(", !llvm.loop !").map_or(line, |(head, _)| head);
+            blocks.entry(current.clone()).or_default().push(line.to_owned());
+        }
+        let second: Vec<String> = blocks
+            .keys()
+            .filter(|label| label.ends_with('v') && blocks.contains_key(label.trim_end_matches('v')))
+            .cloned()
+            .collect();
+        // The names the second copy defines: its labels and its values, each ending in `v`.
+        let mut defined: std::collections::HashSet<String> = second.iter().cloned().collect();
+        for label in &second {
+            for line in blocks.get(label).into_iter().flatten() {
+                if let Some((name, _)) =
+                    line.trim_start().strip_prefix('%').and_then(|rest| rest.split_once(" = "))
+                {
+                    defined.insert(name.to_owned());
+                }
+            }
+        }
+        for label in &second {
+            let first = blocks.get(label.trim_end_matches('v')).ok_or(label.clone())?;
+            let back: Vec<String> = blocks
+                .get(label)
+                .into_iter()
+                .flatten()
+                .map(|line| {
+                    let mut written = String::new();
+                    let mut rest = line.as_str();
+                    while let Some((before, after)) = rest.split_once('%') {
+                        written.push_str(before);
+                        written.push('%');
+                        let end = after
+                            .find(|found: char| !(found.is_ascii_alphanumeric() || "_.$-".contains(found)))
+                            .unwrap_or(after.len());
+                        let (name, tail) = after.split_at(end);
+                        written.push_str(if defined.contains(name) {
+                            name.trim_end_matches('v')
+                        } else {
+                            name
+                        });
+                        rest = tail;
+                    }
+                    written.push_str(rest);
+                    if written.ends_with(crate::emit::CHECKED_ONCE) {
+                        written = written.replacen("br i1 true,", "br i1 false,", 1);
+                    }
+                    written
+                })
+                .collect();
+            if &back != first {
+                return Err(format!("{label}: {back:?} against {first:?}"));
+            }
+        }
+        Ok(second.len())
+    }
+
     /// The overflow checks emit writes for `+`, `-` and `*` are the ones reported, for programs with
     /// no other kind of overflow check.
     #[test]

@@ -1,0 +1,4 @@
+243
+exit 1
+error: index 6 is out of range for length 6
+--> s14_same_check_nested.fen:8:26

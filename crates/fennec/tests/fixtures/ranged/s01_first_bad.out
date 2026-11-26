@@ -1,0 +1,4 @@
+in range: 13
+exit 1
+error: index 2 is out of range for length 2
+--> s01_first_bad.fen:5:18

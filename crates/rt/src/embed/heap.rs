@@ -794,6 +794,14 @@ fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
     <&mut [u64; N]>::try_from(block).map(|words| *words = [0; N]).is_ok()
 }
 
+/// What [`Heap::take_plain_list`] took: a block that holds nothing, or a list of strings' headers
+/// whose strings may hold blocks, for the caller to let go of.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Taken {
+    Plain,
+    Texts,
+}
+
 /// Whether every item of a list of strings' headers is inline, holding its text in itself: then
 /// the list holds no block. A header's last byte has the inline mark when it's inline.
 fn all_inline(block: &[u64]) -> bool {
@@ -1515,14 +1523,19 @@ impl Heap {
     /// Takes a list out of this thread's own table, not one behind it, if its items hold nothing and
     /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
     /// `None`, having taken nothing, for any other block.
+    ///
+    /// A list of strings' headers is taken too when `texts_here`, which says this thread counts
+    /// every block it can reach, whatever its strings hold: what they hold are strings, which
+    /// hold nothing, and the caller lets go of them (`Taken::Texts`).
     pub(super) fn take_plain_list(
         &mut self,
         at: usize,
-        first_list: u64,
-        str_shape: u64,
-    ) -> Option<Box<[u64]>> {
+        (first_list, str_shape): (u64, u64),
+        texts_here: bool,
+    ) -> Option<(Box<[u64]>, Taken)> {
         let (empty_items, text_items) = (&self.empty_items, &self.text_items);
-        self.blocks.take_if(at, |block| {
+        let mut taken = Taken::Plain;
+        let block = self.blocks.take_if(at, |block| {
             // A string, which holds no other block, or a list of a kind whose items hold nothing,
             // or one with no items at all, as a list made empty and never added to is, or one of
             // strings' headers all inline, as a `split` into short parts makes. Only a kind of
@@ -1535,12 +1548,23 @@ impl Heap {
                             .checked_sub(first_list)
                             .and_then(|number| usize::try_from(number).ok())
                             .is_some_and(|number| {
-                                empty_items.get(number).is_some_and(|empty| *empty)
+                                if empty_items.get(number).is_some_and(|empty| *empty)
                                     || block.get(2) == Some(&0)
-                                    || (text_items.get(number).is_some_and(|text| *text) && all_inline(block))
+                                {
+                                    return true;
+                                }
+                                if !text_items.get(number).is_some_and(|text| *text) {
+                                    return false;
+                                }
+                                if texts_here {
+                                    taken = Taken::Texts;
+                                    return true;
+                                }
+                                all_inline(block)
                             })
                 })
-        })
+        })?;
+        Some((block, taken))
     }
 
     /// Takes a block out of the current table or one behind it.

@@ -1,0 +1,11 @@
+# Both bucket lists out of range: the first read to go past the end is the inner one.
+def both(starts: list[int], order: list[int], other_starts: list[int], other: list[int]) -> int:
+    mut added = 0
+    for at in range(starts[0], starts[1]):
+        added += order[at]
+        for inner in range(other_starts[0], other_starts[1]):
+            added += other[inner]
+    return added
+
+def main(stdout: Stdout):
+    stdout.print("past both ends:", both([0, 3], order=[1, 2], other_starts=[0, 2], other=[5]))

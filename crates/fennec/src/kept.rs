@@ -176,6 +176,8 @@ pub(crate) fn report_wrong_analyses(home: &std::path::Path, differ: &[String]) -
     let _ = std::fs::create_dir_all(home.join("daemon"));
     // The stored programs are taken back only if the count that names them is written.
     let programs = crate::run::cache().is_some_and(|cache| cache.count_analysis_found_wrong().is_ok());
+    // What the daemon holds of runs goes too: any of it may have been found with what's taken back.
+    crate::held::forget_all();
     let taken = std::mem::take(&mut *BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner));
     let mut named = Vec::new();
     for built in &taken {
@@ -333,6 +335,11 @@ pub(crate) fn fit_budget() {
     if let Some(kept) = kept.as_mut() {
         within_budget(&mut kept.kits, budget, &mut |_| crate::held_bytes());
     }
+    drop(kept);
+    // What runs found is held too, and goes if the checks going wasn't enough.
+    if crate::held_bytes() > budget {
+        crate::held::forget_all();
+    }
 }
 
 /// Whether a kit's kept check carried anything over and hasn't been checked all again yet.
@@ -393,6 +400,8 @@ pub(crate) fn verify_pending(home: &std::path::Path) -> Vec<PathBuf> {
         if let Some(name) = &found.stored_as {
             crate::built::forget(name);
         }
+        // A run's root the daemon holds may be the program taken back.
+        crate::held::forget_all();
         drop(found);
         let report =
             home.join("daemon").join(format!("kept-check-differs-{generation}-{}.txt", std::process::id()));

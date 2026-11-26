@@ -1,0 +1,33 @@
+# Reads a list between two items of another, as a counting sort's buckets are read. Every item of
+# the bucket list from 0 to the read list's length is checked once, before the loop, and then the
+# reads take no check; otherwise each read is checked as always, and fails where it always did.
+
+def total(starts: list[int], order: list[int], stdout: Stdout) -> int:
+    mut added = 0
+    for cell in range(len(starts) - 1):
+        for at in range(starts[cell], starts[cell + 1]):
+            added += order[at]
+        stdout.print(cell, added)
+    return added
+
+def one(starts: list[int], order: list[int], cell: int) -> int:
+    mut added = 0
+    for at in range(starts[cell], starts[cell + 1]):
+        added += order[at]
+    return added
+
+def main(stdout: Stdout):
+    order = [10, 20, 30, 40, 50, 60]
+    stdout.print(total([0, 2, 2, 5, 6], order=order, stdout=stdout))
+    # An item below 0 fails the check, so each read is checked: -1 reads from the end, as any
+    # index does.
+    stdout.print(total([0, 2, -1, 5, 6], order=order, stdout=stdout))
+    # Too many items to check for the turns the loop takes: each read is checked.
+    mut long = [0, 6]
+    for _ in range(100):
+        long.append(6)
+    stdout.print(one(long, order=order, cell=0))
+    # An item past the end fails the check, and the first read outside fails, after the buckets
+    # before it.
+    stdout.print(total([0, 2, 2, 7, 6], order=order, stdout=stdout))
+    return

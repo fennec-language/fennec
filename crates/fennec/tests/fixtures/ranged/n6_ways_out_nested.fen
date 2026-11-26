@@ -1,0 +1,29 @@
+# Inside a loop over the buckets, the bucket loop is left by `break`, by `return`, by a missing
+# value's `else break`, and by a failure handled with `break`.
+error Small:
+    value: int
+
+def checked(value: int) -> int fails Small:
+    if value < 0: fail Small(value=value)
+    return value * 2
+
+def scan(starts: list[int], order: list[int], names: dict[int, str], wanted: int) -> str:
+    mut text = ""
+    for cell in range(len(starts) - 1):
+        for at in range(starts[cell], starts[cell + 1]):
+            value = order[at]
+            if value == wanted: return text + "!"
+            name = names.get(value) else break
+            doubled = checked(value - 3) except why:
+                text += f"({why.value})"
+                break
+            text += f"{name}{doubled} "
+        text += "| "
+    return text
+
+def main(stdout: Stdout):
+    names = {1: "a", 2: "b", 3: "c", 4: "d", 5: "e"}
+    stdout.print(scan([0, 2, 5], order=[4, 5, 3, 4, 5], names=names, wanted=9))
+    stdout.print(scan([0, 2, 5], order=[4, 7, 3, 2, 5], names=names, wanted=9))
+    stdout.print(scan([0, 2, 5], order=[4, 5, 3, 4, 5], names=names, wanted=3))
+    stdout.print(scan([0, 2, 8], order=[4, 5, 3, 4, 5], names=names, wanted=9))

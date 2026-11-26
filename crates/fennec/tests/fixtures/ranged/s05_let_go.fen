@@ -1,0 +1,32 @@
+# Strings held across calls that can fail, in the loop and in a way out of it: a failure lets go
+# of them on its way out, from either copy.
+error Small:
+    value: int
+
+def named(value: int) -> str fails Small:
+    if value == 7: fail Small(value=value)
+    return f"v{value}"
+
+def scan(starts: list[int], order: list[int], wanted: int) -> str fails Small:
+    mut text = ""
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        name = named(value)?
+        if value == wanted:
+            extra = named(value + 1)?
+            return text + name + extra
+        text += name + named(value + 10)?
+    return text
+
+def shown(starts: list[int], order: list[int], wanted: int) -> str:
+    text = scan(starts, order=order, wanted=wanted) except why:
+        return f"failed at {why.value}"
+    return text
+
+def main(stdout: Stdout):
+    stdout.print(shown([0, 4], order=[5, 6, 8, 9], wanted=0))
+    stdout.print(shown([0, 4], order=[5, 6, 8, 9], wanted=8))
+    stdout.print(shown([0, 4], order=[5, 6, 8, 9], wanted=6))
+    stdout.print(shown([0, 4], order=[5, 7, 8, 9], wanted=0))
+    stdout.print(shown([1, 4], order=[5, 6, -3, 9], wanted=0))
+    stdout.print(shown([0, 9], order=[5, 6, 8, 9], wanted=0))

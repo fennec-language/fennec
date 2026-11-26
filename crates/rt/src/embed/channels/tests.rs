@@ -467,6 +467,61 @@ fn every_listener_gets_every_message_sent_after_it_started_listening() {
     finish();
 }
 
+/// A channel to `.Every` made, listened to and freed over and over, each time its listener the only
+/// one, while another thread receives from a plain channel: the plain receives skip the listeners'
+/// lock while there are none, and every listener still gets its messages, received on the thread
+/// that listened or on one it handed its number to. The plain receiver gets every message once.
+#[test]
+fn a_first_listener_coming_and_going_beside_plain_receives_misses_nothing() {
+    const MESSAGES: i64 = 2_000;
+    const ROUNDS: i64 = 50;
+    begin();
+    let plain = channel_new(16);
+    let receiving = std::thread::spawn(move || {
+        begin();
+        let mut total = 0;
+        for _ in 0..MESSAGES {
+            let mut value = 0;
+            assert_eq!(channel_receive(plain, PATIENCE, &mut value), DONE);
+            total += value;
+        }
+        finish();
+        total
+    });
+    let listening = std::thread::spawn(|| {
+        begin();
+        for round in 0..ROUNDS {
+            let channel = channel_new_every(4);
+            let listener = channel_listen(channel, 0);
+            for word in [round, round + 1] {
+                assert_eq!(channel_send(channel, word, 0, FOREVER), DONE);
+            }
+            if round % 5 == 0 {
+                // Received on a thread given the listener's number after it was listening.
+                let elsewhere = std::thread::spawn(move || {
+                    begin();
+                    let got = [receive(listener, PATIENCE), receive(listener, PATIENCE)];
+                    finish();
+                    got
+                });
+                assert_eq!(elsewhere.join().unwrap(), [(DONE, round), (DONE, round + 1)]);
+            } else {
+                assert_eq!(receive(listener, PATIENCE), (DONE, round));
+                assert_eq!(receive(listener, PATIENCE), (DONE, round + 1));
+            }
+            channel_free(channel);
+        }
+        finish();
+    });
+    for word in 1..=MESSAGES {
+        assert_eq!(channel_send(plain, word, 0, FOREVER), DONE);
+    }
+    assert_eq!(receiving.join().unwrap(), MESSAGES * (MESSAGES + 1) / 2);
+    listening.join().unwrap();
+    channel_free(plain);
+    finish();
+}
+
 #[test]
 fn sending_never_waits_and_a_listener_that_falls_behind_fails_loudly() {
     begin();

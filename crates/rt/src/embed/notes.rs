@@ -17,6 +17,10 @@ use crate::value::Value;
 /// Never shown as a note or given by `notes()`.
 const FRAME: &str = "\0frame ";
 
+/// [`FRAME`]'s seven bytes as the first word of a place's note, its eighth byte left for the letter.
+/// `a_places_header_holds_the_bytes_its_note_always_had` checks they're [`FRAME`]'s.
+const FRAME_WORD: u64 = u64::from_le_bytes(*b"\0frame \0");
+
 /// How many bytes hold each of a place's three numbers, seven bits to a byte, the low ones first:
 /// where it starts, where it ends and how often in a row. Seven bits keep the note text.
 const NUMBER_BYTES: usize = 5;
@@ -54,20 +58,12 @@ impl Place {
         Place { left: Left::Skipped, start: 0, end: 0, times }
     }
 
-    /// The note's bytes.
+    /// The note's bytes, as its header holds them.
     fn bytes(self) -> [u8; INLINE_BYTES] {
-        let letter = match self.left {
-            Left::Raised => b'r',
-            Left::Passed => b'p',
-            Left::Skipped => b's',
-        };
-        let numbers = [u64::from(self.start), u64::from(self.end), self.times.min(MOST)];
-        let sevens = numbers.into_iter().flat_map(|number| {
-            (0..NUMBER_BYTES).map(move |at| u8::try_from((number >> (7 * at)) & 0x7f).unwrap_or(0))
-        });
         let mut bytes = [0_u8; INLINE_BYTES];
-        for (byte, written) in bytes.iter_mut().zip(FRAME.bytes().chain([letter]).chain(sevens)) {
-            *byte = written;
+        let held = self.header().into_iter().flat_map(u64::to_le_bytes);
+        for (byte, from) in bytes.iter_mut().zip(held) {
+            *byte = from;
         }
         bytes
     }
@@ -99,9 +95,26 @@ impl Place {
         Rc::from(String::from_utf8_lossy(&self.bytes()).as_ref())
     }
 
-    /// The note as a string's header, which holds it all.
+    /// The note as a string's header, which holds it all: [`FRAME`] and the letter in its first
+    /// word, the numbers' five bytes each after them, and the inline tag in its last byte. Made
+    /// straight into the three words, as every place an error leaves writes one: put together a
+    /// byte at a time, it took about 550 instructions a place.
     fn header(self) -> [u64; HEADER] {
-        super::text::inline(&self.bytes())
+        let letter: u64 = match self.left {
+            Left::Raised => b'r'.into(),
+            Left::Passed => b'p'.into(),
+            Left::Skipped => b's'.into(),
+        };
+        // Seven bits of `number` to a byte, the low ones first.
+        let sevens = |number: u64| {
+            (0..NUMBER_BYTES).fold(0, |bytes, at| bytes | (((number >> (7 * at)) & 0x7f) << (8 * at)))
+        };
+        let (start, end, times) =
+            (sevens(u64::from(self.start)), sevens(u64::from(self.end)), sevens(self.times.min(MOST)));
+        let tag = u64::from(INLINE) | u64::try_from(INLINE_BYTES).unwrap_or(0);
+        // Bytes 0 to 7, then 8 to 15: the start's five and the end's first three, then 16 to 23:
+        // the end's last two, the count's five and the tag.
+        [FRAME_WORD | (letter << 56), start | (end << 40), (end >> 24) | (times << 16) | (tag << 56)]
     }
 
     /// The place a string's header says, when it holds one's note.
@@ -444,6 +457,41 @@ mod tests {
         let tables =
             Tables { shapes: vec![Rc::new(Element::Str)], text_headers: headers, ..Tables::default() };
         start(tables, crate::Inputs::default());
+    }
+
+    /// A place's note as it was put together a byte at a time, before its header was made straight
+    /// into words: what the words must hold.
+    fn bytes_one_at_a_time(place: Place) -> Vec<u8> {
+        let letter = match place.left {
+            Left::Raised => b'r',
+            Left::Passed => b'p',
+            Left::Skipped => b's',
+        };
+        let numbers = [u64::from(place.start), u64::from(place.end), place.times.min(MOST)];
+        let sevens = numbers.into_iter().flat_map(|number| {
+            (0..super::NUMBER_BYTES).map(move |at| u8::try_from((number >> (7 * at)) & 0x7f).unwrap_or(0))
+        });
+        FRAME.bytes().chain([letter]).chain(sevens).collect()
+    }
+
+    /// A place's header holds the bytes its note was always put together from, a byte at a time,
+    /// for every letter and every number either side of a byte's seven bits.
+    #[test]
+    fn a_places_header_holds_the_bytes_its_note_always_had() {
+        let mut numbers: Vec<u32> = (0..32).map(|bit| 1_u32 << bit).collect();
+        numbers.extend(numbers.clone().iter().map(|number| number - 1));
+        numbers.extend([0x7f, 0x80, 0x3fff, 0x4000, u32::MAX, 0x5555_5555, 0xaaaa_aaaa]);
+        for left in [Left::Raised, Left::Passed, Left::Skipped] {
+            for (at, start) in numbers.iter().enumerate() {
+                let end = numbers[(at * 7 + 3) % numbers.len()];
+                for times in [1, 2, 127, 128, u64::from(u32::MAX), MOST, u64::MAX] {
+                    let place = Place { left, start: *start, end, times };
+                    let wanted = bytes_one_at_a_time(place);
+                    assert_eq!(place.bytes().to_vec(), wanted, "{place:?}");
+                    assert_eq!(place.header(), super::super::text::inline(&wanted), "{place:?}");
+                }
+            }
+        }
     }
 
     /// A place's note says the place again, whatever its numbers, in 23 bytes of text that a

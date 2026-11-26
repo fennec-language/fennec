@@ -75,6 +75,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_dict_strong_step",
     // A fresh tag, from a counter.
     "fennec_new_tag",
+    "fennec_tag_count",
+    "fennec_tag_run",
     // A block made, which native code uses at once with no check: each gives back a block or stops
     // the program as a bug in Fennec (`embed::made`), never 0. They run under `with`, which sets no
     // flag, and what they reach makes, copies and lets go of blocks, which can't fail either.
@@ -502,6 +504,8 @@ export! {
     fennec_out_of_range(a0: i64, a1: i64, a2: i64, a3: i64) => lists::out_of_range(a0, a1, a2, a3);
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
     fennec_new_tag() -> i64 => heap::new_tag();
+    fennec_tag_count() -> i64 => heap::tag_count();
+    fennec_tag_run() -> i64 => heap::tag_run();
     fennec_free(a0: i64) => heap::free(a0);
     fennec_free_plain(a0: i64) => heap::free_plain(a0);
     fennec_close_waiting() => heap::close_waiting();

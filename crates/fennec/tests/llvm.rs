@@ -7608,6 +7608,27 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A number written out after `else` takes the size of the optional it stands in for where the
+/// optional is a name known to be `None` (#2588), as it does where nothing is known: `0.1` here is
+/// an `f32`, so three of it are the `f32` 0.3, not the `float` 0.30000000000000004.
+#[test]
+fn an_else_default_takes_the_size_of_a_name_known_to_be_none() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "else_known_none",
+        "def main(stdout: Stdout):
+    found: f32? = None
+    tiny: u8? = None
+    level: f32 = found else 0.1
+    stdout.print(level * 3.0, (tiny else 200) + 55)
+",
+    )?;
+    assert_eq!(printed, "0.3 255\n");
+    Ok(())
+}
+
 /// A float written out takes `f32` where one goes: on the right of a type's own operator, with `*=`
 /// too, beside an `f32` in `min` and `max`, and as a `case`. Each is the nearest `f32`, so `0.1`
 /// matches a tenth held as an `f32`, and the arithmetic is `f32`'s. What it prints is what the

@@ -551,6 +551,30 @@ fn an_int_that_overflows_stops_the_program() {
     assert!(matches!(&ended, Ended::Stopped(said) if said.contains("overflows an int")), "{ended:?}");
 }
 
+/// The oracle checks a program with the checker compiled code is checked with, so a `list[int]`
+/// passed with `ref` where a `list[int?]` is changed is refused before it runs, in the checker's
+/// words (#2596).
+#[test]
+fn a_ref_argument_that_holds_less_is_refused_before_it_runs() {
+    let (printed, ended) = ran("
+        def add_missing(ref items: list[int?]):
+            items.append(None)
+            return
+
+        def main(stdout: Stdout):
+            mut numbers = [1, 2]
+            add_missing(ref numbers)
+            total = numbers[2] + 1
+            stdout.print(numbers, total)
+            return
+        ");
+    assert_eq!(printed, "");
+    assert!(
+        matches!(&ended, Ended::Unsupported(said) if said.contains("so it could put in what this, a list[int], can't hold")),
+        "{ended:?}"
+    );
+}
+
 /// A generator held in a name fails through its loop as what it fails with, in a function that fails
 /// with a union of errors, as compiled code does since #2086.
 #[test]
@@ -2511,6 +2535,51 @@ fn a_run_that_goes_on_too_long_is_stopped() {
     let source = "def main(stdout: Stdout):\n    mut n = 0\n    while True:\n        n = (n + 1) % 7\n";
     let outcome = run_source_within(source, "test.fen", 100_000, Workdir::current());
     assert_eq!(outcome.ended, Ended::Unsupported("ran too long".to_owned()));
+}
+
+/// The runs of every order of a program's tasks' messages share one budget of steps, so a
+/// program whose every order is a long run is refused within it, saying it ran out across orders,
+/// and never read as one that's stuck. The budget here is half again what one order takes.
+#[test]
+fn the_orders_of_tasks_messages_share_one_budget_of_steps() {
+    let program = |senders: &str| {
+        format!(
+            "from std.concurrent import Closed, Crashed, Sender, channel\n\n\
+             def told(back: Sender[int], what: int) fails Closed:\n    back.send(what)?\n\n\
+             def main(stdout: Stdout) fails Closed | Crashed:\n    mut total = 0\n    \
+             with channel[int](size=4) as answers:\n{senders}\n    mut n = 0\n    \
+             for _ in range(2000):\n        n = (n + 1) % 7\n    stdout.print(total, n)\n    return\n"
+        )
+    };
+    let one = program(
+        "        with launch(() => told(answers.sender(), what=1)?)?:\n            \
+         total += answers.receive() else 0",
+    );
+    let two = program(
+        "        with launch(() => told(answers.sender(), what=1)?)?:\n            \
+         with launch(() => told(answers.sender(), what=2)?)?:\n                \
+         total += answers.receive() else 0\n                total += answers.receive() else 0",
+    );
+    let ran_within =
+        |source: &str, steps: u64| run_source_within(source, "test.fen", steps, Workdir::current());
+    // The least budget the one order of `one` runs in.
+    let (mut short, mut enough) = (0_u64, 1_000_000_u64);
+    assert_eq!(ran_within(&one, enough).ended, Ended::Exited(0));
+    while enough - short > 1 {
+        let middle = short + (enough - short) / 2;
+        if ran_within(&one, middle).ended == Ended::Exited(0) {
+            enough = middle;
+        } else {
+            short = middle;
+        }
+    }
+    assert_eq!(ran_within(&two, 1_000_000).ended, Ended::Exited(0));
+    let ended = ran_within(&two, enough * 3 / 2).ended;
+    let Ended::Unsupported(why) = ended else { panic!("it ended {ended:?}") };
+    assert!(
+        why.starts_with("ran out of steps across ") && why.ends_with(" orders of its tasks' messages"),
+        "{why}"
+    );
 }
 
 #[test]

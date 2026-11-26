@@ -149,6 +149,12 @@ pub(super) fn push(
 
 /// The next message for `listener`, its own to take, or what a receive gives back instead, as
 /// `channels::next` says.
+///
+/// **Every way it ends is met,** which a recording logs and a replay ends the turn at. A listener
+/// that fell behind wasn't, so a recording had no receive where its task crashed, and every replay
+/// stopped there, asking for one (the nightly's random programs, since 2026-11-21). It's met as
+/// what native code gets back, done: a replay's turn then goes through, and comes to the same fall
+/// behind, as the listens and sends before it are in the recording's order.
 pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Result<Message, i64> {
     let timeout_ns = match super::replayed(channel, "receive", timeout_ns < 0) {
         super::Turn::Live => timeout_ns,
@@ -159,12 +165,19 @@ pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Re
     loop {
         let mut queue = channel.queue();
         let kept = u64::try_from(queue.messages.len()).unwrap_or(0);
-        let Some(every) = &mut queue.every else { return Err(CLOSED) };
+        let Some(every) = &mut queue.every else {
+            super::met(channel, "receive", CLOSED);
+            return Err(CLOSED);
+        };
         let first = every.first;
-        let Some(this) = every.by_number.get_mut(&listener) else { return Err(CLOSED) };
+        let Some(this) = every.by_number.get_mut(&listener) else {
+            super::met(channel, "receive", CLOSED);
+            return Err(CLOSED);
+        };
         if this.next < first {
             let missed = first - this.next;
             if !this.drop_oldest {
+                super::met(channel, "receive", DONE);
                 drop(queue);
                 super::super::fail_with(Diagnostic::new(
                     format!(
@@ -185,7 +198,10 @@ pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Re
                 Some(Message::Word(word)) => Message::Word(*word),
                 Some(Message::Shared(address, table)) => Message::Shared(*address, Arc::clone(table)),
                 Some(Message::SharedWords(words)) => Message::SharedWords(Arc::clone(words)),
-                Some(Message::Block(..) | Message::Words(_)) | None => return Err(CLOSED),
+                Some(Message::Block(..) | Message::Words(_)) | None => {
+                    super::met(channel, "receive", CLOSED);
+                    return Err(CLOSED);
+                }
             };
             super::met(channel, "receive", DONE);
             drop(queue);

@@ -64,6 +64,7 @@ pub(crate) const MODULE: Module = Module {
         "table_of_slots",
         "id_of_key",
         "stop",
+        "report",
         "channel_new",
         "channel_new_every",
         "channel_listen",

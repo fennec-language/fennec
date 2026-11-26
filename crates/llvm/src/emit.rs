@@ -3703,6 +3703,19 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{cast} = bitcast {from} {value} to {to}"));
                 self.assign(dest.ok_or("no result")?, &cast)
             }
+            // A line on standard error, which can't fail: the string's block is made for the call
+            // when its text is held in its header, and let go of after.
+            "intrinsics.report" => {
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let made = kind == Kind::Str && self.headers();
+                let block = if made { self.owned_text_block(&value) } else { value };
+                self.declare("declare void @fennec_report(ptr) nounwind");
+                self.line(&format!("call void @fennec_report(ptr {block})"));
+                if made {
+                    self.release_quietly(&block);
+                }
+                Ok(())
+            }
             "intrinsics.stop" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let made = kind == Kind::Str && self.headers();

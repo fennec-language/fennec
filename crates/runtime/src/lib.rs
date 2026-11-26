@@ -14,7 +14,7 @@
 use fennec_rt::embed::guarded::rollback;
 use fennec_rt::embed::{
     aot, bytes, capabilities, channels, checks, cleanup, conn_calls, dicts, eval, guarded, heap, io, lists,
-    notes, numbers, parallel, regex, serve, strings, temps, text, threads,
+    notes, numbers, parallel, regex, report, serve, strings, temps, text, threads,
 };
 
 // The build of Fennec this library is from, in a static named for it: see `build.rs`.
@@ -52,6 +52,9 @@ pub const NEVER_FAIL: &[&str] = &[
     // let go of waits for `fennec_free`, which can fail. A string's block holds nothing at all.
     "fennec_free_plain",
     "fennec_free_text",
+    // `intrinsics.report(text)`: a line on standard error, written or let go, under `with`, which
+    // sets no flag.
+    "fennec_report",
     // Temporaries pushed, copied and read. Dropping back to a mark lets go of blocks, which only
     // queues the generators among them to be closed: `fennec_free` runs those, so it can fail.
     "fennec_mark",
@@ -509,6 +512,7 @@ export! {
     fennec_free(a0: i64) => heap::free(a0);
     fennec_free_plain(a0: i64) => heap::free_plain(a0);
     fennec_close_waiting() => heap::close_waiting();
+    fennec_report(a0: i64) => report::report(a0);
     fennec_retain_shared(a0: i64, a1: i64) => threads::retain_shared(a0, a1);
     fennec_release_shared(a0: i64, a1: i64) => threads::release_shared(a0, a1);
     fennec_parallel_for(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for(a0, a1, a2);

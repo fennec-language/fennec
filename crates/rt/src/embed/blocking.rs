@@ -1,6 +1,8 @@
 //! The threads that run blocking work for parked tasks: a SQLite call, a file's read or write, a
 //! DNS lookup, which has a pool of its own. A task hands its work here and parks, so it doesn't
-//! hold its worker while the work blocks.
+//! hold its worker while the work blocks. A name's lookup comes here from a thread that can't
+//! park too, which waits for it no longer than its connect's timeout (`waited_until`), so that pool
+//! holds every lookup, in a program with tasks or without.
 //!
 //! Threads start as work needs them, one each time work comes with none waiting. The first
 //! `KEPT` stay once started. More are started while every thread is busy, up to `MOST` in all,
@@ -13,48 +15,58 @@
 //! the program's blocking work would wait behind them.
 
 use std::collections::VecDeque;
-use std::sync::{Condvar, LazyLock, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+#[cfg(any(test, feature = "threads"))]
+use std::sync::LazyLock;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 /// Work that blocks its thread.
 pub(super) type Job = Box<dyn FnOnce() + Send>;
 
 /// How many threads stay once started, ready for the next piece of blocking work.
+#[cfg(any(test, feature = "threads"))]
 const KEPT: usize = 8;
 
 /// The most threads there are at once.
+#[cfg(any(test, feature = "threads"))]
 const MOST: usize = 64;
 
 /// How long a thread past the first `KEPT` waits for work before it leaves.
 const IDLE: Duration = Duration::from_secs(5);
 
 /// The runtime's pool, started on first use.
+#[cfg(any(test, feature = "threads"))]
 static POOL: Blocking = Blocking::new(KEPT, MOST, IDLE);
 
 /// The runtime's pool for blocking work.
+#[cfg(any(test, feature = "threads"))]
 pub(super) fn pool() -> &'static Blocking {
     &POOL
 }
 
 /// The most threads work that keeps a core busy for long gets at once.
+#[cfg(any(test, feature = "threads"))]
 const MOST_HEAVY: usize = 8;
 
 /// The pool for work that keeps a core busy for long, as hashing a password does: a thread to a
 /// core, at most `MOST_HEAVY`, and none kept once idle. A hash takes tens of milliseconds and
 /// 19 MiB, so a burst of them runs a few at once and the rest wait their turn, their tasks parked,
 /// rather than taking every core, and as much memory as there are tasks hashing.
+#[cfg(any(test, feature = "threads"))]
 static HEAVY: LazyLock<Blocking> = LazyLock::new(|| {
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     Blocking::new(0, cores.min(MOST_HEAVY), IDLE)
 });
 
 /// The pool for work that keeps a core busy for long.
+#[cfg(any(test, feature = "threads"))]
 pub(super) fn heavy() -> &'static Blocking {
     &HEAVY
 }
 
-/// The most names looked up at once. Past them, a lookup waits its turn, its task parked.
-const MOST_LOOKUPS: usize = 16;
+/// The most names looked up at once. Past them, a lookup waits its turn, its task parked, or its
+/// thread waiting.
+pub(crate) const MOST_LOOKUPS: usize = 16;
 
 /// The pool for names' lookups, apart from the rest, with none kept once idle: a name server that
 /// never answers holds a lookup's thread for as long as the system's resolver takes, past its task's
@@ -65,6 +77,12 @@ static LOOKUPS: Blocking = Blocking::new(0, MOST_LOOKUPS, IDLE);
 /// The pool for names' lookups.
 pub(super) fn lookups() -> &'static Blocking {
     &LOOKUPS
+}
+
+/// For tests: how many threads the lookups' pool has, waiting or busy.
+#[cfg(test)]
+pub(crate) fn lookup_threads() -> usize {
+    LOOKUPS.threads()
 }
 
 /// Starts a thread named `name` running `body`.
@@ -120,6 +138,7 @@ impl Blocking {
     /// Whether nothing's running here or about to: no job queued or promised, no thread being
     /// started, and every thread waiting for work. A deadlock is proven only with every pool idle,
     /// as a job here can end in a wake.
+    #[cfg(any(test, feature = "threads"))]
     pub(super) fn idle(&self) -> bool {
         let state = self.lock();
         state.jobs.is_empty() && state.promised == 0 && state.starting == 0 && state.waiting == state.threads
@@ -202,6 +221,79 @@ impl Blocking {
     #[cfg(test)]
     fn queued(&self) -> usize {
         self.lock().jobs.len()
+    }
+}
+
+/// Where a piece of work handed to a pool with a deadline has got to. Its waiter and its thread
+/// each look at it under its lock, so the one that comes second knows what the other did.
+pub(super) enum Slot<R> {
+    /// The work hasn't ended, and its waiter still waits for it.
+    Waiting,
+    /// The work ended, with this, and its waiter hasn't taken it yet.
+    Answered(R),
+    /// Its waiter gave up: the work, if it's begun, ends unread and wakes nothing.
+    GaveUp,
+}
+
+pub(super) fn slot_of<R>(slot: &Mutex<Slot<R>>) -> MutexGuard<'_, Slot<R>> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What a slot's answer is, if it's come: taken, leaving the slot given up, so nothing that comes
+/// for it later finds it waiting.
+pub(super) fn taken<R>(held: &mut Slot<R>) -> Option<R> {
+    match std::mem::replace(held, Slot::GaveUp) {
+        Slot::Answered(done) => Some(done),
+        was => {
+            *held = was;
+            None
+        }
+    }
+}
+
+/// A name's lookup, `work`, for a thread that can't park: run on the lookups' pool, and waited for
+/// here no longer than until `deadline`. `None` if it isn't done by then: the pool's thread
+/// finishes it all the same, and its answer is dropped, and one that waited its turn past the
+/// deadline isn't made at all. If no thread can be started, it's run here, as it was.
+///
+/// It once ran on a thread of its own, started for each lookup, so a burst of them against a name
+/// server that never answers started as many threads as there were lookups (#1826). Before that,
+/// it ran here, past the connect's own timeout.
+pub(crate) fn waited_until<R: Send + 'static>(
+    deadline: Instant,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> Option<R> {
+    let waited = Arc::new((Mutex::new(Slot::Waiting), Condvar::new()));
+    let given = Arc::clone(&waited);
+    let job: Job = Box::new(move || {
+        let (slot, answered) = &*given;
+        if matches!(*slot_of(slot), Slot::GaveUp) {
+            return;
+        }
+        let done = work();
+        let mut held = slot_of(slot);
+        if !matches!(*held, Slot::GaveUp) {
+            *held = Slot::Answered(done);
+            answered.notify_all();
+        }
+    });
+    if let Err(jobs) = lookups().run(job) {
+        for job in jobs {
+            job();
+        }
+    }
+    let (slot, answered) = &*waited;
+    let mut held = slot_of(slot);
+    loop {
+        if let Some(done) = taken(&mut held) {
+            return Some(done);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            *held = Slot::GaveUp;
+            return None;
+        }
+        held = answered.wait_timeout(held, left).unwrap_or_else(PoisonError::into_inner).0;
     }
 }
 

@@ -2074,16 +2074,16 @@ pub(in crate::embed) use launch::launch_on;
 pub use launch::{TaskBody, launch, launch_end, task_failed};
 pub(in crate::embed) use launch::{take_failed_with, task_number};
 
-mod blocking;
+use super::blocking::{self, Slot, slot_of};
 
-/// Whether both pools of blocking threads are idle, for the deadlock check: a job running there can
+/// Whether every pool of blocking threads is idle, for the deadlock check: a job running there can
 /// end in a wake.
 pub(crate) fn blocking_idle() -> bool {
     blocking::pool().idle() && blocking::heavy().idle() && blocking::lookups().idle()
 }
 
 /// Runs `work`, which blocks its thread, so that this task parks rather than holding its worker:
-/// on one of the blocking threads (`serve/blocking.rs`), which hands its result back and wakes the
+/// on one of the blocking threads (`embed/blocking.rs`), which hands its result back and wakes the
 /// task through its worker's mail. Anywhere a wait can't park, it runs here.
 pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     off_thread_on(blocking::pool(), work)
@@ -2181,21 +2181,6 @@ fn back_from_blocking(failing: bool) {
     let _ = crate::replay::work_ended(cut);
 }
 
-/// Where a piece of work handed to a blocking thread with a deadline has got to. Its task and its
-/// thread each look at it under its lock, so the one that comes second knows what the other did.
-enum Slot<R> {
-    /// The work hasn't ended, and its task still waits for it.
-    Waiting,
-    /// The work ended, with this, and its task hasn't taken it yet.
-    Answered(R),
-    /// Its task gave up waiting: the work, if it's begun, ends unread and wakes nothing.
-    GaveUp,
-}
-
-fn slot_of<R>(slot: &Mutex<Slot<R>>) -> std::sync::MutexGuard<'_, Slot<R>> {
-    slot.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// A name's lookup, which only the system can do and only by blocking, run on a thread of its own
 /// while this task parks, as `off_thread` runs work, for no longer than until `deadline`: `None`
 /// if it isn't done by then. The thread finishes it all the same, and its answer is dropped.
@@ -2209,26 +2194,27 @@ fn slot_of<R>(slot: &Mutex<Slot<R>>) -> std::sync::MutexGuard<'_, Slot<R>> {
 /// A late answer wakes nothing. Its thread sees its task gave up, and the wake it sends to the
 /// task's worker looks again there, where the task marks that it gave up before it parks again,
 /// so it never wakes a later wait that parked on the same token, this task's or another's.
+///
+/// A thread that can't park waits for it on the same pool, with the same deadline
+/// (`blocking::waited_until`).
 pub(crate) fn off_thread_until<R: Send + 'static>(
     deadline: Instant,
     work: impl FnOnce() -> R + Send + 'static,
 ) -> Option<R> {
-    let Some((pool, at)) = super::parallel::here() else { return Some(work()) };
+    let Some((pool, at)) = super::parallel::here() else { return blocking::waited_until(deadline, work) };
     if !can_park() {
         if fennec_parked::stack_low().is_some() {
             BLOCKED_WAITS.fetch_add(1, Ordering::Relaxed);
         }
-        return Some(work());
+        return blocking::waited_until(deadline, work);
     }
+    // Counted until the job ends, however it does: one that finds its task gave up never runs
+    // the work.
     #[cfg(test)]
-    let work = {
+    let counted = {
         let from = std::thread::current().id();
         blocking_jobs_change(from, 1);
-        move || {
-            let done = work();
-            blocking_jobs_change(from, -1);
-            done
-        }
+        Counted(from)
     };
     let failing = super::failed();
     let token = next_token();
@@ -2237,6 +2223,8 @@ pub(crate) fn off_thread_until<R: Send + 'static>(
     let slot: Arc<Mutex<Slot<R>>> = Arc::new(Mutex::new(Slot::Waiting));
     let given = Arc::clone(&slot);
     let job: blocking::Job = Box::new(move || {
+        #[cfg(test)]
+        let _counted = counted;
         // A lookup that waited its turn past its task's deadline isn't made.
         if matches!(*slot_of(&given), Slot::GaveUp) {
             return;
@@ -2272,9 +2260,8 @@ pub(crate) fn off_thread_until<R: Send + 'static>(
     }
     let done = loop {
         let mut held = slot_of(&slot);
-        match std::mem::replace(&mut *held, Slot::GaveUp) {
-            Slot::Answered(done) => break Some(done),
-            was => *held = was,
+        if let Some(done) = blocking::taken(&mut held) {
+            break Some(done);
         }
         // Past its deadline, or cancelled or stopped before its answer came, it gives up: the
         // lookup owns everything it reads, so nothing lent is left for its thread to read.
@@ -2311,6 +2298,17 @@ pub(crate) fn reuse_the_last_lookup_s_token() {
 /// done, and how many they've ever handed over.
 #[cfg(test)]
 static BLOCKING_JOBS: Mutex<Option<HashMap<std::thread::ThreadId, (i64, i64)>>> = Mutex::new(None);
+
+/// For tests: a piece of work counted for `blocking_jobs_of` until it's dropped.
+#[cfg(test)]
+struct Counted(std::thread::ThreadId);
+
+#[cfg(test)]
+impl Drop for Counted {
+    fn drop(&mut self) {
+        blocking_jobs_change(self.0, -1);
+    }
+}
 
 #[cfg(test)]
 fn blocking_jobs_change(from: std::thread::ThreadId, by: i64) {

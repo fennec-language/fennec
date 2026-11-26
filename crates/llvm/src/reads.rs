@@ -43,6 +43,8 @@ pub(crate) enum What {
     /// A type's layout, by its name: its size and its fields' kinds and places, read through
     /// `Layouts::get` (see `Layouts::note_reads`).
     Layout,
+    /// Whether a task can call itself again (see `ticks::recurring`).
+    Recurs,
 }
 
 /// One read: of what, and by which name. A name that isn't there is a read too, of nothing.
@@ -153,6 +155,11 @@ impl<'w, 'p> Reads<'w, 'p> {
         self.note_member(What::Task, &self.whole.tasks, name)
     }
 
+    /// Whether a task can call itself again, and so counts its calls (see `ticks::recurring`).
+    pub(crate) fn recurs(&self, name: &str) -> bool {
+        self.note_member(What::Recurs, &self.whole.recurring, name)
+    }
+
     /// The places in a function proven not negative (see `signs`).
     pub(crate) fn non_negative(&self, name: &str) -> Option<&'w HashSet<(usize, usize)>> {
         if self.noting {
@@ -250,6 +257,7 @@ impl Reads<'_, '_> {
             What::Constant => member(&whole.constants),
             What::OnWorkers => member(&whole.on_workers),
             What::Task => member(&whole.tasks),
+            What::Recurs => member(&whole.recurring),
             What::NonNegative => {
                 whole.non_negative.get(name).map(|places| keyed(&|state| hash_set(places, state)))
             }

@@ -93,7 +93,7 @@ impl Held {
 #[derive(Default)]
 pub(super) struct Table {
     /// Each region's pages, by the region's number. A run uses one or two regions.
-    regions: Vec<(usize, Pages)>,
+    regions: Regions,
     /// Whether every block goes in `short`, for a table that's usually small: pages cost a lot more
     /// than a few blocks do.
     hashed: bool,
@@ -167,20 +167,43 @@ fn at(block: &[u64]) -> usize {
     block.as_ptr().addr()
 }
 
+/// Each region's pages, by the region's number. The first region made is held in the table
+/// itself, not in a list, so finding a place in it reads no list first: a run's blocks are almost
+/// all in one region, and every lookup, made, read or freed, began with that read.
+#[derive(Default)]
+struct Regions {
+    first: Option<(usize, Pages)>,
+    rest: Vec<(usize, Pages)>,
+}
+
+impl Regions {
+    fn iter(&self) -> impl Iterator<Item = &(usize, Pages)> {
+        self.first.iter().chain(&self.rest)
+    }
+
+    fn push(&mut self, region: (usize, Pages)) {
+        if self.first.is_none() {
+            self.first = Some(region);
+        } else {
+            self.rest.push(region);
+        }
+    }
+}
+
 /// A region's pages. The first region is looked at before any search: a run's blocks are
 /// almost all in one.
-fn pages_of(regions: &[(usize, Pages)], region: usize) -> Option<&Pages> {
-    match regions.split_first()? {
-        ((number, pages), _) if *number == region => Some(pages),
-        (_, rest) => rest.iter().find(|(number, _)| *number == region).map(|(_, pages)| pages),
+fn pages_of(regions: &Regions, region: usize) -> Option<&Pages> {
+    match &regions.first {
+        Some((number, pages)) if *number == region => Some(pages),
+        _ => regions.rest.iter().find(|(number, _)| *number == region).map(|(_, pages)| pages),
     }
 }
 
 /// `pages_of`, to change them.
-fn pages_of_mut(regions: &mut [(usize, Pages)], region: usize) -> Option<&mut Pages> {
-    match regions.split_first_mut()? {
-        ((number, pages), _) if *number == region => Some(pages),
-        (_, rest) => rest.iter_mut().find(|(number, _)| *number == region).map(|(_, pages)| pages),
+fn pages_of_mut(regions: &mut Regions, region: usize) -> Option<&mut Pages> {
+    match &mut regions.first {
+        Some((number, pages)) if *number == region => Some(pages),
+        _ => regions.rest.iter_mut().find(|(number, _)| *number == region).map(|(_, pages)| pages),
     }
 }
 
@@ -207,7 +230,7 @@ fn disagrees(wrong: &str) -> ! {
 }
 
 /// The place for `address`, on a page that's been made, whatever it holds.
-fn place_mut(regions: &mut [(usize, Pages)], address: usize) -> Option<&mut u32> {
+fn place_mut(regions: &mut Regions, address: usize) -> Option<&mut u32> {
     let (region, page, place) = split(address);
     pages_of_mut(regions, region)?.get_mut(page)?.as_mut()?.get_mut(place)
 }
@@ -220,7 +243,7 @@ fn index_of(number: u32) -> usize {
 /// The place for `address` and the entry of `live` it points at, when that holds the block at
 /// `address`.
 fn found_mut<'table>(
-    regions: &'table mut [(usize, Pages)],
+    regions: &'table mut Regions,
     live: &'table mut [Held],
     address: usize,
 ) -> Option<(&'table mut u32, &'table mut Held)> {
@@ -759,7 +782,7 @@ impl Table {
     #[cfg(any(test, feature = "audit"))]
     fn agrees(&self) -> Result<(), String> {
         let mut pointed = 0_usize;
-        for (region, pages) in &self.regions {
+        for (region, pages) in self.regions.iter() {
             for (page, places) in pages.iter().enumerate().filter_map(|(n, page)| Some((n, page.as_ref()?))) {
                 for (place, number) in places.iter().enumerate().filter(|(_, number)| **number != 0) {
                     let Some(Held::Block(block)) = self.live.get(index_of(*number)) else {

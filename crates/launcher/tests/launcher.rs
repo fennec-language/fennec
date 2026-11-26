@@ -928,7 +928,8 @@ mod launcher {
     }
 
     /// A build of your own, linked as `dev`, runs for a kit asking for it, and for `+dev`, with
-    /// nothing fetched or pinned; unlinking it leaves the build where it is.
+    /// nothing fetched or pinned; unlinking it leaves the build where it is. Handed `new`, it's
+    /// told the name it's linked as, for the kit it makes to ask for.
     #[test]
     fn a_linked_build_runs_as_it_is() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -943,15 +944,21 @@ mod launcher {
         let (_, why, code) = run_in(&dir, &home, &["toolchain", "link", "dev", &build.to_string_lossy()]);
         assert_eq!(code, Some(1));
         assert!(why.contains("there's no `fennec`"), "{why}");
-        std::fs::write(build.join("fennec"), script("dev")).unwrap();
+        let says =
+            "#!/bin/sh\necho \"fennec dev: $*${FENNEC_LINKED_AS:+ (linked as $FENNEC_LINKED_AS)}\"\nexit 3\n";
+        std::fs::write(build.join("fennec"), says).unwrap();
         std::fs::set_permissions(build.join("fennec"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let fennec = build.join("fennec").to_string_lossy().into_owned();
         assert_eq!(run_in(&dir, &home, &["toolchain", "link", "dev", &fennec]).2, Some(0));
         assert_eq!(run_in(&kit, &home, &["run", "x"]).0, "fennec dev: run x\n");
         assert!(!kit.join("kit.lock").exists());
         assert_eq!(run_in(&dir, &home, &["+dev", "build"]).0, "fennec dev: build\n");
+        assert_eq!(run_in(&kit, &home, &["+dev", "new", "app"]).0, "fennec dev: new app (linked as dev)\n");
+        assert_eq!(run_in(&dir, &home, &["default", "dev"]).2, Some(0));
+        assert_eq!(run_in(&kit, &home, &["new", "app"]).0, "fennec dev: new app (linked as dev)\n");
+        assert_eq!(run_in(&dir, &home, &["run", "x"]).0, "fennec dev: run x\n");
         let listed = run_in(&dir, &home, &["toolchain", "list"]).0;
-        assert_eq!(listed, format!("dev → {}\n", build.display()));
+        assert_eq!(listed, format!("dev → {} (default)\n", build.display()));
         assert_eq!(run_in(&dir, &home, &["toolchain", "remove", "dev"]).2, Some(0));
         assert!(build.join("fennec").is_file());
         assert_eq!(run_in(&kit, &home, &["run"]).2, Some(1));

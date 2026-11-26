@@ -2599,6 +2599,15 @@ fn pack_writes_the_headers_docs_pack_md_pins() {
     assert_eq!(printed, wanted);
 }
 
+/// An `f32` saves as itself in JSON, `std.pack` and TOML, as the compiled program prints it in
+/// `llvm::an_f32_saves_as_itself_in_json_pack_and_toml`.
+#[test]
+fn an_f32_saves_as_itself() {
+    let (printed, ended) = ran(include_str!("../../fennec/tests/fixtures/f32_saved.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/f32_saved.out"));
+}
+
 /// A value saved with `pack.dumps` loads back with `pack.loads`, and data for another type is
 /// refused by its shape hash. What it prints is what the compiled program printed.
 #[test]
@@ -2690,7 +2699,12 @@ fn a_table_gives_each_item_an_id_that_finds_it_or_nothing() {
          Table([Unit(health=12)]) True 9\n"
     );
     let Ended::Stopped(said) = ended else { panic!("it ended {ended:?}") };
-    assert!(said.starts_with("error: this Id refers to something that's been removed\n"), "{said}");
+    assert!(
+        said.starts_with(
+            "error: this Id finds nothing in this Table: its item was taken out, or it's from another Table\n"
+        ),
+        "{said}"
+    );
 }
 
 /// Writes a kit's files into a folder of its own, and runs it.
@@ -3402,6 +3416,9 @@ const OWN_FORMAT: &str = "
             def float(ref self, value: float):
                 self.parts.append(str(value))
 
+            def f32(ref self, value: f32):
+                self.parts.append(str(value))
+
             def bool(ref self, value: bool):
                 self.parts.append('yes' if value else 'no')
 
@@ -3464,13 +3481,13 @@ const OWN_FORMAT: &str = "
             def end_member(ref self):
                 pass
 
-            def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+            def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T]):
                 self.sequence(items)
 
             def exact(self) -> bool:
                 return False
 
-            def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+            def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
                 # Never asked for: `exact` says no.
                 pass
 
@@ -3643,6 +3660,23 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
          0.10000000149011612 1 16777216.0 inf 2.5e-07 123456790.0\n\
          Body(mass=1.5, speed=0.33333334) [0.1, 3.0] {0.1: \"tenth\"} 0.3\n\
          4.5 200.0 -0.0 1e+20\n",
+    );
+}
+
+/// A number written out after `else` takes the size of the optional it stands in for where the
+/// optional is a name known to be `None` (#2588), as compiled code works it out
+/// (`llvm::an_else_default_takes_the_size_of_a_name_known_to_be_none`).
+#[test]
+fn an_else_default_takes_the_size_of_a_name_known_to_be_none() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            found: f32? = None
+            tiny: u8? = None
+            level: f32 = found else 0.1
+            stdout.print(level * 3.0, (tiny else 200) + 55)
+        ",
+        "0.3 255\n",
     );
 }
 

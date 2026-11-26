@@ -5,7 +5,7 @@
 //!
 //! The layout is text, a word at a time with a space between:
 //!
-//! - `i`, `f`, `b`, `s` and `y`: an int, a float, a bool, text and bytes;
+//! - `i`, `f`, `b`, `s` and `y`: an int, a float, a bool, text and bytes; `g`: an `f32`;
 //! - `l` then the item: a list, a set, or what saves as one, like a `Deque`;
 //! - `m` then the key and the value: a dict;
 //! - `o` then what it holds: an optional;
@@ -22,7 +22,7 @@
 
 use std::fmt::Write as _;
 
-use fennec_check::{SavedAs, Type};
+use fennec_check::{Num, SavedAs, Type};
 
 use super::Context;
 
@@ -55,6 +55,7 @@ impl Context<'_> {
         match ty {
             Type::Int => word("i"),
             Type::Float => word("f"),
+            Type::Sized(Num::F32) => word("g"),
             Type::Bool => word("b"),
             Type::Str => word("s"),
             Type::Bytes => word("y"),
@@ -239,7 +240,7 @@ fn saved_node<'t>(words: &mut impl Iterator<Item = &'t str>) -> Option<Saved> {
             Saved::Same
         }
         "O" => Saved::Own(words.next()?.to_owned()),
-        letter @ ("i" | "f" | "b" | "s" | "y" | "I" | "?") => Saved::Plain(letter.chars().next()?),
+        letter @ ("i" | "f" | "g" | "b" | "s" | "y" | "I" | "?") => Saved::Plain(letter.chars().next()?),
         _ => return None,
     })
 }
@@ -294,11 +295,12 @@ impl Context<'_> {
             // What loads as it is, and a struct inside itself, which the outer one is compared as.
             (_, Saved::Same)
             | (Type::Int | Type::Id(_), Saved::Plain('i' | 'I'))
-            | (Type::Float, Saved::Plain('i' | 'f'))
+            | (Type::Float, Saved::Plain('i' | 'f' | 'g'))
+            | (Type::Sized(Num::F32), Saved::Plain('g'))
             | (Type::Bool, Saved::Plain('b'))
             | (Type::Str, Saved::Plain('s'))
             | (Type::Bytes, Saved::Plain('y')) => {}
-            (Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes, _) => {
+            (Type::Int | Type::Float | Type::Sized(Num::F32) | Type::Bool | Type::Str | Type::Bytes, _) => {
                 mismatch(&described(saved));
             }
             (Type::List(item) | Type::Set(item), Saved::List(held))
@@ -439,6 +441,7 @@ fn described(saved: &Saved) -> String {
     match saved {
         Saved::Plain('i' | 'I') => "an int".to_owned(),
         Saved::Plain('f') => "a float".to_owned(),
+        Saved::Plain('g') => "an f32".to_owned(),
         Saved::Plain('b') => "a bool".to_owned(),
         Saved::Plain('s') => "text".to_owned(),
         Saved::Plain('y') => "bytes".to_owned(),

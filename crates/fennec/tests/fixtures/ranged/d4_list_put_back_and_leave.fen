@@ -1,0 +1,24 @@
+# A list's item taken out inside the loop written twice and put back on a way out of the loop.
+struct Unit:
+    health: int
+    bag: dict[str, int]
+
+def scan(ref units: list[Unit], starts: list[int], order: list[int]) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        which = order[at]
+        mut unit = units[which]
+        unit.health += 10
+        unit.bag["hits"] = at
+        if unit.health > 25:
+            units[which] = unit
+            break
+        units[which] = unit
+        total += 1
+    return total
+
+def main(stdout: Stdout):
+    mut units = [Unit(health=1, bag={}), Unit(health=2, bag={}), Unit(health=3, bag={})]
+    stdout.print(scan(ref units, starts=[0, 6], order=[0, 1, 2, 1, 1, 0]))
+    for unit in units:
+        stdout.print(unit.health, unit.bag)

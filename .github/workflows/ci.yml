@@ -59,13 +59,16 @@ jobs:
     name: What changed
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # `actions: read` for whether a push run covers a scheduled run's commit.
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
       docs_only: ${{ steps.changes.outputs.docs-only }}
       parked_changed: ${{ steps.changes.outputs.parked-changed }}
       platforms: ${{ steps.platforms.outputs.platforms }}
+      covered: ${{ steps.covered.outputs.covered }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,11 +100,21 @@ jobs:
               ;;
           esac
           echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+      # A scheduled run on a commit whose push run is waiting, running or passed leaves the jobs a
+      # push runs too to that run, and runs only what's scheduled alone: coverage and the heap
+      # audit. Run beside the push run on main's 661ec0c3a, it held main up for over an hour
+      # (2026-11-26). See `covered-by-push.sh`.
+      - id: covered
+        env:
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: echo "covered=$(.github/scripts/covered-by-push.sh)" >> "$GITHUB_OUTPUT"
 
   lint:
     name: Format, lints and docs
     needs: changes
-    if: needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -155,13 +168,15 @@ jobs:
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.part == 'llvm' && 'llvm::' || matrix.part }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.covered != 'true'
     # The platforms the run has (see `changes`): macOS only through `ci-macos.yml`, a run by hand or
-    # `staging.yml`. GitHub's macOS runners are short, and a job can wait an hour for one.
+    # `staging.yml`. GitHub's macOS runners are short, and a job can wait an hour for one. A pull
+    # request leaves out the Arm Mac, whose whole suite each one's `gate.sh` ran before it opened,
+    # and keeps the Intel Mac, which no gate runs.
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.changes.outputs.platforms == 'macos' && '["macos-latest"]' || needs.changes.outputs.platforms == 'others' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
+        os: ${{ fromJSON(needs.changes.outputs.platforms == 'macos' && '["macos-latest"]' || (needs.changes.outputs.platforms == 'others' || github.event_name == 'pull_request') && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
         # Each platform's tests run in three jobs of about the same length:
         # - `llvm`: the `llvm::` tests in `fennec`'s main test binary, each building a program;
         # - `fennec`: the rest of the `fennec` package's tests, then every example and kit;
@@ -256,12 +271,15 @@ jobs:
       # first, as a build of the whole workspace would. With `std-private`, so `fennec-std-tests` is
       # built beside it too: the fuzzer's `postgres` reader reads std's private names, so it's built
       # with that. `fennec` is the same with or without the feature.
+      # Their test binaries run two at a time: one after another, as `cargo test` runs them, they
+      # took 28 minutes of a 30-minute job on Linux, a few holding the run for minutes with a
+      # handful of long tests and cores to spare. See `two-at-a-time.sh`.
       - name: Run every other package's tests
         if: matrix.part == 'others'
         shell: bash
         run: |
           cargo build --locked -p fennec --features std-private
-          .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast --workspace --exclude fennec
+          .github/scripts/time-wait.sh 3000 .github/scripts/two-at-a-time.sh --locked --no-fail-fast --workspace --exclude fennec
       # A hello world built for release, held to its size here: Windows keeps a program's symbols
       # out of it, so what it links is checked on Linux, in `lean-runtime`, and in the gate on a Mac.
       # Even when a test failed, so the size is always known.
@@ -398,7 +416,7 @@ jobs:
   x86-mac:
     name: Native code on x86-64 macOS (${{ matrix.part }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'others'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'others' && needs.changes.outputs.covered != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -452,7 +470,7 @@ jobs:
   postgres:
     name: Postgres against a real server
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     services:
@@ -574,7 +592,7 @@ jobs:
   deny:
     name: Licenses, advisories and sources
     needs: changes
-    if: needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -597,7 +615,7 @@ jobs:
   site:
     name: Website builds
     needs: changes
-    if: needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -617,7 +635,7 @@ jobs:
   workflows:
     name: Workflow lints and security audit
     needs: changes
-    if: needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -649,6 +667,12 @@ jobs:
         run: .github/scripts/test-flakes.sh
       - name: Saying plainly a job never got a runner, against a GitHub answering from files
         run: .github/scripts/test-ci-passed.sh
+      - name: Running again a run whose only failures got no runner, against a GitHub answering from files
+        run: .github/scripts/test-rerun-no-runner.sh
+      - name: A scheduled run leaving a covered commit to its push run, against a GitHub answering from files
+        run: .github/scripts/test-covered-by-push.sh
+      - name: Deploying only the site or redirect that differs from what's live, on a throwaway site
+        run: .github/scripts/test-site-deploys.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
         run: .github/scripts/test-nightly-report.sh
       - name: A mutants run's counts, a timeout neither caught nor missed, and one where most timed out failing
@@ -664,7 +688,7 @@ jobs:
   bench:
     name: Benchmarks
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -725,7 +749,7 @@ jobs:
   budgets:
     name: Instant-feedback budgets
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -759,7 +783,7 @@ jobs:
   asan:
     name: AddressSanitizer on LLVM-built programs (${{ matrix.half }} of 2)
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     # In two halves, each with half the examples and one of the two fuzzers. In one job it took 29
     # minutes median and 37 at most of its 40, because ubuntu-latest's machines differ: the same
     # LLVM tests take 10.5 minutes on an EPYC 9V45 and 15 on an EPYC 7763, and on 2026-11-24 the
@@ -866,7 +890,7 @@ jobs:
   llvm-asan:
     name: LLVM tests under AddressSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -896,7 +920,7 @@ jobs:
   lean-runtime:
     name: Every example and kernel built natively
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -969,7 +993,7 @@ jobs:
   static:
     name: Release builds in an empty container
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -1009,12 +1033,13 @@ jobs:
           done
 
   # The one command that installs a working `fennec` from a checkout, `.github/scripts/install.sh`,
-  # tried as someone would: installed, then used from a new kit outside the checkout with Rust's
-  # toolchain out of reach, every runtime library from the same source as `fennec`.
+  # tried as someone would: installed, then used through the launcher from a new kit outside the
+  # checkout with Rust's toolchain out of reach, every runtime library from the same source as
+  # `fennec`.
   install:
     name: Install from a checkout
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -1022,17 +1047,20 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: .github/scripts/install.sh "$RUNNER_TEMP/fennec"
+      - run: env FENNEC_HOME="$RUNNER_TEMP/fennec-home" .github/scripts/install.sh
       - name: Use it from a new kit, with nothing but what was installed
         run: |
-          reach="$RUNNER_TEMP/fennec:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup' | paste -sd: -)"
+          reach="$RUNNER_TEMP/fennec-home/bin:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup' | paste -sd: -)"
           cd "$RUNNER_TEMP"
           try() {
             env PATH="$reach" RUSTUP_HOME="$RUNNER_TEMP/no-rustup" CARGO_HOME="$RUNNER_TEMP/no-cargo" \
               FENNEC_HOME="$RUNNER_TEMP/fennec-home" "$@"
           }
+          # The launcher runs the build linked as `dev`, which is the version for scripts.
+          [ "$(try fennec default)" = dev ]
           try fennec new demo
           cd demo
+          grep -qx 'fennec = "dev"' kit.toml
           [ "$(try fennec run)" = "Hello from demo!" ]
           try fennec test
           try fennec build --release -o "$RUNNER_TEMP/demo-program"
@@ -1043,7 +1071,7 @@ jobs:
   worker-sanitizers:
     name: Workers under ${{ matrix.name }}
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -1125,7 +1153,7 @@ jobs:
   tsan-programs:
     name: Programs under ThreadSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -1162,6 +1190,7 @@ jobs:
       needs.changes.outputs.docs_only != 'true'
       && (github.event_name != 'merge_group' || needs.changes.outputs.parked_changed == 'true')
       && needs.changes.outputs.platforms != 'macos'
+      && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -1236,7 +1265,7 @@ jobs:
   server-sanitizers:
     name: Servers under ThreadSanitizer
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos'
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.platforms != 'macos' && needs.changes.outputs.covered != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -1283,6 +1312,7 @@ jobs:
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PARKED_CHANGED: ${{ needs.changes.outputs.parked_changed }}
           PLATFORMS: ${{ needs.changes.outputs.platforms }}
+          COVERED: ${{ needs.changes.outputs.covered }}
           EVENT: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}

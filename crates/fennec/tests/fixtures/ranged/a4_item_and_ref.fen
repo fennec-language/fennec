@@ -1,0 +1,14 @@
+# The bucket list is an item of a list the function also has by `ref`.
+def scan(ref rows: list[list[int]], starts: list[int], order: list[int]) -> int:
+    mut added = 0
+    for cell in range(len(starts) - 1):
+        rows[0][cell + 1] = 50000000
+        _ = rows[1].pop()
+        for at in range(starts[cell], starts[cell + 1]):
+            added += order[at]
+    return added
+
+def main(stdout: Stdout):
+    mut rows = [[0, 2, 4], [1, 2, 3, 4]]
+    stdout.print(scan(ref rows, starts=rows[0], order=rows[1]))
+    stdout.print(rows)

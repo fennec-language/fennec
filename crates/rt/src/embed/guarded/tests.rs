@@ -105,6 +105,33 @@ fn a_new_shared_value_holds_copies_and_gives_up_what_it_was_given() {
     finish();
 }
 
+/// A handle let go of by `free` while this thread holds its write lock, where its block is in the
+/// current table, goes to the walk, which puts its block back and lets go of it as a handle: the
+/// value stays for the handle left, and the block isn't kept for reuse as one that holds nothing.
+/// Let go of with no lock held, its block is in no table of this thread's, and its address says
+/// it's a handle.
+#[test]
+fn a_handle_let_go_of_by_free_is_let_go_of_as_a_handle() {
+    begin();
+    let before = with(|state| state.heap.live());
+    let log = log_of(&["one", "two"]);
+    assert_eq!(shared_new(log), log);
+    let address = u64::try_from(log).unwrap();
+    count_handle(address);
+    shared_enter(log, 1);
+    assert!(with(|state| state.heap.blocks.get(usize::try_from(address).unwrap()).is_some()));
+    heap::free(log);
+    let inside = with(|state| state.heap.blocks.get(usize::try_from(address).unwrap()).map(<[u64]>::to_vec));
+    assert!(inside.is_some(), "the handle's block was freed as a block that holds nothing");
+    shared_leave(log, 1);
+    assert!(is_handle(address), "both handles went");
+    heap::free(log);
+    assert!(!is_handle(address), "still a handle");
+    assert!(super::tables(|tables| tables.get(&address).is_none()), "its value is still kept");
+    assert_eq!(with(|state| state.heap.live()), before);
+    finish();
+}
+
 #[test]
 fn what_is_made_under_a_write_lock_stays_with_the_value_and_counts_as_this_threads() {
     begin();

@@ -3,6 +3,14 @@
 export interface Serializer:
     def int(ref self, value: int)
     def float(ref self, value: float)
+    ## An `f32`, which a format writes as the `f32` it is, not as the `float` it widens to.
+    ##
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps(f32(0.1)) == "0.1"
+    ## assert json.dumps(float(f32(0.1))) == "0.10000000149011612"
+    ## ```
+    def f32(ref self, value: f32)
     def bool(ref self, value: bool)
     def text(ref self, value: str)
     def bytes(ref self, value: bytes)
@@ -55,19 +63,26 @@ export interface Serializer:
     def member(ref self, name: str, at: int)
     def end_member(ref self)
 
-    ## A `Table` of items of the type named `kind`, with its tag: each item in order, with its `Id`.
-    def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T])
+    ## A `Table` of items of the type named `kind`: each item in order, with its `Id`.
+    def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T])
 
     ## Whether `Table`s are saved slot for slot, with their `Id`s as slots and generations, so a
     ## load holds the same slots and hands out the same `Id`s after it: what replays need.
     def exact(self) -> bool
 
-    ## A `Table` saved slot for slot, when `exact` says so: each slot as `table_slots` gives it,
-    ## then the items in the slots in use, in order.
-    def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T])
+    ## A `Table` saved slot for slot, when `exact` says so: each slot's tag, as `table_slot_tags`
+    ## gives them, each slot as `table_slots` gives it, then the items in the slots in use, in
+    ## order. The tags aren't saved: they say which `Id`s can be saved as their slot and generation.
+    def slots[T: Serializable](
+        ref self,
+        kind: str,
+        tags: list[int],
+        slots: list[int],
+        items: list[T],
+    )
 
-    ## An `Id` into a `Table` of `kind`, by its `id_key` and its `Table`'s tag, which is written as
-    ## where its item is in that `Table`.
+    ## An `Id` into a `Table` of `kind`, by its `id_key` and its tag, which is written as where its
+    ## item is in that `Table`.
     def id(ref self, kind: str, key: int, tag: int)
 
     ## An optional's value, which is there. An `Id` in one whose item has gone is written as
@@ -84,6 +99,16 @@ export interface Serializable:
 export interface Deserializer:
     def int(ref self) -> int fails ParseError
     def float(ref self) -> float fails ParseError
+    ## An `f32`, read as one: a format that saves text reads it straight to the nearest `f32`,
+    ## rounded once.
+    ##
+    ## ```fennec
+    ## from std import json
+    ## text = "1.00000005960464477539062501"
+    ## assert json.loads[f32](text)? == f32.parse(text)?
+    ## assert json.loads[f32](text)? != f32(json.loads[float](text)?)
+    ## ```
+    def f32(ref self) -> f32 fails ParseError
     def bool(ref self) -> bool fails ParseError
     def text(ref self) -> str fails ParseError
     def bytes(ref self) -> bytes fails ParseError
@@ -121,12 +146,14 @@ export interface Deserializer:
     ## The error for what was just read, saying `message` about it, like an `Id` that's negative.
     def here(self, message: str) -> ParseError
 
-    ## Takes note of an `Id` read, by the name of the type it's for and where its item is in the
-    ## `Table`, so it can be checked once everything's been read.
-    def saw_id(ref self, kind: str, position: int)
+    ## Takes note of an `Id` read, by the name of the type it's for, where its item is in the
+    ## `Table`, and, saved slot for slot, its generation, or -1, so it can be checked once
+    ## everything's been read.
+    def saw_id(ref self, kind: str, position: int, generation: int)
 
-    ## Takes note of a `Table` read, by the name of its items' type and how many it has.
-    def saw_table(ref self, kind: str, count: int)
+    ## Takes note of a `Table` read, by the name of its items' type, how many it has, and, saved
+    ## slot for slot, each slot as `table_slots` gives it.
+    def saw_table(ref self, kind: str, count: int, words: list[int])
 
     ## The tag this read gives the `Table` of `kind` it makes, and every `Id` into it: new for
     ## each read, so they find their items there and in no other `Table`.

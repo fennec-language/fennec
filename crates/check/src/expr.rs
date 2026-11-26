@@ -1258,6 +1258,14 @@ impl FnCx<'_> {
         (elem, value)
     }
 
+    /// The sized number a name was declared to hold, as an optional or not: `f32` for `found: f32?`.
+    fn declared_sized(&mut self, value: &Expr) -> Option<Type> {
+        let ExprKind::Name(name) = &value.kind else { return None };
+        let declared = self.declared_type(name)?;
+        let sized = self.checker.settled(&declared).without_none();
+        matches!(sized, Type::Sized(_)).then_some(sized)
+    }
+
     /// `value else default`: what's inside the value, or the default, or nothing more if the default
     /// leaves.
     fn else_value(&mut self, value: &Expr, default: &Expr, except: bool, span: Span) -> Type {
@@ -1290,7 +1298,7 @@ impl FnCx<'_> {
             );
         }
         if except && !matches!(self.checker.settled(&value), Type::Result(..) | Type::Unknown) {
-            self.nothing_to_except(&value, written);
+            self.nothing_to_except(&value, value_expr);
         }
         if except
             && let Type::Result(made, _) = self.checker.settled(&value)
@@ -1311,7 +1319,25 @@ impl FnCx<'_> {
                 }
                 given
             }
-            None => self.expr(default),
+            // `speed else 0.5` on an `f32?`: a number written out takes the size it stands in for.
+            None => match self.checker.settled(&value) {
+                Type::Optional(inner) | Type::Result(inner, _)
+                    if crate::expect::number_literal(default)
+                        && matches!(self.checker.settled(&inner), Type::Sized(_)) =>
+                {
+                    self.expr_as(default, &inner)
+                }
+                // A name known to be `None` here, as `found: f32? = None` is, still stands for what
+                // it was declared to hold, so the number takes that size, as it would with nothing
+                // known.
+                Type::None if crate::expect::number_literal(default) => {
+                    match self.declared_sized(value_expr) {
+                        Some(sized) => self.expr_as(default, &sized),
+                        None => self.expr(default),
+                    }
+                }
+                _ => self.expr(default),
+            },
         };
         match value {
             Type::Optional(inner) if matches!(*inner, Type::Result(..)) => {

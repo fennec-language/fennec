@@ -1,0 +1,24 @@
+# An item taken out of a list, changed and put back inside the loop written twice.
+struct Unit:
+    health: int
+    bag: dict[str, int]
+
+def scan(ref units: list[Unit], starts: list[int], order: list[int]):
+    for at in range(starts[0], starts[1]):
+        which = order[at]
+        mut unit = units[which]
+        unit.health -= at + 1
+        if unit.health < 0:
+            unit.health = 100
+            unit.bag["bone"] = (unit.bag.get("bone") else 0) + 1
+        units[which] = unit
+    return
+
+def main(stdout: Stdout):
+    mut units = [Unit(health=3, bag={"gold": 1}), Unit(health=50, bag={"gold": 2})]
+    kept = units
+    scan(ref units, starts=[0, 6], order=[0, 1, 0, 1, 0, 0])
+    for unit in units:
+        stdout.print(unit.health, unit.bag)
+    for unit in kept:
+        stdout.print(unit.health, unit.bag)

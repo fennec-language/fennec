@@ -136,6 +136,15 @@ struct SqlRowReader:
         if kind != 2: fail self._wrong(kind, "a float")
         return self._rows.floats[at]
 
+    def f32(ref self) -> f32 fails ParseError:
+        # A database's floats are doubles, so it's the column's float, rounded once. One too big
+        # for an f32 would come out as infinity, which isn't what it held.
+        wide = self.float()?
+        narrow = f32(wide)
+        if narrow - narrow != 0.0 and wide - wide == 0.0:
+            fail self._bad(f"it holds {wide}, which is too big for an f32")
+        return narrow
+
     def bool(ref self) -> bool fails ParseError:
         kind = self._kind()?
         if kind != 1: fail self._wrong(kind, "a bool")
@@ -211,10 +220,10 @@ struct SqlRowReader:
     def here(self, message: str) -> ParseError:
         return self._bad(message)
 
-    def saw_id(ref self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int, generation: int):
         pass
 
-    def saw_table(ref self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
         pass
 
     def tag(ref self, kind: str) -> int:

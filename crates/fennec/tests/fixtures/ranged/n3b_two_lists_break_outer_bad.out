@@ -1,0 +1,3 @@
+exit 1
+error: index 2 is out of range for length 2
+--> n3b_two_lists_break_outer_bad.fen:5:18

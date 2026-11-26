@@ -1,0 +1,22 @@
+# Enums matched and optionals read inside the loop written twice.
+enum Shape:
+    Dot
+    Line(length: int)
+    Box(wide: int, tall: int)
+
+def scan(starts: list[int], order: list[int], shapes: list[Shape], names: dict[int, str]) -> str:
+    mut total = 0
+    mut text = ""
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        match shapes[value]:
+            case .Dot: total += 1
+            case .Line(length): total += length
+            case .Box(wide, tall): total += wide * tall
+        name = names.get(value) else continue
+        text += name
+    return f"{total} {text}"
+
+def main(stdout: Stdout):
+    shapes = [Shape.Dot, Shape.Line(length=4), Shape.Box(wide=2, tall=5)]
+    stdout.print(scan([0, 5], order=[2, 0, 1, 2, 1], shapes=shapes, names={0: "dot", 2: "box"}))

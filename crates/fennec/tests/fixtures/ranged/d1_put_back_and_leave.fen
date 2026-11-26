@@ -1,0 +1,30 @@
+# A Table's item taken out inside the loop written twice, and put back on a way out of the loop:
+# that block isn't part of the loop, so it's written once and both copies go to it.
+from std.collections import Id, Table
+
+struct Unit:
+    health: int
+    name: str
+
+def scan(ref units: Table[Unit], ids: list[Id[Unit]], starts: list[int], order: list[int]) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        which = order[at]
+        mut unit = units[ids[which]]
+        unit.health += 10
+        unit.name = unit.name + "+"
+        if unit.health > 25:
+            units[ids[which]] = unit
+            return total
+        units[ids[which]] = unit
+        total += 1
+    return total
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for health in [1, 2, 3]:
+        ids.append(units.add(Unit(health=health, name=f"unit {health}")))
+    stdout.print(scan(ref units, ids=ids, starts=[0, 6], order=[0, 1, 2, 1, 1, 0]))
+    for unit in units:
+        stdout.print(unit.health, unit.name)

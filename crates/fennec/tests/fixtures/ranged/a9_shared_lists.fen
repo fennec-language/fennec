@@ -1,0 +1,40 @@
+# The lists are in a shared value, read under its lock, while another task waits to change them.
+from std.concurrent import Crashed
+
+struct World:
+    starts: list[int]
+    order: list[int]
+
+def scan(starts: list[int], order: list[int]) -> int:
+    mut added = 0
+    for round in range(200):
+        for cell in range(len(starts) - 1):
+            for at in range(starts[cell], starts[cell + 1]):
+                added += order[at]
+    return added
+
+def spoil(world: shared World):
+    for round in range(2000):
+        lock world as ref held:
+            held.starts[1] = 50000000 if round % 2 == 0 else 2
+            if round % 2 == 0:
+                _ = held.order.pop()
+            else:
+                held.order.append(4)
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared world = World(starts=[0, 2, 4], order=[1, 2, 3, 4])
+    mut total = 0
+    with launch(() => spoil(world))?:
+        for round in range(300):
+            mut starts = list[int]()
+            mut order = list[int]()
+            lock world as held:
+                if held.starts[1] == 2 and len(held.order) == 4:
+                    total += scan(held.starts, order=held.order)
+                starts = held.starts
+                order = held.order
+            if starts[1] == 2 and len(order) == 4:
+                total += scan(starts, order=order)
+    stdout.print(total % 2000 == 0)

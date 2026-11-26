@@ -1495,7 +1495,7 @@ pub(crate) struct RuleStep {
     /// What it adds, takes away or sets, from 0 to 9, and which of two gauges in a list, by its
     /// evenness.
     pub(crate) value: i64,
-    /// Whether it breaks its rule, which stops the program, or for `Made`, is refused.
+    /// Whether it breaks its rule, which stops the program.
     pub(crate) breaks: bool,
 }
 
@@ -1534,7 +1534,7 @@ pub(crate) enum RuleWay {
     Named,
     /// `copy(gauge, level=picked(value))`, printed, below 0 when it breaks.
     Copied,
-    /// `made(value)`: `Gauge(level=picked(value))`, printed, or refused below 0.
+    /// `made(value)`: `Gauge(level=picked(value))`, printed, below 0 when it breaks.
     Made,
     /// `by_name["k"].level -= amount`.
     InDict,

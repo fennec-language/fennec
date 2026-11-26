@@ -370,3 +370,20 @@ extend f32:
     ## ```
     def parse(text: str) -> f32 fails InvalidValue:
         return f32(text)?
+
+    ## Writes the `f32` for `json.dumps`, `pack.dumps` and the rest, which call it: as the `f32`
+    ## it is, so JSON writes its own shortest text and `std.pack` its 4 bytes.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps(f32(0.1)) == "0.1"
+    ## ```
+    def serialize(self, ref out: Serializer):
+        out.f32(self)
+
+    ## Reads an `f32` for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[f32]("0.1")? == f32(0.1)
+    ## ```
+    def deserialize(ref src: Deserializer) -> f32 fails ParseError:
+        return src.f32()?

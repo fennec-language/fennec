@@ -19,7 +19,7 @@ exactly what it writes.
 
 A type's shape is text, made as follows:
 
-- A plain type is its name: `int`, `float`, `bool`, `str` and `bytes`.
+- A plain type is its name: `int`, `float`, `f32`, `bool`, `str` and `bytes`.
 - `list[T]`, `set[T]`, `dict[K, V]`, `Table[T]` and `Id[T]` are written so, with each part's shape
   in place of its letter, apart by `, `. An optional is its item's shape then `?`. A tuple is
   `(A, B)`, and a union is `(A | B)`, its members in the order the type lists them.
@@ -53,7 +53,9 @@ result is read as a signed 64-bit int.
 The layout says what each value is, with every struct's field names and every enum's case names,
 so bytes from another version of the type load by name. It's words apart by single spaces:
 
-- `i`, `f`, `b`, `s` and `y`: an int, a float, a bool, text and bytes.
+- `i`, `f`, `g`, `b`, `s` and `y`: an int, a float, an `f32`, a bool, text and bytes. An `f32` is its
+  4 bytes, low first, and every `f32` NaN is the quiet NaN with no sign and no payload,
+  `0x7FC00000`, as every float NaN is `0x7FF8000000000000`.
 - `l` then the item: a list or a set. `m` then the key and the value: a dict. `o` then the item:
   an optional.
 - `t`, the count of items, then each item: a tuple.
@@ -84,6 +86,7 @@ the compiled program to this table, and each hash to its shape.
 | `str` | `str` | `f0600d5d19836e82` | `s` |
 | `bool` | `bool` | `bd14b0c69bd42fcd` | `b` |
 | `float` | `float` | `6501b242a9620aa0` | `f` |
+| `f32` | `f32` | `443570ff185063dd` | `g` |
 | `bytes` | `bytes` | `e44f1c4f47c02e2f` | `y` |
 | `list[int]` | `list[int]` | `4675ffb2ccf2c473` | `l i` |
 | `dict[str, int]` | `dict[str, int]` | `d1b23e33599e34ee` | `m s i` |

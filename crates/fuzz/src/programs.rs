@@ -116,7 +116,7 @@ fn boxed_too(input: &[u8]) -> bool {
 /// The target: the two builds agree with each other and with the evaluator, and a boxed third
 /// build, where there's one, with them.
 pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
-    if crate::llvm::ready().is_err() {
+    if !crate::llvm::can_build()? {
         return Ok(());
     }
     let program = generate::program(input);
@@ -125,7 +125,7 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     // none, a program that may launch one, through `tally`, `guard_all` or a `sent`, can't be
     // built.
     let launches = !program.threadless;
-    if launches && !crate::llvm::threads_runtime_here() {
+    if launches && !crate::llvm::can_build_threads()? {
         return Ok(());
     }
     let with_program = |wrong: String| format!("{wrong}\n--- program\n{source}");
@@ -1207,8 +1207,8 @@ mod tests {
 
     /// Every way of a `Ruled` step that keeps to its rules, three times over with shifting values,
     /// checks, and the evaluator prints what the oracle prints. Then each way that can break one
-    /// does, on its own, and stops the program where the evaluator says, but making a value, which
-    /// is refused and goes on: a field lent alone by `ref` stops it as it comes back (#2270).
+    /// does, on its own, and stops the program where the evaluator says, making a value too
+    /// (#2434): a field lent alone by `ref` stops it as it comes back (#2270).
     #[test]
     fn the_where_rule_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
         use super::ast::{Program, RULE_WAYS, RuleStep, RuleWay, Ruling, Stmt};
@@ -1244,7 +1244,7 @@ mod tests {
             let (source, (printed, ended, said)) = run(vec![first, RuleStep { way, value: 4, breaks: true }]);
             let oracle = fennec_oracle::run_source(&source, "programs.fen");
             assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
-            if matches!(way, RuleWay::Raised | RuleWay::Dipped | RuleWay::Made) {
+            if matches!(way, RuleWay::Raised | RuleWay::Dipped) {
                 assert!(ended, "{way:?}: {printed}");
                 assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
             } else {
@@ -1590,7 +1590,7 @@ mod tests {
             usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
         };
         body.extend((5..25).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
-        let native = crate::llvm::ready().is_ok() && crate::llvm::threads_runtime_here();
+        let native = crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}"));
         let mut crashed = 0;
         for stmt in body {
             let program = Program { body: vec![stmt], threadless: false };
@@ -1682,7 +1682,7 @@ mod tests {
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
-        if crate::llvm::ready().is_err() || !crate::llvm::threads_runtime_here() {
+        if !crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}")) {
             return;
         }
         for release in [false, true] {
@@ -1716,7 +1716,7 @@ mod tests {
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
-        if crate::llvm::ready().is_err() || !crate::llvm::threads_runtime_here() {
+        if !crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}")) {
             return;
         }
         for release in [false, true] {
@@ -2099,7 +2099,12 @@ mod tests {
         assert_eq!(stopping.len(), 8);
         for looping in stopping {
             let (_, said) = program(vec![Alias::Part { from: LEDGER, at: 0 }, Alias::Looped(looping)]);
-            assert_eq!(said.as_deref(), Some("this Id refers to something that's been removed"));
+            assert_eq!(
+                said.as_deref(),
+                Some(
+                    "this Id finds nothing in this Table: its item was taken out, or it's from another Table"
+                )
+            );
         }
     }
 

@@ -18,7 +18,7 @@
 use fennec_syntax::{Diagnostic, Span};
 
 use super::super::heap::{self, IMMORTAL};
-use super::super::{State, attempt, with};
+use super::super::{State, Tables, attempt, with};
 use super::{CLOSED, DONE, Message, Turn, find, next, replayed, send_on};
 use crate::packed::Element;
 
@@ -32,26 +32,113 @@ pub(super) const NO_MESSAGE: i64 = 3;
 ///
 /// It's made on the sender's thread and let go of on the receiver's, so each allocation it holds is
 /// one the sender's allocator later takes back from another thread (#2492): it holds only its words
-/// and its copies, and travels unboxed.
+/// and its copies, and travels unboxed. Its words are in it when they fit, as a message's mostly
+/// do, and so is its first copy: a message of a few fields and a string takes no allocation but the
+/// string's copy. Boxed, they cost `chat_server` an allocation and its free on another thread for
+/// each message, and another for each list of copies.
 pub(in crate::embed) struct Flat {
     /// Its kind's number in the program's table of kinds.
     kind: usize,
-    words: Box<[u64]>,
-    blocks: Vec<Box<[u64]>>,
+    words: Words,
+    blocks: Copies,
+}
+
+/// The most words a message holds in itself: a few fields, or two strings and two numbers.
+const WORDS_IN_PLACE: usize = 8;
+
+/// A message's words: in place when there are `WORDS_IN_PLACE` or fewer, and boxed otherwise.
+#[derive(Clone)]
+enum Words {
+    InPlace { count: usize, words: [u64; WORDS_IN_PLACE] },
+    Boxed(Box<[u64]>),
+}
+
+impl Words {
+    /// The words `each` gives, `count` of them.
+    fn of(count: usize, each: impl Iterator<Item = u64>) -> Words {
+        if count <= WORDS_IN_PLACE {
+            let mut words = [0; WORDS_IN_PLACE];
+            for (word, given) in words.iter_mut().zip(each) {
+                *word = given;
+            }
+            return Words::InPlace { count, words };
+        }
+        Words::Boxed(each.take(count).collect())
+    }
+}
+
+impl std::ops::Deref for Words {
+    type Target = [u64];
+    fn deref(&self) -> &[u64] {
+        match self {
+            Words::InPlace { count, words } => words.get(..*count).unwrap_or_default(),
+            Words::Boxed(words) => words,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Words {
+    fn deref_mut(&mut self) -> &mut [u64] {
+        match self {
+            Words::InPlace { count, words } => words.get_mut(..*count).unwrap_or_default(),
+            Words::Boxed(words) => words,
+        }
+    }
+}
+
+/// The copies of the blocks a message names, the first held in place, so one naming a single block,
+/// as most that name any do, makes no list.
+#[derive(Default)]
+struct Copies {
+    first: Option<Box<[u64]>>,
+    rest: Vec<Box<[u64]>>,
+}
+
+impl Copies {
+    fn push(&mut self, block: Box<[u64]>) {
+        if self.first.is_none() {
+            self.first = Some(block);
+        } else {
+            self.rest.push(block);
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &[u64]> {
+        self.first.iter().chain(&self.rest).map(|block| &**block)
+    }
+
+    fn get(&self, at: usize) -> Option<&[u64]> {
+        match at {
+            0 => self.first.as_deref(),
+            _ => self.rest.get(at - 1).map(|block| &**block),
+        }
+    }
+
+    fn get_mut(&mut self, at: usize) -> Option<&mut [u64]> {
+        match at {
+            0 => self.first.as_deref_mut(),
+            _ => self.rest.get_mut(at - 1).map(|block| &mut **block),
+        }
+    }
+}
+
+impl IntoIterator for Copies {
+    type Item = Box<[u64]>;
+    type IntoIter = std::iter::Chain<std::option::IntoIter<Box<[u64]>>, std::vec::IntoIter<Box<[u64]>>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.first.into_iter().chain(self.rest)
+    }
 }
 
 impl Flat {
     /// A copy of its own for a listener of a channel to `.Every`, counted as a copy is: each word
     /// that names one of its copies names that one's copy.
     fn copied(&self, state: &mut State) -> Flat {
-        let blocks: Vec<Box<[u64]>> = self
-            .blocks
-            .iter()
-            .map(|block| {
-                state.heap.copied(block.len());
-                block.clone()
-            })
-            .collect();
+        let mut blocks = Copies::default();
+        for block in self.blocks.iter() {
+            state.heap.copied(block.len());
+            blocks.push(Box::from(block));
+        }
         let mut places = Vec::new();
         each_place(&plan_of(state, self.kind).parts, &self.words, &mut |place| places.push(place));
         let mut words = self.words.clone();
@@ -89,7 +176,16 @@ enum Part {
 /// The plan of every kind the run has, `None` for one that isn't flat: made the first time this
 /// thread's runtime sends or takes a message as words.
 fn plans(state: &State) -> &[Option<Plan>] {
-    state.message_plans.get_or_init(|| {
+    plans_in(&state.message_plans, &state.tables)
+}
+
+/// [`plans`], given the two fields of the state it reads, so a send can borrow the state's others
+/// beside them.
+fn plans_in<'s>(
+    message_plans: &'s std::cell::OnceCell<Box<[Option<Plan>]>>,
+    tables: &Tables,
+) -> &'s [Option<Plan>] {
+    message_plans.get_or_init(|| {
         let planned = |element: &std::rc::Rc<Element>| {
             element.is_flat_message().then(|| {
                 let mut parts = Vec::new();
@@ -97,7 +193,7 @@ fn plans(state: &State) -> &[Option<Plan>] {
                 Plan { width: element.words(), parts: parts.into_boxed_slice() }
             })
         };
-        state.tables.elements.iter().map(planned).collect()
+        tables.elements.iter().map(planned).collect()
     })
 }
 
@@ -198,9 +294,10 @@ pub extern "C" fn channel_send_words(channel: i64, kind: i64, width: i64, done: 
         Turn::Goes => -1,
         Turn::Gives(code) => return code,
     };
-    let copied = attempt(|state: &mut State| copied(state, kind, words).map(Some));
+    let copied =
+        attempt(|state: &mut State| copied(state, kind, words).map(|flat| Some(Message::Words(flat))));
     let Some(message) = copied else { return DONE };
-    send_on(&channel, Message::Words(message), timeout_ns)
+    send_on(&channel, message, timeout_ns)
 }
 
 /// `fennec_channel_receive_words(channel, kind, width, timeout_ns)`: takes the next message, of
@@ -238,9 +335,23 @@ fn flat_kind(state: &State, kind: i64, width: i64) -> usize {
 }
 
 /// The first `count` words of this thread's buffer.
-fn buffered(state: &State, count: usize) -> Box<[u64]> {
+///
+/// A message that fits in place takes the buffer's first `WORDS_IN_PLACE` words whatever its width,
+/// a copy of a known size, where a copy of its own width was a call to fill the rest with zeros and
+/// another to copy: about 45 instructions a send in `chat_server`. The words past its width are
+/// never read.
+fn buffered(state: &State, count: usize) -> Words {
     super::super::dicts::value_buffer_of(state, |buffer| {
-        buffer.get(..count).map(|words| words.iter().map(std::cell::Cell::get).collect())
+        if count <= WORDS_IN_PLACE
+            && let Some(cells) = buffer.get(..WORDS_IN_PLACE)
+        {
+            let mut words = [0; WORDS_IN_PLACE];
+            for (word, cell) in words.iter_mut().zip(cells) {
+                *word = cell.get();
+            }
+            return Some(Words::InPlace { count, words });
+        }
+        buffer.get(..count).map(|words| Words::of(count, words.iter().map(std::cell::Cell::get)))
     })
     .unwrap_or_else(|| heap::runtime_bug("a message is wider than the buffer it's passed in"))
 }
@@ -250,25 +361,30 @@ fn buffered(state: &State, count: usize) -> Box<[u64]> {
 /// read, a string literal, isn't copied: it travels as its address. A block the sender can't find
 /// fails. Where the blocks are named, and which each copy was made of, are kept in this thread's
 /// own lists between sends, so a send makes only the copies and the list that holds them.
-fn copied(state: &mut State, kind: usize, mut words: Box<[u64]>) -> Result<Flat, Diagnostic> {
-    let (mut places, mut made_of) = std::mem::take(&mut state.message_lists);
+///
+/// The lists are borrowed where they are, beside the heap and the kinds' plans: taken out and put
+/// back, they were dropped and moved at every send.
+fn copied(state: &mut State, kind: usize, mut words: Words) -> Result<Flat, Diagnostic> {
+    let State { message_plans, tables, message_lists: (places, made_of), heap: own, .. } = state;
+    let Some(Some(plan)) = plans_in(message_plans, tables).get(kind) else {
+        heap::runtime_bug("a message's kind isn't a flat one the program described");
+    };
     places.clear();
     made_of.clear();
-    each_place(&plan_of(state, kind).parts, &words, &mut |place| places.push(place));
-    let copies = copies(state, &places, &mut words, &mut made_of);
-    state.message_lists = (places, made_of);
-    Ok(Flat { kind, words, blocks: copies? })
+    each_place(&plan.parts, &words, &mut |place| places.push(place));
+    let blocks = copies(own, places, &mut words, made_of)?;
+    Ok(Flat { kind, words, blocks })
 }
 
 /// The copies of the blocks the words at `places` in `words` name, each word pointed at its copy,
 /// with `made_of` the block each copy was made of, by its place in the copies.
 fn copies(
-    state: &mut State,
+    heap: &mut heap::Heap,
     places: &[usize],
     words: &mut [u64],
     made_of: &mut Vec<u64>,
-) -> Result<Vec<Box<[u64]>>, Diagnostic> {
-    let mut blocks: Vec<Box<[u64]>> = Vec::new();
+) -> Result<Copies, Diagnostic> {
+    let mut blocks = Copies::default();
     for place in places {
         let Some(&address) = words.get(*place) else { continue };
         if let Some(which) = made_of.iter().position(|old| *old == address) {
@@ -280,7 +396,7 @@ fn copies(
             }
             continue;
         }
-        let block = state.heap.block(address).ok_or_else(|| {
+        let block = heap.block(address).ok_or_else(|| {
             Diagnostic::new(
                 format!("internal error: block {address:#x} of a message isn't there"),
                 Span::default(),
@@ -293,7 +409,7 @@ fn copies(
         if let Some(count) = copy.first_mut() {
             *count = 1;
         }
-        state.heap.copied(copy.len());
+        heap.copied(copy.len());
         if let Some(word) = words.get_mut(*place) {
             *word = address_of(&copy);
         }

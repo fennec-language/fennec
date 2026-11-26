@@ -38,13 +38,7 @@ fn an_id_map_of_optional_ids_crosses_and_comes_back_the_same() {
     let generations = Element::List(Rc::new(Element::Int));
     let map = named(
         "Table[Unit]",
-        vec![
-            ("items", items),
-            ("generations", generations),
-            ("live", Element::Int),
-            ("free_from", Element::Int),
-            ("tag", Element::Int),
-        ],
+        vec![("items", items), ("slots", generations), ("live", Element::Int), ("free_from", Element::Int)],
     );
     let tables =
         Tables { shapes: vec![Rc::new(map), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
@@ -62,11 +56,14 @@ fn an_id_map_of_optional_ids_crosses_and_comes_back_the_same() {
     };
     let tag = crate::value::new_tag();
     let slots = vec![
-        Slot { generation: 0, value: Some(unit("a", Value::None)) },
-        Slot { generation: 3, value: None },
-        Slot { generation: 1, value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0, tag }))) },
+        Slot { tag, value: Some(unit("a", Value::None)) },
+        Slot { tag: 0, value: None },
+        Slot {
+            tag: crate::value::new_tag(),
+            value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0, tag }))),
+        },
     ];
-    let original = Value::Table(Rc::new(Table::tagged(slots, tag)));
+    let original = Value::Table(Rc::new(Table::new(slots)));
     let value = with(|state| Some(state.push(original.clone()))).unwrap();
     let block = heap::from_value(value, 0, 0, 0);
     assert_ne!(block, 0);
@@ -193,6 +190,39 @@ fn strings_have_their_methods() {
     assert!(failure.is_some());
 }
 
+/// A string that's never freed, as a literal is, has its text kept apart from those of strings that
+/// can be, read once and found again after: a free has nothing to forget while only such texts
+/// are held. A string that can be freed has its text forgotten when it is.
+#[test]
+fn a_never_freed_strings_text_is_kept_apart_from_those_a_free_forgets() {
+    let str = Rc::new(Element::Str);
+    let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
+    start(tables, crate::Inputs::default());
+    let string = |text: &str| with(|state| heap::text_address(state, text));
+    let read = |at: i64| with(|state| Some(heap::read_block(state, at.cast_unsigned()))).unwrap();
+    let message = "NewUser.age breaks its `where` rule";
+    let literal = string(message);
+    heap::constant_kept(literal);
+    let (first, again) = (read(literal), read(literal));
+    assert_eq!(first, Value::str(message));
+    let (Value::Str(first), Value::Str(again)) = (first, again) else { panic!("not strings") };
+    assert!(Rc::ptr_eq(&first, &again), "read again, its text is made anew");
+    with(|state| {
+        assert!(state.heap.texts.borrow().is_empty(), "a literal's text is among those a free forgets");
+    });
+    let made = string("a string made as the program runs, long enough for a block of its own");
+    assert_eq!(
+        read(made),
+        Value::str("a string made as the program runs, long enough for a block of its own")
+    );
+    with(|state| assert_eq!(state.heap.texts.borrow().len(), 1));
+    heap::free(made);
+    with(|state| assert!(state.heap.texts.borrow().is_empty(), "a freed string's text is kept"));
+    assert_eq!(read(literal), Value::str(message));
+    let (_, failure, _) = finish();
+    assert!(failure.is_none(), "{failure:?}");
+}
+
 /// A task's mark is its own number's until the marks have come round, which is 16 million tasks on
 /// one thread. After that a task whose number's mark is held by one still alive takes the next
 /// that's free, so two tasks alive on a thread never share a mark: a long task's end finds its
@@ -212,4 +242,67 @@ fn a_task_never_takes_the_mark_of_one_still_alive_on_its_thread() {
     assert_eq!(number_to_mark(round + 7, three), round + 10);
     // One whose own mark is free keeps it.
     assert_eq!(number_to_mark(round + 20, alive), round + 20);
+}
+
+/// A `Table` laid out with each slot's tag (#2424) crosses to its block and back with each slot's
+/// own, 0 for one taken out, and an `Id` finds its item only under its slot's tag.
+#[test]
+fn a_table_s_slots_keep_their_own_tags_crossing_to_a_block_and_back() {
+    use crate::value::{Id, Slot, Table};
+    let fields = vec![
+        (Rc::from("items"), Element::List(Rc::new(Element::Int))),
+        (Rc::from("slots"), Element::List(Rc::new(Element::Int))),
+        (Rc::from("live"), Element::Int),
+        (Rc::from("free_from"), Element::Int),
+    ];
+    let layout = Element::Struct { name: Rc::from("Table[int]"), fields };
+    let tables = Tables {
+        shapes: vec![Rc::new(layout), Rc::new(Element::Str)],
+        elements: vec![Rc::new(Element::Int)],
+        str_shape: 1,
+        ..Tables::default()
+    };
+    start(tables, crate::Inputs::default());
+    let tags = [crate::value::new_tag(), crate::value::new_tag()];
+    let slots = vec![
+        Slot { tag: tags[0], value: Some(Value::Int(10)) },
+        Slot { tag: 0, value: None },
+        Slot { tag: tags[1], value: Some(Value::Int(30)) },
+    ];
+    let original = Table::new(slots);
+    let value = with(|state| Some(state.push(Value::Table(Rc::new(original.clone()))))).unwrap();
+    let block = heap::from_value(value, 0, 0, 0);
+    assert_ne!(block, 0);
+    let Value::Table(back) = temp(heap::to_value(block)) else { panic!("not a Table") };
+    assert_eq!(*back, original);
+    assert_eq!(back.slots, original.slots, "each slot's tag came back too");
+    assert_eq!(back.get(Id::new(2, 0, tags[1])), Some(&Value::Int(30)));
+    assert_eq!(back.get(Id::new(2, 0, tags[0])), None, "the same slot under another tag");
+    assert_eq!(back.get(Id::new(1, 0, 0)), None, "a slot taken out finds nothing");
+    let ids: Vec<u64> = back.entries().map(|(id, _)| id.tag).collect();
+    assert_eq!(ids, vec![tags[0], tags[1]]);
+    finish();
+}
+
+/// `fennec_tag_count` gives the place of the count `fennec_new_tag` takes from, which never moves,
+/// so native code taking tags from it and the runtime never give the same one.
+#[test]
+fn the_tag_count_is_where_new_tag_takes_from_and_stays_there() {
+    let at = heap::tag_count();
+    assert_ne!(at, 0);
+    let first = heap::new_tag();
+    let second = heap::new_tag();
+    assert!(second > first);
+    assert_eq!(heap::tag_count(), at);
+}
+
+/// `fennec_tag_run` gives each thread a place of its own for its run of tags, which stays put.
+#[test]
+fn each_thread_s_run_of_tags_has_a_place_of_its_own_that_stays_put() {
+    let here = heap::tag_run();
+    assert_ne!(here, 0);
+    assert_eq!(heap::tag_run(), here);
+    let there = std::thread::spawn(|| heap::tag_run()).join().unwrap_or(0);
+    assert_ne!(there, 0);
+    assert_ne!(there, here);
 }

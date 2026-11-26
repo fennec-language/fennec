@@ -15,7 +15,7 @@ def main(stdout: Stdout):
     mut stats = Stats(level=1)
     stats.level += 2
     stats.speed = 0.5
-    mut player = Player(name="Kit", stats=stats).expect("the name isn't empty")
+    mut player = Player(name="Kit", stats=stats)
     player.rise()
     player.stats.level -= 1
     player.name = "Ash"

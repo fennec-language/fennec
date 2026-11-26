@@ -208,7 +208,7 @@ fn a_never_freed_strings_text_is_kept_apart_from_those_a_free_forgets() {
     let (Value::Str(first), Value::Str(again)) = (first, again) else { panic!("not strings") };
     assert!(Rc::ptr_eq(&first, &again), "read again, its text is made anew");
     with(|state| {
-        assert!(state.heap.texts.borrow().is_empty(), "a literal's text is among those a free forgets")
+        assert!(state.heap.texts.borrow().is_empty(), "a literal's text is among those a free forgets");
     });
     let made = string("a string made as the program runs, long enough for a block of its own");
     assert_eq!(

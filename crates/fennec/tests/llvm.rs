@@ -2663,12 +2663,12 @@ fn prints_built(name: &str, source: &str, wanted: &str, checking_too: bool) -> s
     let output = output.to_string_lossy().into_owned();
     let ways = [(&["--llvm"][..], false), (&["--llvm", "--release"][..], false), (&["--llvm"][..], true)];
     for (how, checking) in ways.into_iter().filter(|(_, checking)| checking_too || !checking) {
-        let mut build = crate::executables::fennec_command();
-        build.arg("build").args(how).args([program.as_str(), "-o", &output]).env("FENNEC_HOME", &dir);
+        let mut command = crate::executables::fennec_command();
+        command.arg("build").args(how).args([program.as_str(), "-o", &output]).env("FENNEC_HOME", &dir);
         if checking {
-            build.env("FENNEC_CHECK_PROOFS", "1");
+            command.env("FENNEC_CHECK_PROOFS", "1");
         }
-        let built = build.output_before(FENNEC_DEADLINE)?;
+        let built = command.output_before(FENNEC_DEADLINE)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&output).output_within()?;
         assert_eq!(
@@ -4041,12 +4041,12 @@ fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::
         let output = executable.to_string_lossy().into_owned();
         let ways = [(&["--llvm"][..], false), (&["--llvm", "--release"][..], false), (&["--llvm"][..], true)];
         for (how, checking) in ways {
-            let mut build = crate::executables::fennec_command();
-            build.arg("build").args(how).args([program.as_str(), "-o", &output]).env("FENNEC_HOME", &dir);
+            let mut command = crate::executables::fennec_command();
+            command.arg("build").args(how).args([program.as_str(), "-o", &output]).env("FENNEC_HOME", &dir);
             if checking {
-                build.env("FENNEC_CHECK_PROOFS", "1");
+                command.env("FENNEC_CHECK_PROOFS", "1");
             }
-            let built = build.output_before(FENNEC_DEADLINE)?;
+            let built = command.output_before(FENNEC_DEADLINE)?;
             assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
             for threads in ["1", "4"] {
                 let ran = Command::new(&executable)

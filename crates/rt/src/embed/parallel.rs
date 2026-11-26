@@ -1298,24 +1298,30 @@ mod tests {
     /// `set_worker_setup` in the runtime's sources is one of those, or where it's defined.
     #[test]
     fn only_a_program_and_the_shared_test_setup_set_workers_up() {
-        fn calls_in(folder: &std::path::Path, found: &mut Vec<(String, usize)>) {
+        // Each file is named by its path from `src`, its parts joined by `/`, however the system
+        // writes paths: Windows gave them whole, with `\\`, and none matched (#2546's follow-up).
+        fn calls_in(sources: &std::path::Path, folder: &std::path::Path, found: &mut Vec<(String, usize)>) {
             for entry in std::fs::read_dir(folder).expect("the runtime's sources").flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    calls_in(&path, found);
+                    calls_in(sources, &path, found);
                 } else if path.extension().is_some_and(|extension| extension == "rs") {
                     let source = std::fs::read_to_string(&path).expect("a source file");
                     let calls = source.matches(["set_worker", "_setup("].concat().as_str()).count();
                     if calls > 0 {
-                        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/");
-                        let name = path.to_string_lossy().trim_start_matches(root).replace('\\', "/");
-                        found.push((name, calls));
+                        let inside = path.strip_prefix(sources).expect("a file under the sources");
+                        let parts: Vec<String> = inside
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                            .collect();
+                        found.push((parts.join("/"), calls));
                     }
                 }
             }
         }
         let mut found = Vec::new();
-        calls_in(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")), &mut found);
+        let sources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        calls_in(&sources, &sources, &mut found);
         found.sort();
         let wanted = [
             // A program's own setup, given as it starts.

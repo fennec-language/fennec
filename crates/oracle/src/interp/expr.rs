@@ -667,7 +667,7 @@ impl Interp {
                 match table.find(id).and_then(|at| table.slots.get_mut(at)).and_then(|slot| slot.item.take())
                 {
                     Some(item) => Ok(item),
-                    None => crash(table.missing(id), span),
+                    None => crash(crate::value::MISSING, span),
                 }
             }
             (object, at) => unsupported(format!("indexing a {} with a {}", object.kind(), at.kind())),

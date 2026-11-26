@@ -7651,7 +7651,8 @@ def main(stdout: Stdout):
 
 /// Numbers written out and joined by arithmetic, where a sized number goes, are worked out in that
 /// size: `16.0 / 9.0` as an `f32` is `f32` 16 over `f32` 9, rounded to 32 bits, not the `float`
-/// quotient rounded after. Beside a sized number, in a list of them and negated, too.
+/// quotient rounded after. Beside a sized number, in a list of them and negated, too, and on a
+/// type's own operator's right, in `min` and `max` beside an `f32` and after `else`.
 #[test]
 fn sums_of_literals_are_worked_out_in_the_size_they_go_into() -> std::io::Result<()> {
     if !ready() {
@@ -7659,8 +7660,17 @@ fn sums_of_literals_are_worked_out_in_the_size_they_go_into() -> std::io::Result
     }
     let printed = printed_by(
         "literal_sums_sized",
-        "def scaled(by: f32) -> f32:
+        "struct Velocity:
+    x: f32 = 0.0
+
+    def *(self, scale: f32) -> Velocity:
+        return Velocity(x=self.x * scale)
+
+def scaled(by: f32) -> f32:
     return by * (1.0 + 0.5)
+
+def picked(found: f32?) -> f32:
+    return found else 16.0 / 9.0
 
 def main(stdout: Stdout):
     aspect: f32 = 16.0 / 9.0
@@ -7671,9 +7681,15 @@ def main(stdout: Stdout):
     stdout.print(aspect, back, level, low, scaled(2.0 ** 3.0 - 1.0), aspect * (1.0 / 3.0))
     sized: list[f32] = [16.0 / 9.0, 0.5 - 0.25]
     stdout.print(sized, 16.0 / 9.0)
+    speed: f32 = 0.1
+    fast = Velocity(x=1.5) * (1.0 / 3.0)
+    stdout.print(fast.x, max(speed, 1.0 / 3.0), min(-(0.5 + 0.25), speed), picked(None))
 ",
     )?;
-    assert_eq!(printed, "1.7777778 -7.0 249 -33 10.5 0.5925926\n[1.7777778, 0.25] 1.7777777777777777\n");
+    assert_eq!(
+        printed,
+        "1.7777778 -7.0 249 -33 10.5 0.5925926\n[1.7777778, 0.25] 1.7777777777777777\n0.5 0.33333334 -0.75 1.7777778\n"
+    );
     Ok(())
 }
 

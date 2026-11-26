@@ -3663,6 +3663,35 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
     );
 }
 
+/// Numbers written out and joined by arithmetic, where an `f32` goes, are worked out in `f32`, as
+/// compiled code works them out (`llvm::sums_of_literals_are_worked_out_in_the_size_they_go_into`).
+#[test]
+fn sums_of_literals_are_worked_out_in_the_size_they_go_into() {
+    prints(
+        "
+        struct Velocity:
+            x: f32 = 0.0
+
+            def *(self, scale: f32) -> Velocity:
+                return Velocity(x=self.x * scale)
+
+        def picked(found: f32?) -> f32:
+            return found else 16.0 / 9.0
+
+        def main(stdout: Stdout):
+            aspect: f32 = 16.0 / 9.0
+            mut level: u8 = 200 + 55
+            level -= 2 * 3
+            sized: list[f32] = [16.0 / 9.0, 0.5 - 0.25]
+            speed: f32 = 0.1
+            fast = Velocity(x=1.5) * (1.0 / 3.0)
+            stdout.print(aspect, level, sized, 16.0 / 9.0, aspect * (1.0 / 3.0))
+            stdout.print(fast.x, max(speed, 1.0 / 3.0), min(-(0.5 + 0.25), speed), picked(None))
+        ",
+        "1.7777778 249 [1.7777778, 0.25] 1.7777777777777777 0.5925926\n0.5 0.33333334 -0.75 1.7777778\n",
+    );
+}
+
 /// `std.math`'s `sqrt`, `sin`, `cos` and `acos` take an `f32` and give one, computed in `f32` by
 /// `libm`'s own, the same bits everywhere, and `abs` of an `f32` is one. Given a `float`, each is
 /// what it was.

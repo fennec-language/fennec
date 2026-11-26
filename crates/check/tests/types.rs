@@ -194,7 +194,8 @@ fn literals_take_the_size_they_go_into() {
 }
 
 /// Numbers written out and joined by arithmetic take the size they go into, as one alone does:
-/// `16.0 / 9.0` where an `f32` goes is worked out in `f32`, wherever it goes and however deep, and
+/// `16.0 / 9.0` where an `f32` goes is worked out in `f32`, wherever it goes and however deep, on a
+/// type's own operator's right, beside a sized number in `min` and `max` and after `else`, and
 /// each number is checked to fit, beside a sized number too. A sum mixing a float with a whole
 /// number is refused as before, and one with a name in it takes its size from the name.
 #[test]
@@ -212,6 +213,17 @@ fn sums_of_literals_take_the_size_they_go_into() {
             stdout.print(aspect, back, level, low, scaled(2.0 ** 3.0 - 1.0), aspect * (1.0 / 3.0))
             sized: list[f32] = [16.0 / 9.0, 0.5 - 0.25]
             stdout.print(sized)
+
+        struct Velocity:
+            x: f32 = 0.0
+
+            def *(self, scale: f32) -> Velocity:
+                return Velocity(x=self.x * scale)
+
+        def beside(stdout: Stdout, speed: f32, found: f32?):
+            fast = Velocity(x=1.5) * (1.0 / 3.0)
+            picked: f32 = found else 16.0 / 9.0
+            stdout.print(fast.x, max(speed, 1.0 / 3.0), min(-(0.5 + 0.25), speed), picked)
 
         def refused(stdout: Stdout):
             mixed: f32 = 16.0 / 9

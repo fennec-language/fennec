@@ -1374,7 +1374,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         });
         reads.insert((at, index), id);
     }
-    known.versioned = find_versioned_loops(function, &reads, &counted_by, (&ways_in, &back));
+    known.versioned = find_versioned_loops(function, &reads, &counted_by, &ways_in, &back);
     known.ranged_reads = reads;
     known.range_scans = scans;
 }
@@ -1397,7 +1397,8 @@ fn find_versioned_loops(
     function: &Function,
     reads: &HashMap<(usize, usize), usize>,
     counted_by: &HashMap<(usize, usize), fennec_ir::Count>,
-    (ways_in, back): (&HashMap<usize, Vec<usize>>, &HashSet<(usize, usize)>),
+    ways_in: &HashMap<usize, Vec<usize>>,
+    back: &HashSet<(usize, usize)>,
 ) -> Vec<Versioned> {
     let mut by_count: BTreeMap<usize, (fennec_ir::Count, BTreeSet<usize>)> = BTreeMap::new();
     let mut places: Vec<(&(usize, usize), &usize)> = reads.iter().collect();

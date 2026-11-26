@@ -5745,18 +5745,7 @@ test \"the word isn't broken\":\n    assert word() != \"broken\"\n"
     let app = dir.join("app");
     let manifest = "[dependencies]\nfirst = { path = \"../first\" }\n";
     write_kit(&app, "app", manifest, &[("main.fen", &main(""))]).unwrap();
-    let ran = || {
-        crate::executables::fennec_command()
-            .arg("run")
-            .current_dir(&app)
-            .env("FENNEC_HOME", &home)
-            .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
-            .env_remove("FENNEC_NO_DAEMON")
-            .env_remove("FENNEC_NO_CACHE")
-            .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
-            .output()
-            .unwrap()
-    };
+    let ran = || run_held(&app, &home, &[]).unwrap();
     let first = ran();
     let lint = text(&first.stderr);
     assert!(lint.contains("short-name"), "{lint}");
@@ -5836,6 +5825,8 @@ fn run_held(dir: &Path, home: &Path, args: &[&str]) -> std::io::Result<Output> {
         .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
         .env_remove("FENNEC_NO_DAEMON")
         .env_remove("FENNEC_NO_CACHE")
+        // Under CI, a command does its work itself, with no daemon (`daemon::served`).
+        .env_remove("CI")
         .env("FENNEC_DAEMONS", crate::executables::daemons_of(home))
         .output()
 }

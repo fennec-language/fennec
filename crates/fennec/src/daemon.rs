@@ -517,6 +517,8 @@ mod unix {
     pub(super) fn serve(home: &Path) -> ExitCode {
         // Its builds go to processes of their own, whose memory goes when they end.
         crate::child::serving(home);
+        // What each kit's runs found is held, for runs of the same files after.
+        crate::held::hold();
         // Its owner is whom the socket's folder has to belong to.
         let _ = std::fs::create_dir_all(home);
         let Some(socket) = socket_path(home, true) else { return ExitCode::FAILURE };
@@ -807,6 +809,8 @@ mod unix {
                         // before loading, are let go of as the command's own process would, but
                         // only once they're found: they're found in this folder.
                         crate::lint::forget_errors_found();
+                        // What a run found is held once all of it is found, the lint included.
+                        crate::held::done();
                         code_of(code)
                     };
                     std::thread::Builder::new()
@@ -967,7 +971,8 @@ mod unix {
                     },
                     megabytes(Cache::new(&state.home).size()),
                     megabytes(Cache::cap()),
-                ) + &crate::kept::status().unwrap_or_default(),
+                ) + &crate::kept::status().unwrap_or_default()
+                    + &crate::held::status().unwrap_or_default(),
                 ..Outcome::default()
             },
             (Some("changes"), Some(path)) => {

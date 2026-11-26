@@ -21855,6 +21855,65 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A request line is three parts with a space between each, a method, a target and HTTP/1.1 or
+/// HTTP/1.0, and anything else is refused with a 400 before it's taken apart: a space in the
+/// target, a target missing, a space after the version, a version in lower case, a control byte in
+/// the method. A well-made line with a query, or with HTTP/1.0, is answered.
+#[test]
+fn a_request_line_of_other_than_three_parts_is_refused() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    let dir = folder("http_request_lines")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    // What the server says to `line` sent alone with `connection: close`, until it closes.
+    let answer = |line: &str| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        stream.write_all(format!("{line}\r\nconnection: close\r\n\r\n").as_bytes())?;
+        let mut heard = Vec::new();
+        stream.read_to_end(&mut heard)?;
+        Ok(String::from_utf8_lossy(&heard).into_owned())
+    };
+    let lines = [
+        "GET / x HTTP/1.1",
+        "GET  HTTP/1.1",
+        "GET / HTTP/1.1 ",
+        "GET /HTTP/1.1",
+        "GET / http/1.1",
+        "GET",
+        "G\u{1}T / HTTP/1.1",
+        "GET /a?q=1 HTTP/1.1",
+        "GET /b HTTP/1.0",
+    ];
+    let heard = lines.iter().map(|line| answer(line)).collect::<std::io::Result<Vec<_>>>()?;
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    let refused = "HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line";
+    let answered = |path: &str| format!("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{path}");
+    let mut wanted = vec![refused.to_owned(); 7];
+    wanted.extend([answered("/a"), answered("/b")]);
+    assert_eq!(heard, wanted);
+    Ok(())
+}
+
 /// What a server says to `asked` on one connection, sent whole with the sending side then
 /// closed, built with the runtime `threads` names: `"1"` for the one with threads, `"0"` for the
 /// plain one. A reset after what was said shows as `[reset]`.

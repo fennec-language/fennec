@@ -1,0 +1,5 @@
+46
+15
+exit 1
+error: index 3 is out of range for length 3
+--> n4_break_block_other_list.fen:8:26

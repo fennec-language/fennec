@@ -1,0 +1,6 @@
+d2 e4 | c0 d2 e4 | 
+d2 | c0 (-1)| 
+d2 e4 | !
+exit 1
+error: index 5 is out of range for length 5
+--> n6_ways_out_nested.fen:14:21

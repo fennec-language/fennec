@@ -5061,7 +5061,7 @@ fn the_bucket_review_programs_print_what_they_always_did() -> std::io::Result<()
         .collect::<std::io::Result<_>>()?;
     programs.retain(|path| path.extension().is_some_and(|extension| extension == "fen"));
     programs.sort();
-    assert_eq!(programs.len(), 67);
+    assert_eq!(programs.len(), 80);
     let dir = folder("bucket_review")?;
     let executable = dir.join("program");
     for program in &programs {

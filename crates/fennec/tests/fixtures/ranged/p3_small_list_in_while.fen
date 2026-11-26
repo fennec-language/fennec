@@ -1,0 +1,25 @@
+# A bucket loop left at its first item, inside a `while` that goes round a short bucket list many
+# times: the check before the bucket loop is made each time round.
+def firsts(starts: list[int], order: list[int], rounds: int) -> int:
+    mut total = 0
+    mut cell = 0
+    mut round = 0
+    while round < rounds:
+        for at in range(starts[cell], starts[cell + 1]):
+            if order[at] >= 0:
+                total += 1
+                break
+        cell += 1
+        if cell == len(starts) - 1:
+            cell = 0
+            round += 1
+    return total
+
+def main(stdout: Stdout):
+    mut starts = list[int]()
+    mut order = list[int]()
+    for cell in range(60):
+        starts.append(cell)
+        order.append(cell)
+    starts.append(60)
+    stdout.print(firsts(starts, order=order, rounds=20000))

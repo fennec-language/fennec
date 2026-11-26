@@ -1,0 +1,6 @@
+406
+15
+303
+exit 1
+error: index 5 is out of range for length 5
+--> n1_break_bad_lists.fen:7:16

@@ -367,11 +367,10 @@ fn patterns_written_in_the_program_are_checked() {
         in_main_after(IMPORTS, "stdout.print(Regex(r'(a'))"),
         ["this pattern isn't valid: this `(` is never closed @ r\"(a\""]
     );
-    // A pattern made while the program runs might not be valid, so making it can fail.
-    assert_eq!(
-        in_main_after(IMPORTS, "stdout.print(Regex('(' + 'a').search('a'))"),
-        ["this is the result of something that can fail @ Regex(\"(\" + \"a\")"]
-    );
+    // A pattern made while the program runs is checked as it's made, and one that isn't valid
+    // stops the program, as any value that breaks a `where` rule does.
+    let empty: [&str; 0] = [];
+    assert_eq!(in_main_after(IMPORTS, "stdout.print(Regex('(' + 'a').search('a'))"), empty);
 }
 
 #[test]

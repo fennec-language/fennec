@@ -1219,6 +1219,41 @@ fn flat_messages_replay_as_they_ran_on_one_thread_and_four() -> std::io::Result<
     Ok(())
 }
 
+/// A listener of a channel to `.Every`, two messages behind before its task starts, whose first
+/// take crashes its task, which `main` handles.
+const FALLEN_BEHIND: &str = "from std.concurrent import Closed, Crashed, Inbox, channel
+
+# Takes every number from an inbox that has fallen behind its channel, so its first take crashes.
+def read(hits: Inbox[int], stdout: Stdout):
+    for hit in hits:
+        stdout.print(\"took\", hit)
+
+def reading(hits: Inbox[int], stdout: Stdout) fails Crashed:
+    with launch(() => read(hits, stdout)) as task:
+        pass
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=2, to=.Every) as hits:
+        behind = hits.inbox()
+        for hit in range(1, 5):
+            hits.send(hit)?
+        reading(behind, stdout) except Crashed():
+            stdout.print(\"behind\")
+    stdout.print(\"over\")
+";
+
+/// A listener that fell behind a channel to `.Every` crashes its task at its next take, and a
+/// replay crashes it there too. The take wasn't recorded, so every replay stopped at it, asking
+/// for a receive where its recording had the channel's close: the nightly's determinism run found
+/// one to three random programs like this every night from 2026-11-21.
+#[test]
+fn a_listener_that_fell_behind_replays_its_crash() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("fallen-behind", FALLEN_BEHIND, 2, 0)
+}
+
 /// `Table`s copied every way a run can copy one replay as they ran (#2424): every item added takes a
 /// tag of its own from one count, which a replay has to hand out the same way. Recorded on 4
 /// threads and replayed on 1, and the other way.

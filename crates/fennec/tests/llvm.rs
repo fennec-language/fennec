@@ -6435,6 +6435,34 @@ def main(stdout: Stdout):
         stdout.print(held)
 "#;
 
+/// A `list[int]` passed with `ref` where a `list[int?]` is changed is refused by the checker,
+/// saying what the function could put in, where it once checked and stopped the build at the IR
+/// validator, with "the IR isn't sound" (#2596).
+#[test]
+fn a_ref_argument_that_holds_less_is_refused_before_the_ir() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("ref-holds-less")?;
+    let program = dir.join("ref_holds_less.fen");
+    std::fs::write(
+        &program,
+        "def add_missing(ref items: list[int?]):\n    items.append(None)\n    return\n\n\
+         def main(stdout: Stdout):\n    mut numbers = [1, 2]\n    add_missing(ref numbers)\n    \
+         total = numbers[2] + 1\n    stdout.print(numbers, total)\n    return\n",
+    )?;
+    let built = fennec(
+        &["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("ref_holds_less").to_string_lossy()],
+        &dir,
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    let said = String::from_utf8_lossy(&built.stderr).into_owned();
+    assert!(!built.status.success(), "it built");
+    assert!(said.contains("so it could put in what this, a list[int], can't hold"), "{said}");
+    assert!(!said.contains("the IR isn't sound"), "{said}");
+    Ok(())
+}
+
 /// `ref unit = world.units[actor]` is the item where it is: a change through it is a change there,
 /// read back through the list and through the name, its index worked out once at the `ref`, and
 /// passed on as `ref`. It's declared again each time round a loop.

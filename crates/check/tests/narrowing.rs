@@ -622,6 +622,60 @@ fn what_a_mut_parameter_can_make_none_is_checked_again() {
     assert_eq!(problems(keeps_what_it_knows), Vec::<String>::new());
 }
 
+/// What's passed with `ref` has to hold all its parameter does, since the function can put in
+/// anything the parameter holds (#2596): a `list[int]` where a `list[int?]` is changed, a `Crate`
+/// where a `Crate | Heap` is, and a field or an item that holds less. One declared as the whole
+/// type and narrowed where it's passed, the same type, and a generic's are all fine.
+#[test]
+fn a_ref_argument_has_to_hold_all_its_parameter_does() {
+    let program = "
+        struct Crate:
+            items: list[int]
+
+        struct Heap:
+            held: int
+
+        def add_missing(ref items: list[int?]):
+            items.append(None)
+
+        def swapped(ref shape: Crate | Heap):
+            shape = Heap(held=1)
+
+        def pushed[T](ref items: list[T], item: T):
+            items.append(item)
+
+        def refused(made: Crate):
+            mut numbers = [1, 2]
+            add_missing(ref numbers)
+            mut crate = made
+            swapped(ref crate)
+            add_missing(ref crate.items)
+            mut lists = [[1]]
+            add_missing(ref lists[0])
+
+        def fine(made: Crate | Heap, given: int?):
+            mut maybe: list[int?] = [1]
+            add_missing(ref maybe)
+            mut shape = made
+            if shape is Crate:
+                swapped(ref shape)
+            mut numbers = [1]
+            pushed(ref numbers, 2)
+    ";
+    let list =
+        "`add_missing` changes `items`, a list[int?], so it could put in what this, a list[int], can't hold";
+    assert_eq!(
+        problems(program),
+        [
+            format!("{list} @ numbers"),
+            "`swapped` changes `shape`, a Crate | Heap, so it could put in what this, a Crate, can't hold @ crate"
+                .to_owned(),
+            format!("{list} @ crate.items"),
+            format!("{list} @ lists[0]"),
+        ]
+    );
+}
+
 /// A union known to hold one member, given by `ref` where the whole union is taken, can come back
 /// holding another, so it's known as the union again, however it was narrowed: by `is`, by what
 /// it was given, by what's left after one member leaves, in a `match` case or as a `for ref`

@@ -6588,13 +6588,27 @@ fn a_daemon_build_knows_its_objects_till_a_cleanup_takes_any() {
 /// `count`, with a test of it. The rule for using a kept analysis again is told to leave the
 /// parameters' ranges out, and the in-build check is off, so `picked`'s analysis kept for a positive
 /// count is used for a negative one, as a release compiler would use a wrong one the rule let
-/// through. Gives back the exit code, what it printed and what it said.
+/// through. Gives back the exit code, what it printed and what it said. It never checks proofs, even
+/// in the nightly run that checks them everywhere: a build checking them stops at the wrong range
+/// it plants, before the check after the build these tests are about can find it.
 #[cfg(unix)]
 fn with_picked(
     kit: &Path,
     home: &Path,
     args: &[&str],
     count: i32,
+) -> std::io::Result<(Option<i32>, String, String)> {
+    with_picked_checking(kit, home, args, count, false)
+}
+
+/// [`with_picked`], and where `checking`, checking every proof.
+#[cfg(unix)]
+fn with_picked_checking(
+    kit: &Path,
+    home: &Path,
+    args: &[&str],
+    count: i32,
+    checking: bool,
 ) -> std::io::Result<(Option<i32>, String, String)> {
     let source = format!(
         "def picked(count: int) -> int:\n    return [5, 6, 7, 8, 9][count]\n\n\
@@ -6607,6 +6621,11 @@ fn with_picked(
     command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "0");
     command.env("FENNEC_KEPT_ANALYSIS_RULE_OFF", "ranges").env_remove("CI").env_remove("FENNEC_NO_DAEMON");
     command.env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
+    if checking {
+        command.env("FENNEC_CHECK_PROOFS", "1");
+    } else {
+        command.env_remove("FENNEC_CHECK_PROOFS");
+    }
     let done = command.output()?;
     Ok((done.status.code(), text(&done.stdout), text(&done.stderr)))
 }
@@ -6686,6 +6705,25 @@ fn tests_built_with_a_kept_analysis_found_wrong_run_again() {
     assert_eq!(code, Some(0), "{printed}{said}");
     assert!(said.contains(KEPT_ANALYSIS_NOTE), "{said}");
     assert!(printed.contains("1 passed") && !printed.contains("1 unchanged"), "{printed}");
+}
+
+/// A kept analysis found wrong breaks a proof in a build that checks them: `picked`'s range, kept
+/// for 2 and planted for -2, stops its test at "a parameter is in the range every call gives it"
+/// rather than reading outside the list.
+#[cfg(unix)]
+#[test]
+fn a_kept_analysis_found_wrong_breaks_a_proof_in_a_build_checking_them() {
+    let (_folder, kit, home) = small_kit("kept-analysis-wrong-proofs").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let (code, printed, said) = with_picked_checking(&kit, &home, &["test", "."], 2, true).unwrap();
+    assert_eq!(code, Some(0), "{printed}{said}");
+    let (code, printed, said) = with_picked_checking(&kit, &home, &["test", "."], -2, true).unwrap();
+    assert_eq!(code, Some(1), "{printed}{said}");
+    let broken = "proof broken: a parameter is in the range every call gives it";
+    assert!(printed.contains(broken) || said.contains(broken), "{printed}{said}");
 }
 
 /// Two builds of one kit at once through the daemon queue, so neither's output takes in the

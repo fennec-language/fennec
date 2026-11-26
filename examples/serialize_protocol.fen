@@ -11,6 +11,9 @@ struct Shown:
     def float(ref self, value: float):
         self.parts.append(str(value))
 
+    def f32(ref self, value: f32):
+        self.parts.append(str(value))
+
     def bool(ref self, value: bool):
         self.parts.append("yes" if value else "no")
 
@@ -106,6 +109,9 @@ struct Counted:
         self.total += 1
 
     def float(ref self, value: float):
+        self.total += 1
+
+    def f32(ref self, value: f32):
         self.total += 1
 
     def bool(ref self, value: bool):

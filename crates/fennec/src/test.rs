@@ -96,6 +96,10 @@ impl Options {
 /// Runs the tests a change affects before a program runs, giving back how to stop if one fails.
 /// When no file has changed since they last passed, this reads little or nothing.
 pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
+    // The build daemon holds that they passed with files the same as now.
+    if crate::held::tested(path) {
+        return None;
+    }
     // A kit whose files are as they were when all its tests passed needs nothing read at all.
     if let Some(cache) = &crate::run::cache() {
         let name = crate::run::absolute(path);
@@ -103,6 +107,7 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
             && let Some(files) = crate::verdict::kit_files(path, Some(&state))
             && crate::verdict::same_files(&state, &files)
         {
+            crate::held::note_tested(path, &files);
             return None;
         }
     }
@@ -158,6 +163,11 @@ pub(crate) fn test_here(path: &str, options: Options) -> ExitCode {
     // What its tests pass with is taken back if the build daemon finds an analysis it used wrong.
     #[cfg(unix)]
     crate::kept::built_while_keeping(crate::kept::TakenBack::Tests(crate::run::absolute(path)));
+    // What the build daemon holds of the kit's runs is found again once `fennec test` has run its
+    // tests, whatever they found.
+    if !options.before_a_run {
+        crate::held::forget(&crate::run::absolute(path));
+    }
     let results = Results::open(path, options.run != Run::Affected);
     let cached = results.cache.as_ref().map(|(cache, name)| (cache, name.as_str()));
     let state = cached.and_then(crate::verdict::last_state);

@@ -1,0 +1,4 @@
+1893
+exit 1
+error: division by zero
+--> s16_divide_in_copy.fen:5:18

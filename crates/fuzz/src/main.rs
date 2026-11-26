@@ -234,7 +234,7 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     let options = options(args)?;
     let everything = targets::TARGETS.iter().chain(std::iter::once(&targets::UTF8));
     let chosen: Vec<&Target> = if options.names.is_empty() {
-        let built = llvm::ready().is_ok();
+        let built = llvm::can_build()?;
         if !built {
             println!("{}: left out, since nothing can be built natively here", targets::NATIVE.join(", "));
         }

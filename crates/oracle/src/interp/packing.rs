@@ -30,6 +30,7 @@ impl Interp {
         match ty {
             Type::Int => out.push_str("int"),
             Type::Float => out.push_str("float"),
+            Type::Sized(fennec_check::Num::F32) => out.push_str("f32"),
             Type::Bool => out.push_str("bool"),
             Type::Str => out.push_str("str"),
             Type::Bytes => out.push_str("bytes"),
@@ -170,6 +171,7 @@ impl Interp {
         match ty {
             Type::Int => word("i"),
             Type::Float => word("f"),
+            Type::Sized(fennec_check::Num::F32) => word("g"),
             Type::Bool => word("b"),
             Type::Str => word("s"),
             Type::Bytes => word("y"),

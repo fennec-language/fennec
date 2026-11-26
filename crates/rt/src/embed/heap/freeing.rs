@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
-use super::{CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, children_into, is_text, shape_word};
+use super::{
+    CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, Taken, children_into, is_text, shape_word,
+};
 use crate::embed::dicts::Entries;
 use crate::embed::plans::{Holds, Plan};
 use crate::embed::table::Released;
@@ -68,34 +70,99 @@ fn let_go(address: i64) {
             free_waiting(state);
         }
         let address = u64::try_from(address).unwrap_or(0);
-        if !free_plain_list(state, address) {
+        if !free_taken(state, address) {
             free_block(state, address);
         }
     });
 }
 
-/// Frees a string or a list whose items hold nothing of this thread's, the most usual blocks let
-/// go of: out of the table and kept for reuse, with nothing to walk. A string's place kept in it,
-/// and the runtime's copy of its text, are forgotten, as [`free_block`] does. False, having done
-/// nothing, for any other block, which [`free_block`] frees.
-fn free_plain_list(state: &mut State, address: u64) -> bool {
+/// Frees a block of this thread's own table, taken out with one look: a string or a list whose
+/// items hold nothing of this thread's, the most usual blocks let go of, kept for reuse with
+/// nothing to walk, and any other given to the walk out of the table already, as a freed block's
+/// children are. A string's place kept in it, and the runtime's copy of its text, are forgotten,
+/// as [`free_queued`] does. False, having done nothing, for a block another thread holds, or one
+/// that isn't in this table, which [`free_block`] frees by its address.
+///
+/// A list of strings, as `split` makes, is freed here too when this thread counts every block it
+/// can reach, letting go of each string held in a block as it reads its header
+/// ([`let_go_of_texts`]). Freed as any list is, it cost `log_crunch` about 1,400 instructions a
+/// line, more than making it: what its items hold looked up by plan, item by item, through the
+/// queue every freed block takes.
+fn free_taken(state: &mut State, address: u64) -> bool {
     if crate::embed::threads::held_elsewhere(address) {
         return false;
     }
-    let (first_list, str_shape) = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
-    let Some(block) =
-        usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, first_list, str_shape))
+    let shapes = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
+    let Some((block, taken)) =
+        usize::try_from(address).ok().and_then(|at| state.heap.take_to_free(at, shapes))
     else {
         return false;
     };
-    if shape_word(&block) == Some(str_shape) {
-        state.heap.forget_place(address);
-        if !state.heap.texts.get_mut().is_empty() {
-            forget_text(state, address);
-        }
+    match taken {
+        Taken::Walked => return free_walked(state, block),
+        Taken::Texts => let_go_of_texts(state, &block),
+        Taken::Plain if shape_word(&block) == Some(shapes.1) => forget_string(state, address),
+        Taken::Plain => {}
     }
     state.heap.recycle(block);
     true
+}
+
+/// [`free_taken`], for a block that holds what has to be walked: queued, out of the table
+/// already, as a freed block's children are, and freed by the walk.
+#[inline(never)]
+fn free_walked(state: &mut State, block: Box<[u64]>) -> bool {
+    state.heap.taken.push(block);
+    free_queued(state);
+    true
+}
+
+/// Forgets a freed string's place kept in it, and the runtime's copy of its text.
+#[inline]
+fn forget_string(state: &mut State, address: u64) {
+    state.heap.forget_place(address);
+    if !state.heap.texts.get_mut().is_empty() {
+        forget_text(state, address);
+    }
+}
+
+/// Gives up the owner a freed list of strings' headers held of each string in a block, freeing
+/// each it was the last owner of: a string holds nothing, so it's out of the table and kept for
+/// reuse at once. Only for a thread that counts every block it can reach, which `release_one`
+/// finds in its own table.
+///
+/// Out of line, so `let_go`, which every free goes through, stays as small as it was: inlined, it
+/// made `let_go` save four more registers at every call, about 8 instructions a free.
+#[inline(never)]
+fn let_go_of_texts(state: &mut State, list: &[u64]) {
+    let str_shape = state.tables.str_shape;
+    for header in crate::embed::lists::items(list, 3).as_chunks::<3>().0 {
+        let Some(text) = crate::embed::text::block_of(header).filter(|text| *text != 0) else { continue };
+        match state.heap.blocks.release_one(usize::try_from(text).unwrap_or(usize::MAX)) {
+            Released::Held => {}
+            Released::Gone(block) if shape_word(&block) == Some(str_shape) => {
+                forget_string(state, text);
+                state.heap.recycle(block);
+            }
+            released => let_go_of_text_the_long_way(state, text, released),
+        }
+    }
+}
+
+/// [`let_go_of_texts`], for a header's block that isn't a string this table counts: freed, or let
+/// go of, as any block a freed one held is.
+#[cold]
+#[inline(never)]
+fn let_go_of_text_the_long_way(state: &mut State, text: u64, released: Released) {
+    if let Released::Gone(block) = released {
+        state.heap.taken.push(block);
+    } else {
+        let (mut pending, mut taken) =
+            (std::mem::take(&mut state.heap.pending), std::mem::take(&mut state.heap.taken));
+        release_child(state, text, false, &mut pending, &mut taken);
+        (state.heap.pending, state.heap.taken) = (pending, taken);
+    }
+    free_queued(state);
 }
 
 /// Frees what other threads let go of last, which waits for this one, which made it. Only a
@@ -288,10 +355,16 @@ fn is_abandoned(state: &State, block: &[u64]) -> bool {
 /// Frees a block and releases its boxed fields, freeing those with no other owner, all the
 /// way down.
 fn free_block(state: &mut State, address: u64) {
+    state.heap.pending.push(address);
+    free_queued(state);
+}
+
+/// Frees each block queued to be: those waiting in `pending`, whose last owner let them go, and
+/// those taken out already in `taken`, and what each held that had no other owner.
+fn free_queued(state: &mut State) {
     take_up_abandons(state);
     let mut pending = std::mem::take(&mut state.heap.pending);
     let mut taken = std::mem::take(&mut state.heap.taken);
-    pending.push(address);
     while let Some((address, block)) = next_to_free(state, &mut pending, &mut taken) {
         if super::is_handle_block(&block) {
             state.heap.blocks.insert(block);
@@ -861,6 +934,84 @@ mod tests {
         let other = crate::embed::lists::new(0, 1);
         crate::embed::heap::free(other);
         with(|state| assert_eq!(state.heap.live(), before, "what the other thread let go of is freed here"));
+        finish();
+    }
+
+    /// A block that isn't plain, which a free takes out and gives to the walk, is asked first, as a
+    /// plain one is, whether another thread counts it: then it waits, with all it holds, until that
+    /// thread lets go, and is freed here the next time this thread frees something.
+    #[test]
+    fn a_block_for_the_walk_another_thread_counts_waits_for_it() {
+        let me = i64::from(crate::embed::threads::take_index());
+        let elements = vec![Rc::new(Element::Int), Rc::new(Element::Str)];
+        start(Tables { elements, ..Tables::default() }, crate::Inputs::default());
+        let before = with(|state| state.heap.live());
+        let long = |at: usize| crate::value::Value::str(&format!("string {at}, long enough to need a block"));
+        let pushed = with(|state| state.push(crate::value::Value::list((0..3).map(long).collect())));
+        let texts = crate::embed::lists::from_value(pushed, 1, 0, 0);
+        crate::embed::threads::retain_shared(texts, me);
+        crate::embed::heap::free(texts);
+        with(|state| {
+            assert!(state.heap.block(texts.cast_unsigned()).is_some(), "freed while another counted it");
+            assert!(state.heap.live() >= before + 4, "its strings were let go of");
+        });
+        crate::embed::threads::release_shared(texts, me);
+        let other = crate::embed::lists::new(0, 1);
+        crate::embed::heap::free(other);
+        with(|state| assert_eq!(state.heap.live(), before, "what the other thread let go of is freed here"));
+        finish();
+    }
+
+    /// A free takes only from this thread's own table, never one behind it, which the address's
+    /// walk finds, and says what it took: a list with nothing in it is plain, but the same list as
+    /// a `shared` value's handle goes to the walk, which puts it back.
+    #[test]
+    fn a_free_takes_from_its_own_table_and_a_handle_is_never_plain() {
+        let (str_shape, first_list) = (0, 1 + crate::embed::dicts::SHAPES);
+        let shapes = (first_list, str_shape);
+        let mut heap = Heap::default();
+        let empty_list =
+            |owner: u64| vec![1, first_list | (owner << super::super::OWNER_SHIFT), 0, 0].into_boxed_slice();
+        let block = empty_list(0);
+        let at = block.as_ptr().addr();
+        heap.blocks.insert(block);
+        let taken = heap.take_to_free(at, shapes).map(|(block, taken)| (block.as_ptr().addr(), taken));
+        assert!(taken == Some((at, super::super::Taken::Plain)), "an empty list is plain");
+        let handle = empty_list(crate::embed::guarded::HANDLE_OWNER);
+        let at = handle.as_ptr().addr();
+        heap.blocks.insert(handle);
+        let taken = heap.take_to_free(at, shapes).map(|(_, taken)| taken);
+        assert!(taken == Some(super::super::Taken::Walked), "a handle was taken as plain");
+        let behind = empty_list(0);
+        let at = behind.as_ptr().addr();
+        heap.blocks.insert(behind);
+        let own = std::mem::take(&mut heap.blocks);
+        heap.behind.push((Box::new(own), 0));
+        assert!(heap.take_to_free(at, shapes).is_none(), "taken from a table behind this one");
+        assert!(heap.take_block(at).is_some(), "the walk finds it behind");
+    }
+
+    /// A string a place is kept in, which a free can't tell from the address alone, is taken out
+    /// all the same and its place forgotten: taking it as `remove` does, which says a string's
+    /// place has to be forgotten first, stopped a debug build.
+    #[test]
+    fn a_string_with_a_place_kept_in_it_is_freed_and_its_place_forgotten() {
+        let str = Rc::new(Element::Str);
+        start(
+            Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() },
+            crate::Inputs::default(),
+        );
+        let before = with(|state| state.heap.live());
+        let text = with(|state| {
+            super::super::text_address(state, "a string long enough to need a block of its own")
+        });
+        let at = usize::try_from(text).unwrap();
+        with(|state| state.heap.set_cursor(super::super::Cursor { address: at, chars: 1, bytes: 1 }));
+        crate::embed::heap::free(text);
+        with(|state| {
+            assert_eq!(state.heap.cursor().address, 0, "its place is still kept");
+            assert_eq!(state.heap.live(), before);
+        });
         finish();
     }
 

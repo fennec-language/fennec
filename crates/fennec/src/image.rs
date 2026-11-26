@@ -30,13 +30,25 @@ fn image_name(path: &str) -> String {
 /// its hash, so a run whose program is stored already never reads or decodes it: on a big kit
 /// that's 16 million instructions a run.
 pub(crate) fn kept(path: &str, cache: &Cache) -> Option<(fennec_blake3::Hash, String)> {
+    // The build daemon holds it for files the same as when it was found.
+    if let Some(held) = crate::held::image(path) {
+        return Some(held);
+    }
     let state = cache.kit_state(&name_of(path), BUILD)?;
     let files = kept_files(path, &state)?;
     if !crate::verdict::same_files(&state, &files) {
         return None;
     }
     let image = cache.written_hash("run-image", &image_name(path))?;
-    Some((image, kept_hash(path, &files, image)))
+    let kept = kept_hash(path, &files, image);
+    crate::held::note_image(path, &files, (image, kept.clone()));
+    Some((image, kept))
+}
+
+/// What the last run that kept the program at `path` noted of its files, which says which of them
+/// to read again: those whose size or changed time isn't as noted.
+pub(crate) fn noted(path: &str) -> Option<KitState> {
+    crate::run::cache()?.kit_state(&name_of(path), BUILD)
 }
 
 /// The program a kit's image holds, as `kept` found it: None if it isn't the image `kept` named
@@ -105,7 +117,12 @@ pub(crate) fn store(path: &str, cache: &Cache, files: &[KitFile], program: &Prog
     let noted = crate::verdict::with_embedded(files, program);
     fennec_build::kept("keep the kit's state", cache.store_kit_state(&name_of(path), BUILD, &noted))?;
     let state = cache.kit_state(&name_of(path), BUILD)?;
-    Some(kept_hash(path, &kept_files(path, &state)?, fennec_blake3::hash(&bytes)))
+    let files = kept_files(path, &state)?;
+    let image = fennec_blake3::hash(&bytes);
+    let kept = kept_hash(path, &files, image);
+    // The build daemon holds it for the next run of these same files, which then reads nothing.
+    crate::held::note_image(path, &files, (image, kept.clone()));
+    Some(kept)
 }
 
 /// What a kit's files are now, with what was last noted to save reading them.

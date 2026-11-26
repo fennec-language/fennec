@@ -1,0 +1,6 @@
+one 0 5
+one 1 5
+one 2 11
+exit 1
+error: index 5 is out of range for length 5
+--> b2_11.fen:7:22

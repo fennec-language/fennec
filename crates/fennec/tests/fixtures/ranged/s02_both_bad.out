@@ -1,0 +1,3 @@
+exit 1
+error: index 1 is out of range for length 1
+--> s02_both_bad.fen:7:22

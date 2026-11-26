@@ -1,0 +1,15 @@
+# A dict walked inside the loop written twice, with a way out of both loops that reads the pair
+# the walk is on.
+def scan(counts: dict[int, int], starts: list[int], order: list[int]) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        for key, count in counts.items():
+            total += 1
+            if total > value:
+                return key * 1000 + count
+    return -total
+
+def main(stdout: Stdout):
+    counts = {7: 1, 8: 2, 9: 3}
+    stdout.print(scan(counts, starts=[0, 4], order=[50, 60, 4, 80]))

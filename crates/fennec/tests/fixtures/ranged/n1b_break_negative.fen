@@ -1,0 +1,15 @@
+# As n1, a bucket list with an item below 0, and one whose buckets run backwards.
+def scan(starts: list[int], order: list[int], wanted: int) -> int:
+    mut total = 0
+    for cell in range(len(starts) - 1):
+        for at in range(starts[cell], starts[cell + 1]):
+            if order[at] == wanted:
+                total += order[at] * 100
+                break
+            total += order[at]
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(scan([3, 1, 4], order=[1, 2, 3, 4, 5], wanted=4))
+    stdout.print(scan([0, 5, 5, 5], order=[1, 2, 3, 4, 5], wanted=9))
+    stdout.print(scan([-2, 1, 4], order=[1, 2, 3, 4, 5], wanted=9))

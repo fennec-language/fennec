@@ -1,0 +1,27 @@
+# As p1, the search left by a failure passed up rather than a `return`: no block of the loop
+# goes out of it, so the check before the loop is allowed by the turns the loop could take.
+error Found:
+    at: int
+
+def want(value: int, wanted: int, at: int) fails Found:
+    if value >= wanted: fail Found(at=at)
+    return
+
+def first_at_least(starts: list[int], order: list[int], cell: int, wanted: int) fails Found:
+    for at in range(starts[cell], starts[len(starts) - 1]):
+        want(order[at], wanted=wanted, at=at)?
+    return
+
+def main(stdout: Stdout):
+    mut starts = list[int]()
+    mut order = list[int]()
+    for cell in range(20000):
+        starts.append(cell)
+        order.append(cell)
+    starts.append(20000)
+    mut found = 0
+    for round in range(5):
+        for cell in range(20000):
+            first_at_least(starts, order=order, cell=cell, wanted=cell) except why:
+                found += why.at
+    stdout.print(found)

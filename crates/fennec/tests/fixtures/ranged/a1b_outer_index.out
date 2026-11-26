@@ -1,0 +1,4 @@
+in range: 28
+exit 1
+error: index 1 is out of range for length 1
+--> a1b_outer_index.fen:9:34

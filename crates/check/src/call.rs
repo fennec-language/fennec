@@ -660,8 +660,14 @@ impl FnCx<'_> {
             return;
         }
         let (expected, actual) = (self.checker.settled(&param.ty), self.checker.settled(actual));
+        // A function that can't fail goes where one that fails does only where it's copied.
+        let could_put_in = if self.checker.takes_a_failing_function(&expected, &actual) {
+            "a function that fails, which"
+        } else {
+            "what"
+        };
         let message = format!(
-            "`{function}` changes `{}`, {}, so it could put in what this, {}, can't hold",
+            "`{function}` changes `{}`, {}, so it could put in {could_put_in} this, {}, can't hold",
             param.name,
             a(&expected),
             a(&actual)

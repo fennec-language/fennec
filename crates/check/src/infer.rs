@@ -180,6 +180,30 @@ impl Checker {
         }
     }
 
+    /// Whether `expected` holds, somewhere `actual` holds a function that can't fail, a function
+    /// that can: what's changed with `ref` could then be given one that fails.
+    pub(crate) fn takes_a_failing_function(&mut self, expected: &Type, actual: &Type) -> bool {
+        let (expected, actual) = (self.settled(expected), self.settled(actual));
+        match (&expected, &actual) {
+            (Type::Arrow(_, wanted), Type::Arrow(_, given)) => {
+                let (wanted, given) = (self.settled(wanted), self.settled(given));
+                matches!(wanted, Type::Result(..)) && !matches!(given, Type::Result(..))
+            }
+            (Type::List(a), Type::List(b))
+            | (Type::Buffer(a), Type::Buffer(b))
+            | (Type::Set(a), Type::Set(b))
+            | (Type::Optional(a), Type::Optional(b))
+            | (Type::Array(a, _), Type::Array(b, _)) => self.takes_a_failing_function(a, b),
+            (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
+                self.takes_a_failing_function(k1, k2) || self.takes_a_failing_function(v1, v2)
+            }
+            (Type::Tuple(a), Type::Tuple(b)) | (Type::Generic(_, a), Type::Generic(_, b)) => {
+                a.iter().zip(b).any(|(a, b)| self.takes_a_failing_function(a, b))
+            }
+            _ => false,
+        }
+    }
+
     /// Whether the function `key` can go where a `(params) -> returns` is wanted. A generic
     /// one, or one with a `mut` parameter, can't: a call through the type can't say which types
     /// it stands for or pass anything `mut`.

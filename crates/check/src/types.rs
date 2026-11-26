@@ -652,7 +652,13 @@ impl fmt::Display for Type {
             Type::Errors(names) => f.write_str(&names.join(" | ")),
             Type::Arrow(params, ret) => {
                 let params: Vec<String> = params.iter().map(ToString::to_string).collect();
-                write!(f, "({}) -> {ret}", params.join(", "))
+                match ret.as_ref() {
+                    // A function type that can fail reads as it's written, `() -> int fails Broken`.
+                    Type::Result(value, error) => {
+                        write!(f, "({}) -> {value} fails {error}", params.join(", "))
+                    }
+                    _ => write!(f, "({}) -> {ret}", params.join(", ")),
+                }
             }
             Type::Id(item) => write!(f, "Id[{item}]"),
             Type::Generic(name, items) if name == crate::lend::WITH && items.len() == 1 => {

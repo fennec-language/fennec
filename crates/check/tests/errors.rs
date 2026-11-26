@@ -623,9 +623,21 @@ fn a_function_that_cant_fail_goes_where_one_that_fails_does() {
         problems(&refused),
         [
             "this can't fail, so `except` has nothing to handle @ run_it(() => 7)",
-            "`make` should be a () -> result of int, but this is a function @ other",
-            "`make` should be a () -> result of int, but this is a function @ words",
+            "`make` should be a () -> int fails Broken, but this is a function @ other",
+            "`make` should be a () -> int fails Broken, but this is a function @ words",
         ]
+    );
+    // Only where it's copied: a list of them changed through `ref` could be given one that fails.
+    let changed = format!(
+        "{errors}def add_failing(ref makers: list[() -> int fails Broken]):\n    \
+         makers.append(() => 1)\n    return\n\n\
+         def main(stdout: Stdout):\n    mut makers: list[() -> int] = [() => 2]\n    \
+         add_failing(ref makers)\n    stdout.print(len(makers))\n"
+    );
+    assert_eq!(
+        problems(&changed),
+        ["`add_failing` changes `makers`, a list[() -> int fails Broken], so it could put in a function \
+             that fails, which this, a list[() -> int], can't hold @ makers"]
     );
 }
 

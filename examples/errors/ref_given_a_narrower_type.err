@@ -1,0 +1,7 @@
+error: `add_missing` changes `items`, a list[int?], so it could put in what this, a list[int], can't hold
+ --> examples/errors/ref_given_a_narrower_type.fen:7:21
+  |
+7 |     add_missing(ref numbers)
+  |                     ^^^^^^^
+  |
+  = help: what's passed with `ref` has to be exactly what the parameter is: make this a list[int?]

@@ -799,12 +799,13 @@ fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
     <&mut [u64; N]>::try_from(block).map(|words| *words = [0; N]).is_ok()
 }
 
-/// What [`Heap::take_plain_list`] took: a block that holds nothing, or a list of strings' headers
-/// whose strings may hold blocks, for the caller to let go of.
+/// What [`Heap::take_to_free`] took: a block that holds nothing, a list of strings' headers whose
+/// strings may hold blocks, for the caller to let go of, or any other block, for the walk.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Taken {
     Plain,
     Texts,
+    Walked,
 }
 
 /// Whether every item of a list of strings' headers is inline, holding its text in itself: then
@@ -1525,28 +1526,31 @@ impl Heap {
         usize::try_from(address).is_ok_and(|at| self.lent.as_ref().is_some_and(|lent| lent.get(at).is_some()))
     }
 
-    /// Takes a list out of this thread's own table, not one behind it, if its items hold nothing and
-    /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
-    /// `None`, having taken nothing, for any other block.
+    /// Takes a block whose last owner let it go out of this thread's own table, not one behind it,
+    /// looking it up once, and says what it is: a block that holds nothing (`Taken::Plain`), a
+    /// list of strings' headers for the caller to let go of (`Taken::Texts`), or any other, for the
+    /// walk that frees what it holds (`Taken::Walked`). Lists' shapes start at `first_list`. `None`,
+    /// having taken nothing, when it isn't in this table. A block that wasn't plain was looked up
+    /// again by the walk: 107,000 of `api_handler`'s 464,000 frees.
     ///
-    /// A list of strings' headers is taken too when `texts_here`, which says this thread counts
-    /// every block it can reach, whatever its strings hold: what they hold are strings, which
-    /// hold nothing, and the caller lets go of them (`Taken::Texts`).
-    pub(super) fn take_plain_list(
+    /// A list of strings' headers is `Taken::Texts` when `texts_here`, which says this thread
+    /// counts every block it can reach, whatever its strings hold: what they hold are strings,
+    /// which hold nothing.
+    pub(super) fn take_to_free(
         &mut self,
         at: usize,
         (first_list, str_shape): (u64, u64),
         texts_here: bool,
     ) -> Option<(Box<[u64]>, Taken)> {
         let (empty_items, text_items) = (&self.empty_items, &self.text_items);
-        let mut taken = Taken::Plain;
+        let mut taken = Taken::Walked;
         let block = self.blocks.take_if(at, |block| {
             // A string, which holds no other block, or a list of a kind whose items hold nothing,
             // or one with no items at all, as a list made empty and never added to is, or one of
             // strings' headers all inline, as a `split` into short parts makes. Only a kind of
             // list's shape is looked at: past them are other blocks, like cells, whose third word
-            // means something else.
-            !is_handle_block(block)
+            // means something else. A `shared` value's handle goes to the walk, which puts it back.
+            let plain = !is_handle_block(block)
                 && shape_word(block).is_some_and(|shape| {
                     shape == str_shape
                         || shape
@@ -1567,7 +1571,11 @@ impl Heap {
                                 }
                                 all_inline(block)
                             })
-                })
+                });
+            if plain && taken == Taken::Walked {
+                taken = Taken::Plain;
+            }
+            true
         })?;
         Some((block, taken))
     }

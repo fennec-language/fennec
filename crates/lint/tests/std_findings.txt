@@ -107,7 +107,7 @@ math.fen: [short-name] `a6` is too short to say what it is: write a word
 math.fen: [short-name] `a6` is too short to say what it is: write a word
 math.fen: [short-name] `a7` is too short to say what it is: write a word
 math.fen: [short-name] `a7` is too short to say what it is: write a word
-net.fen: [long-function] `read_request` is 97 lines, and a function can be 80
+net.fen: [long-function] `read_request` is 94 lines, and a function can be 80
 net.fen: [missing-doc] the exported method `flush` has no doc comment
 net.fen: [missing-doc] the exported method `lines` has no doc comment
 net.fen: [missing-doc] the exported method `read_chunk` has no doc comment

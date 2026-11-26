@@ -102,11 +102,19 @@ pub extern "C" fn channel_listen(channel: i64, drop_oldest: i64) -> i64 {
 /// The channel a listener listens to, and the listener's number, if `number` is a listener's.
 ///
 /// A listener's number is given out once it's in `LISTENING`, and reaches a receive through the
-/// program, which got it after: so a receive given one finds `ANY_LISTENING` set.
+/// program, which got it after: so a receive given one finds `ANY_LISTENING` set. Asked in line,
+/// so a receive with no listener anywhere, most of them, makes no call to find that out.
+#[inline]
 pub(super) fn listening(number: i64) -> Option<(Arc<Channel>, i64)> {
     if !ANY_LISTENING.load(Ordering::Acquire) {
         return None;
     }
+    listener(number)
+}
+
+/// [`listening`], once some channel to `.Every` has a listener.
+#[inline(never)]
+fn listener(number: i64) -> Option<(Arc<Channel>, i64)> {
     let channel = listening_to(|listening| listening.get(&number).copied())?;
     Some((find(channel)?, number))
 }

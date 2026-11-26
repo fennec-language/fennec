@@ -23294,9 +23294,60 @@ fn a_round_spinning_through_any_way_back_lets_the_others_answer() -> std::io::Re
     }
     let dir = folder("ticking-ways-back")?;
     let program = dir.join("ways_back.fen");
-    std::fs::write(
-        &program,
-        "from std.net import NetError
+    std::fs::write(&program, WAYS_BACK)?;
+    let executable = dir.join("ways_back");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let mut spinning = Vec::new();
+    let mut answers = Vec::new();
+    for way in ["skipping", "testing", "leaving", "walking"] {
+        // The round has read its line before the ping comes, so it's spinning.
+        let mut spinner = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        spinner.write_all(format!("{way}\n").as_bytes())?;
+        spinning.push(spinner);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        ping.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        ping.write_all(b"ping\n")?;
+        let mut back = String::new();
+        let read = std::io::BufReader::new(ping).read_line(&mut back);
+        answers.push((way, back, read.is_ok()));
+    }
+    drop(spinning);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    for (way, back, read) in answers {
+        assert_eq!(back, "pong\n", "the ping wasn't answered while a round spun {way} (read {read})");
+    }
+    Ok(())
+}
+
+/// Rounds of a server that spin every way a loop can go back to its start, by the line they're
+/// sent, and answer `pong` to anything else.
+const WAYS_BACK: &str = "from std.net import NetError
 
 def skipping(turns: int) -> int:
     mut x = 1
@@ -23356,57 +23407,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
                 conn.write(f\"{walking()}\\n\")?
             else:
                 conn.write(\"pong\\n\")?
-",
-    )?;
-    let executable = dir.join("ways_back");
-    let mut command = crate::executables::fennec_command();
-    command.args([
-        "build",
-        "--llvm",
-        "--release",
-        &program.to_string_lossy(),
-        "-o",
-        &executable.to_string_lossy(),
-    ]);
-    let built = command
-        .env("FENNEC_HOME", &dir)
-        .env_remove("FENNEC_THREADS_RUNTIME")
-        .output_before(FENNEC_DEADLINE)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let mut server = Running(
-        Command::new(&executable)
-            .env("FENNEC_THREADS", "1")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()?,
-    );
-    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
-    let mut port = String::new();
-    printed.read_line(&mut port)?;
-    let port: u16 = port.trim().parse().unwrap_or(0);
-    let mut spinning = Vec::new();
-    let mut answers = Vec::new();
-    for way in ["skipping", "testing", "leaving", "walking"] {
-        // The round has read its line before the ping comes, so it's spinning.
-        let mut spinner = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        spinner.write_all(format!("{way}\n").as_bytes())?;
-        spinning.push(spinner);
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        ping.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
-        ping.write_all(b"ping\n")?;
-        let mut back = String::new();
-        let read = std::io::BufReader::new(ping).read_line(&mut back);
-        answers.push((way, back, read.is_ok()));
-    }
-    drop(spinning);
-    drop(server);
-    std::fs::remove_dir_all(&dir)?;
-    for (way, back, read) in answers {
-        assert_eq!(back, "pong\n", "the ping wasn't answered while a round spun {way} (read {read})");
-    }
-    Ok(())
-}
+";
 
 /// A chat hub, launched from `main`, writing each line a round hands it to every member's
 /// connection itself, on whichever worker it runs. It counts the writes that went out.

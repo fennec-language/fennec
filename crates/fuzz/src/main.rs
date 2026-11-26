@@ -378,7 +378,7 @@ mod tests {
             opening(3, b"\nwrong: a data race\n\n  at main\n"),
             "  input 3 said:\n    wrong: a data race\n      at main\n"
         );
-        let many: String = (1..=9).map(|line| format!("line {line}\n")).collect();
+        let many = (1..=9).map(|line| format!("line {line}")).collect::<Vec<_>>().join("\n");
         let shown = opening(5, many.as_bytes());
         assert!(shown.ends_with("    line 6\n    and 3 more lines\n"), "{shown}");
         let long = "x".repeat(300);

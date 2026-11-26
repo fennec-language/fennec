@@ -143,6 +143,12 @@ const STORED_ROWS: bool = true;
 /// each task. #2516's segfault, at `main`'s next lock after such a crash, was found only by chance.
 const LOCKED_CREWS: bool = true;
 
+/// Whether a statement takes links from a `std.concurrent` pool (`Pooled`): `main` taking them
+/// nested up to the pool's size, blocks failing, a task crashing with one, a short wait timing out
+/// where every link is held, an open refused, and links that can't be reset replaced. Pools had no
+/// shape before.
+const KEEPER_POOLS: bool = true;
+
 /// Whether a statement sends enums to a task (`Messaged`): flat ones, which go as words once enums
 /// do (cheap messages, step 5), and ones that aren't, which are copied as blocks, each case's texts
 /// short, long, empty or the sender's own as it changes.
@@ -864,6 +870,7 @@ impl Writer<'_> {
             27 if SAVED_VALUES && self.choice(4) == 0 => self.saved_values(body),
             27 if STORED_ROWS && self.choice(4) == 0 => self.stored_rows(body),
             27 if LOCKED_CREWS && !self.threadless && self.choice(4) == 0 => self.locked_crews(body),
+            27 if KEEPER_POOLS && !self.threadless && self.choice(4) == 0 => self.keeper_pools(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1761,6 +1768,13 @@ impl Writer<'_> {
         self.made += 1;
         let id = self.made;
         body.push(Stmt::Crewed(super::crews::picked(id, &mut |n| self.choice(n))));
+    }
+
+    /// A `Pooled` statement: a pool of 1 to 3 links taken by `main` and a crashing task.
+    fn keeper_pools(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        body.push(Stmt::Pooled(super::pools::picked(id, &mut |n| self.choice(n))));
     }
 
     /// A `Messaged` statement: 2 to 8 enums of one shape sent to a task.

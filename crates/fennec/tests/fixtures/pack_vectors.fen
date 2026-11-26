@@ -67,6 +67,7 @@ def main(stdout: Stdout):
     stdout.print(header(pack.dumps("fox")))
     stdout.print(header(pack.dumps(True)))
     stdout.print(header(pack.dumps(1.5)))
+    stdout.print(header(pack.dumps(f32(1.5))))
     stdout.print(header(pack.dumps(bytes([1, 2]))))
     stdout.print(header(pack.dumps([1, 2])))
     stdout.print(header(pack.dumps({"a": 1})))

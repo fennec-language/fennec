@@ -1,0 +1,20 @@
+# A search from a bucket's start to the end of the last bucket that stops at the first match,
+# called once for each bucket. The check before the loop is allowed whenever the bucket list has
+# at most four items for each turn the loop could take, and here it takes one.
+def first_at_least(starts: list[int], order: list[int], cell: int, wanted: int) -> int:
+    for at in range(starts[cell], starts[len(starts) - 1]):
+        if order[at] >= wanted: return at
+    return -1
+
+def main(stdout: Stdout):
+    mut starts = list[int]()
+    mut order = list[int]()
+    for cell in range(20000):
+        starts.append(cell)
+        order.append(cell)
+    starts.append(20000)
+    mut found = 0
+    for round in range(5):
+        for cell in range(20000):
+            found += first_at_least(starts, order=order, cell=cell, wanted=cell)
+    stdout.print(found)

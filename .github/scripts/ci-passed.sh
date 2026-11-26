@@ -10,13 +10,14 @@
 #   NEEDS='{"lint":{"result":"success"},...}' EVENT=push RUN_ID=... RUN_ATTEMPT=1 \
 #     GITHUB_REPOSITORY=owner/name .github/scripts/ci-passed.sh
 #
-# DOCS_ONLY, PARKED_CHANGED and PLATFORMS are `changes`' outputs. It needs `gh`, with a token that
+# DOCS_ONLY, PARKED_CHANGED, PLATFORMS and COVERED are `changes`' outputs. It needs `gh`, with a token that
 # reads the run's jobs and checks.
 set -euo pipefail
 : "${NEEDS:?}" "${EVENT:?}" "${RUN_ID:?}" "${RUN_ATTEMPT:?}" "${GITHUB_REPOSITORY:?}"
 DOCS_ONLY=${DOCS_ONLY:-false}
 PARKED_CHANGED=${PARKED_CHANGED:-false}
 PLATFORMS=${PLATFORMS:-all}
+COVERED=${COVERED:-false}
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 
 # Every job of this attempt, as `id|name|conclusion|runner|steps`, split on `|` since tabs would
@@ -56,6 +57,12 @@ while read -r job result; do
     continue
   fi
   [ "$result" = skipped ] && [ "$PLATFORMS" = others ] && [ "$job" = x86-mac ] && continue
+  # A scheduled run whose commit a push run covers skips all but what's scheduled alone
+  # (`covered-by-push.sh`).
+  if [ "$result" = skipped ] && [ "$COVERED" = true ] && [ "$EVENT" = schedule ] \
+    && [ "$job" != changes ] && [ "$job" != coverage ] && [ "$job" != audit ]; then
+    continue
+  fi
   # Coverage and the heap audit run only in the scheduled run and by hand.
   if [ "$result" = skipped ] && { [ "$job" = coverage ] || [ "$job" = audit ]; } \
     && [ "$EVENT" != schedule ] && [ "$EVENT" != workflow_dispatch ]; then

@@ -9,7 +9,7 @@
 //!
 //! These need the `fennec` command beside this one (or where `FENNEC` says), the runtime library
 //! beside that, and LLVM's tools. `fennec-fuzz run llvm` stops if one is missing, and the others,
-//! like replaying a kept input, pass without them.
+//! like replaying a kept input, pass without them, unless building is asked for (`can_build`).
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -19,10 +19,21 @@ use std::sync::OnceLock;
 use crate::generate::printing_plainly;
 use crate::supervise::{MOST_KILOBYTES, STUCK, build_stuck, output_watched, watch};
 
-/// `fennec`: where `FENNEC` says, or beside this program.
+/// `fennec`: where `FENNEC` says, or beside this program. A test binary, which Cargo puts in a
+/// `deps` folder below the one it builds `fennec` in, finds it in that one. Looking only beside
+/// itself, every unit test here that builds a program found none, on CI and in the gate, and
+/// passed having built nothing (fennec#2557).
 pub(crate) fn fennec() -> PathBuf {
-    std::env::var_os("FENNEC")
-        .map_or_else(|| std::env::current_exe().unwrap_or_default().with_file_name("fennec"), PathBuf::from)
+    if let Some(fennec) = std::env::var_os("FENNEC") {
+        return PathBuf::from(fennec);
+    }
+    let here = std::env::current_exe().unwrap_or_default();
+    match here.parent() {
+        Some(folder) if folder.file_name().is_some_and(|name| name == "deps") => {
+            folder.with_file_name("fennec")
+        }
+        _ => here.with_file_name("fennec"),
+    }
 }
 
 /// This process's own folder to build in, held as its own while it runs (see `owned`). Where it
@@ -71,6 +82,50 @@ fn fuzzing_process(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("fennec-fuzz-")?;
     let pid = rest.strip_prefix("llvm-").or_else(|| rest.strip_prefix("small-")).unwrap_or(rest);
     pid.parse().ok()
+}
+
+/// Whether programs are to be built natively here, which a target or test that can't build one
+/// otherwise passes over: false where nothing can be. Where building is asked for, by
+/// `FENNEC_EXPECT_LLVM`, as CI's test jobs and the gate set it, or by the heap audit's
+/// `FENNEC_AUDIT=1`, not being able to is a failure that says why, never a pass with nothing built
+/// (fennec#2557).
+pub(crate) fn can_build() -> Result<bool, String> {
+    match (ready(), asked_to_build()) {
+        (Ok(()), _) => Ok(true),
+        (Err(_), None) => Ok(false),
+        (Err(why), Some(asked)) => Err(format!("{asked}, but nothing can be built natively here: {why}")),
+    }
+}
+
+/// `can_build`, for a program that launches tasks, which needs the runtime with threads beside
+/// `fennec` as well.
+pub(crate) fn can_build_threads() -> Result<bool, String> {
+    if !can_build()? {
+        return Ok(false);
+    }
+    if threads_runtime_here() {
+        return Ok(true);
+    }
+    match asked_to_build() {
+        None => Ok(false),
+        Some(asked) => Err(format!(
+            "{asked}, but there's no runtime with threads, `libfennec_runtime_threads.a`, beside `{}`: build \
+             it with `cargo build -p fennec-runtime --features threads --target-dir target/threads` and copy it \
+             there",
+            fennec().display()
+        )),
+    }
+}
+
+/// What asks for programs to be built natively here, where something does.
+fn asked_to_build() -> Option<&'static str> {
+    if audited() {
+        Some("the heap audit is asked for (`FENNEC_AUDIT=1`)")
+    } else if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
+        Some("`FENNEC_EXPECT_LLVM` is set")
+    } else {
+        None
+    }
 }
 
 /// Whether a program can be built and run here, or why not.
@@ -377,7 +432,7 @@ fn shown((printed, said, _): &Outcome) -> String {
 }
 
 pub(crate) fn llvm(input: &[u8]) -> Result<(), String> {
-    if ready().is_err() {
+    if !can_build()? {
         return Ok(());
     }
     let source = printing_plainly(input);
@@ -747,7 +802,7 @@ fn built_from(source: &str, compiler: &Path) -> String {
 
 /// The program built for `name`, or None where nothing can be built here.
 pub(crate) fn built_reader(name: &str) -> Result<Option<PathBuf>, String> {
-    if ready().is_err() {
+    if !can_build()? {
         return Ok(None);
     }
     reader(name).map(Some)
@@ -765,7 +820,7 @@ pub(crate) fn run_reader(name: &str, args: &[&std::ffi::OsStr]) -> Result<Option
 /// Runs `input` through the reader for `name`, giving what it printed, or None where nothing can
 /// be built here. It may fail, but must not crash or get stuck.
 pub(crate) fn read_natively(name: &str, input: &[u8]) -> Result<Option<Vec<u8>>, String> {
-    if ready().is_err() {
+    if !can_build()? {
         return Ok(None);
     }
     let executable = reader(name)?;

@@ -1,0 +1,19 @@
+# Three loops deep, each left early in its own way: the innermost bucket loop by `break`, the
+# middle one by `continue` and `break`, the outer one by `return`.
+def scan(starts: list[int], order: list[int], wanted: int, rounds: int) -> int:
+    mut total = 0
+    for round in range(rounds):
+        for cell in range(len(starts) - 1):
+            if cell == round: continue
+            for at in range(starts[cell], starts[cell + 1]):
+                if order[at] == wanted: break
+                total += order[at]
+                if total > 60: return -total
+            if total > 40: break
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 2, 5], order=[1, 2, 3, 4, 5], wanted=4, rounds=3))
+    stdout.print(scan([0, 2, 5], order=[1, 2, 3, 4, 5], wanted=9, rounds=5))
+    stdout.print(scan([0, 2, 5], order=[9, 9, 9, 9, 9], wanted=1, rounds=9))
+    stdout.print(scan([0, 2, 6], order=[1, 2, 3, 4, 5], wanted=9, rounds=2))

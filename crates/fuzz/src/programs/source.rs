@@ -674,8 +674,14 @@ pub(crate) fn source(program: &Program) -> String {
     } else {
         ""
     };
+    // Only a program holding a `Pooled` statement makes a pool, so only it imports one.
+    let pools = if writer.helpers.contains("with pool[") {
+        "from std.concurrent import Pool, PoolError, pool\n"
+    } else {
+        ""
+    };
     format!(
-        "{formats}{databases}{channels}{header}{tasks}{}def main(stdout: Stdout{fs}):\n{}",
+        "{formats}{databases}{pools}{channels}{header}{tasks}{}def main(stdout: Stdout{fs}):\n{}",
         writer.helpers, writer.out
     )
 }
@@ -3948,6 +3954,10 @@ impl Writer {
             Stmt::Crewed(crew) => {
                 let _ = write!(self.helpers, "{}", super::crews::written(crew));
                 self.line(indent, &format!("crewed{}(stdout)", crew.id));
+            }
+            Stmt::Pooled(pooling) => {
+                let _ = write!(self.helpers, "{}", super::pools::written(pooling));
+                self.line(indent, &format!("pooled{}(stdout)", pooling.id));
             }
             Stmt::Messaged(messaging) => {
                 let _ = write!(self.helpers, "{}", super::messaging::written(messaging));

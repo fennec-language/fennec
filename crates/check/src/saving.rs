@@ -314,7 +314,14 @@ fn loaded(checker: &Checker, ty: &Type, loadable: &BTreeSet<String>) -> bool {
 /// ask of what it stands for.
 pub(crate) fn saved(checker: &Checker, ty: &Type, generated: &BTreeSet<String>) -> bool {
     match ty {
-        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::Param(_) | Type::Id(_) => true,
+        Type::Int
+        | Type::Float
+        | Type::Sized(crate::types::Num::F32)
+        | Type::Bool
+        | Type::Str
+        | Type::Bytes
+        | Type::Param(_)
+        | Type::Id(_) => true,
         // A union is saved through a type made for it, which a set's items and a dict's keys
         // can't be changed to and from.
         Type::Set(inner) | Type::Table(inner) if holds_union(inner) => false,
@@ -1057,6 +1064,7 @@ fn field_stops(
     match ty {
         Type::Int
         | Type::Float
+        | Type::Sized(crate::types::Num::F32)
         | Type::Bool
         | Type::Str
         | Type::Bytes

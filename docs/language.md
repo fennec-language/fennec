@@ -30,6 +30,8 @@ def main(stdout: Stdout):
     stdout.print(target.health + 1)
 ```
 
+What's passed with `ref` has to hold all the parameter does, not only something that fits it, since the function can put in anything the parameter holds: a `list[int]` can't go where `ref items: list[int?]` does, as a `None` could be put in it, and a `Crate` can't go where `ref shape: Crate | Heap` does. A name declared as the whole type can, however it's narrowed where it's passed. It's a compile error that says what could be put in. Built.
+
 A local `ref target = units[target_id]` links a name to a place for several changes in a row. It lasts until its last use, inside its block. While it's alive, nothing else may change that container, and a second `ref` into it is refused, but reading it is fine and sees the change. Its index is worked out once, at the `ref`. It's checked at compile time and costs nothing at run time. There's no scoped `with units[target_id] as ref target:`. The one function that may return a `ref` is a type's `ref` form of `def []`, which gives a place, so `units[i].health -= 1` works on your own types too.
 
 ## What you can declare
@@ -603,6 +605,7 @@ back = json.loads[World](text)?
 ```
 
 - JSON, TOML and `std.pack` save any type whose fields can all be saved, through one `serialize` and `deserialize`.
+- An `f32` is saved as the `f32` it is: JSON writes its own shortest text and reads text straight to the nearest `f32`, rounded once, and `std.pack` writes its 4 bytes. Each `f32` NaN packs as the one quiet NaN, as a float's does. A `float` field loads an `f32` saved before, exactly, and an `f32` field doesn't load a `float`, which it would round. TOML reads its numbers as floats, so an `f32` there is its float rounded. The other sized numbers aren't saved yet.
 - A generic function writes a `T: Serializable` and reads a `T: Deserializable`, as `def answer[T: Serializable](status: int, value: T) -> str: return json.dumps(value)`. Each call's own type is checked against the format where the call is: `answer(200, value=set[int]())` is refused there, as JSON can't hold a set, and so is a call that hands its own type parameter on to one.
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it.
 - Saved slot for slot, as `pack.dumps(value, exact=True)` does, a `Table` keeps its slots, so a load hands out the same `Id`s after it. An `Id` saves as its slot only where it finds its item. One whose item has gone saves as missing when it's optional, and otherwise stops the save, since after the load it would find whatever is in its slot. A load refuses an `Id` whose generation isn't its slot's, as one saved after its item went by a version that kept them. Built.

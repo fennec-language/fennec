@@ -189,7 +189,7 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 - `map.update(id, value) -> bool` puts a new value at a live ID and says whether it was there, for when the item may be gone. Chris decided this on 2026-11-09. Built for `Table`.
 - A map reports how many items are live, which makes a forgotten item visible.
 - Its storage is in chunks, so one write after a snapshot copies a chunk rather than the whole map.
-- A copy of a `Table` keeps its tag, so an `Id` made before the copy finds its item in both. Generations are unique across copies, so an item added to one copy has an `Id` that finds nothing in the other. Chris decided this. Not built yet: today an item added to each copy can get the same `Id`, so one copy's `Id` finds the other's item.
+- An `Id` made before a copy of a `Table` finds its item in both copies, and an item added to one copy has an `Id` that finds nothing in the other. Chris decided this. Built (#2424) as Fable's review proposed: each `add` takes a new tag from the runtime's 64-bit count and its slot keeps it, so the rule holds through every kind of copy and through a lock's rollback, with nothing done at a copy.
 - `type EnemyId = Id[Enemy]` is an optional alias, not something the compiler makes for each struct.
 
 *Why:* Game engines, compilers, graph libraries and servers use the same generational-handle pattern. IDs are small plain values, so they're cheap to copy and can be saved or sent anywhere. A cycle of them is just numbers, with nothing counted, so it can't leak. A stale ID that silently became `None` would hide bugs, so the short form is the loud one.
@@ -1759,6 +1759,9 @@ The commit before removal gets a tag, so the old engines can still be found. Bui
 
 **A release build optimizes what it uses of the runtime together with the program, so runtime calls can inline.** The runtime's own LLVM bitcode ships beside `fennec`, and a release links only the runtime's C parts (mimalloc and the compiler's helpers) afterwards. Development builds are unchanged.
 *Why:* It takes about 1.3% off a kernel's instructions on Arm, up to 4%, for release builds that take about 20 seconds instead of one, which release builds can afford.
+
+**The runtime's bitcode is stamped with the build of Fennec it's from, as the runtime library is, and a release refuses bitcode that isn't stamped with its own build** before it looks in the store; the store's key, and the key of a build of unchanged files, name the bitcode by that stamp (#2565). Bitcode packs a string's bytes into bits but keeps names as written, so the stamp is also in the name of the static that holds it. Unlike a library from before stamps, unstamped bitcode is refused too.
+*Why:* Bitcode from other source linked without a word and gave wrong answers, and a program built with other bitcode was handed back from the store, which once had a benchmark measure a stale runtime.
 
 Every build and the language server share one build engine and store, described under Builds.
 

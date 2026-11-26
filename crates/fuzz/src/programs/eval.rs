@@ -2966,7 +2966,7 @@ impl Machine {
                 Alias::Looped(looping) => {
                     let value = kept.get_mut(looping.to).ok_or(Stop::Unsure)?;
                     if !looped(value, looping).ok_or(Stop::Unsure)? {
-                        self.said = Some("this Id refers to something that's been removed".to_owned());
+                        self.said = Some("this Id finds nothing in this Table: its item was taken out, or it's from another Table".to_owned());
                         return Err(Stop::Failed);
                     }
                 }

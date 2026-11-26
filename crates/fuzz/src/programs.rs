@@ -2000,7 +2000,12 @@ mod tests {
         assert_eq!(stopping.len(), 8);
         for looping in stopping {
             let (_, said) = program(vec![Alias::Part { from: LEDGER, at: 0 }, Alias::Looped(looping)]);
-            assert_eq!(said.as_deref(), Some("this Id refers to something that's been removed"));
+            assert_eq!(
+                said.as_deref(),
+                Some(
+                    "this Id finds nothing in this Table: its item was taken out, or it's from another Table"
+                )
+            );
         }
     }
 

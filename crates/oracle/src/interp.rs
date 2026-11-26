@@ -1371,7 +1371,7 @@ fn step_into<'v>(value: &'v Value, step: &Step, span: Span) -> Run<Reached<'v>> 
         (Value::Table(table), Step::At(Value::Id(id))) => {
             match table.find(*id).and_then(|at| table.slots.get(at)).and_then(|slot| slot.item.as_ref()) {
                 Some(item) => Ok(Reached::Inside(item)),
-                None => crash(table.missing(*id), span),
+                None => crash(crate::value::MISSING, span),
             }
         }
         (other, _) => unsupported(format!("reaching into a {}", other.kind())),
@@ -1402,7 +1402,7 @@ fn step_into_mut<'v>(value: &'v mut Value, step: &Step, span: Span, adding: bool
             pairs.get_mut(at).map(|(_, value)| value).map_or_else(|| unsupported("a key"), Ok)
         }
         (Value::Table(table), Step::At(Value::Id(id))) => {
-            let missing = table.missing(*id);
+            let missing = crate::value::MISSING;
             match table.find(*id).and_then(|at| table.slots.get_mut(at)).and_then(|slot| slot.item.as_mut()) {
                 Some(item) => Ok(item),
                 None => crash(missing, span),

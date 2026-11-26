@@ -157,11 +157,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     # The platforms the run has (see `changes`): macOS only through `ci-macos.yml`, a run by hand or
-    # `staging.yml`. GitHub's macOS runners are short, and a job can wait an hour for one.
+    # `staging.yml`. GitHub's macOS runners are short, and a job can wait an hour for one. A pull
+    # request leaves out the Arm Mac, whose whole suite each one's `gate.sh` ran before it opened,
+    # and keeps the Intel Mac, which no gate runs.
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.changes.outputs.platforms == 'macos' && '["macos-latest"]' || needs.changes.outputs.platforms == 'others' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
+        os: ${{ fromJSON(needs.changes.outputs.platforms == 'macos' && '["macos-latest"]' || (needs.changes.outputs.platforms == 'others' || github.event_name == 'pull_request') && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
         # Each platform's tests run in three jobs of about the same length:
         # - `llvm`: the `llvm::` tests in `fennec`'s main test binary, each building a program;
         # - `fennec`: the rest of the `fennec` package's tests, then every example and kit;
@@ -649,6 +651,8 @@ jobs:
         run: .github/scripts/test-flakes.sh
       - name: Saying plainly a job never got a runner, against a GitHub answering from files
         run: .github/scripts/test-ci-passed.sh
+      - name: Running again a run whose only failures got no runner, against a GitHub answering from files
+        run: .github/scripts/test-rerun-no-runner.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
         run: .github/scripts/test-nightly-report.sh
       - name: A mutants run's counts, a timeout neither caught nor missed, and one where most timed out failing

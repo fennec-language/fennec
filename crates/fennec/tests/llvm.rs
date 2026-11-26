@@ -24448,6 +24448,64 @@ fn a_stale_threads_runtime_fails_the_build_rather_than_running_on_one_thread() -
     Ok(())
 }
 
+/// A release build by a `fennec` whose runtime bitcode is from another build, or stamped with no
+/// build, fails saying so, before the store is looked in: such bitcode once linked without a word
+/// and gave wrong answers, or a program built with other bitcode was handed back from the store.
+/// The stamp in bitcode is in a static's name, which bitcode keeps as written.
+#[test]
+fn release_bitcode_from_another_build_is_refused_before_the_store() -> std::io::Result<()> {
+    if !ready() || !runtime_built() || !crate::executables::runtime_beside_fennec() {
+        return Ok(());
+    }
+    let dir = folder("bitcode-stale")?;
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let mine = dir.join("bin");
+    std::fs::create_dir_all(&mine)?;
+    let fennec_here = mine.join(fennec.file_name().unwrap_or_default());
+    if std::fs::hard_link(fennec, &fennec_here).is_err() {
+        std::fs::copy(fennec, &fennec_here)?;
+    }
+    let plain = fennec.with_file_name(crate::executables::runtime_file());
+    std::fs::copy(&plain, mine.join(crate::executables::runtime_file()))?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n")?;
+    let release = || {
+        Command::new(&fennec_here)
+            .args([
+                "build",
+                "--llvm",
+                "--release",
+                &program.to_string_lossy(),
+                "-o",
+                &dir.join("hello").to_string_lossy(),
+            ])
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)
+    };
+    // With no bitcode, a release links the runtime library, and the program is kept in the store.
+    let first = release()?;
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let bitcode = mine.join("libfennec_runtime.bc");
+    let stale =
+        [b"BC\xc0\xde_RNvCs0_14fennec_runtime84".as_slice(), b"RUNTIME_BUILD_", b"STAMP_", &[b'0'; 64]]
+            .concat();
+    let unstamped = b"BC\xc0\xde bitcode from before stamps".to_vec();
+    let mut said = Vec::new();
+    for (bytes, why) in
+        [(stale, "is from another build of Fennec"), (unstamped, "is stamped with no build of Fennec")]
+    {
+        std::fs::write(&bitcode, bytes)?;
+        let built = release()?;
+        said.push((built.status.success(), String::from_utf8_lossy(&built.stderr).into_owned(), why));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    for (built, said, why) in said {
+        assert!(!built, "built with stale bitcode: {said}");
+        assert!(said.contains("libfennec_runtime.bc") && said.contains(why), "{said}");
+    }
+    Ok(())
+}
+
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
 /// std's collections among them, so a program reading and writing them builds natively.
 #[test]

@@ -35351,9 +35351,13 @@ fn a_constant_of_empty_bytes_is_kept_with_threads() -> std::io::Result<()> {
             .unwrap_or_else(|| panic!("no counts: {said}"));
         Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), made))
     };
-    for (constant, each, kept) in
-        [("bytes([])", 0, true), ("bytes()", 0, true), ("bytes(numbers())", 2, false)]
-    {
+    for (constant, each, kept) in [
+        ("bytes([])", 0, true),
+        ("bytes()", 0, true),
+        ("bytes(numbers())", 2, false),
+        // A comprehension's list is made empty and then filled: its bytes are its items.
+        ("bytes([11 for _ in range(4)])", 4, false),
+    ] {
         let (once, made_once) = allocations(1, constant)?;
         let (often, made_often) = allocations(1000, constant)?;
         assert_eq!(once, format!("{each}\n"), "{constant}");

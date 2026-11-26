@@ -118,6 +118,10 @@ fn forget_string(state: &mut State, address: u64) {
 /// each it was the last owner of: a string holds nothing, so it's out of the table and kept for
 /// reuse at once. Only for a thread that counts every block it can reach, which `release_one`
 /// finds in its own table.
+///
+/// Out of line, so `let_go`, which every free goes through, stays as small as it was: inlined, it
+/// made `let_go` save four more registers at every call, about 8 instructions a free.
+#[inline(never)]
 fn let_go_of_texts(state: &mut State, list: &[u64]) {
     let str_shape = state.tables.str_shape;
     for header in crate::embed::lists::items(list, 3).as_chunks::<3>().0 {

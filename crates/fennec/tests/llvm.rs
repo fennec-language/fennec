@@ -23373,8 +23373,10 @@ def main(net: Net, stdout: Stdout) fails NetError:
 /// connection's round answer: a `while True` whose only way back is `continue`, a `for` whose body
 /// tests a value and goes on to its step, a loop whose inner loop is left by `break` on its first
 /// turn, and a loop walking a generator that yields on every turn of its own, where the walking
-/// loop ticks for each. A task ticks once a turn, on its jump back to the loop's start, and each
-/// spinning round here was started, and is still spinning, when its ping comes.
+/// loop ticks for each. And one with no loop at all, calling itself (#2594), whose calls are
+/// counted on the thread. A task ticks once a turn, on its jump back to the loop's start, or at
+/// each call of a function that can call itself again, and each spinning round here was started,
+/// and is still spinning, when its ping comes.
 #[test]
 fn a_round_spinning_through_any_way_back_lets_the_others_answer() -> std::io::Result<()> {
     use std::io::{BufRead as _, Write as _};
@@ -23412,7 +23414,7 @@ fn a_round_spinning_through_any_way_back_lets_the_others_answer() -> std::io::Re
     let port: u16 = port.trim().parse().unwrap_or(0);
     let mut spinning = Vec::new();
     let mut answers = Vec::new();
-    for way in ["skipping", "testing", "leaving", "walking"] {
+    for way in ["skipping", "testing", "leaving", "walking", "recursing"] {
         // The round has read its line before the ping comes, so it's spinning.
         let mut spinner = std::net::TcpStream::connect(("127.0.0.1", port))?;
         spinner.write_all(format!("{way}\n").as_bytes())?;
@@ -23480,6 +23482,11 @@ def walking() -> int:
             return x
     return 0
 
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return (fib(n - 1) + fib(n - 2)) % 1000003
+
 def main(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
         stdout.print(server.port)
@@ -23494,6 +23501,8 @@ def main(net: Net, stdout: Stdout) fails NetError:
                 conn.write(f\"{leaving(many)}\\n\")?
             elif line == \"walking\":
                 conn.write(f\"{walking()}\\n\")?
+            elif line == \"recursing\":
+                conn.write(f\"{fib(90)}\\n\")?
             else:
                 conn.write(\"pong\\n\")?
 ";

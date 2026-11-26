@@ -1610,6 +1610,9 @@ impl Emit<'_, '_, '_> {
         }
         if self.ticks() {
             self.start_ticks();
+            if self.module.reads.recurs(function.name.as_str()) {
+                self.tick_call();
+            }
         }
         self.line("br label %bb0");
         // Which blocks lead to each, so a lookup can carry on into a block every way in has

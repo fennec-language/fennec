@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::executables::{Within, fennec_command, runtime_built};
+use crate::executables::{Within, fennec_command};
 
 /// Examples of every kind of code: closures, generators, collections, JSON, interfaces, crashes.
 const PROGRAMS: &[&str] = &[
@@ -660,7 +660,7 @@ fn compare(program: &str, scratch: &Path, tally: &mut Tally) {
 
 #[test]
 fn the_loader_links_each_program_as_the_linker_does() {
-    if !runtime_built() {
+    if !crate::llvm::ready() {
         return;
     }
     let scratch =

@@ -18,7 +18,7 @@
 use fennec_syntax::{Diagnostic, Span};
 
 use super::super::heap::{self, IMMORTAL};
-use super::super::{State, attempt, with};
+use super::super::{State, Tables, attempt, with};
 use super::{CLOSED, DONE, Message, Turn, find, next, replayed, send_on};
 use crate::packed::Element;
 
@@ -176,7 +176,16 @@ enum Part {
 /// The plan of every kind the run has, `None` for one that isn't flat: made the first time this
 /// thread's runtime sends or takes a message as words.
 fn plans(state: &State) -> &[Option<Plan>] {
-    state.message_plans.get_or_init(|| {
+    plans_in(&state.message_plans, &state.tables)
+}
+
+/// [`plans`], given the two fields of the state it reads, so a send can borrow the state's others
+/// beside them.
+fn plans_in<'s>(
+    message_plans: &'s std::cell::OnceCell<Box<[Option<Plan>]>>,
+    tables: &Tables,
+) -> &'s [Option<Plan>] {
+    message_plans.get_or_init(|| {
         let planned = |element: &std::rc::Rc<Element>| {
             element.is_flat_message().then(|| {
                 let mut parts = Vec::new();
@@ -184,7 +193,7 @@ fn plans(state: &State) -> &[Option<Plan>] {
                 Plan { width: element.words(), parts: parts.into_boxed_slice() }
             })
         };
-        state.tables.elements.iter().map(planned).collect()
+        tables.elements.iter().map(planned).collect()
     })
 }
 
@@ -285,9 +294,10 @@ pub extern "C" fn channel_send_words(channel: i64, kind: i64, width: i64, done: 
         Turn::Goes => -1,
         Turn::Gives(code) => return code,
     };
-    let copied = attempt(|state: &mut State| copied(state, kind, words).map(Some));
+    let copied =
+        attempt(|state: &mut State| copied(state, kind, words).map(|flat| Some(Message::Words(flat))));
     let Some(message) = copied else { return DONE };
-    send_on(&channel, Message::Words(message), timeout_ns)
+    send_on(&channel, message, timeout_ns)
 }
 
 /// `fennec_channel_receive_words(channel, kind, width, timeout_ns)`: takes the next message, of
@@ -325,8 +335,22 @@ fn flat_kind(state: &State, kind: i64, width: i64) -> usize {
 }
 
 /// The first `count` words of this thread's buffer.
+///
+/// A message that fits in place takes the buffer's first `WORDS_IN_PLACE` words whatever its width,
+/// a copy of a known size, where a copy of its own width was a call to fill the rest with zeros and
+/// another to copy: about 45 instructions a send in `chat_server`. The words past its width are
+/// never read.
 fn buffered(state: &State, count: usize) -> Words {
     super::super::dicts::value_buffer_of(state, |buffer| {
+        if count <= WORDS_IN_PLACE
+            && let Some(cells) = buffer.get(..WORDS_IN_PLACE)
+        {
+            let mut words = [0; WORDS_IN_PLACE];
+            for (word, cell) in words.iter_mut().zip(cells) {
+                *word = cell.get();
+            }
+            return Some(Words::InPlace { count, words });
+        }
         buffer.get(..count).map(|words| Words::of(count, words.iter().map(std::cell::Cell::get)))
     })
     .unwrap_or_else(|| heap::runtime_bug("a message is wider than the buffer it's passed in"))
@@ -337,20 +361,25 @@ fn buffered(state: &State, count: usize) -> Words {
 /// read, a string literal, isn't copied: it travels as its address. A block the sender can't find
 /// fails. Where the blocks are named, and which each copy was made of, are kept in this thread's
 /// own lists between sends, so a send makes only the copies and the list that holds them.
+///
+/// The lists are borrowed where they are, beside the heap and the kinds' plans: taken out and put
+/// back, they were dropped and moved at every send.
 fn copied(state: &mut State, kind: usize, mut words: Words) -> Result<Flat, Diagnostic> {
-    let (mut places, mut made_of) = std::mem::take(&mut state.message_lists);
+    let State { message_plans, tables, message_lists: (places, made_of), heap: own, .. } = state;
+    let Some(Some(plan)) = plans_in(message_plans, tables).get(kind) else {
+        heap::runtime_bug("a message's kind isn't a flat one the program described");
+    };
     places.clear();
     made_of.clear();
-    each_place(&plan_of(state, kind).parts, &words, &mut |place| places.push(place));
-    let copies = copies(state, &places, &mut words, &mut made_of);
-    state.message_lists = (places, made_of);
-    Ok(Flat { kind, words, blocks: copies? })
+    each_place(&plan.parts, &words, &mut |place| places.push(place));
+    let blocks = copies(own, places, &mut words, made_of)?;
+    Ok(Flat { kind, words, blocks })
 }
 
 /// The copies of the blocks the words at `places` in `words` name, each word pointed at its copy,
 /// with `made_of` the block each copy was made of, by its place in the copies.
 fn copies(
-    state: &mut State,
+    heap: &mut heap::Heap,
     places: &[usize],
     words: &mut [u64],
     made_of: &mut Vec<u64>,
@@ -367,7 +396,7 @@ fn copies(
             }
             continue;
         }
-        let block = state.heap.block(address).ok_or_else(|| {
+        let block = heap.block(address).ok_or_else(|| {
             Diagnostic::new(
                 format!("internal error: block {address:#x} of a message isn't there"),
                 Span::default(),
@@ -380,7 +409,7 @@ fn copies(
         if let Some(count) = copy.first_mut() {
             *count = 1;
         }
-        state.heap.copied(copy.len());
+        heap.copied(copy.len());
         if let Some(word) = words.get_mut(*place) {
             *word = address_of(&copy);
         }

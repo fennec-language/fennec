@@ -2645,24 +2645,36 @@ def main(stdout: Stdout):
 
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    prints_built(name, source, wanted, false)
+}
+
+/// What [`prints_in_both_builds`] checks, and the same of a dev build checking every proof, so a
+/// proof the program breaks stops it in the gate rather than only in the nightly run. A lock's
+/// programs are built this way: its end checks that nothing is still out of its place (#2516).
+fn prints_built_checking_proofs_too(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    prints_built(name, source, wanted, true)
+}
+
+fn prints_built(name: &str, source: &str, wanted: &str, checking_too: bool) -> std::io::Result<()> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
     let (program, output) = (program.to_string_lossy().into_owned(), dir.join(name));
     let output = output.to_string_lossy().into_owned();
-    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
-        let args: Vec<&str> = ["build"]
-            .into_iter()
-            .chain(how.iter().copied())
-            .chain([program.as_str(), "-o", &output])
-            .collect();
-        let built = fennec(&args, &dir)?;
+    let ways = [(&["--llvm"][..], false), (&["--llvm", "--release"][..], false), (&["--llvm"][..], true)];
+    for (how, checking) in ways.into_iter().filter(|(_, checking)| checking_too || !checking) {
+        let mut command = crate::executables::fennec_command();
+        command.arg("build").args(how).args([program.as_str(), "-o", &output]).env("FENNEC_HOME", &dir);
+        if checking {
+            command.env("FENNEC_CHECK_PROOFS", "1");
+        }
+        let built = command.output_before(FENNEC_DEADLINE)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&output).output_within()?;
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
             wanted,
-            "{how:?}: {}",
+            "{how:?}, checking proofs {checking}: {}",
             String::from_utf8_lossy(&ran.stderr)
         );
     }
@@ -3687,7 +3699,7 @@ fn random_changes_under_a_lock_are_undone_by_a_failure() -> std::io::Result<()> 
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_undo_by_failure",
         include_str!("fixtures/lock_undo_by_failure.fen"),
         "wrong 0 crashed True kept True\n",
@@ -3701,7 +3713,7 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_undo_by_crash",
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
@@ -3720,7 +3732,7 @@ fn a_crash_in_a_lock_of_two_values_puts_both_back_whatever_their_order() -> std:
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "crash_in_a_lock_named_against_its_order",
         include_str!("fixtures/workers/crash_in_a_lock_named_against_its_order.fen"),
         include_str!("fixtures/workers/crash_in_a_lock_named_against_its_order.out"),
@@ -3893,7 +3905,7 @@ fn appends_in_a_locks_own_body_change_a_dicts_lists_where_they_are() -> std::io:
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "appended_in_a_locks_body",
         APPENDED_IN_A_LOCKS_BODY,
         "301 300 301\n301 301 locked 299, a text long enough for a block of its own\n",
@@ -3982,10 +3994,14 @@ def main(stdout: Stdout):
 ///   appended text out of range or multiplying past an int's range;
 /// - a failure leaving the lock, after appends written straight in it and through a `ref` method
 ///   failing partway;
-/// - a `for ref` loop over the lock's list, failing or crashing partway.
+/// - a `for ref` loop over the lock's list, failing or crashing partway;
+/// - a task crashing after the lock's block, in the function that held it: the lock's end leaves
+///   nothing out of its place for the crash to write over the shared value (#2516). It
+///   segfaulted at the next lock, as the lock's end, written before the loop's body, took the
+///   list item out again.
 ///
-/// Each prints what the reference evaluator prints, dev and release, on one thread and on four,
-/// with nothing left.
+/// Each prints what the reference evaluator prints, dev and release and dev checking every proof,
+/// on one thread and on four, with nothing left.
 #[test]
 fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -4012,19 +4028,25 @@ fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::
             include_str!("fixtures/workers/failed_in_a_for_ref_in_a_locks_own_body.fen"),
             include_str!("fixtures/workers/failed_in_a_for_ref_in_a_locks_own_body.out"),
         ),
+        (
+            "crashed_after_a_locks_own_body",
+            include_str!("fixtures/workers/crashed_after_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/crashed_after_a_locks_own_body.out"),
+        ),
     ] {
         let dir = folder(name)?;
         let program = dir.join(format!("{name}.fen"));
         std::fs::write(&program, source)?;
         let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
         let output = executable.to_string_lossy().into_owned();
-        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
-            let args: Vec<&str> = ["build"]
-                .into_iter()
-                .chain(how.iter().copied())
-                .chain([program.as_str(), "-o", &output])
-                .collect();
-            let built = fennec(&args, &dir)?;
+        let ways = [(&["--llvm"][..], false), (&["--llvm", "--release"][..], false), (&["--llvm"][..], true)];
+        for (how, checking) in ways {
+            let mut command = crate::executables::fennec_command();
+            command.arg("build").args(how).args([program.as_str(), "-o", &output]).env("FENNEC_HOME", &dir);
+            if checking {
+                command.env("FENNEC_CHECK_PROOFS", "1");
+            }
+            let built = command.output_before(FENNEC_DEADLINE)?;
             assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
             for threads in ["1", "4"] {
                 let ran = Command::new(&executable)
@@ -4033,10 +4055,19 @@ fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::
                     .output_within()?;
                 let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
                 let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
-                assert_eq!(printed, wanted, "{name} {how:?}, {threads} threads: {errors}");
-                assert!(ran.status.success(), "{name} {how:?}, {threads} threads: {errors}");
+                assert_eq!(
+                    printed, wanted,
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {errors}"
+                );
+                assert!(
+                    ran.status.success(),
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {errors}"
+                );
                 let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
-                assert!(counts.ends_with(" live 0"), "{name} {how:?}, {threads} threads: {counts}");
+                assert!(
+                    counts.ends_with(" live 0"),
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {counts}"
+                );
             }
         }
         std::fs::remove_dir_all(&dir)?;
@@ -4335,7 +4366,7 @@ fn a_struct_of_three_fields_changed_in_place_keeps_only_what_ended_normally() ->
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_rollback_three_fields",
         include_str!("fixtures/workers/lock_rollback_three_fields.fen"),
         include_str!("fixtures/workers/lock_rollback_three_fields.out"),
@@ -4350,7 +4381,7 @@ fn changes_in_place_under_a_lock_are_undone_exactly() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_undo_in_place",
         include_str!("fixtures/lock_undo_in_place.fen"),
         include_str!("fixtures/lock_undo_in_place.out"),
@@ -4365,7 +4396,7 @@ fn plain_words_a_lock_saves_go_back_on_a_failure_however_many() -> std::io::Resu
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_plain_saves",
         include_str!("fixtures/lock_plain_saves.fen"),
         "10 24500 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 False\n",
@@ -5087,14 +5118,15 @@ fn the_bucket_review_programs_print_what_they_always_did() -> std::io::Result<()
                 .env("FENNEC_HOME", &dir)
                 .env("FENNEC_CHECK_PROOFS", proofs)
                 .output_before(FENNEC_DEADLINE)?;
-            // The first error said, and the first place pointed at after it, by the file's name.
+            // The first error said, and the first place pointed at after it, by the file's name:
+            // the place can carry part of the program's path, which Windows writes with `\`.
             let first_error = |said: &[u8]| {
                 let said = String::from_utf8_lossy(said);
                 let mut lines = said.lines().skip_while(|line| !line.starts_with("error"));
                 let Some(error) = lines.next() else { return String::new() };
                 let place = lines
                     .find_map(|line| line.trim_start().strip_prefix("--> "))
-                    .map(|place| format!("--> {}\n", place.rsplit('/').next().unwrap_or(place)))
+                    .map(|place| format!("--> {}\n", place.rsplit(['/', '\\']).next().unwrap_or(place)))
                     .unwrap_or_default();
                 format!("{error}\n{place}")
             };
@@ -6356,7 +6388,7 @@ fn a_local_ref_in_a_lock_reads_and_is_rolled_back() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "local_ref_in_lock",
         LOCAL_REF_IN_LOCK,
         "Bag(items=[2, 2], counts={})\n5\nfailed: stop\nBag(items=[4, 2], counts={})\n",
@@ -6912,14 +6944,14 @@ fn a_failure_inside_a_lock_in_a_with_rolls_the_lock_back() -> std::io::Result<()
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_in_a_with_rolls_back",
         LOCK_IN_A_WITH_ROLLS_BACK,
         "failed fail\nOops(code=1)\nfailed try\nOops(code=2)\nOops(code=3)\n10 Bag.Full(count=6)\n",
     )?;
     // A `ref` case in a source's body, lowered a round after its lock was, the lock already written
     // as the lowering writes one.
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_in_a_source_s_case_rolls_back",
         LOCK_IN_A_SOURCE_S_CASE,
         "Oops(code=4)\n10\n",
@@ -7051,7 +7083,7 @@ fn a_failure_leaves_what_s_inside_a_ref_case_once_before_putting_it_back() -> st
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_in_ref_case_failed_deep",
         LOCK_IN_REF_CASE,
         "71\n[]\nBag.Full(counts=[71, 2])\n",
@@ -7604,6 +7636,27 @@ def main(stdout: Stdout):
         "1.4142135 0.47942555 0.87758255 1.0471976 1.5\n\"1,5\" isn't a float\n\
          1.0000001 1.0 False 0.0 -2000.0\n"
     );
+    Ok(())
+}
+
+/// A number written out after `else` takes the size of the optional it stands in for where the
+/// optional is a name known to be `None` (#2588), as it does where nothing is known: `0.1` here is
+/// an `f32`, so three of it are the `f32` 0.3, not the `float` 0.30000000000000004.
+#[test]
+fn an_else_default_takes_the_size_of_a_name_known_to_be_none() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "else_known_none",
+        "def main(stdout: Stdout):
+    found: f32? = None
+    tiny: u8? = None
+    level: f32 = found else 0.1
+    stdout.print(level * 3.0, (tiny else 200) + 55)
+",
+    )?;
+    assert_eq!(printed, "0.3 255\n");
     Ok(())
 }
 
@@ -13050,6 +13103,35 @@ fn an_f_string_added_to_a_text_goes_on_its_end() -> std::io::Result<()> {
         "f_string_added",
         "def put(ref out: str, n: int):\n    out += f\" and number {n} put through a ref parameter\"\n\ndef main(stdout: Stdout):\n    mut out = \"\"\n    out += f\"{1.5} short\"\n    out += f\", then a piece long enough to need a block: {42}\"\n    kept = out\n    out += f\" / {out}\"\n    out = out + f\" (wrote {len(kept)} bytes before)\"\n    put(ref out, 7)\n    stdout.print(out)\n    stdout.print(kept)\n    mut grown = \"\u{fc}\"\n    for at in range(12):\n        grown += f\"{at}\u{e9}\"\n    stdout.print(len(grown), grown)\n    return\n",
         "1.5 short, then a piece long enough to need a block: 42 / 1.5 short, then a piece long enough to need a block: 42 (wrote 55 bytes before) and number 7 put through a ref parameter\n1.5 short, then a piece long enough to need a block: 42\n27 \u{fc}0\u{e9}1\u{e9}2\u{e9}3\u{e9}4\u{e9}5\u{e9}6\u{e9}7\u{e9}8\u{e9}9\u{e9}10\u{e9}11\u{e9}\n",
+    )
+}
+
+/// An f-string's literal pieces go on a text with their bytes and characters known where it is
+/// built, and an int's with its characters taken as its bytes: short ones as headers, ASCII or not
+/// and up to exactly 23 bytes, and longer ones from their blocks. Each length and slice counts
+/// characters as `+` does, onto an inline text and onto a block.
+#[test]
+fn an_f_strings_known_pieces_go_on_counted() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "f_string_known_pieces",
+        r#"def main(stdout: Stdout):
+    mut out = ""
+    n = -9223372036854775807 - 1
+    for at in range(3):
+        out += f"<{at}>é日{n}|exactly twenty-three!|{at * -7}twenty-four bytes long.|日本語の文字で!!{at}|a literal of more than twenty-three bytes, ünï🦊|"
+    stdout.print(len(out), out[0:3], out[len(out) - 3:len(out)], out[60:70])
+    stdout.print(out)
+    mut short = "ab"
+    short += f"{5}é"
+    stdout.print(len(short), short, short[2:4])
+    mut plain = ""
+    plain += f"x{12}y"
+    stdout.print(len(plain), plain)
+"#,
+        "399 <0> ï🦊|  bytes lon\n<0>é日-9223372036854775808|exactly twenty-three!|0twenty-four bytes long.|日本語の文字で!!0|a literal of more than twenty-three bytes, ünï🦊|<1>é日-9223372036854775808|exactly twenty-three!|-7twenty-four bytes long.|日本語の文字で!!1|a literal of more than twenty-three bytes, ünï🦊|<2>é日-9223372036854775808|exactly twenty-three!|-14twenty-four bytes long.|日本語の文字で!!2|a literal of more than twenty-three bytes, ünï🦊|\n4 ab5é 5é\n4 x12y\n",
     )
 }
 
@@ -21855,6 +21937,66 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A request line is three parts with a space between each, a method, a target and HTTP/1.1 or
+/// HTTP/1.0, and anything else is refused with a 400 before it's taken apart: a space in the
+/// target, a target missing, a space after the version, a version in lower case, a control byte in
+/// the method. A well-made line with a query, or with HTTP/1.0, is answered.
+#[test]
+fn a_request_line_of_other_than_three_parts_is_refused() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"from std.net import Request, Response
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=request.path.encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+";
+    let dir = folder("http_request_lines")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(Command::new(&executable).stdout(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    // What the server says to `line` sent alone with `connection: close`, until it closes.
+    let answer = |line: &str| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        stream.write_all(format!("{line}\r\nconnection: close\r\n\r\n").as_bytes())?;
+        let mut heard = Vec::new();
+        stream.read_to_end(&mut heard)?;
+        Ok(String::from_utf8_lossy(&heard).into_owned())
+    };
+    let lines = [
+        "GET / x HTTP/1.1",
+        "GET  HTTP/1.1",
+        "GET / HTTP/1.1 ",
+        "GET /HTTP/1.1",
+        "GET / http/1.1",
+        "GET",
+        "G\u{1}T / HTTP/1.1",
+        "GET /a?q=1 HTTP/1.1",
+        "GET /b HTTP/1.0",
+    ];
+    let heard = lines.iter().map(|line| answer(line)).collect::<std::io::Result<Vec<_>>>()?;
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    let refused = "HTTP/1.1 400 Bad Request\r\ncontent-length: 35\r\nconnection: close\r\n\r\nthat isn't an HTTP/1.1 request line";
+    let answered =
+        |path: &str| format!("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{path}");
+    let mut wanted = vec![refused.to_owned(); 7];
+    wanted.extend([answered("/a"), answered("/b")]);
+    assert_eq!(heard, wanted);
+    Ok(())
+}
+
 /// What a server says to `asked` on one connection, sent whole with the sending side then
 /// closed, built with the runtime `threads` names: `"1"` for the one with threads, `"0"` for the
 /// plain one. A reset after what was said shows as `[reset]`.
@@ -22085,7 +22227,7 @@ fn a_failure_out_of_a_lock_puts_back_every_kind_of_write() -> std::io::Result<()
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_failure_every_write",
         include_str!("fixtures/lock_failure_every_write.fen"),
         "kinds that kept a change: 0\n",
@@ -22099,7 +22241,7 @@ fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
+    prints_built_checking_proofs_too(
         "lock_failure_enum_fields",
         include_str!("fixtures/lock_failure_enum_fields.fen"),
         "kinds that kept a change: 0\n",
@@ -23278,6 +23420,144 @@ def main(net: Net, stdout: Stdout) fails NetError:
     assert_eq!(back, "pong\n", "the ping wasn't answered while the other round computed: {read:?}");
     Ok(())
 }
+
+/// On one thread, rounds spinning every way a loop can go back to its start still let another
+/// connection's round answer: a `while True` whose only way back is `continue`, a `for` whose body
+/// tests a value and goes on to its step, a loop whose inner loop is left by `break` on its first
+/// turn, and a loop walking a generator that yields on every turn of its own, where the walking
+/// loop ticks for each. And one with no loop at all, calling itself (#2594), whose calls are
+/// counted on the thread. A task ticks once a turn, on its jump back to the loop's start, or at
+/// each call of a function that can call itself again, and each spinning round here was started,
+/// and is still spinning, when its ping comes.
+#[test]
+fn a_round_spinning_through_any_way_back_lets_the_others_answer() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ticking-ways-back")?;
+    let program = dir.join("ways_back.fen");
+    std::fs::write(&program, WAYS_BACK)?;
+    let executable = dir.join("ways_back");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let mut spinning = Vec::new();
+    let mut answers = Vec::new();
+    for way in ["skipping", "testing", "leaving", "walking", "recursing"] {
+        // The round has read its line before the ping comes, so it's spinning.
+        let mut spinner = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        spinner.write_all(format!("{way}\n").as_bytes())?;
+        spinning.push(spinner);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        ping.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        ping.write_all(b"ping\n")?;
+        let mut back = String::new();
+        let read = std::io::BufReader::new(ping).read_line(&mut back);
+        answers.push((way, back, read.is_ok()));
+    }
+    drop(spinning);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    for (way, back, read) in answers {
+        assert_eq!(back, "pong\n", "the ping wasn't answered while a round spun {way} (read {read})");
+    }
+    Ok(())
+}
+
+/// Rounds of a server that spin every way a loop can go back to its start, by the line they're
+/// sent, and answer `pong` to anything else.
+const WAYS_BACK: &str = "from std.net import NetError
+
+def skipping(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while True:
+        n += 1
+        x = (x * 31 + 7) % 1000003
+        if n < turns:
+            continue
+        break
+    return x
+
+def testing(turns: int) -> int:
+    mut x = 1
+    for n in range(turns):
+        if x == -1:
+            return n
+        x = (x * 31 + 7) % 1000003
+    return x
+
+def leaving(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while n < turns:
+        n += 1
+        for k in range(1000):
+            if k == 0:
+                break
+        x = (x * 31 + 7) % 1000003
+    return x
+
+def forever() -> Iterator[int]:
+    mut x = 1
+    while True:
+        x = (x * 31 + 7) % 1000003
+        yield x
+
+def walking() -> int:
+    for x in forever():
+        if x == -1:
+            return x
+    return 0
+
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return (fib(n - 1) + fib(n - 2)) % 1000003
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            many = 1_000_000_000_000
+            if line == \"skipping\":
+                conn.write(f\"{skipping(many)}\\n\")?
+            elif line == \"testing\":
+                conn.write(f\"{testing(many)}\\n\")?
+            elif line == \"leaving\":
+                conn.write(f\"{leaving(many)}\\n\")?
+            elif line == \"walking\":
+                conn.write(f\"{walking()}\\n\")?
+            elif line == \"recursing\":
+                conn.write(f\"{fib(90)}\\n\")?
+            else:
+                conn.write(\"pong\\n\")?
+";
 
 /// A chat hub, launched from `main`, writing each line a round hands it to every member's
 /// connection itself, on whichever worker it runs. It counts the writes that went out.
@@ -24563,6 +24843,52 @@ fn release_bitcode_from_another_build_is_refused_before_the_store() -> std::io::
         assert!(!built, "built with stale bitcode: {said}");
         assert!(said.contains("libfennec_runtime.bc") && said.contains(why), "{said}");
     }
+    Ok(())
+}
+
+/// A program built against one runtime library isn't handed back from the store for another of the
+/// same name and stamp built another way from the same source (#2593): the threads runtime, put
+/// where the plain one goes, gives another program, and the plain one put back gives the first
+/// back from the store.
+#[test]
+fn a_runtime_built_another_way_from_the_same_source_builds_another_program() -> std::io::Result<()> {
+    if !ready() || !runtime_built() || !crate::executables::runtime_beside_fennec() {
+        return Ok(());
+    }
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let plain = fennec.with_file_name(crate::executables::runtime_file());
+    let threaded = fennec.with_file_name("libfennec_runtime_threads.a");
+    if !threaded.is_file() {
+        return Ok(());
+    }
+    let dir = folder("runtime-contents")?;
+    let mine = dir.join("bin");
+    std::fs::create_dir_all(&mine)?;
+    let fennec_here = mine.join(fennec.file_name().unwrap_or_default());
+    if std::fs::hard_link(fennec, &fennec_here).is_err() {
+        std::fs::copy(fennec, &fennec_here)?;
+    }
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n")?;
+    let library = mine.join(crate::executables::runtime_file());
+    let built_with = |runtime: &Path, name: &str| -> std::io::Result<Vec<u8>> {
+        // A copy, so the library is a new file each time, as one built again is.
+        std::fs::copy(runtime, &library)?;
+        let output = dir.join(name);
+        let built = Command::new(&fennec_here)
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &output.to_string_lossy()])
+            .env("FENNEC_HOME", &dir)
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        std::fs::read(output)
+    };
+    let first = built_with(&plain, "first")?;
+    let other = built_with(&threaded, "other")?;
+    let again = built_with(&plain, "again")?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(first != other, "the program built against the plain runtime was handed back for another");
+    assert!(first == again, "the plain runtime put back didn't give back the first program");
     Ok(())
 }
 
@@ -35311,6 +35637,97 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
         assert!(made_often - made_once <= 999, "with a task: {task}: {made_once} against {made_often}");
     }
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A constant of `bytes([])`, or of `bytes()`, can't fail, so a program with a task keeps it, made
+/// once, where it was made again at every read: `bytes` counted as able to fail whatever it was
+/// given, which kept std's HTTP from sharing an empty body (#2579). One of `bytes` of a list
+/// from anywhere else may hold a number that isn't a byte, so it's still made at each read, which
+/// is how a constant that can fail keeps a program with threads from failing before it starts.
+#[test]
+fn a_constant_of_empty_bytes_is_kept_with_threads() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("bytes_kept")?;
+    let allocations = |calls: u32, constant: &str| -> std::io::Result<(String, u64)> {
+        let source = format!(
+            "from std.concurrent import Crashed\n\ndef numbers() -> list[int]:\n    return [7, 8]\n\n\
+             DATA = {constant}\n\ndef idle():\n    pass\n\n\
+             def main(stdout: Stdout) fails Crashed:\n    with launch(() => idle())?:\n        pass\n    \
+             mut total = 0\n    for _ in range({calls}):\n        total += len(DATA)\n    stdout.print(total)\n"
+        );
+        let name = format!("calls{calls}_{}", constant.len());
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(&name);
+        let built = fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let made = said
+            .split_whitespace()
+            .skip_while(|word| *word != "allocations")
+            .nth(1)
+            .and_then(|count| count.parse().ok())
+            .unwrap_or_else(|| panic!("no counts: {said}"));
+        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), made))
+    };
+    for (constant, each, kept) in [
+        ("bytes([])", 0, true),
+        ("bytes()", 0, true),
+        ("bytes(numbers())", 2, false),
+        // A comprehension's list is made empty and then filled: its bytes are its items.
+        ("bytes([11 for _ in range(4)])", 4, false),
+    ] {
+        let (once, made_once) = allocations(1, constant)?;
+        let (often, made_often) = allocations(1000, constant)?;
+        assert_eq!(once, format!("{each}\n"), "{constant}");
+        assert_eq!(often, format!("{}\n", each * 1000), "{constant}");
+        if kept {
+            assert!(made_often - made_once < 10, "{constant}: {made_once} against {made_often}");
+        } else {
+            assert!(made_often - made_once >= 999, "{constant}: {made_once} against {made_often}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A list made empty and then filled is not empty bytes: `bytes(...)` of it gives every item,
+/// whichever way it was filled. Each form makes the list with `[]` or `list[int]()` and then
+/// fills it, as a comprehension's lowering does, which once had a list "written once as `[]`"
+/// taken for `bytes([])`, and HMAC keys came out empty.
+#[test]
+fn bytes_of_a_list_filled_after_it_was_made_empty_holds_its_items() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "bytes_filled",
+        r"def filled(ref items: list[int]):
+    items.append(9)
+    items.append(8)
+
+def main(stdout: Stdout):
+    comprehension = bytes([11 for _ in range(3)])
+    mut looped = list[int]()
+    for n in range(4):
+        looped.append(n)
+    mut extended: list[int] = []
+    extended.extend([5, 6])
+    mut by_ref: list[int] = []
+    filled(ref by_ref)
+    mut added: list[int] = []
+    added = added + [7]
+    stdout.print(list(comprehension), list(bytes(looped)), list(bytes(extended)), list(bytes(by_ref)), list(bytes(added)), list(bytes([])))
+",
+    )?;
+    assert_eq!(printed, "[11, 11, 11] [0, 1, 2, 3] [5, 6] [9, 8] [7] []\n");
     Ok(())
 }
 

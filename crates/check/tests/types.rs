@@ -194,7 +194,8 @@ fn literals_take_the_size_they_go_into() {
 }
 
 /// A number written out after `else` takes the size of the optional it stands in for, as a field's
-/// default does where a struct's generated `deserialize` fills it in; and an `f32` can be saved.
+/// default does where a struct's generated `deserialize` fills it in, and so it does where the
+/// optional is a name known to be `None` (#2588); and an `f32` can be saved.
 #[test]
 fn an_else_default_takes_the_optionals_size() {
     let program = "
@@ -207,8 +208,14 @@ fn an_else_default_takes_the_optionals_size() {
             level: f32 = found else 0.25
             stdout.print(level, small else 7, json.dumps(Reading()))
             stdout.print(small else 300)
+
+        def known(stdout: Stdout):
+            found: f32? = None
+            tiny: u8? = None
+            level: f32 = found else 0.25
+            stdout.print(level, tiny else 7, tiny else 301)
     ";
-    assert_eq!(problems(program), ["300 doesn't fit in u8 @ 300"]);
+    assert_eq!(problems(program), ["300 doesn't fit in u8 @ 300", "301 doesn't fit in u8 @ 301"]);
 }
 
 /// A number literal takes the size a type's own operator takes on its right, as `velocity * 2.0`

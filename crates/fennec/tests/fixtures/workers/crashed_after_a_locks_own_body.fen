@@ -1,0 +1,45 @@
+# A task crashes after a lock's block, in the function that held it, having appended to a list
+# item's list in a loop under the lock. The lock's end wrote nothing out of its place, so the
+# crash's way out puts nothing back over the shared value: it's as the lock left it, and the next
+# lock of it works. The lock's end, written before the loop's body, took the item out again for
+# letting go of its local, and the crash wrote that emptied local over the shared list (#2516).
+from std.concurrent import Crashed
+
+struct Bag:
+    items: list[str]
+    seen: int
+
+struct Shelf:
+    rows: list[Bag]
+
+def first_bag() -> Bag:
+    return Bag(items=["first, a text long enough for a block of its own"], seen=0)
+
+def appended(shelf: shared Shelf, count: int, limits: list[int]):
+    lock shelf as ref held:
+        for turn in range(count):
+            held.rows[0].items.append(f"row {turn}, a text long enough for a block")
+    held_seen = limits[count]
+    lock shelf as ref held:
+        held.rows[0].seen += held_seen
+    return
+
+def ran(shelf: shared Shelf, count: int) fails Crashed:
+    limits = [0, 1, 2]
+    with launch(() => appended(shelf, count=count, limits=limits)) as task:
+        pass
+    return
+
+def held_now(shelf: shared Shelf) -> str:
+    lock shelf as held:
+        row = held.rows[0]
+        return f"{len(row.items)} {row.seen} {row.items[-1]}"
+
+def main(stdout: Stdout):
+    shared shelf = Shelf(rows=[first_bag()])
+    for count in [1, 40, 2, 300, 1]:
+        ran(shelf, count=count) except Crashed():
+            stdout.print("crashed", count, held_now(shelf))
+            continue
+        stdout.print("went", count, held_now(shelf))
+    return

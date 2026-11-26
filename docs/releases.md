@@ -46,22 +46,43 @@ Print the private key, then destroy the file. Each `.pub` file's line goes in `R
 
 ## Signing a release
 
-1. Download `fennec-v0.4.2.manifest` from the prerelease.
-2. Check that the release's `Built twice, the same` job passed. CI builds each archive twice, from checkouts in two places on two machines, and that job holds that both builds made the same bytes. Windows isn't checked yet. With the release workflow's flags, anyone can build an archive again from the tag and get the hash in the manifest.
-3. Sign it, touching the key when it blinks:
+1. Download `fennec-v0.4.2.manifest` and `fennec-launcher-v0.4.2.manifest` from the prerelease.
+2. Check that the release's `Built twice, the same` job passed. CI builds each archive twice, from checkouts in two places on two machines, and that job holds that both builds made the same bytes, on every platform. One script builds them, `.github/scripts/release-build.sh`, with the environment in `release-env.sh`. On Linux they're built in containers pinned by digest, with their compilers pinned by version in `release-container.sh`, so the same commit builds the same bytes off GitHub too: no path of the machine's, and no time but the commit's, goes in what's built.
+3. Build it again yourself, off GitHub, and sign only if it says every archive is the same:
+
+   ```bash
+   .github/scripts/rebuild-release.sh v0.4.2 fennec-v0.4.2.manifest fennec-launcher-v0.4.2.manifest
+   ```
+
+   It clones the tag afresh and builds this machine's Linux archives, musl runtime and all, in the containers and with the compilers the tag pins. Each archive's size and BLAKE3 hash has to be the manifest's line for it. It exits 0 only when every archive is; otherwise it names each one that isn't, says not to sign, and keeps its build to look at. It needs git and Docker: on a Mac with Colima, run it with `REBUILD_DOCKER="docker --context <yours>"`. See [what the rebuild checks](#what-the-rebuild-checks).
+4. Sign it, touching the key when it blinks:
 
    ```bash
    ssh-keygen -Y sign -f ~/.ssh/fennec_release_1 -n fennec-toolchain fennec-v0.4.2.manifest
    ```
 
-4. Check it before uploading, with `fennec-dist`, which this repository builds:
+5. Check it before uploading, with `fennec-dist`, which this repository builds:
 
    ```bash
    fennec-dist verify toolchain fennec-v0.4.2.manifest fennec-v0.4.2.manifest.sig
    ```
 
-5. Upload `fennec-v0.4.2.manifest.sig` to the release, and mark it a release.
+6. Upload `fennec-v0.4.2.manifest.sig` to the release, and mark it a release.
 
 A launcher release is signed the same way in the `fennec-launcher` namespace, by two of the keys. The two signatures go one after the other in one `.sig` file.
+
+### What the rebuild checks
+
+The rebuild is what shows a release is its tag's source and nothing else, since it doesn't run on GitHub's machines. It builds what the signing machine runs without emulation:
+
+| archive | checked by |
+|---|---|
+| Arm Linux (`aarch64-unknown-linux-gnu`) | the signer's rebuild, from a Mac or an Arm Linux machine |
+| x86-64 Linux (`x86_64-unknown-linux-gnu`) | the signer's rebuild from an x86-64 Linux machine; from a Mac, CI's `Built twice, the same` check only |
+| Arm Mac (`aarch64-apple-darwin`) | CI's `Built twice, the same` check only, until the release's Xcode is pinned and the signer has that Xcode |
+| Intel Mac (`x86_64-apple-darwin`) | CI's `Built twice, the same` check only |
+| Windows (`x86_64-pc-windows-gnullvm`) | CI's `Built twice, the same` check only |
+
+CI's check builds each archive twice on two of GitHub's machines, so it shows a build doesn't depend on where it ran, but not that GitHub built from the tag.
 
 `fennec self update` installs a launcher release. It reads `latest`, the newest launcher's version, then `v<version>/fennec-launcher-v<version>.manifest`, its `.sig` and the archive for its platform, from `https://dl.fennec-lang.dev/launcher` or `FENNEC_LAUNCHER_DIST`. The archive's one top folder, `fennec-launcher-v<version>-<platform>`, holds the launcher's three programs: `fennec`, `fennec-setup` and `fennec-fetch`. It replaces only the launcher installed as `~/.fennec/bin/fennec`, only with a newer version, and only one two of the keys signed. Until there are keys, it refuses before fetching anything.

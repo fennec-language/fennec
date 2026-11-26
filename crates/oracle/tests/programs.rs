@@ -3708,6 +3708,23 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
     );
 }
 
+/// A number written out after `else` takes the size of the optional it stands in for where the
+/// optional is a name known to be `None` (#2588), as compiled code works it out
+/// (`llvm::an_else_default_takes_the_size_of_a_name_known_to_be_none`).
+#[test]
+fn an_else_default_takes_the_size_of_a_name_known_to_be_none() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            found: f32? = None
+            tiny: u8? = None
+            level: f32 = found else 0.1
+            stdout.print(level * 3.0, (tiny else 200) + 55)
+        ",
+        "0.3 255\n",
+    );
+}
+
 /// `std.math`'s `sqrt`, `sin`, `cos` and `acos` take an `f32` and give one, computed in `f32` by
 /// `libm`'s own, the same bits everywhere, and `abs` of an `f32` is one. Given a `float`, each is
 /// what it was.

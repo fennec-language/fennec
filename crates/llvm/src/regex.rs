@@ -24,24 +24,29 @@ impl Emit<'_, '_, '_> {
         number
     }
 
-    /// A `Regex`'s pattern, borrowed for a call.
-    fn pattern(&mut self, regex: &Operand, made: &mut Vec<(String, String)>) -> Result<String, String> {
+    /// A `Regex`'s pattern, as its header, read from the `Regex`.
+    fn pattern_header(&mut self, regex: &Operand) -> Result<String, String> {
         let (block, kind) = self.operand(regex)?;
         let (offset, held) = self.field(&kind, "pattern")?;
         let fields = self.fields_at(&block, &kind);
         let at = self.offset(&fields, offset);
         let (pattern, text) = (self.temp(), self.text_of(&held));
         self.line(&format!("{pattern} = load {text}, ptr {at}"));
+        Ok(pattern)
+    }
+
+    /// A `Regex`'s pattern, borrowed for a call: `header`, from [`Self::pattern_header`], as a block.
+    fn pattern(&mut self, header: &str, made: &mut Vec<(String, String)>) -> String {
         if !self.headers() {
-            return Ok(pattern);
+            return header.to_owned();
         }
-        let (pattern, owned) = self.text_block(&pattern);
+        let (pattern, owned) = self.text_block(header);
         // Noted for a failing op too, which lets go of it on its way out of the function.
         if let Some(noted) = self.made_for_body.last_mut() {
             noted.push((pattern.clone(), owned.clone()));
         }
         made.push((pattern.clone(), owned));
-        Ok(pattern)
+        pattern
     }
 
     /// A string operand as a block, as [`Self::pattern`] gives one.
@@ -103,7 +108,17 @@ impl Emit<'_, '_, '_> {
             let problem = self.text_value(&problem);
             return self.assign(dest, &problem);
         }
-        let pattern = self.pattern(arg(0)?, made)?;
+        let anchor = match name {
+            "Regex.search" => Some(0),
+            "Regex.match" => Some(1),
+            "Regex.fullmatch" => Some(2),
+            _ => None,
+        };
+        if let Some(anchor) = anchor {
+            return self.search(dest, anchor, arg(0)?, arg(1)?, span);
+        }
+        let header = self.pattern_header(arg(0)?)?;
+        let pattern = self.pattern(&header, made);
         let whole = self.regex_text(arg(1)?, made)?;
         match name {
             "Regex.replace" => {
@@ -135,7 +150,7 @@ impl Emit<'_, '_, '_> {
                     "{places} = call ptr @fennec_regex_find_all(ptr {pattern}, ptr {whole}, i64 {ints}, i64 {from}, i64 {to})"
                 ));
                 self.leave_if_failed();
-                let groups = self.group_count(&pattern);
+                let groups = self.group_count(&header)?;
                 let (per, per_match, count) = (self.temp(), self.temp(), self.temp());
                 self.line(&format!("{per} = shl i64 {groups}, 1"));
                 self.line(&format!("{per_match} = add i64 {per}, 2"));
@@ -158,33 +173,55 @@ impl Emit<'_, '_, '_> {
                 self.release_quietly(&places);
                 self.assign(dest, &found)
             }
-            "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
-                let anchor = match name {
-                    "Regex.match" => 1,
-                    "Regex.fullmatch" => 2,
-                    _ => 0,
-                };
-                let ints = self.element_number(ListItem::Int);
-                self.declare("declare ptr @fennec_regex_find(ptr, ptr, i64, i64, i64, i64) nounwind");
-                let places = self.temp();
-                self.line(&format!(
-                    "{places} = call ptr @fennec_regex_find(ptr {pattern}, ptr {whole}, i64 {anchor}, i64 {ints}, i64 {from}, i64 {to})"
-                ));
-                self.leave_if_failed();
-                let groups = self.group_count(&pattern);
-                self.optional_match(dest, &whole, &places, &groups, span)?;
-                self.release_quietly(&places);
-                Ok(())
-            }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }
 
-    fn group_count(&mut self, pattern: &str) -> String {
-        self.declare("declare i64 @fennec_regex_groups(ptr) nounwind");
+    /// How many groups the pattern in `header`, a pattern's header, has.
+    fn group_count(&mut self, header: &str) -> Result<String, String> {
+        let [p0, p1, p2] = self.header_words(header)?;
+        self.declare("declare i64 @fennec_regex_groups(i64, i64, i64) nounwind");
         let groups = self.temp();
-        self.line(&format!("{groups} = call i64 @fennec_regex_groups(ptr {pattern})"));
-        groups
+        self.line(&format!("{groups} = call i64 @fennec_regex_groups(i64 {p0}, i64 {p1}, i64 {p2})"));
+        Ok(groups)
+    }
+
+    /// A string header's three words, for a runtime call that reads it where it is.
+    fn header_words(&mut self, header: &str) -> Result<[String; 3], String> {
+        if !self.headers() {
+            return Err("a regex call here takes strings held as headers".to_owned());
+        }
+        Ok([0, 1, 2].map(|at| self.header_word(header, at)))
+    }
+
+    /// `search` (0), `match` (1) or `fullmatch` (2). The runtime reads the pattern and the text
+    /// from their headers, so a search makes no block for either. Only when it finds a match are
+    /// the pattern's groups counted and the text made a block, for the `Match`'s slices.
+    fn search(
+        &mut self,
+        dest: LocalId,
+        anchor: u8,
+        regex: &Operand,
+        text: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
+        let (from, to) = self.place_in_source(span);
+        let pattern = self.pattern_header(regex)?;
+        let (whole, _) = self.operand(text)?;
+        let [p0, p1, p2] = self.header_words(&pattern)?;
+        let [t0, t1, t2] = self.header_words(&whole)?;
+        let ints = self.element_number(ListItem::Int);
+        self.declare(
+            "declare ptr @fennec_regex_find(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
+        );
+        let places = self.temp();
+        self.line(&format!(
+            "{places} = call ptr @fennec_regex_find(i64 {p0}, i64 {p1}, i64 {p2}, i64 {t0}, i64 {t1}, i64 {t2}, i64 {anchor}, i64 {ints}, i64 {from}, i64 {to})"
+        ));
+        self.leave_if_failed();
+        self.optional_match(dest, &pattern, &whole, &places, span)?;
+        self.release_quietly(&places);
+        Ok(())
     }
 
     /// Runs `body` with each number from 0 up to `count`, as a loop.
@@ -342,13 +379,15 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// `Some(Match)` when the runtime found one, otherwise `None`.
+    /// `Some(Match)` when the runtime found one, otherwise `None`. `pattern` and `whole` are the
+    /// pattern's and the text's headers: the groups are counted and the text made a block only for
+    /// a match.
     fn optional_match(
         &mut self,
         dest: LocalId,
+        pattern: &str,
         whole: &str,
         places: &str,
-        groups: &str,
         span: Span,
     ) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
@@ -359,7 +398,14 @@ impl Emit<'_, '_, '_> {
         let place = self.place_for(&kind);
         self.line(&format!("br i1 {found}, label %{some}, label %{none}"));
         self.start_block(&some);
-        let made = self.build_match(whole, places, "0", groups, span)?;
+        let groups = self.group_count(pattern)?;
+        let (block, owned) = self.text_block(whole);
+        // Noted while the `Match` is built, so a slice that fails lets go of it on its way out.
+        self.made_for_body.push(vec![(block.clone(), owned.clone())]);
+        let made = self.build_match(&block, places, "0", &groups, span);
+        self.made_for_body.pop();
+        let made = made?;
+        self.let_go_text_block(&block, &owned);
         self.write_option(&kind, Some(&made), &place)?;
         self.line(&format!("br label %{joined}"));
         self.start_block(&none);

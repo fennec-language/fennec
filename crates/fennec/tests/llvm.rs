@@ -35648,7 +35648,7 @@ fn bytes_of_a_list_filled_after_it_was_made_empty_holds_its_items() -> std::io::
     }
     let printed = printed_by(
         "bytes_filled",
-        r#"def filled(ref items: list[int]):
+        r"def filled(ref items: list[int]):
     items.append(9)
     items.append(8)
 
@@ -35664,7 +35664,7 @@ def main(stdout: Stdout):
     mut added: list[int] = []
     added = added + [7]
     stdout.print(list(comprehension), list(bytes(looped)), list(bytes(extended)), list(bytes(by_ref)), list(bytes(added)), list(bytes([])))
-"#,
+",
     )?;
     assert_eq!(printed, "[11, 11, 11] [0, 1, 2, 3] [5, 6] [9, 8] [7] []\n");
     Ok(())

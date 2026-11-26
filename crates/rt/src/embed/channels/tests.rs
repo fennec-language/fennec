@@ -763,10 +763,46 @@ fn a_channel_found_and_kept_is_gone_once_it_s_freed() {
     let mut got = 0;
     assert_eq!(channel_receive(channel, FOREVER, &mut got), DONE);
     assert_eq!(got, 7);
-    assert!(FOUND.with_borrow(|found| found.contains_key(&channel)), "kept to find again");
+    assert!(kept_to_find(channel), "kept to find again");
     channel_free(channel);
     assert_eq!(channel_send(channel, 8, 0, FOREVER), CLOSED);
     assert_eq!(channel_receive(channel, FOREVER, &mut got), CLOSED);
+    finish();
+}
+
+/// Two channels whose numbers share a place among those a thread keeps to find, used in turn: each
+/// send and receive finds its own channel, never the other one, though each takes the place from
+/// the other at every look.
+#[test]
+fn two_channels_that_share_a_kept_place_each_find_their_own() {
+    begin();
+    let first = channel_new(4);
+    // Numbers are given out across every test running at once, so others are made until one
+    // shares the first's place, within a few thousand.
+    let mut made = Vec::new();
+    let second = loop {
+        let channel = channel_new(4);
+        if kept_at(channel) == kept_at(first) {
+            break channel;
+        }
+        made.push(channel);
+        assert!(made.len() < 10_000, "no channel shared the first's place");
+    };
+    assert_ne!(first, second);
+    for round in 0..3 {
+        assert_eq!(channel_send(first, 100 + round, 0, FOREVER), DONE);
+        assert_eq!(channel_send(second, 200 + round, 0, FOREVER), DONE);
+        assert_eq!(receive(first, FOREVER), (DONE, 100 + round), "the first's own");
+        assert_eq!(receive(second, FOREVER), (DONE, 200 + round), "the second's own");
+    }
+    assert!(kept_to_find(second) && !kept_to_find(first), "the place is the last one found's");
+    channel_free(second);
+    assert_eq!(receive(first, MILLISECOND), (TIMED_OUT, 0), "the first is still open, and empty");
+    assert_eq!(receive(second, MILLISECOND).0, CLOSED);
+    for channel in made {
+        channel_free(channel);
+    }
+    channel_free(first);
     finish();
 }
 

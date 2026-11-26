@@ -472,28 +472,36 @@ fn fennec_owns(path: &Path) -> bool {
 }
 
 /// What a dev build depends on besides the program: which runtime it links, as far as anything
-/// outside the program chooses that, whether it's linked on its own, what `--cpu` asked for, and
-/// every output switch.
+/// outside the program chooses that, and what each runtime library holds, by the hash of its bytes
+/// (#2593); whether it's linked on its own, what `--cpu` asked for, and every output switch.
 pub(crate) fn dev_build_settings() -> String {
     let threads = std::env::var_os("FENNEC_THREADS_RUNTIME").map(|on| on.to_string_lossy().into_owned());
     let found = runtime_folder(false).is_ok_and(|folder| folder.join(Runtime::Threads.library()).is_file());
     let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
+    let statically = links_statically();
+    let holding = |runtime: Runtime| {
+        let path = runtime_folder(statically).ok()?.join(runtime.library());
+        identity_of(&path).map(|identity| identity.contents)
+    };
     format!(
-        "threads={threads:?} found={found} baseline={baseline} static={} {}",
-        links_statically(),
-        fennec_llvm::output_switches()
+        "threads={threads:?} found={found} baseline={baseline} static={statically} {} plain={:?} threaded={:?}",
+        fennec_llvm::output_switches(),
+        holding(Runtime::Plain),
+        holding(Runtime::Threads)
     )
 }
 
 /// Which of the runtime's bitcode a release build would put in its unit, for the key of a build
 /// of unchanged files (see `built`): the plain runtime's and the one with threads, either of
-/// which a program may link. Bitcode from another build is refused, as building refuses it, so
-/// any found is this build's.
+/// which a program may link, by the hash of its bytes. Bitcode from another build is refused, as
+/// building refuses it.
 pub(crate) fn release_bitcode() -> Result<String, String> {
     let statically = links_statically();
-    let plain = runtime_bitcode(Runtime::Plain, statically)?.is_some();
-    let threads = runtime_bitcode(Runtime::Threads, statically)?.is_some();
-    Ok(format!("bitcode plain={plain} threads={threads}"))
+    let holding =
+        |path: Option<PathBuf>| path.and_then(|path| identity_of(&path)).map(|identity| identity.contents);
+    let plain = holding(runtime_bitcode(Runtime::Plain, statically)?);
+    let threads = holding(runtime_bitcode(Runtime::Threads, statically)?);
+    Ok(format!("bitcode plain={plain:?} threads={threads:?}"))
 }
 
 /// Puts the finished program at `output`: the one in the store under its root hash, or else the
@@ -632,9 +640,9 @@ struct Stored {
 /// them, so a program built before LLVM's tools changed isn't handed back after; the target and
 /// the CPU it's built for; whether it's a release build and a static one; every switch that
 /// changes what's built, as `fennec_llvm::output_switches` names them; and the runtime library
-/// linked in, and the runtime's bitcode a release puts in its unit, by the build each is stamped
-/// with, or for a library from before stamps, its size and when it was built, since hashing it
-/// whole would cost every run. See `docs/store.md`.
+/// linked in, and the runtime's bitcode a release puts in its unit, by the hash of each one's bytes,
+/// kept by its path, size and when it changed, since hashing it whole would cost every run. See
+/// `docs/store.md`.
 fn root_hash(
     units: &[fennec_llvm::Unit],
     (entry, llvm): (&str, &str),
@@ -658,22 +666,13 @@ fn root_hash(
     hasher.update(target.as_bytes());
     let library = runtime_library(runtime, statically).ok().into_iter().chain(bitcode.map(Path::to_path_buf));
     for path in library {
-        // Which library, by its name, and the build of Fennec it's from, as its stamp says, so the
-        // same library keys the same program on every machine and in every folder. The name tells
-        // the runtime with threads from the one without, which one build of Fennec makes both of.
-        // One from before stamps goes by where it is, how big and when it changed.
-        if let Some(build) = stamp_of(&path) {
-            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            hasher.update(format!("library {name} built from {build}\n").as_bytes());
-            continue;
-        }
-        let metadata = std::fs::metadata(&path).ok();
-        let changed = metadata
-            .as_ref()
-            .and_then(|found| found.modified().ok())
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
-        let size = metadata.map_or(0, |found| found.len());
-        hasher.update(format!("{}\n{size}\n{changed:?}\n", path.display()).as_bytes());
+        // Which library, by its name and the hash of its bytes, so the same library keys the same
+        // program in every folder, and one built another way from the same source, with other
+        // features or another profile, keys another (#2593): the build its stamp names is the same.
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let contents =
+            identity_of(&path).map_or_else(|| "unreadable".to_owned(), |identity| identity.contents);
+        hasher.update(format!("library {name} holding {contents}\n").as_bytes());
     }
     for function in &functions {
         hasher.update(function.as_bytes());
@@ -1706,10 +1705,21 @@ fn stamp_in(bytes: &[u8]) -> Option<String> {
 }
 
 /// The build of Fennec a runtime library is from, as its stamp says, or `None` when it has none,
-/// like one from before stamps. Reading a library whole takes a while, so what it says is kept in the
-/// store by the file's path, size and when it changed, and in the toolchain's store too, which every
-/// home reads (see `toolchain`).
+/// like one from before stamps.
 fn stamp_of(path: &Path) -> Option<String> {
+    identity_of(path)?.build
+}
+
+/// What a runtime library is: the build of Fennec its stamp names, and the hash of its bytes.
+struct Identity {
+    build: Option<String>,
+    contents: String,
+}
+
+/// A runtime library's [`Identity`]. Reading a library whole takes a while, so what it is is kept
+/// in the store by the file's path, size and when it changed, and in the toolchain's store too,
+/// which every home reads (see `toolchain`).
+fn identity_of(path: &Path) -> Option<Identity> {
     let metadata = std::fs::metadata(path).ok()?;
     let changed = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
     let name =
@@ -1717,26 +1727,31 @@ fn stamp_of(path: &Path) -> Option<String> {
     let cache = crate::run::cache();
     let kept = cache
         .as_ref()
-        .and_then(|cache| cache.read(RUNTIME_STAMPS, &name))
-        .or_else(|| crate::toolchain::read(RUNTIME_STAMPS, &name));
-    if let Some(kept) = kept {
-        return String::from_utf8(kept).ok().filter(|build| !build.is_empty());
+        .and_then(|cache| cache.read(RUNTIME_IDENTITIES, &name))
+        .or_else(|| crate::toolchain::read(RUNTIME_IDENTITIES, &name));
+    if let Some(kept) = kept.and_then(|kept| String::from_utf8(kept).ok())
+        && let Some((build, contents)) = kept.split_once('\n')
+    {
+        let build = Some(build.to_owned()).filter(|build| !build.is_empty());
+        return Some(Identity { build, contents: contents.to_owned() });
     }
-    let build = stamp_in(&std::fs::read(path).ok()?);
-    let stamp = build.as_deref().unwrap_or("").as_bytes();
+    let bytes = std::fs::read(path).ok()?;
+    let identity = Identity { build: stamp_in(&bytes), contents: fennec_blake3::hash(&bytes).to_hex() };
+    let noted = format!("{}\n{}", identity.build.as_deref().unwrap_or(""), identity.contents);
     if let Some(cache) = &cache {
         // A store that can't be written only means reading the library again next time.
         fennec_build::kept(
-            "keep which build a runtime library is",
-            cache.write(RUNTIME_STAMPS, &name, stamp),
+            "keep what a runtime library is",
+            cache.write(RUNTIME_IDENTITIES, &name, noted.as_bytes()),
         );
     }
-    crate::toolchain::keep(RUNTIME_STAMPS, &name, stamp);
-    build
+    crate::toolchain::keep(RUNTIME_IDENTITIES, &name, noted.as_bytes());
+    Some(identity)
 }
 
-/// Where which build each runtime library is from is kept, by its path, size and changed time.
-const RUNTIME_STAMPS: &str = "runtime-stamps";
+/// Where what each runtime library is, its build and the hash of its bytes, is kept, by its path,
+/// size and changed time.
+const RUNTIME_IDENTITIES: &str = "runtime-identities";
 
 #[cfg(test)]
 mod tests {

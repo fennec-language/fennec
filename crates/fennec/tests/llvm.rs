@@ -5087,14 +5087,15 @@ fn the_bucket_review_programs_print_what_they_always_did() -> std::io::Result<()
                 .env("FENNEC_HOME", &dir)
                 .env("FENNEC_CHECK_PROOFS", proofs)
                 .output_before(FENNEC_DEADLINE)?;
-            // The first error said, and the first place pointed at after it, by the file's name.
+            // The first error said, and the first place pointed at after it, by the file's name:
+            // the place can carry part of the program's path, which Windows writes with `\`.
             let first_error = |said: &[u8]| {
                 let said = String::from_utf8_lossy(said);
                 let mut lines = said.lines().skip_while(|line| !line.starts_with("error"));
                 let Some(error) = lines.next() else { return String::new() };
                 let place = lines
                     .find_map(|line| line.trim_start().strip_prefix("--> "))
-                    .map(|place| format!("--> {}\n", place.rsplit('/').next().unwrap_or(place)))
+                    .map(|place| format!("--> {}\n", place.rsplit(['/', '\\']).next().unwrap_or(place)))
                     .unwrap_or_default();
                 format!("{error}\n{place}")
             };

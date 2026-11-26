@@ -35609,6 +35609,97 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A constant of `bytes([])`, or of `bytes()`, can't fail, so a program with a task keeps it, made
+/// once, where it was made again at every read: `bytes` counted as able to fail whatever it was
+/// given, which kept std's HTTP from sharing an empty body (#2579). One of `bytes` of a list
+/// from anywhere else may hold a number that isn't a byte, so it's still made at each read, which
+/// is how a constant that can fail keeps a program with threads from failing before it starts.
+#[test]
+fn a_constant_of_empty_bytes_is_kept_with_threads() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("bytes_kept")?;
+    let allocations = |calls: u32, constant: &str| -> std::io::Result<(String, u64)> {
+        let source = format!(
+            "from std.concurrent import Crashed\n\ndef numbers() -> list[int]:\n    return [7, 8]\n\n\
+             DATA = {constant}\n\ndef idle():\n    pass\n\n\
+             def main(stdout: Stdout) fails Crashed:\n    with launch(() => idle())?:\n        pass\n    \
+             mut total = 0\n    for _ in range({calls}):\n        total += len(DATA)\n    stdout.print(total)\n"
+        );
+        let name = format!("calls{calls}_{}", constant.len());
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(&name);
+        let built = fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let made = said
+            .split_whitespace()
+            .skip_while(|word| *word != "allocations")
+            .nth(1)
+            .and_then(|count| count.parse().ok())
+            .unwrap_or_else(|| panic!("no counts: {said}"));
+        Ok((String::from_utf8_lossy(&ran.stdout).into_owned(), made))
+    };
+    for (constant, each, kept) in [
+        ("bytes([])", 0, true),
+        ("bytes()", 0, true),
+        ("bytes(numbers())", 2, false),
+        // A comprehension's list is made empty and then filled: its bytes are its items.
+        ("bytes([11 for _ in range(4)])", 4, false),
+    ] {
+        let (once, made_once) = allocations(1, constant)?;
+        let (often, made_often) = allocations(1000, constant)?;
+        assert_eq!(once, format!("{each}\n"), "{constant}");
+        assert_eq!(often, format!("{}\n", each * 1000), "{constant}");
+        if kept {
+            assert!(made_often - made_once < 10, "{constant}: {made_once} against {made_often}");
+        } else {
+            assert!(made_often - made_once >= 999, "{constant}: {made_once} against {made_often}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A list made empty and then filled is not empty bytes: `bytes(...)` of it gives every item,
+/// whichever way it was filled. Each form makes the list with `[]` or `list[int]()` and then
+/// fills it, as a comprehension's lowering does, which once had a list "written once as `[]`"
+/// taken for `bytes([])`, and HMAC keys came out empty.
+#[test]
+fn bytes_of_a_list_filled_after_it_was_made_empty_holds_its_items() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "bytes_filled",
+        r"def filled(ref items: list[int]):
+    items.append(9)
+    items.append(8)
+
+def main(stdout: Stdout):
+    comprehension = bytes([11 for _ in range(3)])
+    mut looped = list[int]()
+    for n in range(4):
+        looped.append(n)
+    mut extended: list[int] = []
+    extended.extend([5, 6])
+    mut by_ref: list[int] = []
+    filled(ref by_ref)
+    mut added: list[int] = []
+    added = added + [7]
+    stdout.print(list(comprehension), list(bytes(looped)), list(bytes(extended)), list(bytes(by_ref)), list(bytes(added)), list(bytes([])))
+",
+    )?;
+    assert_eq!(printed, "[11, 11, 11] [0, 1, 2, 3] [5, 6] [9, 8] [7] []\n");
+    Ok(())
+}
+
 /// The workers of a `parallel` loop race to reach an `embed_file` first, each reading it whole,
 /// slicing it and joining parts of it in the runtime. The one copy the process makes is the
 /// winner's, but nothing a program or its replay sees says which thread won (#2429).

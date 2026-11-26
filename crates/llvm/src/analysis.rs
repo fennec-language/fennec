@@ -4917,6 +4917,9 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
             && args.first().and_then(|list| function.type_of(list)).is_some_and(|ty| {
                 !matches!(&ty, Type::List(item) if matches!(**item, Type::Int | Type::Float | Type::Str | Type::Bool))
             }))
+        // `bytes(list)` fails on an item that isn't a byte, which `bytes()` and `bytes([])` can't
+        // have.
+        || (name == "bytes" && !makes_no_bytes(function, args))
         || name.starts_with("crypto.")
         || name.starts_with("compress.")
         || name.starts_with("unicode.")
@@ -4957,7 +4960,6 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
                     | "max.key"
                     | "min.key"
                     | "main.result"
-                    | "bytes"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"
@@ -4973,6 +4975,49 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
                     | "parallel.stream_next"
                     | "parallel.sum"
         )
+}
+
+/// Whether `bytes(...)` given `args` makes empty bytes, so can't fail: given nothing, or a list
+/// written once as `[]` and read only by the `bytes(...)`, as `bytes([])` is, in a constant kept
+/// for the whole run too. A list from anywhere else may hold a number that isn't a byte. One
+/// written out of bytes can't either, but the runtime's call for a list says so by failing, so
+/// it's left to that.
+pub(crate) fn makes_no_bytes(function: &Function, args: &[Operand]) -> bool {
+    let list = match args {
+        [] => return true,
+        [Operand::Local(list)] => *list,
+        _ => return false,
+    };
+    let mut writes = function.blocks.iter().flat_map(|block| &block.insts).filter(|inst| {
+        let mut writes = false;
+        visit(&inst.kind, |_| {}, |local| writes |= local == list);
+        writes
+    });
+    let (Some(write), None) = (writes.next(), writes.next()) else { return false };
+    // Read by nothing but the `bytes(...)` itself, so nothing filled it after it was made: a
+    // comprehension's list is made empty and then appended to, which is a read, not a write.
+    let reads: usize = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .map(|inst| {
+            let mut reads = 0;
+            visit(&inst.kind, |operand| reads += usize::from(*operand == Operand::Local(list)), |_| {});
+            reads
+        })
+        .sum();
+    let ends_with_it = function.blocks.iter().any(|block| match &block.end {
+        Terminator::Return(Some(value)) | Terminator::Branch { cond: value, .. } => {
+            *value == Operand::Local(list)
+        }
+        _ => false,
+    });
+    match &write.kind {
+        InstKind::MakeList { items, .. } | InstKind::ConstantList { items, .. } => {
+            items.is_empty() && reads == 1 && !ends_with_it
+        }
+        _ => false,
+    }
 }
 
 /// Whether `function` can fail of itself, rather than by what it calls failing, in a program that

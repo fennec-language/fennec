@@ -278,8 +278,12 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &block)
     }
 
-    /// `bytes(list)`, which fails on an item that isn't a byte.
+    /// `bytes(list)`, which fails on an item that isn't a byte. `bytes([])` is `bytes()`, which
+    /// can't fail and has no way out for a failure (`analysis::makes_no_bytes`).
     pub(crate) fn bytes_of_list(&mut self, dest: LocalId, list: &Operand, span: Span) -> Result<(), String> {
+        if crate::analysis::makes_no_bytes(self.function, std::slice::from_ref(list)) {
+            return self.empty_bytes(dest);
+        }
         let (list, _) = self.operand(list)?;
         self.declare("declare ptr @fennec_bytes_of_list(ptr, i64, i64) nounwind");
         let (from, to) = self.place_in_source(span);

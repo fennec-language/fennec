@@ -1086,6 +1086,7 @@ impl<'p> Module<'_, 'p> {
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             ranged_flags: HashMap::new(),
+            ranged_made: HashMap::new(),
             copied_text: HashMap::new(),
             pair_slots: HashMap::new(),
             taken_places: HashMap::new(),
@@ -1334,6 +1335,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// For each check of item ranges (`range_scans`), the flag saying it held when last made
     /// (`check_item_ranges`): clear until it's made.
     pub(crate) ranged_flags: HashMap<usize, String>,
+    /// For each check of item ranges, the flag saying it's been made in this call: neither list
+    /// can change in the function, so what it found holds for the rest of the call.
+    pub(crate) ranged_made: HashMap<usize, String>,
     /// For each loop written twice (`find_versioned_loops`), by its place in `versioned`, where the
     /// text of each of its blocks is in `out` and `cold`, for the second copy to be made from.
     copied_text: HashMap<usize, Vec<CopiedText>>,
@@ -1521,10 +1525,13 @@ impl Emit<'_, '_, '_> {
             let _ = writeln!(self.allocas, "  %sl{at} = alloca i64");
             self.keep_length(LocalId(at));
         }
-        // Each check of item ranges (`find_ranged_reads`) has its flag, clear until it's made.
+        // Each check of item ranges (`find_ranged_reads`) has its flag, clear until it's made, and
+        // a second saying whether it's been made: once a call is enough (`check_item_ranges`).
         for id in 0..self.known.range_scans.len() {
             let flag = self.flag_slot();
             self.ranged_flags.insert(id, flag);
+            let made = self.flag_slot();
+            self.ranged_made.insert(id, made);
         }
         // What every call gives a parameter, which what's proven from it leans on.
         if self.checks_proofs() && !self.known.param_ranges.is_empty() {

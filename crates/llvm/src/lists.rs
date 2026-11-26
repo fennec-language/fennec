@@ -1731,7 +1731,9 @@ impl Emit<'_, '_, '_> {
     /// holds at every read after it. The greatest item is found as unsigned, where a negative item
     /// is greater than any length. A check costs a step an item, so it's made only for a list of
     /// at most 64 items or at most 4 for each turn the loop is to take, and its flag is left clear
-    /// otherwise: it never costs much more than the loop would.
+    /// otherwise: it never costs much more than the loop would. It's made once a call: a loop
+    /// entered again, as one inside a `while` is, finds it made and goes by what it found, since
+    /// neither list can have changed since.
     pub(crate) fn check_item_ranges(&mut self, before: usize) -> Result<(), String> {
         let scans: Vec<(usize, crate::analysis::RangeScan)> = self
             .known
@@ -1743,6 +1745,11 @@ impl Emit<'_, '_, '_> {
             .collect();
         for (id, scan) in scans {
             let flag = self.ranged_flags.get(&id).cloned().ok_or("a check of item ranges with no flag")?;
+            let made = self.ranged_made.get(&id).cloned().ok_or("a check of item ranges with no mark")?;
+            let (was, trying, kept) = (self.temp(), self.label("range_try"), self.label("range_kept"));
+            self.line(&format!("{was} = load i1, ptr {made}"));
+            self.line(&format!("br i1 {was}, label %{kept}, label %{trying}"));
+            self.start_block(&trying);
             let (list, slot) = (self.temp(), self.slot(LocalId(scan.bounds)));
             self.line(&format!("{list} = load ptr, ptr {slot}"));
             let count = self.list_length(&list);
@@ -1790,9 +1797,14 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{ok} = icmp ule i64 {greatest}, {limit}"));
             self.line(&format!("br label %{done}"));
             self.start_block(&done);
-            let held = self.temp();
+            let (held, checked) = (self.temp(), self.temp());
             self.line(&format!("{held} = phi i1 [ false, %{skipped} ], [ {ok}, %{summed} ]"));
             self.line(&format!("store i1 {held}, ptr {flag}"));
+            // Made only once it's walked the list: one left for too few turns can be made later.
+            self.line(&format!("{checked} = phi i1 [ false, %{skipped} ], [ true, %{summed} ]"));
+            self.line(&format!("store i1 {checked}, ptr {made}"));
+            self.line(&format!("br label %{kept}"));
+            self.start_block(&kept);
         }
         Ok(())
     }

@@ -285,6 +285,26 @@ mod tests {
         Ok(())
     }
 
+    /// A bucket loop inside a `while`, as a worklist goes round buckets, is entered again and again,
+    /// and the check of its list is made only the first time: its block tests a flag saying it's
+    /// been made, and walks the list only when it hasn't. The list can't change in the function,
+    /// so what the first check found holds. Made each time, a list of 60 buckets walked for each
+    /// bucket ran four times the instructions of checking each read (Fable's `p4`).
+    #[test]
+    fn a_bucket_loop_entered_again_checks_its_list_once_a_call() -> Result<(), String> {
+        let body = "def go(starts: list[int], order: list[int], rounds: int) -> int:\n    mut total = 0\n    mut cell = 0\n    mut round = 0\n    while round < rounds:\n        for at in range(starts[cell], starts[cell + 1]):\n            total += order[at]\n        cell += 1\n        if cell == len(starts) - 1:\n            cell = 0\n            round += 1\n    return total\n";
+        let (units, _, _) = crate::emit(&lowered(body)?)?;
+        let text = &units.iter().find(|unit| unit.function == "go").ok_or("`go` isn't emitted")?.text;
+        assert_eq!(text.matches("call i64 @llvm.umax.i64(").count(), 1, "{text}");
+        // The walk is only on the way the mark sends a call that hasn't made the check yet.
+        let (before, after) = text.split_once("call i64 @llvm.umax.i64(").ok_or("no walk")?;
+        let tried = before.rfind("range_try").ok_or("no test of the mark before the walk")?;
+        let marked = before.get(..tried).unwrap_or_default();
+        assert!(marked.contains(", label %range_kept"), "{text}");
+        assert!(after.contains("store i1 %"), "{text}");
+        Ok(())
+    }
+
     /// Compares the two copies of each loop written twice in a function's LLVM text: every block of
     /// the second, its names' `v` taken off and its `checked once` branch turned back, has to be the
     /// first's block of the same name, but for the note on a loop's own back jump. Gives back how

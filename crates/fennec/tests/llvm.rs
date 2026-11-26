@@ -4055,10 +4055,19 @@ fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::
                     .output_within()?;
                 let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
                 let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
-                assert_eq!(printed, wanted, "{name} {how:?}, checking proofs {checking}, {threads} threads: {errors}");
-                assert!(ran.status.success(), "{name} {how:?}, checking proofs {checking}, {threads} threads: {errors}");
+                assert_eq!(
+                    printed, wanted,
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {errors}"
+                );
+                assert!(
+                    ran.status.success(),
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {errors}"
+                );
                 let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
-                assert!(counts.ends_with(" live 0"), "{name} {how:?}, checking proofs {checking}, {threads} threads: {counts}");
+                assert!(
+                    counts.ends_with(" live 0"),
+                    "{name} {how:?}, checking proofs {checking}, {threads} threads: {counts}"
+                );
             }
         }
         std::fs::remove_dir_all(&dir)?;

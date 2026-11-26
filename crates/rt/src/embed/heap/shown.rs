@@ -360,18 +360,18 @@ fn id(fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written)
 
 /// `Table([a, b])`: what's in the slots still in use.
 fn id_map(state: &State, fields: &Fields, words: &mut dyn Iterator<Item = &u64>, out: &mut Written) {
-    let (mut held, mut generations) = (0, 0);
+    let (mut held, mut slots) = (0, 0);
     for (field, element) in fields {
         let mut mine = (&mut *words).take(element.words());
         let address = word(&mut mine);
         mine.for_each(drop);
         match field.as_ref() {
             "items" => held = address,
-            "generations" => generations = address,
+            "slots" => slots = address,
             _ => {}
         }
     }
     out.push_str("Table([");
-    crate::embed::lists::shown_where_used(state, held, generations, out);
+    crate::embed::lists::shown_where_used(state, held, slots, out);
     out.push_str("])");
 }

@@ -60,14 +60,17 @@ impl Interp {
     fn change_table(&mut self, place: &Place, name: &str, args: Vec<Value>, span: Span) -> Run<Value> {
         let mut args = args.into_iter();
         let (first, second, more) = (args.next(), args.next(), args.next());
+        // Every item added has an `Id` with a tag of its own, which no other item has (#2424).
+        let tag = if name == "add" { self.shared.new_tag() } else { 0 };
         self.change_place(place, span, false, |held| {
             let Value::Table(table) = held else { return unsupported("a Table that isn't one") };
             match (name, first, second, more) {
-                ("add", Some(item), None, None) => Ok(Value::Id(table.add(item))),
+                ("add", Some(item), None, None) => Ok(Value::Id(table.add(item, tag))),
                 ("remove", Some(Value::Id(id)), None, None) => Ok(Value::found_or_none(table.remove(id))),
                 ("clear", None, None, None) => {
                     for slot in &mut table.slots {
                         slot.item = None;
+                        slot.tag = 0;
                     }
                     Ok(Value::Unit)
                 }

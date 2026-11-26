@@ -2036,6 +2036,21 @@ pub extern "C" fn new_tag() -> i64 {
     crate::value::new_tag().cast_signed()
 }
 
+/// `fennec_tag_run()`: where this thread's run of tags is, two `u64`s, the next tag and where the run
+/// ends, both 0 at first, at one place for the thread's life. Native code hands out `next` with a
+/// plain add, and takes a new run from `fennec_tag_count`'s count with one atomic add when `next`
+/// reaches `end`. The runtime never touches them.
+pub extern "C" fn tag_run() -> i64 {
+    i64::try_from(crate::value::tag_run()).unwrap_or(0)
+}
+
+/// `fennec_tag_count()`: where the count `fennec_new_tag` takes from is, a `u64` every thread adds
+/// to, for native code to take a tag with `atomicrmw add ... 1 monotonic` and no call. The old value
+/// is the tag. It never moves while the run goes on.
+pub extern "C" fn tag_count() -> i64 {
+    i64::try_from(crate::value::tag_count()).unwrap_or(0)
+}
+
 /// A new block of a shape, owned once, its fields zero.
 pub extern "C" fn alloc(shape: i64) -> i64 {
     super::made_with("fennec_alloc", |state| {
@@ -2546,24 +2561,40 @@ fn same_here(state: &State, a: u64, b: u64, later: &mut Vec<(u64, u64)>) -> bool
     if let Element::Struct { name, fields } = shape.as_ref()
         && named::is_id_map(name)
     {
-        return same_tables(fields, left, right, later);
+        return same_tables(state, fields, (left, right), later);
     }
     same_words_here(state, &shape, left, right, later)
 }
 
-/// Whether two `Table`s are equal: the same items in the same slots, with the same generations.
-/// Which `Table` each is, its tag, and where a search for a free slot starts don't count.
+/// Whether two `Table`s are equal: the same slots in use, holding the same items (#2424). A free
+/// slot's item is zero, so which slots are in use is compared too, or an item all zero, as
+/// `Point(x=0)`, would be the same as no item. The tags each slot's `Id` has, and where a search
+/// for a free slot starts, don't count.
 fn same_tables(
+    state: &State,
     fields: &[(Rc<str>, Element)],
-    left: &[u64],
-    right: &[u64],
+    (left, right): (&[u64], &[u64]),
     later: &mut Vec<(u64, u64)>,
 ) -> bool {
     let mut at = 0;
     for (field, element) in fields {
-        if matches!(field.as_ref(), "items" | "generations") {
-            let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
-            compare_later(later, *x, *y);
+        let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
+        match field.as_ref() {
+            "items" => {
+                compare_later(later, *x, *y);
+            }
+            // Each slot's tag, 0 where it's free: only whether each is in use is compared.
+            "slots" => {
+                let in_use = |list: u64| {
+                    state.heap.block(list).map(|block| {
+                        super::lists::items(block, 1).iter().map(|tag| *tag != 0).collect::<Vec<bool>>()
+                    })
+                };
+                if in_use(*x) != in_use(*y) {
+                    return false;
+                }
+            }
+            _ => {}
         }
         at += element.words();
     }

@@ -2690,7 +2690,12 @@ fn a_table_gives_each_item_an_id_that_finds_it_or_nothing() {
          Table([Unit(health=12)]) True 9\n"
     );
     let Ended::Stopped(said) = ended else { panic!("it ended {ended:?}") };
-    assert!(said.starts_with("error: this Id refers to something that's been removed\n"), "{said}");
+    assert!(
+        said.starts_with(
+            "error: this Id finds nothing in this Table: its item was taken out, or it's from another Table\n"
+        ),
+        "{said}"
+    );
 }
 
 /// Writes a kit's files into a folder of its own, and runs it.
@@ -3464,13 +3469,13 @@ const OWN_FORMAT: &str = "
             def end_member(ref self):
                 pass
 
-            def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+            def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T]):
                 self.sequence(items)
 
             def exact(self) -> bool:
                 return False
 
-            def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+            def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
                 # Never asked for: `exact` says no.
                 pass
 

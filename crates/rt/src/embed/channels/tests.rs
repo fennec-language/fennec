@@ -314,6 +314,78 @@ fn a_channel_freed_while_a_task_and_a_thread_wait_on_it_wakes_both_as_closed() {
     finish();
 }
 
+/// A receiver on another thread, which keeps the channel to find again, sees its sender's end as
+/// it always has: what was sent before the close, then `CLOSED` at once, and `CLOSED` again once
+/// the channel's freed. What a thread keeps holds no say in when a channel closes: only `close`
+/// and `free` do, and they're what's waited for here.
+#[test]
+fn a_receiver_that_kept_the_channel_sees_its_sender_close_it_as_before() {
+    begin();
+    let channel = channel_new(4);
+    assert_eq!(channel_send(channel, 1, 0, FOREVER), DONE);
+    let (took_one, close_now) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let (took_one, said_took) = took_one;
+    let (go_on, wait_for_close) = close_now;
+    let receiving = std::thread::spawn(move || {
+        begin();
+        let first = receive(channel, PATIENCE);
+        took_one.send(()).unwrap();
+        wait_for_close.recv().unwrap();
+        let after_close = [receive(channel, PATIENCE), receive(channel, PATIENCE)];
+        took_one.send(()).unwrap();
+        wait_for_close.recv().unwrap();
+        let after_free = receive(channel, PATIENCE);
+        finish();
+        (first, after_close, after_free)
+    });
+    said_took.recv().unwrap();
+    assert_eq!(channel_send(channel, 2, 0, FOREVER), DONE);
+    channel_close(channel);
+    go_on.send(()).unwrap();
+    said_took.recv().unwrap();
+    channel_free(channel);
+    go_on.send(()).unwrap();
+    let (first, after_close, after_free) = receiving.join().unwrap();
+    assert_eq!(first, (DONE, 1));
+    assert_eq!(after_close, [(DONE, 2), (CLOSED, 0)]);
+    assert_eq!(after_free, (CLOSED, 0));
+    finish();
+}
+
+/// A channel this thread keeps to find again, freed by another thread, is closed to this one at
+/// once: what it keeps is held, so it stays to say it's freed. A thread that's found more channels
+/// than it keeps still finds each one that isn't freed.
+#[test]
+fn a_channel_another_thread_freed_is_closed_though_this_one_kept_it() {
+    begin();
+    let made: Vec<i64> = (0..100).map(|_| channel_new(1)).collect();
+    for channel in &made {
+        assert_eq!(channel_send(*channel, 7, 0, FOREVER), DONE);
+    }
+    let freeing = made.clone();
+    std::thread::spawn(move || {
+        begin();
+        for channel in freeing.iter().step_by(2) {
+            channel_free(*channel);
+        }
+        finish();
+    })
+    .join()
+    .unwrap();
+    for (at, channel) in made.iter().enumerate() {
+        let got = receive(*channel, MILLISECOND);
+        if at % 2 == 0 {
+            assert_eq!(got.0, CLOSED, "channel {at} was freed");
+        } else {
+            assert_eq!(got, (DONE, 7), "channel {at}");
+        }
+    }
+    for channel in made.iter().skip(1).step_by(2) {
+        channel_free(*channel);
+    }
+    finish();
+}
+
 /// How many times each of these tests' tasks waits and gives up.
 const TRIES: i64 = 50;
 /// What each test's task waits on: a quiet channel, a full one, and a listener nothing's sent to.
@@ -464,6 +536,61 @@ fn every_listener_gets_every_message_sent_after_it_started_listening() {
         assert_eq!(receive(listener, MILLISECOND), (TIMED_OUT, 0));
     }
     channel_free(channel);
+    finish();
+}
+
+/// A channel to `.Every` made, listened to and freed over and over, each time its listener the only
+/// one, while another thread receives from a plain channel: the plain receives skip the listeners'
+/// lock while there are none, and every listener still gets its messages, received on the thread
+/// that listened or on one it handed its number to. The plain receiver gets every message once.
+#[test]
+fn a_first_listener_coming_and_going_beside_plain_receives_misses_nothing() {
+    const MESSAGES: i64 = 2_000;
+    const ROUNDS: i64 = 50;
+    begin();
+    let plain = channel_new(16);
+    let receiving = std::thread::spawn(move || {
+        begin();
+        let mut total = 0;
+        for _ in 0..MESSAGES {
+            let mut value = 0;
+            assert_eq!(channel_receive(plain, PATIENCE, &mut value), DONE);
+            total += value;
+        }
+        finish();
+        total
+    });
+    let listening = std::thread::spawn(|| {
+        begin();
+        for round in 0..ROUNDS {
+            let channel = channel_new_every(4);
+            let listener = channel_listen(channel, 0);
+            for word in [round, round + 1] {
+                assert_eq!(channel_send(channel, word, 0, FOREVER), DONE);
+            }
+            if round % 5 == 0 {
+                // Received on a thread given the listener's number after it was listening.
+                let elsewhere = std::thread::spawn(move || {
+                    begin();
+                    let got = [receive(listener, PATIENCE), receive(listener, PATIENCE)];
+                    finish();
+                    got
+                });
+                assert_eq!(elsewhere.join().unwrap(), [(DONE, round), (DONE, round + 1)]);
+            } else {
+                assert_eq!(receive(listener, PATIENCE), (DONE, round));
+                assert_eq!(receive(listener, PATIENCE), (DONE, round + 1));
+            }
+            channel_free(channel);
+        }
+        finish();
+    });
+    for word in 1..=MESSAGES {
+        assert_eq!(channel_send(plain, word, 0, FOREVER), DONE);
+    }
+    assert_eq!(receiving.join().unwrap(), MESSAGES * (MESSAGES + 1) / 2);
+    listening.join().unwrap();
+    channel_free(plain);
     finish();
 }
 

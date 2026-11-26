@@ -19,7 +19,7 @@ pub(crate) const MODULE: Module = Module {
 };
 
 /// `re.is_regex(pattern)`: whether some text is a pattern. `re.pattern_problem(pattern)`: what's
-/// wrong with text that isn't one, as a `Regex` built from it would say.
+/// wrong with text that isn't one, as `Regex.parse` says it.
 fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], _: Span) -> Type {
     if let Some((ty, at)) = plain.first()
         && !cx.checker.fits(&Type::Str, ty)

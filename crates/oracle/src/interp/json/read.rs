@@ -348,9 +348,10 @@ impl Interp {
         let items = self.read_items(items, ty, reading)?;
         let kind = type_name(ty);
         reading.tables.push((kind.clone(), reading.here(), items.len()));
-        let mut table = Table::new(self.tag_of(&kind, reading));
+        let tag = self.tag_of(&kind, reading);
+        let mut table = Table::new(tag);
         for item in items {
-            table.add(item);
+            table.add(item, tag);
         }
         Ok(Value::Table(Box::new(table)))
     }

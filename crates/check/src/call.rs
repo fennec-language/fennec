@@ -1438,10 +1438,14 @@ impl FnCx<'_> {
             given => Type::Generic(type_name.to_owned(), given.iter().map(|(_, ty)| ty.clone()).collect()),
         };
         self.private_fields_given(type_name, &fields, args, span);
-        let literal = self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
+        self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
         self.check_bounds(chosen, span);
         crate::stdlib::construct(self, type_name, args);
-        if fields.iter().any(|field| field.rule.is_some()) && !literal {
+        // A value that breaks a `where` rule stops the program, as a bug. One from outside comes in
+        // through a load, which fails cleanly: built in its own `deserialize` the compiler or std
+        // wrote, breaking a rule is a failure the load passes on. A default for one of its fields,
+        // as `gauge = Gauge(level=0)`, is built as anywhere else.
+        if self.loading(type_name) && fields.iter().any(|field| field.rule.is_some()) {
             return Type::result(built, Type::named("InvalidValue"));
         }
         built
@@ -1718,9 +1722,16 @@ impl FnCx<'_> {
         Diagnostic::new(message, span).with_help(help)
     }
 
-    /// Matches arguments to fields, positionally and by name. Returns whether every argument
-    /// is written as a literal, so `where` rules can be checked when the value is made.
-    fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
+    /// Whether this is the `deserialize` of `type_name` that the compiler or the standard library
+    /// wrote: a load, where a value that breaks a `where` rule fails the load rather than stopping
+    /// the program.
+    fn loading(&self, type_name: &str) -> bool {
+        self.key.strip_suffix(".deserialize") == Some(type_name)
+            && self.checker.program.functions.get(&self.key).is_some_and(|entry| entry.def.span.in_prelude())
+    }
+
+    /// Matches arguments to fields, positionally and by name.
+    fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) {
         let Target { name: type_name, case, .. } = *target;
         if self.checker.program.type_info(type_name).is_some_and(|info| !info.prelude) {
             let values: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
@@ -1792,12 +1803,6 @@ impl FnCx<'_> {
                 self.error(problem);
             }
         }
-        args.iter().all(|arg| {
-            matches!(
-                arg.value.kind,
-                ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None
-            )
-        })
     }
 }
 

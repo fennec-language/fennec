@@ -11,7 +11,7 @@
 # checks itself first: a program that does use SQLite has to be seen linking it.
 #
 # The hello world, built for release, is held to the size the list's `<system> size hello <bytes>`
-# line gives too: a release program carries none of the runtime's debug information, and nothing
+# line gives too, on macOS without the padding of its segments to whole pages (below): a release program carries none of the runtime's debug information, and nothing
 # it doesn't call, so one that grows past it has taken on something new.
 #
 # What it looks for, in the symbols' demangled names: `sqlite3_` or `rusqlite::` (sqlite), `rustls::`
@@ -100,6 +100,25 @@ done < <(comm -13 "$work/found" "$work/known")
 budget=$(sed -n "s/^$os size hello \([0-9]*\) *|.*/\1/p" "$known")
 # Built as `hello.exe` on Windows.
 size=$(cat "$work/hello" "$work/hello.exe" 2> /dev/null | wc -c | tr -d ' ')
+# On macOS, the file grows a whole 16 KB page at a time: each segment but the last is padded to a
+# page. A change of 104 bytes once took the file a page past its budget. So what's held there is
+# what the program holds: every section's own size, but those that are only zeros when it runs,
+# like `__bss`, which take no room in the file, and all of `__LINKEDIT`, its symbols and signature,
+# which isn't padded. On Linux, LLD lays each segment right after the last in the file, and on
+# Windows a section is padded to 512 bytes at most, so their file sizes grow as the program does.
+if [ "$os" = macos ]; then
+  file_size=$size
+  size=$(size -m -l "$work/hello" | awk -v whole="$file_size" '
+    $1 == "Section" && !/zerofill/ { sections += $3 }
+    $1 == "Segment" && $2 == "__LINKEDIT:" { linkedit = whole - $NF }
+    END { if (sections > 0 && linkedit > 0) print sections + linkedit }
+  ')
+  if [ -z "$size" ] || [ "$size" -gt "$file_size" ]; then
+    echo "::error::couldn't read the hello world's sections with \`size -m -l\`"
+    size=$file_size
+    failed=1
+  fi
+fi
 if [ -z "$budget" ]; then
   echo "::error::$known has no \`$os size hello <bytes> | why\` line, to hold a hello world's size to"
   failed=1
@@ -107,7 +126,11 @@ elif [ "$size" -gt "$budget" ]; then
   echo "::error::a hello world built for release is $size bytes, past its budget of $budget: see what it took on"
   failed=1
 fi
-echo "On $os, a hello world built for release is $size bytes, of a budget of ${budget:-none}."
+if [ "$os" = macos ]; then
+  echo "On $os, a hello world built for release holds $size bytes of sections and \`__LINKEDIT\`, in a file of $file_size, of a budget of ${budget:-none}."
+else
+  echo "On $os, a hello world built for release is $size bytes, of a budget of ${budget:-none}."
+fi
 echo "On $os, what programs link that they don't use:"
 sed 's/^/  /' "$work/found"
 [ -s "$work/found" ] || echo "  nothing"

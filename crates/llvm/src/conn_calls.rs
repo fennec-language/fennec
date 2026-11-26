@@ -99,6 +99,24 @@ impl Emit<'_, '_, '_> {
                 self.leave_if_failed();
                 self.result_into(dest, &word, &mark, span, |_, _, _, _| Ok(()))?;
             }
+            // A response's head and body in one write, with no block made for the two joined.
+            ("Connection._write_parts", [head, body]) => {
+                let timeout = self.timeout_of(timeout)?;
+                let (head, made) = self.data_block(head)?;
+                let (body, _) = self.data_block(body)?;
+                let (from, to) = self.place_in_source(span);
+                let mark = self.mark();
+                self.declare("declare i64 @fennec_conn_write_parts(i64, i64, i64, i64, i64, i64) nounwind");
+                let word = self.temp();
+                self.line(&format!(
+                    "{word} = call i64 @fennec_conn_write_parts(i64 {handle}, i64 {head}, i64 {body}, i64 {timeout}, i64 {from}, i64 {to})"
+                ));
+                if let Some(made) = made {
+                    self.release_block(&made, &Kind::Str);
+                }
+                self.leave_if_failed();
+                self.result_into(dest, &word, &mark, span, |_, _, _, _| Ok(()))?;
+            }
             ("Connection._body", [size]) => {
                 let timeout = self.timeout_of(timeout)?;
                 let (size, _) = self.operand(size)?;

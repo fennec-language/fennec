@@ -7,6 +7,10 @@ from std.string import cut_input, quoted_input
 ## How deeply arrays and inline tables may nest, so bad input can't overflow the stack.
 TOML_MOST_DEEP = 500
 
+## The least float that rounds to an infinite `f32`, 2**128 - 2**103: halfway between an `f32`'s
+## largest and 2**128. `f32(x)` of a finite float this big or bigger stops the program.
+PAST_F32 = 3.4028235677973366e38
+
 ## A value of a TOML document.
 enum TomlValue:
     Text(text: str)
@@ -880,16 +884,15 @@ struct TomlReader:
         # own shortest text, as TOML writes it, reads back as the same `f32`.
         match self._here:
             case .Float(x):
-                narrow = f32(x)
-                # A number too big for an f32 would come out as infinity, which isn't what it said.
-                # TOML's own `inf` and `nan` are what they say.
-                if narrow - narrow != 0.0 and x - x == 0.0:
+                # A finite number too big for an f32 isn't one, and would stop the program. TOML's
+                # own `inf` and `nan` are what they say.
+                if x - x == 0.0 and (x >= PAST_F32 or x <= -PAST_F32):
                     fail ParseError(
                         message=f"{self._where()} is too big for an f32",
                         line=0,
                         column=0,
                     )
-                return narrow
+                return f32(x)
             case .Int(n):
                 return f32(n)
             case _:

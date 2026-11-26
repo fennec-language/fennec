@@ -106,7 +106,15 @@ fn thousands(number: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Number, float, with_spec};
+    use super::{Number, float, float32, with_spec};
+
+    /// The range `f32(x)` says it holds when it stops is the least and largest `f32`, as they print.
+    #[test]
+    fn an_f32_that_doesnt_fit_says_the_range_an_f32_prints_as() {
+        let said =
+            format!("it doesn't fit in f32, which holds {} to {}: ", float32(f32::MIN), float32(f32::MAX));
+        assert_eq!(fennec_check::F32_DOESNT_FIT, said);
+    }
 
     /// What `stdout.print` writes for each of these floats, built natively.
     #[test]

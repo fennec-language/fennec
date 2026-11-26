@@ -121,7 +121,14 @@ impl Interp {
             // `f32(x)`: the nearest `f32`.
             "f32" => match self.one(&mut given, name)? {
                 Value::Int(n) => Ok(Value::F32(super::expr::as_f32(text::int_as_float(n)))),
-                Value::Float(x) => Ok(Value::F32(super::expr::as_f32(x))),
+                // A finite float past an `f32`'s largest doesn't fit, as `u8(300)` doesn't. Rounding
+                // is silent, and NaN and infinity convert as themselves.
+                Value::Float(x) => match super::expr::as_f32(x) {
+                    nearest if nearest.is_infinite() && x.is_finite() => {
+                        crash(format!("{}{}", fennec_check::F32_DOESNT_FIT, text::float(x)), span)
+                    }
+                    nearest => Ok(Value::F32(nearest)),
+                },
                 Value::F32(x) => Ok(Value::F32(x)),
                 Value::Sized(num, n) if !num.is_float() => Ok(Value::F32(int128_as_f32(n))),
                 // std's `f32.parse`: text read straight to the nearest `f32`, rounded once.

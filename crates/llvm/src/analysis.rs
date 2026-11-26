@@ -4876,8 +4876,11 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
         .is_some_and(|ty| matches!(&ty, Type::Named(name) if fennec_layout::Cap::named(name).is_some()));
     // A connection's or server's method runs in the runtime too.
     capability
-        // `u8(x)` stops the program when `x` doesn't fit.
-        || fennec_check::Num::named(name).is_some_and(|num| !num.is_float())
+        // `u8(x)` stops the program when `x` doesn't fit, and `f32(x)` when a float is past an
+        // `f32`'s largest.
+        || fennec_check::Num::named(name).is_some_and(|num| {
+            !num.is_float() || args.first().and_then(|first| function.type_of(first)) == Some(Type::Float)
+        })
         // A stop can cut a channel's wait short.
         || matches!(
             name,

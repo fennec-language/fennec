@@ -7573,6 +7573,31 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `f32(x)` of a float rounds it to the nearest `f32` without a word, even one past the largest
+/// that rounds back to it. NaN and infinity convert as themselves, and arithmetic on `f32`s that
+/// goes past the largest gives infinity, as a float's does: only a finite float that rounds to
+/// infinity stops (`what_overflows_a_size_stops_the_program`). What it prints is what the reference
+/// evaluator prints.
+#[test]
+fn f32_of_a_float_rounds_without_a_word_and_takes_nan_and_infinity_as_they_are() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "f32_of_floats",
+        "from std.math import INFINITY, NAN
+
+def main(stdout: Stdout):
+    just_past = 3.4028235e38
+    big = f32(3.0e38)
+    stdout.print(f32(just_past), f32(-just_past), f32(NAN), f32(INFINITY), f32(-INFINITY))
+    stdout.print(big * big, -big * big, f32(1e-50), f32(0.1))
+",
+    )?;
+    assert_eq!(printed, "3.4028235e+38 -3.4028235e+38 nan inf -inf\ninf -inf 0.0 0.1\n");
+    Ok(())
+}
+
 /// `std.math`'s `sqrt`, `sin`, `cos` and `acos` of an `f32` give an `f32`, worked out in `f32`, and
 /// `abs` of one is one. `f32.parse` reads text straight to the nearest `f32`, rounded once, where
 /// reading a `float` first rounds twice, and text that isn't a number fails as `float`'s does.
@@ -8233,7 +8258,7 @@ fn every_assigning_form_gives_what_its_operator_gives() -> std::io::Result<()> {
 
 /// What doesn't fit a size stops the program, saying which size and what it holds: arithmetic
 /// past either end, a negation, the one division that grows, and a conversion that doesn't fit,
-/// a `u64` too big for an `int` among them.
+/// a `u64` too big for an `int` and a float past an `f32`'s largest among them.
 #[test]
 fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
     if !ready() {
@@ -8241,6 +8266,8 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
     }
     let overflow =
         |size: &str, range: &str| format!("error: this calculation overflows {size}, which holds {range}");
+    let past_f32 =
+        |x: &str| format!("error: it doesn't fit in f32, which holds -3.4028235e+38 to 3.4028235e+38: {x}");
     for (at, (body, said)) in [
         ("x: i8 = -128\n    stdout.print(-x)", overflow("an i8", "-128 to 127")),
         ("big: i32 = 2147483647\n    stdout.print(big + 1)", overflow("an i32", "-2147483648 to 2147483647")),
@@ -8285,6 +8312,8 @@ fn what_overflows_a_size_stops_the_program() -> std::io::Result<()> {
             "h: u64 = 9223372036854775807\n    stdout.print(i8(h))",
             "error: it doesn't fit in i8, which holds -128 to 127: 9223372036854775807".to_owned(),
         ),
+        ("x = 1e300\n    stdout.print(f32(x))", past_f32("1e+300")),
+        ("x = -3.5e38\n    stdout.print(f32(x))", past_f32("-3.5e+38")),
         (
             "h: u64 = 9223372036854775807\n    stdout.print(int(h + 1))",
             "error: it doesn't fit in int, which holds -9223372036854775808 to 9223372036854775807: \

@@ -126,7 +126,7 @@ impl Emit<'_, '_, '_> {
             }
             // `f32(x)`: the f32 nearest a number.
             ("f32", [value], [Some(Kind::Int | Kind::Float | Kind::U64 | Kind::F32)]) => {
-                dest.and_then(|dest| self.nearest_f32(dest, value))
+                dest.and_then(|dest| self.nearest_f32(dest, value, span))
             }
             ("float", [value], [Some(Kind::F32)]) | ("u64", [value], [Some(Kind::U64)]) => {
                 dest.and_then(|dest| self.copy(dest, value))
@@ -322,7 +322,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `f32(x)`: the nearest `f32`, held as the `float` it is exactly.
-    fn nearest_f32(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+    fn nearest_f32(&mut self, dest: LocalId, value: &Operand, span: Span) -> Result<(), String> {
         let (number, kind) = self.operand(value)?;
         // An int rounds straight to an `f32`: through a `float` it could round twice.
         let to = match kind {
@@ -330,6 +330,9 @@ impl Emit<'_, '_, '_> {
             Kind::U64 => "uitofp i64",
             _ => {
                 let nearest = self.rounded_to_f32(&number);
+                if kind == Kind::Float {
+                    self.stop_past_f32((&number, &nearest), value, span)?;
+                }
                 return self.assign(dest, &nearest);
             }
         };
@@ -337,6 +340,33 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{narrow} = {to} {number} to float"));
         self.line(&format!("{nearest} = fpext float {narrow} to double"));
         self.assign(dest, &nearest)
+    }
+
+    /// Stops the program when a finite float rounds to an `f32` that's infinite, past an `f32`'s
+    /// largest: a conversion that doesn't fit, as `u8(300)` is. Rounding to the nearest is silent,
+    /// and NaN and infinity convert as themselves.
+    fn stop_past_f32(
+        &mut self,
+        (number, nearest): (&str, &str),
+        value: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
+        self.declare("declare double @llvm.fabs.f64(double)");
+        let infinity = float_text(f64::INFINITY);
+        let (given, rounded) = (self.temp(), self.temp());
+        self.line(&format!("{given} = call double @llvm.fabs.f64(double {number})"));
+        self.line(&format!("{rounded} = call double @llvm.fabs.f64(double {nearest})"));
+        let (finite, endless, bad) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{finite} = fcmp one double {given}, {infinity}"));
+        self.line(&format!("{endless} = fcmp oeq double {rounded}, {infinity}"));
+        self.line(&format!("{bad} = and i1 {finite}, {endless}"));
+        let (stops, fits) = (self.label("too_big"), self.label("fits"));
+        self.line(&format!("br i1 {bad}, label %{stops}, label %{fits}, !prof !0"));
+        self.start_block(&stops);
+        self.failed_with(fennec_check::F32_DOESNT_FIT, value, span)?;
+        self.line(&format!("br label %{fits}"));
+        self.start_block(&fits);
+        Ok(())
     }
 
     /// `int(text)`, `float(text)` or `f32(text)`: `Ok` with the number, or `Err` with an

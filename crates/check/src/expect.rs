@@ -173,7 +173,7 @@ impl FnCx<'_> {
                 }
             }
             (ExprKind::Float(written), None) => {
-                if written.is_finite() && written.abs() > f64::from(f32::MAX) {
+                if crate::types::past_f32(*written) {
                     let message = format!("{written} is too big for an f32");
                     let help = "an f32 holds up to about 3.4e38; use `float` for more";
                     self.error(Diagnostic::new(message, expr.span).with_help(help));

@@ -1,0 +1,21 @@
+# The bucket list is a field of a struct the function also has by `ref`, and changes through it.
+# The plain parameter is a value: it keeps what it was given, so this prints 10.
+struct World:
+    starts: list[int]
+    order: list[int]
+
+def scan(ref world: World, starts: list[int], order: list[int]) -> int:
+    mut added = 0
+    for cell in range(len(starts) - 1):
+        world.starts[cell + 1] = 50000000
+        _ = world.order.pop()
+        for at in range(starts[cell], starts[cell + 1]):
+            added += order[at]
+    return added
+
+def main(stdout: Stdout):
+    mut world = World(starts=[0, 2, 4], order=[1, 2, 3, 4])
+    held_starts = world.starts
+    held_order = world.order
+    stdout.print(scan(ref world, starts=held_starts, order=held_order))
+    stdout.print(world.starts, world.order)

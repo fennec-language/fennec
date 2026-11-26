@@ -1,0 +1,14 @@
+# Text built up inside the loop written twice.
+def scan(starts: list[int], order: list[int], names: list[str]) -> str:
+    mut text = ""
+    mut parts = list[str]()
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        text += f"{names[value]}={value},"
+        parts.append(names[value] + "!")
+        if value in [1, 3]:
+            text += "odd;"
+    return text + " ".join(parts)
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 4], order=[0, 1, 2, 3], names=["zero", "one", "two", "three"]))

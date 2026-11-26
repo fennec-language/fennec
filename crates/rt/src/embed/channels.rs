@@ -470,9 +470,20 @@ enum Turn {
 
 /// Waits, in a replay, for the running task's turn to do `what` at `channel`, a wait with no time
 /// limit when `for_good`. A replay that's diverged fails, as having found the channel closed.
+///
+/// A channel's named only in a recording or a replay: anywhere else nothing's waited for, which
+/// is asked in line, as every send and receive asks it.
+#[inline]
 fn replayed(channel: &Channel, what: &str, for_good: bool) -> Turn {
-    // A channel's named only in a recording or a replay: anywhere else nothing's waited for.
-    let Some(place) = channel.replay.as_deref() else { return Turn::Live };
+    match channel.replay.as_deref() {
+        None => Turn::Live,
+        Some(place) => replayed_at(channel, place, what, for_good),
+    }
+}
+
+/// [`replayed`], for a channel named in a recording or a replay, at `place`.
+#[inline(never)]
+fn replayed_at(channel: &Channel, place: &str, what: &str, for_good: bool) -> Turn {
     // A send or a receive with no time limit is a stuck wait where nothing can end it, which a
     // replay of a run that deadlocked goes on into past its recording's end, as the run was when
     // the check fired: a listener's on a channel to `.Every` too, the one receive there is. One with

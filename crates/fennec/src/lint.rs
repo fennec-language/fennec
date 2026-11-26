@@ -198,9 +198,17 @@ static FINDING: std::sync::Mutex<Option<std::thread::JoinHandle<String>>> = std:
 static LENT: std::sync::Mutex<Option<std::sync::mpsc::Sender<std::sync::Arc<fennec_kit::Program>>>> =
     std::sync::Mutex::new(None);
 
+/// The lint errors of a run's program as the build daemon held them, found with no thread.
+static HELD_FOUND: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// Starts finding the lint errors of the program at `path` beside whatever comes next, for
 /// `show_errors_found` to show.
 pub(crate) fn find_errors_beside(path: &str) {
+    // The build daemon holds what they were with files the same as now.
+    if let Some(shown) = crate::held::linted(path) {
+        *HELD_FOUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(shown);
+        return;
+    }
     let owned = path.to_owned();
     let (sender, receiver) = std::sync::mpsc::channel();
     *LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender);
@@ -232,8 +240,9 @@ pub(crate) fn lend_loaded(program: Option<&std::sync::Arc<fennec_kit::Program>>,
 pub(crate) fn show_errors_found() {
     // A run that ends before it loaded anything lets them load it themselves.
     lend_loaded(None, "");
+    let held = HELD_FOUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     let finding = FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-    if let Some(found) = finding.and_then(|finding| finding.join().ok()) {
+    if let Some(found) = held.or_else(|| finding.and_then(|finding| finding.join().ok())) {
         eprint!("{}", as_a_run_shows(&found));
     }
 }
@@ -245,6 +254,7 @@ pub(crate) fn show_errors_found() {
 #[cfg(unix)]
 pub(crate) fn forget_errors_found() {
     lend_loaded(None, "");
+    HELD_FOUND.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     let finding = FINDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     if let Some(finding) = finding {
         let _ = finding.join();
@@ -262,12 +272,27 @@ fn errors_remembered_with(
 ) -> String {
     let Some(cache) = crate::run::cache() else { return errors_shown(path) };
     let files = crate::image::files_now(path, &cache);
-    let Some(key) = files_key(path, files.as_deref()) else { return errors_shown(path) };
+    // A single file's lint goes by its text, read once here.
+    let single = match &files {
+        Some(_) => None,
+        None => match std::fs::read(path) {
+            Ok(text) => Some(fennec_blake3::hash(&text)),
+            Err(_) => return errors_shown(path),
+        },
+    };
+    let key = files_key(files.as_deref(), single);
     let name = crate::run::passed_name(path);
     if let Some(kept) = cache.read("linted", &name)
         && let Some(shown) = kept.strip_prefix(key.as_bytes()).and_then(|rest| rest.strip_prefix(b"\n"))
     {
-        return String::from_utf8_lossy(shown).into_owned();
+        let shown = String::from_utf8_lossy(shown).into_owned();
+        // What the cache kept is what was found for that text, so it's held as found for it.
+        match (&files, single) {
+            (Some(files), _) => crate::held::note_linted(path, files, &shown),
+            (None, Some(text)) => crate::held::note_linted_file(path, text, &shown),
+            (None, None) => {}
+        }
+        return shown;
     }
     let shown = match &files {
         Some(files) => of_kit(path, &cache, files, lent),
@@ -278,26 +303,33 @@ fn errors_remembered_with(
         "keep what the lint found",
         cache.write("linted", &name, format!("{key}\n{shown}").as_bytes()),
     );
+    match (&files, single) {
+        (Some(files), _) => crate::held::note_linted(path, files, &shown),
+        // A single file is linted from its own reading of it, so it's held only if the file still
+        // has the text the key was made from.
+        (None, Some(text)) => {
+            if std::fs::read(path).is_ok_and(|now| fennec_blake3::hash(&now) == text) {
+                crate::held::note_linted_file(path, text, &shown);
+            }
+        }
+        (None, None) => {}
+    }
     shown
 }
 
-/// What the files of the program at `path` hold, as a hash: a kit's files by their sizes and when
-/// they changed where those say they're as last seen, or a single file's text.
-fn files_key(path: &str, files: Option<&[fennec_build::KitFile]>) -> Option<String> {
-    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec lints 2026-11-07");
+/// What the files of a program hold, as a hash: a kit's files by their sizes and when they changed
+/// where those say they're as last seen, or a single file's text, by its hash.
+fn files_key(files: Option<&[fennec_build::KitFile]>, single: Option<fennec_blake3::Hash>) -> String {
+    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec lints 2026-11-25");
     hasher.update(env!("FENNEC_BUILD").as_bytes());
-    match files {
-        Some(files) => {
-            for file in files {
-                hasher.update(file.module.as_bytes());
-                hasher.update(file.text.to_hex().as_bytes());
-            }
-        }
-        None => {
-            hasher.update(&std::fs::read(path).ok()?);
-        }
+    for file in files.into_iter().flatten() {
+        hasher.update(file.module.as_bytes());
+        hasher.update(file.text.to_hex().as_bytes());
     }
-    Some(hasher.finalize().to_hex())
+    if let Some(text) = single {
+        hasher.update(text.to_hex().as_bytes());
+    }
+    hasher.finalize().to_hex()
 }
 
 /// A lint error as shown, kept with the file it's in.

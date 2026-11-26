@@ -1,0 +1,16 @@
+# An item of a `ref` list of lists handed on by `ref` inside the loop written twice.
+def note(ref seen: list[int], value: int):
+    seen.append(value)
+    return
+
+def scan(ref rows: list[list[int]], starts: list[int], order: list[int]):
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        note(ref rows[value % 2], value=value)
+    return
+
+def main(stdout: Stdout):
+    mut rows = [[100], [200]]
+    kept = rows
+    scan(ref rows, starts=[0, 4], order=[5, 6, 7, 8])
+    stdout.print(rows, kept)

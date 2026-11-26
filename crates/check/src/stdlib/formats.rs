@@ -192,6 +192,7 @@ impl FnCx<'_> {
             | Type::Bool
             | Type::Int
             | Type::Float
+            | Type::Sized(crate::types::Num::F32)
             | Type::Str
             | Type::Bytes
             | Type::Id(_) => Ok(()),

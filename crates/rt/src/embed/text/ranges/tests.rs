@@ -185,3 +185,42 @@ fn a_range_made_no_string_for_its_slice() {
     let_go(whole);
     finish();
 }
+
+/// A freed list of strings, as `split` makes, lets go of each long part it held, freeing those it
+/// was the last owner of and leaving one held elsewhere. It's freed without walking it as any
+/// list, by its strings' headers.
+#[test]
+fn a_freed_split_lets_go_of_its_long_parts() {
+    begin();
+    let kept = "a part long enough for a block of its own";
+    let whole = header(&format!("{kept},short,another part long enough for one"));
+    let comma = header(",");
+    let before = live();
+    let list = strings::split_header(whole[0], whole[1], whole[2], comma[0], comma[1], comma[2], 0, 0);
+    // The list and its two long parts.
+    assert_eq!(live(), before + 3);
+    let read = with(|state| Some(heap::read_block(state, list.cast_unsigned()))).unwrap();
+    let Value::List(parts) = read else { panic!("not a list: {read:?}") };
+    assert_eq!(parts.len(), 3);
+    // The first part is held elsewhere too, as a program keeping it would.
+    let first = with(|state| {
+        let block = state.heap.block(list.cast_unsigned())?;
+        let header = <[u64; 3]>::try_from(block.get(4..7)?).ok()?;
+        let first = super::super::block_of(&header)?;
+        heap::retain(state, first);
+        Some(first)
+    })
+    .unwrap();
+    heap::free(list);
+    assert_eq!(live(), before + 1, "the list and the part it alone held are freed");
+    assert_eq!(text_of([first, u64::try_from(kept.len()).unwrap(), 0]), kept);
+    with(|state| {
+        heap::release(state, first);
+        Some(())
+    });
+    assert_eq!(live(), before);
+    let_go(whole);
+    let_go(comma);
+    let (_, failure, _) = finish();
+    assert!(failure.is_none(), "{failure:?}");
+}

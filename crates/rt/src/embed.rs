@@ -566,7 +566,21 @@ pub(in crate::embed) fn take_failure_of(own: &mut Temporaries) {
 /// kept to save writing it line by line, so this is called before anything that can wait, and
 /// before anything else on another thread is to come after it. A failure to write stays for the
 /// next print to report, as there's nothing here to pass it to.
+///
+/// Asked in line whether anything's kept, as every send asks before its message goes: mostly
+/// nothing is, and a call to find that out cost `chat_server` about 40 instructions a message.
+#[inline]
 pub(crate) fn write_kept_output() {
+    let kept =
+        OUTPUT.with_borrow(|output| output.as_ref().is_some_and(|output| !output.0.borrow().is_empty()));
+    if kept {
+        write_kept_output_now();
+    }
+}
+
+/// [`write_kept_output`], with something kept.
+#[inline(never)]
+fn write_kept_output_now() {
     OUTPUT.with_borrow_mut(|output| {
         if let Some(output) = output {
             let _ = output.flush();

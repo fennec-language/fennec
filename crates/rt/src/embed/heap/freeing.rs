@@ -934,6 +934,84 @@ mod tests {
         finish();
     }
 
+    /// A block that isn't plain, which a free takes out and gives to the walk, is asked first, as a
+    /// plain one is, whether another thread counts it: then it waits, with all it holds, until that
+    /// thread lets go, and is freed here the next time this thread frees something.
+    #[test]
+    fn a_block_for_the_walk_another_thread_counts_waits_for_it() {
+        let me = i64::from(crate::embed::threads::take_index());
+        let elements = vec![Rc::new(Element::Int), Rc::new(Element::Str)];
+        start(Tables { elements, ..Tables::default() }, crate::Inputs::default());
+        let before = with(|state| state.heap.live());
+        let long = |at: usize| crate::value::Value::str(&format!("string {at}, long enough to need a block"));
+        let pushed = with(|state| state.push(crate::value::Value::list((0..3).map(long).collect())));
+        let texts = crate::embed::lists::from_value(pushed, 1, 0, 0);
+        crate::embed::threads::retain_shared(texts, me);
+        crate::embed::heap::free(texts);
+        with(|state| {
+            assert!(state.heap.block(texts.cast_unsigned()).is_some(), "freed while another counted it");
+            assert!(state.heap.live() >= before + 4, "its strings were let go of");
+        });
+        crate::embed::threads::release_shared(texts, me);
+        let other = crate::embed::lists::new(0, 1);
+        crate::embed::heap::free(other);
+        with(|state| assert_eq!(state.heap.live(), before, "what the other thread let go of is freed here"));
+        finish();
+    }
+
+    /// A free takes only from this thread's own table, never one behind it, which the address's
+    /// walk finds, and says what it took: a list with nothing in it is plain, but the same list as
+    /// a `shared` value's handle goes to the walk, which puts it back.
+    #[test]
+    fn a_free_takes_from_its_own_table_and_a_handle_is_never_plain() {
+        let (str_shape, first_list) = (0, 1 + crate::embed::dicts::SHAPES);
+        let shapes = (first_list, str_shape);
+        let mut heap = Heap::default();
+        let empty_list =
+            |owner: u64| vec![1, first_list | (owner << super::super::OWNER_SHIFT), 0, 0].into_boxed_slice();
+        let block = empty_list(0);
+        let at = block.as_ptr().addr();
+        heap.blocks.insert(block);
+        let taken = heap.take_to_free(at, shapes, true).map(|(block, taken)| (block.as_ptr().addr(), taken));
+        assert!(taken == Some((at, super::super::Taken::Plain)), "an empty list is plain");
+        let handle = empty_list(crate::embed::guarded::HANDLE_OWNER);
+        let at = handle.as_ptr().addr();
+        heap.blocks.insert(handle);
+        let taken = heap.take_to_free(at, shapes, true).map(|(_, taken)| taken);
+        assert!(taken == Some(super::super::Taken::Walked), "a handle was taken as plain");
+        let behind = empty_list(0);
+        let at = behind.as_ptr().addr();
+        heap.blocks.insert(behind);
+        let own = std::mem::take(&mut heap.blocks);
+        heap.behind.push((Box::new(own), 0));
+        assert!(heap.take_to_free(at, shapes, true).is_none(), "taken from a table behind this one");
+        assert!(heap.take_block(at).is_some(), "the walk finds it behind");
+    }
+
+    /// A string a place is kept in, which a free can't tell from the address alone, is taken out
+    /// all the same and its place forgotten: taking it as `remove` does, which says a string's
+    /// place has to be forgotten first, stopped a debug build.
+    #[test]
+    fn a_string_with_a_place_kept_in_it_is_freed_and_its_place_forgotten() {
+        let str = Rc::new(Element::Str);
+        start(
+            Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() },
+            crate::Inputs::default(),
+        );
+        let before = with(|state| state.heap.live());
+        let text = with(|state| {
+            super::super::text_address(state, "a string long enough to need a block of its own")
+        });
+        let at = usize::try_from(text).unwrap();
+        with(|state| state.heap.set_cursor(super::super::Cursor { address: at, chars: 1, bytes: 1 }));
+        crate::embed::heap::free(text);
+        with(|state| {
+            assert_eq!(state.heap.cursor().address, 0, "its place is still kept");
+            assert_eq!(state.heap.live(), before);
+        });
+        finish();
+    }
+
     /// A constant kept on the main thread is let go of there more often than it's taken, as code
     /// that runs only on the main thread counts it and code that may run on a worker doesn't. It
     /// still lives, still reads as never freed by its count, and is still among the blocks every

@@ -23280,6 +23280,134 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// On one thread, rounds spinning every way a loop can go back to its start still let another
+/// connection's round answer: a `while True` whose only way back is `continue`, a `for` whose body
+/// tests a value and goes on to its step, a loop whose inner loop is left by `break` on its first
+/// turn, and a loop walking a generator that yields on every turn of its own, where the walking
+/// loop ticks for each. A task ticks once a turn, on its jump back to the loop's start, and each
+/// spinning round here was started, and is still spinning, when its ping comes.
+#[test]
+fn a_round_spinning_through_any_way_back_lets_the_others_answer() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ticking-ways-back")?;
+    let program = dir.join("ways_back.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def skipping(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while True:
+        n += 1
+        x = (x * 31 + 7) % 1000003
+        if n < turns:
+            continue
+        break
+    return x
+
+def testing(turns: int) -> int:
+    mut x = 1
+    for n in range(turns):
+        if x == -1:
+            return n
+        x = (x * 31 + 7) % 1000003
+    return x
+
+def leaving(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while n < turns:
+        n += 1
+        for k in range(1000):
+            if k == 0:
+                break
+        x = (x * 31 + 7) % 1000003
+    return x
+
+def forever() -> Iterator[int]:
+    mut x = 1
+    while True:
+        x = (x * 31 + 7) % 1000003
+        yield x
+
+def walking() -> int:
+    for x in forever():
+        if x == -1:
+            return x
+    return 0
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            many = 1_000_000_000_000
+            if line == \"skipping\":
+                conn.write(f\"{skipping(many)}\\n\")?
+            elif line == \"testing\":
+                conn.write(f\"{testing(many)}\\n\")?
+            elif line == \"leaving\":
+                conn.write(f\"{leaving(many)}\\n\")?
+            elif line == \"walking\":
+                conn.write(f\"{walking()}\\n\")?
+            else:
+                conn.write(\"pong\\n\")?
+",
+    )?;
+    let executable = dir.join("ways_back");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let mut spinning = Vec::new();
+    let mut answers = Vec::new();
+    for way in ["skipping", "testing", "leaving", "walking"] {
+        // The round has read its line before the ping comes, so it's spinning.
+        let mut spinner = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        spinner.write_all(format!("{way}\n").as_bytes())?;
+        spinning.push(spinner);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        ping.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        ping.write_all(b"ping\n")?;
+        let mut back = String::new();
+        let read = std::io::BufReader::new(ping).read_line(&mut back);
+        answers.push((way, back, read.is_ok()));
+    }
+    drop(spinning);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    for (way, back, read) in answers {
+        assert_eq!(back, "pong\n", "the ping wasn't answered while a round spun {way} (read {read})");
+    }
+    Ok(())
+}
+
 /// A chat hub, launched from `main`, writing each line a round hands it to every member's
 /// connection itself, on whichever worker it runs. It counts the writes that went out.
 pub(crate) const HUB_WRITES_TO_EVERY_MEMBER: &str = r#"from std.concurrent import Closed, Crashed, Inbox, Sender

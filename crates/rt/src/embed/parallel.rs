@@ -2209,6 +2209,100 @@ mod tests {
         if from == 0 { 0 } else { connects_and_talks(env, from, to, thread) }
     }
 
+    /// How long the two tests below give a name's lookup, as a connect's timeout.
+    const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
+    /// What the task connecting to a name that never answers found, in each of the two tests below:
+    /// whether it failed as timed out, and how long it took, in milliseconds, or -1 until it ended.
+    static TIMED_OUT: [std::sync::atomic::AtomicBool; 2] =
+        [std::sync::atomic::AtomicBool::new(false), std::sync::atomic::AtomicBool::new(false)];
+    static TOOK_MS: [std::sync::atomic::AtomicI64; 2] =
+        [std::sync::atomic::AtomicI64::new(-1), std::sync::atomic::AtomicI64::new(-1)];
+
+    /// Connects to `name`, whose name server never answers, as `net.connect` does in a task, and
+    /// notes what it found, for the test `test`.
+    fn connects_to_a_name_that_never_answers(name: &str, test: usize) {
+        let started = std::time::Instant::now();
+        let made = crate::stdlib::net::connected_parked(name, 80, LOOKUP_TIMEOUT, None);
+        let took = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        TIMED_OUT[test]
+            .store(matches!(made, Err(crate::stdlib::net::Failure::TimedOut(_))), Ordering::SeqCst);
+        TOOK_MS[test].store(took, Ordering::SeqCst);
+    }
+
+    extern "C" fn connects_to_a_stalled_name(_env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        connects_to_a_name_that_never_answers("never.stalls.test", 0);
+        0
+    }
+
+    /// A task connecting to a name whose name server never answers fails as timed out once the
+    /// connect's timeout has passed, as a connect does: it waited for the lookup as long as the
+    /// system's resolver took, holding a thread every other file's read and database call might
+    /// need, however short its timeout (#1826). The lookup's thread is let go at the end, and its
+    /// answer, which comes after the task gave up, is dropped.
+    #[test]
+    fn a_name_whose_lookup_never_answers_times_out_with_the_connect() {
+        begin();
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, 1, super::Leaf::For(connects_to_a_stalled_name, 0));
+        assert_eq!(run.finish(), 0);
+        crate::stdlib::net::tests::stalls::let_go("never.stalls.test");
+        assert!(TIMED_OUT[0].load(Ordering::SeqCst), "the connect didn't fail as timed out");
+        let took = TOOK_MS[0].load(Ordering::SeqCst);
+        let timeout = i64::try_from(LOOKUP_TIMEOUT.as_millis()).unwrap_or(i64::MAX);
+        assert!(took >= timeout, "it gave up after {took} ms, before its timeout");
+        // Well past its timeout is still well short of the lookup's, which never ends by itself.
+        assert!(took < timeout * 25, "it gave up only after {took} ms");
+        finish();
+    }
+
+    /// Whether the wait after a lookup that was given up on, parked on the lookup's token, was woken
+    /// by anything before its own deadline.
+    static WOKEN_EARLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    static ANSWERED_LATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Gives up on a lookup, then has the lookup answer while this task waits on the token the
+    /// lookup parked on, as a wait would once the tokens had come round again.
+    extern "C" fn gives_up_then_waits_on_the_same_token(
+        _env: i64,
+        _from: i64,
+        _to: i64,
+        _thread: i64,
+    ) -> i64 {
+        let name = "late.stalls.test";
+        connects_to_a_name_that_never_answers(name, 1);
+        crate::embed::serve::reuse_the_last_lookup_s_token();
+        crate::stdlib::net::tests::stalls::let_go(name);
+        // The lookup's answer is in by the time this parks, and a wake for its token with it, if
+        // one was sent: the worker reads its mail only once this has parked.
+        let answered =
+            crate::stdlib::net::tests::stalls::answered_within(name, std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        ANSWERED_LATE.store(answered, Ordering::SeqCst);
+        let token = crate::embed::serve::next_token();
+        let parked = crate::embed::serve::park_on(token, Some(std::time::Instant::now() + LOOKUP_TIMEOUT));
+        WOKEN_EARLY.store(!matches!(parked, crate::embed::serve::Parked::TimedOut), Ordering::SeqCst);
+        0
+    }
+
+    /// A lookup's answer that comes after its task gave up wakes nothing, even a wait that parked on
+    /// the same token since, as one would once the tokens had come round again: it'd be woken as
+    /// if what it waited for had come.
+    #[test]
+    fn a_late_lookup_wakes_no_later_wait_on_its_token() {
+        begin();
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let leaf = super::Leaf::For(gives_up_then_waits_on_the_same_token, 0);
+        let run = super::each_on_pool(run, pool, 1, leaf);
+        assert_eq!(run.finish(), 0);
+        assert!(TIMED_OUT[1].load(Ordering::SeqCst), "the connect didn't fail as timed out");
+        assert!(ANSWERED_LATE.load(Ordering::SeqCst), "the lookup never answered");
+        assert!(!WOKEN_EARLY.load(Ordering::SeqCst), "the late lookup woke the wait on its token");
+        finish();
+    }
+
     /// A server that takes two connections and answers neither until both have sent a line.
     fn answers_once_both_have_spoken() -> u16 {
         use std::io::{BufRead as _, Write as _};

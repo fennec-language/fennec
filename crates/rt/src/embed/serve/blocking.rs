@@ -1,6 +1,6 @@
 //! The threads that run blocking work for parked tasks: a SQLite call, a file's read or write, a
-//! DNS lookup. A task hands its work here and parks, so it doesn't hold its worker while the work
-//! blocks.
+//! DNS lookup, which has a pool of its own. A task hands its work here and parks, so it doesn't
+//! hold its worker while the work blocks.
 //!
 //! Threads start as work needs them, one each time work comes with none waiting. The first
 //! `KEPT` stay once started. More are started while every thread is busy, up to `MOST` in all,
@@ -51,6 +51,20 @@ static HEAVY: LazyLock<Blocking> = LazyLock::new(|| {
 /// The pool for work that keeps a core busy for long.
 pub(super) fn heavy() -> &'static Blocking {
     &HEAVY
+}
+
+/// The most names looked up at once. Past them, a lookup waits its turn, its task parked.
+const MOST_LOOKUPS: usize = 16;
+
+/// The pool for names' lookups, apart from the rest, with none kept once idle: a name server that
+/// never answers holds a lookup's thread for as long as the system's resolver takes, past its task's
+/// deadline, so a burst of them holds at most `MOST_LOOKUPS` threads, all of them here, and none of
+/// the threads the rest of the program's blocking work runs on.
+static LOOKUPS: Blocking = Blocking::new(0, MOST_LOOKUPS, IDLE);
+
+/// The pool for names' lookups.
+pub(super) fn lookups() -> &'static Blocking {
+    &LOOKUPS
 }
 
 /// Starts a thread named `name` running `body`.

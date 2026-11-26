@@ -1446,7 +1446,7 @@ def heard(conn: Connection, asked: str, stdout: Stdout) fails NetError:
         line = (conn.read_line()? else \"\").strip()
         if line == \"\": break
         if line.lower().startswith(\"content-length:\"):
-            length = int(line[15:].strip()) except InvalidValue(): 0
+            length = int.parse(line[15:].strip()) except InvalidValue(): 0
     mut body = bytes([])
     while len(body) < length:
         more = conn.read(length - len(body))?

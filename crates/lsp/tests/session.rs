@@ -672,9 +672,11 @@ fn the_standard_librarys_declarations_are_found_in_a_copy_of_its_files() {
     let mut editor = Editor::new("library").unwrap();
     let text = "from std.math import Vec3\n\ndef main(stdout: Stdout):\n    at = Vec3(x=1.0)\n    stdout.print(at.x, at.length())\n";
     editor.open("src/main.fen", text);
-    for (needle, declared) in
-        [("Vec3(x", "export struct Vec3:"), ("x=1.0", "    x = 0.0"), ("length()", "    def length(self)")]
-    {
+    for (needle, declared) in [
+        ("Vec3(x", "export struct Vec3:"),
+        ("x=1.0", "    x: f32 = 0.0"),
+        ("length()", "    def length(self)"),
+    ] {
         let found = editor.at("textDocument/definition", "src/main.fen", text, needle, 0);
         let found = &found.as_array().unwrap()[0];
         let uri = found.get("uri").and_then(Json::as_str).unwrap();

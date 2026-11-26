@@ -137,8 +137,9 @@ fn i64_and_f64_convert_as_int_and_float_do() {
     assert_eq!(
         problems(program),
         [
-            "`i64` converts a number or text, not a list[int] @ items",
-            "`f64` converts a number or text, not a list[int] @ items",
+            "`i64(...)` converts a number, and never fails: text is read with `int.parse(text)`, which can @ text",
+            "`i64` converts a number, not a list[int] @ items",
+            "`f64` converts a number, not a list[int] @ items",
         ]
     );
 }
@@ -226,6 +227,64 @@ fn sums_of_literals_take_the_size_they_go_into() {
             "256 doesn't fit in u8 @ 256",
         ]
     );
+}
+
+/// A number written out after `else` takes the size of the optional it stands in for, as a field's
+/// default does where a struct's generated `deserialize` fills it in; and an `f32` can be saved.
+#[test]
+fn an_else_default_takes_the_optionals_size() {
+    let program = "
+        from std import json
+
+        struct Reading:
+            level: f32 = 0.5
+
+        def shown(stdout: Stdout, found: f32?, small: u8?):
+            level: f32 = found else 0.25
+            stdout.print(level, small else 7, json.dumps(Reading()))
+            stdout.print(small else 300)
+    ";
+    assert_eq!(problems(program), ["300 doesn't fit in u8 @ 300"]);
+}
+
+/// A number literal takes the size a type's own operator takes on its right, as `velocity * 2.0`
+/// and `velocity *= 2.0` do for `def *(self, scale: f32)`, the size of what's beside it in `min`
+/// and `max`, and the size a `case` matches, `assert ... fails` too. One that doesn't fit is still
+/// reported.
+#[test]
+fn literals_take_the_size_of_operators_min_max_and_cases() {
+    let program = "
+        struct Velocity:
+            x: f32 = 0.0
+
+            def *(self, scale: f32) -> Velocity:
+                return Velocity(x=self.x * scale)
+
+        error TooFast:
+            speed: f32
+
+        def check(speed: f32) fails TooFast:
+            if speed > 9.5: fail TooFast(speed)
+
+        def named(speed: f32) -> str:
+            match speed:
+                case 0.5: return \"slow\"
+                case _: return \"other\"
+
+        def main(stdout: Stdout):
+            mut velocity = Velocity(x=1.5) * 2.0
+            velocity *= 0.5
+            speed = velocity.x
+            stdout.print(min(speed, 2.0), max(-1.0, speed, 0.25), named(speed))
+            check(speed) except why:
+                case TooFast(speed=10.5): stdout.print(why)
+                case _: stdout.print(why)
+            stdout.print(velocity * 1e39)
+
+        test \"too fast\":
+            assert check(10.5) fails TooFast(speed=10.5)
+    ";
+    assert_eq!(problems(program), ["1000000000000000000000000000000000000000 is too big for an f32 @ 1e39"]);
 }
 
 /// A set, dict or tuple literal written where one holding sized numbers goes takes their sizes,
@@ -508,7 +567,7 @@ fn builtins_give_back_the_right_types() {
         ("len([1]) + 1.0", "can't mix int and float in `+` @ len([1]) + 1.0"),
         ("str(1) + 1", "can't use `+` on a str and an int @ str(1) + 1"),
         ("int(1.5) + 1.0", "can't mix int and float in `+` @ int(1.5) + 1.0"),
-        ("int('1') + 1", "this is the result of something that can fail @ int(\"1\") + 1"),
+        ("int.parse('1') + 1", "this is the result of something that can fail @ int.parse(\"1\") + 1"),
         ("floor(1.5) + 1.0", "can't mix int and float in `+` @ floor(1.5) + 1.0"),
         ("round(1.5) + 1.0", "can't mix int and float in `+` @ round(1.5) + 1.0"),
         ("round(1.5, 1) + 1", "can't mix int and float in `+` @ round(1.5, 1) + 1"),

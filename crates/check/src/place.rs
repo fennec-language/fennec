@@ -120,17 +120,7 @@ impl FnCx<'_> {
                 {
                     self.read_from.insert(name.clone(), crate::loops::place_text(value));
                 }
-                let expected = match written {
-                    Some(written) => self.written_type(written),
-                    None if op.is_none() => self.declared_type(name),
-                    // `query += " where id = 1"` keeps a `LiteralStr` one when what's added is.
-                    None if op == Some(BinOp::Add) => {
-                        self.declared_type(name).filter(|ty| matches!(ty, Type::LiteralStr | Type::Sized(_)))
-                    }
-                    // `small -= 1`: a number literal takes the size of what it changes.
-                    None => self.declared_type(name).filter(|ty| matches!(ty, Type::Sized(_))),
-                };
-                let ty = match &expected {
+                let ty = match &self.expected_by_name(name, op, value, written) {
                     Some(expected) => self.expr_as(value, expected),
                     None => self.expr(value),
                 };
@@ -174,7 +164,16 @@ impl FnCx<'_> {
                 let adds_literal = op == Some(BinOp::Add) && matches!(current, Type::LiteralStr);
                 // `small += 1`: a number literal takes the size of what it changes.
                 let sized = matches!(current, Type::Sized(_)) && crate::expect::number_literal(value);
-                let mut ty = if op.is_none() || adds_literal || sized {
+                // `velocity *= 2.0`: one taken by a type's own operator takes the size it takes.
+                let takes = match op {
+                    Some(op) if crate::expect::number_literal(value) => {
+                        self.operator_takes_sized(op, &current)
+                    }
+                    _ => None,
+                };
+                let mut ty = if let Some(takes) = takes {
+                    self.expr_as(value, &takes)
+                } else if op.is_none() || adds_literal || sized {
                     self.expr_as(value, &current)
                 } else {
                     self.expr(value)
@@ -189,6 +188,34 @@ impl FnCx<'_> {
             }
         }
         self.lent_kept(target, value);
+    }
+
+    /// The type what's given to a name is checked against: its written type, or what it holds
+    /// where that's what decides, as a literal's size does.
+    fn expected_by_name(
+        &mut self,
+        name: &str,
+        op: Option<BinOp>,
+        value: &Expr,
+        written: Option<&TypeExpr>,
+    ) -> Option<Type> {
+        let expected = match written {
+            Some(written) => self.written_type(written),
+            None if op.is_none() => self.declared_type(name),
+            // `query += " where id = 1"` keeps a `LiteralStr` one when what's added is.
+            None if op == Some(BinOp::Add) => {
+                self.declared_type(name).filter(|ty| matches!(ty, Type::LiteralStr | Type::Sized(_)))
+            }
+            // `small -= 1`: a number literal takes the size of what it changes.
+            None => self.declared_type(name).filter(|ty| matches!(ty, Type::Sized(_))),
+        };
+        // `velocity *= 2.0`: one taken by a type's own operator takes the size it takes.
+        match (op, expected) {
+            (Some(op), None) if crate::expect::number_literal(value) => {
+                self.lookup(name).and_then(|(current, _)| self.operator_takes_sized(op, &current))
+            }
+            (_, expected) => expected,
+        }
     }
 
     /// The type a field or item holds, as declared: not narrowed by a check for None.
@@ -253,8 +280,16 @@ impl FnCx<'_> {
     /// which can be narrower, as `int` for an `int?` given `5`, except for a function. One whose
     /// type differs from a function type it's given where, as one giving back `str` where
     /// `(int) -> str?` goes, is made to give back what that says, so the name holds that type:
-    /// what it holds can't be read back as the narrower function.
+    /// what it holds can't be read back as the narrower function. An optional of an optional,
+    /// `int??`, given an `int?` that might be `None` holds an `int??` (#2465): read as the `int?`
+    /// it was given, the `None` inside would be the `None` of the name itself.
     fn held_as(&mut self, declared: &Type, ty: Type) -> Type {
+        if let Type::Optional(inner) = self.checker.settled(declared)
+            && self.checker.settled(&inner).maybe_none()
+            && matches!(self.checker.settled(&ty), Type::Optional(_))
+        {
+            return declared.clone();
+        }
         let Type::Arrow(..) = self.checker.settled(declared) else { return ty };
         let given = match self.checker.settled(&ty) {
             Type::Function(key) => match self.checker.signature(&key) {

@@ -101,7 +101,7 @@ impl FnCx<'_> {
                 if let Some(tested) = tested {
                     self.direct_read = Some((tested.start, tested.end));
                 }
-                let (left, right) = self.operands(lhs, rhs);
+                let (left, right) = self.operator_operands(*op, lhs, rhs);
                 self.direct_read = outer;
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
@@ -214,7 +214,7 @@ impl FnCx<'_> {
         let help = if kinds.iter().all(|kind| kind == "an int" || kind == "a float") {
             "ints and floats don't mix: write whole floats with a decimal point, like `10.0`, or convert with float(...)"
         } else {
-            "a value has one type: convert one side, as `str(count)` or `int(text)`, or make an enum with a case for each"
+            "a value has one type: convert one side, as `str(count)` or `int.parse(text)?`, or make an enum with a case for each"
         };
         self.error(Diagnostic::new(format!("{what} {}", kinds.join(" and ")), span).with_help(help));
         Type::Unknown
@@ -542,7 +542,7 @@ impl FnCx<'_> {
     }
 
     /// The side of a one-line `if` that can fail where the other gives what it would on
-    /// success, as in `int(text) if given else 8080`: the two don't join, and the failure is why.
+    /// success, as in `int.parse(text) if given else 8080`: the two don't join, and the failure is why.
     fn failing_side<'e>(
         &mut self,
         (then, otherwise): (&'e Expr, &'e Expr),
@@ -888,7 +888,7 @@ impl FnCx<'_> {
                 let help = if ty == Type::Bool {
                     "a bool is turned around with `not`, as `not done`"
                 } else {
-                    "only a number is negated, as `-count`: convert it first, as `-int(text)`"
+                    "only a number is negated, as `-count`: convert it first, as `-int.parse(text)?`"
                 };
                 self.error(
                     Diagnostic::new(format!("can't negate {}", article(&ty.kind())), span).with_help(help),
@@ -1290,7 +1290,7 @@ impl FnCx<'_> {
             );
         }
         if except && !matches!(self.checker.settled(&value), Type::Result(..) | Type::Unknown) {
-            self.nothing_to_except(&value, written);
+            self.nothing_to_except(&value, value_expr);
         }
         if except
             && let Type::Result(made, _) = self.checker.settled(&value)
@@ -1311,7 +1311,16 @@ impl FnCx<'_> {
                 }
                 given
             }
-            None => self.expr(default),
+            // `speed else 0.5` on an `f32?`: a number written out takes the size it stands in for.
+            None => match self.checker.settled(&value) {
+                Type::Optional(inner) | Type::Result(inner, _)
+                    if crate::expect::number_literal(default)
+                        && matches!(self.checker.settled(&inner), Type::Sized(_)) =>
+                {
+                    self.expr_as(default, &inner)
+                }
+                _ => self.expr(default),
+            },
         };
         match value {
             Type::Optional(inner) if matches!(*inner, Type::Result(..)) => {
@@ -1605,7 +1614,7 @@ fn operator_help(op: BinOp, left: &Type, right: &Type) -> &'static str {
         (Type::List(_), Type::List(_)) => {
             "work on a list's items, as `[item * 2 for item in items]`, or join lists with `+`"
         }
-        _ => "convert one side so both are numbers, as `int(text)` or `float(count)`",
+        _ => "convert one side so both are numbers, as `int.parse(text)?` or `float(count)`",
     }
 }
 

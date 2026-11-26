@@ -1219,6 +1219,51 @@ fn flat_messages_replay_as_they_ran_on_one_thread_and_four() -> std::io::Result<
     Ok(())
 }
 
+/// `Table`s copied every way a run can copy one replay as they ran (#2424): every item added takes a
+/// tag of its own from one count, which a replay has to hand out the same way. Recorded on 4
+/// threads and replayed on 1, and the other way.
+#[test]
+fn copied_tables_replay_as_they_ran_on_four_threads_and_one() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("copied-tables")?;
+    let program = dir.join("tables.fen");
+    std::fs::write(&program, include_str!("fixtures/tables_copied.fen"))?;
+    let executable = dir.join("tables");
+    let built = fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_THREADS_RUNTIME", "1")
+        .output_within()?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for (recording, (recorded_on, replayed_on)) in [("4", "1"), ("1", "4")].into_iter().enumerate() {
+        let log = dir.join(format!("tables-{recording}.log"));
+        fennec_rt::replay::start_log(&log, format!("native\0{}", program.display()).as_bytes())?;
+        let recorded = std::process::Command::new(&executable)
+            .env("FENNEC_RECORD", &log)
+            .env("FENNEC_THREADS", recorded_on)
+            .current_dir(&dir)
+            .output_within()?;
+        let recorded = outcome(&recorded);
+        assert_eq!(recorded.2, Some(0), "{}", recorded.1);
+        assert_eq!(recorded.0, include_str!("fixtures/tables_copied.out"), "recorded on {recorded_on}");
+        let replayed = std::process::Command::new(&executable)
+            .env("FENNEC_REPLAY", &log)
+            .env("FENNEC_THREADS", replayed_on)
+            .current_dir(&dir)
+            .output_limited(DEADLINE, Duration::from_secs(60))?;
+        let replayed = outcome(&replayed);
+        let how = format!("recorded on {recorded_on} threads, replayed on {replayed_on}: {}", replayed.1);
+        assert_eq!(replayed.0, recorded.0, "{how}");
+        assert_eq!(replayed.2, Some(0), "{how}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A replay that can't follow its recording says where it first couldn't, once, and ends. Here
 /// `main` takes a lock its recording didn't. A replay of that waited out its patience, crashed, and
 /// then its connection's cleanup asked for a close where the recording read a line: the replay said
@@ -1314,6 +1359,60 @@ fn a_hub_writing_to_connections_on_other_workers_replays_its_writes() -> std::io
         );
         assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
     }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Asks `localhost` on the port it's given, with a short timeout, and prints the answer.
+const ASKS_LOCALHOST: &str = "from std.net import NetError
+
+def main(net: Net, args: Args, stdout: Stdout) fails NetError:
+    got = net.get(f\"http://localhost:{args[0]}/one\", timeout=1s)?
+    stdout.print(got.status, got.text())
+";
+
+/// A request of `localhost`, to a server listening only on `127.0.0.1`, is recorded as what it
+/// came to, so a replay prints the same with no server there. How long connecting took, trying
+/// `::1` first where the system looks it up so, is in no recording: a replay never connects.
+#[test]
+fn a_request_of_localhost_replays_as_what_it_came_to() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("localhost")?;
+    let program = dir.join("asks.fen");
+    std::fs::write(&program, ASKS_LOCALHOST)?;
+    let log = dir.join("asks.log");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    let serving = std::thread::spawn(move || -> std::io::Result<()> {
+        let (mut connection, _) = listener.accept()?;
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") && connection.read(&mut byte)? == 1 {
+            head.extend_from_slice(&byte);
+        }
+        connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+    });
+    let recorded = fennec_command()
+        .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+        .arg(&program)
+        .arg(port.to_string())
+        .current_dir(&dir)
+        .output_before(DEADLINE)?;
+    // A run that never connected leaves the server waiting: one connection lets it go.
+    if !serving.is_finished() {
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+    }
+    let _ = serving.join();
+    let recorded = without_build_hints(outcome(&recorded));
+    assert_eq!(recorded.0, "200 hello\n", "{recorded:?}");
+    let replayed = fennec_command()
+        .args(["replay", &log.to_string_lossy()])
+        .current_dir(&dir)
+        .output_before(DEADLINE)?;
+    assert_eq!(without_build_hints(outcome(&replayed)), recorded);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

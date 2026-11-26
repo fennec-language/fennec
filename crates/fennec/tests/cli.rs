@@ -3230,6 +3230,25 @@ fn new_makes_a_kit_that_runs_and_passes_its_tests() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A build the launcher runs as `dev`, linked from a checkout, makes kits that ask for `dev`, as
+/// there's no release of its version to run. Linked by another name, it asks for its version.
+#[test]
+fn new_made_by_a_build_linked_as_dev_asks_for_dev() {
+    let dir = scratch("new-dev").unwrap();
+    for (linked, asks) in [("dev", "dev"), ("mine", env!("CARGO_PKG_VERSION"))] {
+        let made = crate::executables::fennec_command()
+            .args(["new", linked])
+            .current_dir(&dir)
+            .env("FENNEC_LINKED_AS", linked)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{}", text(&made.stderr));
+        let manifest = std::fs::read_to_string(dir.join(linked).join("kit.toml")).unwrap();
+        assert!(manifest.contains(&format!("fennec = \"{asks}\"")), "{manifest}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn fmt_with_no_path_formats_the_kit_around_the_current_folder() {
     let dir = scratch("fmt-kit").unwrap();
@@ -3970,7 +3989,7 @@ fn fix_migrate_rewrites_what_needs_no_types_in_a_program_that_doesnt_check() {
     let program = dir.join("mistake.fen");
     let path = program.to_string_lossy().into_owned();
     let old = "def size(items: list[int]) -> int:\n    items.len()\n\n\
-        def main(stdout: Stdout):\n    got = int(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
+        def main(stdout: Stdout):\n    got = int.parse(\"1\") else as why:\n        stdout.print(why)\n        0\n    \
         stdout.print(size([got]), nowhere)\n";
     std::fs::write(&program, old).unwrap();
     let fixed = fennec(&["fix", "--migrate", &path], "").unwrap();
@@ -5703,6 +5722,317 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// The build daemon holds what a kit's run found while the kit's files are the same, so the next
+/// run starts from it, and lets go of it when any of them changes: a file of the kit's own, a
+/// dependency's, `kit.toml`, `kit.lock`, and the toolchain `kit.lock` pins. Each such run is
+/// worked out as one with no daemon is, and the run after it is held again.
+#[cfg(unix)]
+#[test]
+fn the_daemon_holds_a_kits_run_till_one_of_its_files_changes() {
+    let dir = scratch("daemon_holds_runs").unwrap();
+    let home = dir.join("home");
+    let _stopped = DaemonsStopped { home: &home };
+    let says = |word: &str| format!("export def word() -> str:\n    return \"{word}\"\n");
+    write_kit(&dir.join("first"), "first", "", &[("lib.fen", &says("first"))]).unwrap();
+    // `f` is a name the lint finds too short, and the test fails once the dependency says "broken".
+    let main = |end: &str| {
+        format!(
+            "from first import word\n\ndef f() -> str:\n    return word()\n\n\
+def main(stdout: Stdout):\n    stdout.print(f() + \"{end}\")\n\n\
+test \"the word isn't broken\":\n    assert word() != \"broken\"\n"
+        )
+    };
+    let app = dir.join("app");
+    let manifest = "[dependencies]\nfirst = { path = \"../first\" }\n";
+    write_kit(&app, "app", manifest, &[("main.fen", &main(""))]).unwrap();
+    let ran = || {
+        crate::executables::fennec_command()
+            .arg("run")
+            .current_dir(&app)
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
+            .env_remove("FENNEC_NO_DAEMON")
+            .env_remove("FENNEC_NO_CACHE")
+            .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
+            .output()
+            .unwrap()
+    };
+    let first = ran();
+    let lint = text(&first.stderr);
+    assert!(lint.contains("short-name"), "{lint}");
+    // Each run that ends well shows the same lint errors, whether it was held or not.
+    let run = || {
+        let ran = ran();
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        assert_eq!(text(&ran.stderr), lint);
+        text(&ran.stdout)
+    };
+    // How many runs the daemon has started from what it held.
+    let held = || {
+        let status = text(&with_daemon(&app, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
+        status
+            .split_once("runs held: ")
+            .and_then(|(_, rest)| rest.split_once(", and "))
+            .and_then(|(_, rest)| rest.split_once(" run"))
+            .map_or(0, |(count, _)| count.parse::<u64>().unwrap())
+    };
+    // Each edit is made a moment later than the files were last looked at, as a person's is.
+    let edit = |file: PathBuf, text: &str| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(file, text).unwrap();
+    };
+
+    // The run after an edit is worked out again and shows it, and the one after that is held.
+    let seen_then_held = |said: &str, held_before: u64| {
+        assert_eq!(run(), said);
+        assert_eq!(held(), held_before);
+        assert_eq!(run(), said);
+        assert_eq!(held(), held_before + 1);
+    };
+    assert_eq!((text(&first.stdout).as_str(), held()), ("first\n", 0));
+    assert_eq!(run(), "first\n");
+    assert_eq!(held(), 1);
+    assert_eq!(run(), "first\n");
+    assert_eq!(held(), 2);
+
+    // The kit's own file.
+    edit(app.join("src/main.fen"), &main("!"));
+    seen_then_held("first!\n", 2);
+    // A dependency's file.
+    edit(dir.join("first/src/lib.fen"), &says("other"));
+    seen_then_held("other!\n", 3);
+    // `kit.toml`, though nothing it says changes what the program does.
+    let manifest = format!("name = \"app\"\nversion = \"0.1.1\"\nfennec = \"0.0.1\"\n{manifest}");
+    edit(app.join("kit.toml"), &manifest);
+    seen_then_held("other!\n", 4);
+    // `kit.lock`, given a toolchain to pin, and then the pin moved to another.
+    let lock = std::fs::read_to_string(app.join("kit.lock")).unwrap_or_default();
+    let pin = |version: &str, byte: &str| format!("{lock}toolchain {version} {}\n", byte.repeat(64));
+    edit(app.join("kit.lock"), &pin("0.0.1", "a"));
+    seen_then_held("other!\n", 5);
+    edit(app.join("kit.lock"), &pin("0.0.2", "b"));
+    seen_then_held("other!\n", 6);
+
+    // Its tests passing is held with the rest: a dependency changed so one fails stops the run.
+    edit(dir.join("first/src/lib.fen"), &says("broken"));
+    let failed = ran();
+    assert!(!failed.status.success() && text(&failed.stdout).is_empty(), "{}", text(&failed.stderr));
+    assert_eq!(held(), 7);
+
+    let stop = with_daemon(&app, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert_eq!(text(&stop.stdout), "stopped\n");
+    assert!(stops(&app, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `fennec run` in `dir` through the daemon, using the cache, as a person's run does.
+#[cfg(unix)]
+fn run_held(dir: &Path, home: &Path, args: &[&str]) -> std::io::Result<Output> {
+    crate::executables::fennec_command()
+        .arg("run")
+        .args(args)
+        .current_dir(dir)
+        .env("FENNEC_HOME", home)
+        .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
+        .env_remove("FENNEC_NO_DAEMON")
+        .env_remove("FENNEC_NO_CACHE")
+        .env("FENNEC_DAEMONS", crate::executables::daemons_of(home))
+        .output()
+}
+
+/// How many runs the daemon of `home` has started from what it held.
+#[cfg(unix)]
+fn runs_held(dir: &Path, home: &Path) -> Option<u64> {
+    let status = text(&with_daemon(dir, home, DAEMON_IDLE, &["daemon", "status"]).ok()?.stdout);
+    let Some((_, held)) = status.split_once("runs held: ") else { return Some(0) };
+    held.split_once(", and ")?.1.split_once(" run")?.0.parse().ok()
+}
+
+/// A program the daemon holds is the program of the path the run was given, which names every file
+/// in what it says: a kit run as `k` and then as `.`, or through a link, and a single file run from
+/// another folder, each say where they fail by the path they were given.
+#[cfg(unix)]
+#[test]
+fn a_held_run_names_files_by_the_path_it_was_given() {
+    let dir = scratch("daemon_held_paths").unwrap();
+    let home = dir.join("home");
+    let _stopped = DaemonsStopped { home: &home };
+    let source = "def pick(items: list[int], at: int) -> int:\n    return items[at]\n\n\
+def main(stdout: Stdout):\n    mut at = 0\n    for step in range(7):\n        at += step\n    stdout.print(pick([1, 2, 3], at=at))\n";
+    write_kit(&dir.join("k"), "k", "", &[("main.fen", source)]).unwrap();
+    std::os::unix::fs::symlink("k", dir.join("link")).unwrap();
+    std::fs::write(dir.join("prog.fen"), source).unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    // A run given `given` in `at` fails, saying it failed at `said`. The lint lines before it still
+    // name the path the kit was first run by (#2541), so only the failure's own line is looked at.
+    let fails_at = |at: &Path, given: &str, said: &str| {
+        let ran = run_held(at, &home, &[given]).unwrap();
+        let printed = text(&ran.stderr);
+        assert!(!ran.status.success() && printed.contains(&format!("--> {said}\n")), "{given}: {printed}");
+    };
+    for _ in 0..3 {
+        fails_at(&dir, "k", "k/src/main.fen:2:12");
+    }
+    assert_eq!(runs_held(&dir, &home), Some(2));
+    fails_at(&dir.join("k"), ".", "src/main.fen:2:12");
+    fails_at(&dir, "link", "link/src/main.fen:2:12");
+    fails_at(&dir, "./k", "./k/src/main.fen:2:12");
+    for _ in 0..3 {
+        fails_at(&dir, "prog.fen", "prog.fen:2:12");
+    }
+    fails_at(&dir.join("sub"), "../prog.fen", "../prog.fen:2:12");
+    fails_at(&dir, "./prog.fen", "./prog.fen:2:12");
+
+    with_daemon(&dir, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&dir, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A kit that embeds a folder is held, and what's held goes when what's in the folder changes:
+/// a file in it saved as an editor saves it, by a new file renamed over it, and run at once, and
+/// then a file added to it. Each run shows what the folder holds, and the runs after a change are
+/// held again.
+#[cfg(unix)]
+#[test]
+fn a_held_run_sees_what_an_embedded_folder_holds() {
+    let dir = scratch("daemon_held_folder").unwrap();
+    let home = dir.join("home");
+    let _stopped = DaemonsStopped { home: &home };
+    let main = "SITE = embed_folder(\"../site\")\n\ndef main(stdout: Stdout):\n    \
+                for path, data in SITE.items():\n        stdout.print(path, len(data))\n";
+    let kit = dir.join("k");
+    write_kit(&kit, "k", "", &[("main.fen", main)]).unwrap();
+    std::fs::create_dir_all(kit.join("site")).unwrap();
+    std::fs::write(kit.join("site/app.css"), "body {}\n").unwrap();
+    std::fs::write(kit.join("site/index.html"), "<p>hi</p>\n").unwrap();
+    let run = || {
+        let ran = run_held(&kit, &home, &[]).unwrap();
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        text(&ran.stdout)
+    };
+    // Runs until one starts from what's held, at most `most`, each printing `said`.
+    let held_within = |most: u64, said: &str| {
+        let before = runs_held(&kit, &home).unwrap();
+        for _ in 0..most {
+            assert_eq!(run(), said);
+            if runs_held(&kit, &home).unwrap() > before {
+                return;
+            }
+        }
+        panic!("none of {most} runs started from what was held");
+    };
+    held_within(3, "app.css 8\nindex.html 10\n");
+
+    // An editor's save: the folder's time changes, and the kit is run at once.
+    std::fs::write(kit.join("site/.app.css.tmp"), "body { color: red }\n").unwrap();
+    std::fs::rename(kit.join("site/.app.css.tmp"), kit.join("site/app.css")).unwrap();
+    held_within(3, "app.css 20\nindex.html 10\n");
+
+    // A file added to the folder, after the time it changed has settled.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    std::fs::write(kit.join("site/logo.svg"), "<svg/>\n").unwrap();
+    held_within(3, "app.css 20\nindex.html 10\nlogo.svg 7\n");
+    // A hidden file changes nothing it holds.
+    std::fs::write(kit.join("site/.DS_Store"), "").unwrap();
+    held_within(1, "app.css 20\nindex.html 10\nlogo.svg 7\n");
+
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What a name in an embedded folder is counts, not only the name: what's read through a link is
+/// noted by where it led, so the folder says where each link leads. A link to a file pointed at
+/// another, a link to a folder pointed at another, a link made a file of its own, and an empty
+/// folder made an empty file are each seen, by the cache's own look and so by the daemon's.
+#[cfg(unix)]
+#[test]
+fn a_held_run_sees_a_link_in_an_embedded_folder_changed() {
+    use std::os::unix::fs::symlink;
+    let dir = scratch("daemon_held_links").unwrap();
+    let home = dir.join("home");
+    let _stopped = DaemonsStopped { home: &home };
+    let main = "SITE = embed_folder(\"../site\")\n\ndef main(stdout: Stdout):\n    \
+                for path, data in SITE.items():\n        stdout.print(path, len(data))\n";
+    let kit = dir.join("k");
+    write_kit(&kit, "k", "", &[("main.fen", main)]).unwrap();
+    let (site, data) = (kit.join("site"), kit.join("data"));
+    for folder in [site.join("empty"), data.join("a"), data.join("b")] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    for (file, text) in
+        [("v1.txt", "one\n"), ("v2.txt", "three33\n"), ("a/x.txt", "x\n"), ("b/x.txt", "xyz\n")]
+    {
+        std::fs::write(data.join(file), text).unwrap();
+    }
+    std::fs::write(site.join("app.css"), "body {}\n").unwrap();
+    symlink("../data/v1.txt", site.join("current.txt")).unwrap();
+    symlink("../data/v1.txt", site.join("pinned.txt")).unwrap();
+    symlink("../data/a", site.join("shelf")).unwrap();
+    // Runs until one starts from what's held, at most three, each printing what the site holds.
+    let held_within = |said: &str| {
+        let before = runs_held(&kit, &home).unwrap();
+        for _ in 0..3 {
+            let ran = run_held(&kit, &home, &[]).unwrap();
+            assert_eq!(text(&ran.stdout), said, "{}", text(&ran.stderr));
+            if runs_held(&kit, &home).unwrap() > before {
+                return;
+            }
+        }
+        panic!("none of 3 runs started from what was held");
+    };
+    held_within("app.css 8\ncurrent.txt 4\npinned.txt 4\nshelf/x.txt 2\n");
+    std::fs::remove_file(site.join("current.txt")).unwrap();
+    symlink("../data/v2.txt", site.join("current.txt")).unwrap();
+    held_within("app.css 8\ncurrent.txt 8\npinned.txt 4\nshelf/x.txt 2\n");
+    std::fs::remove_file(site.join("shelf")).unwrap();
+    symlink("../data/b", site.join("shelf")).unwrap();
+    held_within("app.css 8\ncurrent.txt 8\npinned.txt 4\nshelf/x.txt 4\n");
+    std::fs::remove_file(site.join("pinned.txt")).unwrap();
+    std::fs::write(site.join("pinned.txt"), "own file\n").unwrap();
+    held_within("app.css 8\ncurrent.txt 8\npinned.txt 9\nshelf/x.txt 4\n");
+    std::fs::remove_dir(site.join("empty")).unwrap();
+    std::fs::write(site.join("empty"), "").unwrap();
+    held_within("app.css 8\ncurrent.txt 8\nempty 0\npinned.txt 9\nshelf/x.txt 4\n");
+
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// An embedded folder's note can't be read two ways, whatever a name in it holds: a link `latest`
+/// to `v2.txt` made a file named `latest -> v2.txt` is seen, with no daemon, as the cache looks.
+#[cfg(unix)]
+#[test]
+fn a_file_named_like_a_link_in_an_embedded_folder_is_seen() {
+    let dir = scratch("embedded_link_name").unwrap();
+    let main = "SITE = embed_folder(\"../site\")\n\ndef main(stdout: Stdout):\n    \
+                for path, data in SITE.items():\n        stdout.print(path, len(data))\n";
+    let kit = dir.join("k");
+    write_kit(&kit, "k", "", &[("main.fen", main)]).unwrap();
+    let site = kit.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("v2.txt"), "two\n").unwrap();
+    std::os::unix::fs::symlink("v2.txt", site.join("latest")).unwrap();
+    let run = || {
+        let ran = crate::executables::fennec_command()
+            .arg("run")
+            .current_dir(&kit)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        text(&ran.stdout)
+    };
+    assert_eq!(run(), "latest 4\nv2.txt 4\n");
+    assert_eq!(run(), "latest 4\nv2.txt 4\n");
+    std::fs::remove_file(site.join("latest")).unwrap();
+    std::fs::write(site.join("latest -> v2.txt"), "a file of its own\n").unwrap();
+    assert_eq!(run(), "latest -> v2.txt 18\nv2.txt 4\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `fennec daemon status` and `stop` reach every daemon the user has running, one for each
 /// environment commands ran in: a terminal set up another way still sees and stops them all.
 #[cfg(unix)]
@@ -6064,6 +6394,54 @@ fn a_build_after_an_edit_carries_over_what_the_daemon_kept_and_is_the_one_made_h
         .env_remove("FENNEC_NO_DAEMON")
         .env("FENNEC_DAEMONS", home.join("noted-daemons"));
     command.output().unwrap();
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// Past the daemon's budget (`FENNEC_KEPT_BUDGET`), the kit built longest ago is let go of once its
+/// build is done, this one too when it's past by itself: the next build after an edit carries
+/// nothing over, and makes the same program as one made here.
+#[cfg(unix)]
+#[test]
+fn a_kit_past_the_daemons_budget_is_let_go_of_and_its_next_build_checks_all_of_it() {
+    let (folder, kit, home) = small_kit("kept-budget").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let here_home = folder.join("home-here");
+    let main = kit.join("src/main.fen");
+    let before = "def main(stdout: Stdout):\n    stdout.print(doubled(2))\n\n\
+                  def doubled(n: int) -> int:\n    return n * 2\n";
+    let after = before.replace("    return n * 2\n", "    total = n * 2 + 1\n    return total\n");
+    let fennec = |args: &[&str], daemon: bool, home: &Path| {
+        let mut command = crate::executables::fennec_command();
+        command.args(args).current_dir(&kit).env("FENNEC_HOME", home);
+        command.env("FENNEC_DAEMON_IDLE", DAEMON_IDLE).env("FENNEC_KEPT_BUDGET", "1").env_remove("CI");
+        if daemon {
+            command.env_remove("FENNEC_NO_DAEMON").env("FENNEC_DAEMONS", home.join("noted-daemons"));
+        }
+        command
+    };
+    let status = || fennec(&["daemon", "status"], true, &home).output();
+    crate::executables::daemon_started(fennec(&["daemon", "serve"], true, &home), &status).unwrap();
+    for source in [before, after.as_str()] {
+        std::fs::write(&main, source).unwrap();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let here = fennec(&["build", ".", "-o", "prog"], false, &here_home).output().unwrap();
+        let made_here = std::fs::read(kit.join("prog")).ok();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let made = fennec(&["build", ".", "-o", "prog"], true, &home).output().unwrap();
+        assert_eq!(made.status.code(), Some(0), "{}", text(&made.stderr));
+        assert_eq!(text(&made.stderr), text(&here.stderr));
+        assert!(made_here.is_some());
+        assert_eq!(std::fs::read(kit.join("prog")).ok(), made_here);
+    }
+    let run = std::process::Command::new(kit.join("prog")).output().unwrap();
+    assert_eq!(text(&run.stdout), "5\n");
+    let said = text(&status().unwrap().stdout);
+    assert!(said.contains("checks kept: 0 kits"), "{said}");
+    assert!(said.contains("the last build carried over 0 functions"), "{said}");
+    fennec(&["daemon", "stop"], true, &home).output().unwrap();
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 

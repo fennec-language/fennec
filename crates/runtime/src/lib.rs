@@ -17,10 +17,8 @@ use fennec_rt::embed::{
     notes, numbers, parallel, regex, serve, strings, temps, text, threads,
 };
 
-/// The build of Fennec this library is from, after a marker, which `fennec` reads out of the
-/// library's file to tell one built from other source. Kept by `#[used]`, since nothing calls it.
-#[used]
-static BUILD_STAMP: &str = concat!("fennec-runtime-build:", env!("FENNEC_BUILD"));
+// The build of Fennec this library is from, in a static named for it: see `build.rs`.
+include!(concat!(env!("OUT_DIR"), "/stamp.rs"));
 
 /// The exported functions that never fail: none of them sets the flag `fennec_aot_failed_flag`
 /// gives the address of. Generated code has to check that flag after calling any other, and may
@@ -77,6 +75,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_dict_strong_step",
     // A fresh tag, from a counter.
     "fennec_new_tag",
+    "fennec_tag_count",
+    "fennec_tag_run",
     // A block made, which native code uses at once with no check: each gives back a block or stops
     // the program as a bug in Fennec (`embed::made`), never 0. They run under `with`, which sets no
     // flag, and what they reach makes, copies and lets go of blocks, which can't fail either.
@@ -84,6 +84,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_unshare",
     "fennec_block_text",
     "fennec_bytes_builder",
+    "fennec_bytes_embedded",
+    "fennec_bytes_embedded_filled",
     "fennec_bytes_grow",
     "fennec_str_encode",
     "fennec_bytes_decode_problem",
@@ -439,7 +441,8 @@ export! {
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_proof_broken(a0: i64, a1: i64, a2: i64) => checks::proof_broken(a0, a1, a2);
     fennec_bytes_new(a0: i64) -> i64 => bytes::new(a0);
-    fennec_bytes_constant(a0: i64) -> i64 => bytes::constant(a0);
+    fennec_bytes_embedded(a0: i64, a1: i64) -> i64 => bytes::embedded(a0, a1);
+    fennec_bytes_embedded_filled(a0: i64) => bytes::embedded_filled(a0);
     fennec_bytes_builder() -> i64 => bytes::builder();
     fennec_bytes_grow(a0: i64, a1: i64) -> i64 => bytes::grow(a0, a1);
     fennec_bytes_of_list(a0: i64, a1: i64, a2: i64) -> i64 => bytes::of_list(a0, a1, a2);
@@ -463,10 +466,10 @@ export! {
     fennec_list_sort_by_keys_with(a0: i64, a1: i64, a2: extern "C" fn(i64, i64) -> i64) => lists::sort_by_keys_with(a0, a1, a2);
     fennec_regex_problem(a0: i64) -> i64 => regex::problem(a0);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);
-    fennec_regex_groups(a0: i64) -> i64 => regex::groups(a0);
+    fennec_regex_groups(a0: u64, a1: u64, a2: u64) -> i64 => regex::groups(a0, a1, a2);
     fennec_regex_replace(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => regex::replace(a0, a1, a2, a3, a4);
     fennec_regex_find_all(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => regex::find_all(a0, a1, a2, a3, a4);
-    fennec_regex_find(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64 => regex::find(a0, a1, a2, a3, a4, a5);
+    fennec_regex_find(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: i64, a7: i64, a8: i64, a9: i64) -> i64 => regex::find(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
     fennec_regex_split(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => regex::split(a0, a1, a2, a3, a4);
     fennec_list_with_room(a0: i64, a1: i64) -> i64 => lists::with_room(a0, a1);
     fennec_float_spec_text(a0: f64, a1: i64, a2: i64, a3: i64) -> i64 => strings::float_spec_text(a0, a1, a2, a3);
@@ -501,6 +504,8 @@ export! {
     fennec_out_of_range(a0: i64, a1: i64, a2: i64, a3: i64) => lists::out_of_range(a0, a1, a2, a3);
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
     fennec_new_tag() -> i64 => heap::new_tag();
+    fennec_tag_count() -> i64 => heap::tag_count();
+    fennec_tag_run() -> i64 => heap::tag_run();
     fennec_free(a0: i64) => heap::free(a0);
     fennec_free_plain(a0: i64) => heap::free_plain(a0);
     fennec_close_waiting() => heap::close_waiting();

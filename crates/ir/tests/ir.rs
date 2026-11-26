@@ -1686,55 +1686,36 @@ def f(p: P?) -> int:
     );
 }
 
+/// A value that breaks a `where` rule stops the program where it's built, whatever it's built from.
 #[test]
-fn a_where_rule_gives_an_error_unless_the_values_are_written_out() {
+fn a_where_rule_stops_the_program_when_a_value_breaks_it() {
     let source = "struct Score:
     value: int where value >= 0
 
-def f(n: int) -> Score fails InvalidValue:
-    return Score(n)?
+def f(n: int) -> Score:
+    return Score(n)
 
 def g() -> Score:
     return Score(1)
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(_0) -> result of Score
+        "fn f(_0) -> Score
   local _0 n: int
-  local _1: result of Score
-  local _2 value: int
-  local _3: bool
-  local _4: InvalidValue
-  local _5: Score
-  local _6: bool
-  local _7: InvalidValue
-  local _8: result of Score
-  local _9: Score
-  local _10: result of Score
+  local _1 value: int
+  local _2: bool
+  local _3: Score
   bb0:
-    _2 = _0
-    _3 = _2 >= 0
-    branch _3 bb2 bb3
+    _1 = _0
+    _2 = _1 >= 0
+    branch _2 bb2 bb3
   bb1:
-    _6 = _1 is err
-    branch _6 bb4 bb5
+    return _3
   bb2:
-    _5 = make Score(_0)
-    _1 = ok _5
+    _3 = make Score(_0)
     jump bb1
   bb3:
-    _4 = make InvalidValue(\"Score.value breaks its `where` rule\")
-    _1 = err _4
-    jump bb1
-  bb4:
-    _7 = _1 as err
-    builtin error.passed(ref _7)
-    _8 = err _7
-    return _8
-  bb5:
-    _9 = _1 as ok
-    _10 = ok _9
-    return _10
+    stop \"this breaks the `where` rule on `Score.value`\"
 "
     );
     assert_eq!(
@@ -2096,7 +2077,7 @@ fn what_std_writes_in_fennec_is_lowered_with_its_types() {
 struct Body:
     position = Vec3.zero
 
-def f() -> float:
+def f() -> f32:
     return (Body().position + Vec3(x=3.0)).length()
 ";
     let program = lowered(source).unwrap();

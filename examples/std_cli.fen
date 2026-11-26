@@ -98,7 +98,7 @@ def main(stdout: Stdout, args: Args):
 
 def say_hello(stdout: Stdout, given: CliArgs):
     names = given.many() if len(given.many()) > 0 else ["world"]
-    times = int(given.value("times") else "1") except InvalidValue(): 1
+    times = int.parse(given.value("times") else "1") except InvalidValue(): 1
     for _ in range(times):
         for name in names:
             line = f"hello, {name}"

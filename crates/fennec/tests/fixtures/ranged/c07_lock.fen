@@ -1,0 +1,30 @@
+# A lock taken, changed under and failed out of inside the loop written twice.
+error Odd:
+    value: int
+
+struct Ledger:
+    entries: list[int]
+    total: int
+
+def record(ledger: shared Ledger, value: int) fails Odd:
+    lock ledger as ref held:
+        held.entries.append(value)
+        held.total += value
+        if value % 2 == 1: fail Odd(value=value)
+    return
+
+def scan(ledger: shared Ledger, starts: list[int], order: list[int]) -> int:
+    mut refused = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        lock ledger as ref held:
+            held.total += 1000
+        record(ledger, value=value) except Odd():
+            refused += 1
+    return refused
+
+def main(stdout: Stdout):
+    shared ledger = Ledger(entries=[], total=0)
+    stdout.print(scan(ledger, starts=[0, 4], order=[5, 6, 7, 8]))
+    lock ledger as held:
+        stdout.print(held.entries, held.total)

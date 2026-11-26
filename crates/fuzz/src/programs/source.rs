@@ -2688,9 +2688,7 @@ def flooded{N}(ref tags: list[str], stdout: Stdout):
     stdout.print(\"flooded\", len(tags))
 
 def made{N}(n: int, stdout: Stdout):
-    got = Gauge{N}(level=picked{N}(n)) except why:
-        stdout.print(\"refused\", why)
-        return
+    got = Gauge{N}(level=picked{N}(n))
     stdout.print(\"made\", got)
 
 ";
@@ -3883,6 +3881,10 @@ impl Writer {
                 let _ = write!(self.helpers, "{}", super::storing::written(storing));
                 self.line(indent, &format!("stored{}(fs, stdout) except why:", storing.id));
                 self.line(indent + 1, "stdout.print(\"stored failed\", why.message())");
+            }
+            Stmt::Crewed(crew) => {
+                let _ = write!(self.helpers, "{}", super::crews::written(crew));
+                self.line(indent, &format!("crewed{}(stdout)", crew.id));
             }
             Stmt::Messaged(messaging) => {
                 let _ = write!(self.helpers, "{}", super::messaging::written(messaging));

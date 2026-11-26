@@ -19,6 +19,7 @@ use crate::value::{Cap, Id, Text, Value};
 pub(crate) enum Saved {
     Int(i64),
     Float(f64),
+    F32(f32),
     Bool(bool),
     Text(String),
     None,
@@ -33,10 +34,9 @@ pub(crate) enum Saved {
     /// An enum's case with no fields.
     Case(String),
     CaseRecord(String, Vec<(FieldName, Saved)>),
-    /// A `Table` of items of the type named `kind`: its tag, and each item with its `Id`.
+    /// A `Table` of items of the type named `kind`: each item with its `Id`.
     Table {
         kind: String,
-        tag: u64,
         ids: Vec<Id>,
         items: Vec<Saved>,
     },
@@ -87,6 +87,7 @@ impl Interp {
             (Type::Int, Value::Int(n)) => Saved::Int(*n),
             (Type::Float, Value::Float(x)) => Saved::Float(*x),
             (Type::Float, Value::Int(n)) => Saved::Float(crate::text::int_as_float(*n)),
+            (Type::Sized(fennec_check::Num::F32), Value::F32(x)) => Saved::F32(*x),
             (Type::Bool, Value::Bool(truth)) => Saved::Bool(*truth),
             (Type::Str | Type::LiteralStr, Value::Str(text)) => Saved::Text(text.as_str().to_owned()),
             (Type::Optional(_) | Type::None, Value::None) => Saved::None,
@@ -119,7 +120,7 @@ impl Interp {
                     ids.push(id);
                     items.push(self.saved(item, inner)?);
                 }
-                Saved::Table { kind: type_name(inner), tag: table.tag, ids, items }
+                Saved::Table { kind: type_name(inner), ids, items }
             }
             (Type::Id(inner), Value::Id(id)) => Saved::Id { kind: type_name(inner), id: *id },
             (Type::Named(name), Value::Instance(_)) if self.own_method(name, "serialize").is_some() => {
@@ -183,6 +184,7 @@ impl Interp {
         let saved = match (name, args, types.as_slice()) {
             ("int", [held], _) => self.saved(held, &Type::Int)?,
             ("float", [held], _) => self.saved(held, &Type::Float)?,
+            ("f32", [held], _) => self.saved(held, &Type::Sized(fennec_check::Num::F32))?,
             ("bool", [held], _) => self.saved(held, &Type::Bool)?,
             ("text", [held], _) => self.saved(held, &Type::Str)?,
             ("none", [], _) => Saved::None,
@@ -254,6 +256,7 @@ fn field_name(field: &SavedField) -> FieldName {
 fn unwritable(saved: &Saved) -> bool {
     match saved {
         Saved::Float(x) => !x.is_finite(),
+        Saved::F32(x) => !x.is_finite(),
         Saved::Some(inner) => unwritable(inner),
         Saved::Sequence(items) | Saved::Items(items) | Saved::Table { items, .. } => {
             items.iter().any(unwritable)
@@ -358,6 +361,7 @@ impl Writer {
         match saved {
             Saved::Int(n) => self.text.push_str(&n.to_string()),
             Saved::Float(x) => self.text.push_str(&float_text(*x)),
+            Saved::F32(x) => self.text.push_str(&exponent_written(crate::text::float32(*x))),
             Saved::Bool(truth) => self.text.push_str(if *truth { "true" } else { "false" }),
             Saved::Text(text) => self.text.push_str(&quoted(text)),
             Saved::None => self.text.push_str("null"),
@@ -449,7 +453,11 @@ impl Writer {
 /// A float as JSON writes it: as Fennec prints it, with an exponent that has no `+` and no
 /// leading zeros, as in `1e20` and `1e-7`.
 fn float_text(x: f64) -> String {
-    let text = crate::text::float(x);
+    exponent_written(crate::text::float(x))
+}
+
+/// A number's text with its exponent as JSON writes it: no `+` and no leading zeros.
+fn exponent_written(text: String) -> String {
     let Some((mantissa, exponent)) = text.split_once('e') else { return text };
     let (sign, digits) = match exponent.strip_prefix('-') {
         Some(digits) => ("-", digits),
@@ -500,8 +508,8 @@ struct FoundId {
 #[derive(Default)]
 struct Finder {
     positions: Positions,
-    /// Where each `Table` is, and its tag, by the name of its items' type.
-    tables: HashMap<String, (String, u64)>,
+    /// Where each `Table` is, by the name of its items' type.
+    tables: HashMap<String, String>,
     ids: Vec<FoundId>,
     path: Vec<String>,
     problem: Option<String>,
@@ -520,6 +528,13 @@ impl Finder {
                 self.problem = Some(format!(
                     "{here} is {}, which JSON can't write: it has no NaN or infinity",
                     crate::text::float(*x)
+                ));
+            }
+            Saved::F32(x) if self.floats && self.problem.is_none() && !x.is_finite() => {
+                let here = self.here();
+                self.problem = Some(format!(
+                    "{here} is {}, which JSON can't write: it has no NaN or infinity",
+                    crate::text::float32(*x)
                 ));
             }
             Saved::Some(inner) => self.go(inner, true),
@@ -543,8 +558,8 @@ impl Finder {
                     self.path.pop();
                 }
             }
-            Saved::Table { kind, tag, ids, items } => {
-                self.table(kind, *tag, ids);
+            Saved::Table { kind, ids, items } => {
+                self.table(kind, ids);
                 self.sequence(items);
             }
             Saved::Id { kind, id } => {
@@ -568,9 +583,9 @@ impl Finder {
         }
     }
 
-    fn table(&mut self, kind: &str, tag: u64, ids: &[Id]) {
+    fn table(&mut self, kind: &str, ids: &[Id]) {
         let here = self.here();
-        if let Some((there, _)) = self.tables.get(kind) {
+        if let Some(there) = self.tables.get(kind) {
             if self.problem.is_none() {
                 self.problem = Some(format!(
                     "{there} and {here} are both a `Table[{kind}]`, so an Id can't say which it's in"
@@ -578,7 +593,7 @@ impl Finder {
             }
             return;
         }
-        self.tables.insert(kind.to_owned(), (here, tag));
+        self.tables.insert(kind.to_owned(), here);
         let positions =
             ids.iter().enumerate().map(|(at, id)| ((id.slot, id.generation, id.tag), at)).collect();
         self.positions.insert(kind.to_owned(), positions);
@@ -600,12 +615,13 @@ impl Finder {
             if found.optional {
                 continue;
             }
-            let (there, tag) = self.tables.get(kind).cloned().unwrap_or_else(|| ("its Table".to_owned(), 0));
-            if found.key.2 != tag {
-                return Some(format!("{} is an Id from another `Table[{kind}]` than {there}", found.at));
-            }
+            let there = self.tables.get(kind).cloned().unwrap_or_else(|| "its Table".to_owned());
+            // By its own tag, the one its `add` took, which only its item's slot holds.
             if !positions.contains_key(&found.key) {
-                return Some(format!("{} is an Id of something that's been taken out of {there}", found.at));
+                return Some(format!(
+                    "{} is an Id that finds nothing in {there}: its item was taken out, or it's from another `Table[{kind}]`",
+                    found.at
+                ));
             }
         }
         None

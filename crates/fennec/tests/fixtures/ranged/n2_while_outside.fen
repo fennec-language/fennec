@@ -1,0 +1,19 @@
+# The bucket loop left by `break` inside a `while`, which isn't a counted loop: its check is made
+# each time round.
+def scan(starts: list[int], order: list[int], wanted: int) -> int:
+    mut total = 0
+    mut cell = 0
+    while cell < len(starts) - 1:
+        for at in range(starts[cell], starts[cell + 1]):
+            if order[at] == wanted:
+                total += 100
+                break
+            total += order[at]
+        cell += 1
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 2, 5], order=[1, 2, 3, 4, 5], wanted=4))
+    stdout.print(scan([0, 2, 5], order=[1, 2, 3, 4, 5], wanted=9))
+    stdout.print(scan([0, 2, 7], order=[1, 2, 3, 4, 5], wanted=3))
+    stdout.print(scan([0, 2, 7], order=[1, 2, 3, 4, 5], wanted=9))

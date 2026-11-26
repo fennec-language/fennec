@@ -203,27 +203,48 @@ pub const PROGRAMS: [&str; 3] = ["fennec", "fennec-setup", "fennec-fetch"];
 /// # Errors
 ///
 /// When it can't be run.
-#[cfg(unix)]
 pub fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<std::process::ExitCode, String> {
-    use std::os::unix::process::CommandExt as _;
-    let err = toolchain(command, args, offline).arg0("fennec").exec();
-    Err(format!("couldn't run {}: {err}", command.display()))
+    handed(toolchain(command, args, offline), command)
 }
 
-/// Runs `command`, with the arguments, and exits as it does. Ctrl-C reaches every program in the
-/// console, so the launcher lets it go by and waits: the program decides what it means, and the
-/// launcher exits as it does, rather than leaving it running behind a prompt.
+/// Where a linked build handed `new` is told the name it's linked as, so the kit it makes asks for
+/// it by that name: there's no release of its version to run.
+pub const LINKED_AS: &str = "FENNEC_LINKED_AS";
+
+/// Hands `new` to the toolchain `version`, as `hand_off` does, telling a linked build the name
+/// it's linked as.
 ///
 /// # Errors
 ///
 /// When it can't be run.
+pub fn hand_off_new(
+    command: &Path,
+    args: &[String],
+    offline: bool,
+    version: &str,
+) -> Result<std::process::ExitCode, String> {
+    let mut toolchain = toolchain(command, args, offline);
+    if kit::linked_name(version) {
+        toolchain.env(LINKED_AS, version);
+    }
+    handed(toolchain, command)
+}
+
+#[cfg(unix)]
+fn handed(mut toolchain: std::process::Command, command: &Path) -> Result<std::process::ExitCode, String> {
+    use std::os::unix::process::CommandExt as _;
+    let err = toolchain.arg0("fennec").exec();
+    Err(format!("couldn't run {}: {err}", command.display()))
+}
+
+/// Runs the toolchain, and exits as it does. Ctrl-C reaches every program in the console, so the
+/// launcher lets it go by and waits: the program decides what it means, and the launcher exits as
+/// it does, rather than leaving it running behind a prompt.
 #[cfg(not(unix))]
-pub fn hand_off(command: &Path, args: &[String], offline: bool) -> Result<std::process::ExitCode, String> {
+fn handed(mut toolchain: std::process::Command, command: &Path) -> Result<std::process::ExitCode, String> {
     ctrlc::set_handler(|| {})
         .map_err(|err| format!("couldn't let Ctrl-C through to the toolchain: {err}"))?;
-    let status = toolchain(command, args, offline)
-        .status()
-        .map_err(|err| format!("couldn't run {}: {err}", command.display()))?;
+    let status = toolchain.status().map_err(|err| format!("couldn't run {}: {err}", command.display()))?;
     Ok(status
         .code()
         .and_then(|code| u8::try_from(code).ok())
@@ -563,6 +584,90 @@ impl Launcher {
         }
         self.found(&version, None).ok()??;
         Some(self.command(&version))
+    }
+
+    /// A plain `fennec run`, asked of the build daemon of the toolchain whose `fennec` is
+    /// `toolchain` by the launcher itself, which then becomes the program, as the toolchain's
+    /// `fennec run` would: so a run whose daemon is up doesn't pay for the toolchain's own start.
+    /// It sends the same request the toolchain would, to the same daemon, and prints what that
+    /// sends back. None when it's to be handed to the toolchain, as everything else is:
+    /// - anything but `run`, `run <path> [arguments…]`, with a path not starting with `-`, and no
+    ///   `--cpu` anywhere, which the toolchain takes out wherever it is;
+    /// - under `CI`, with `FENNEC_NO_DAEMON` or `FENNEC_RUN_WAITS`, which the toolchain heeds;
+    /// - a linked build, whose `fennec` changes as it's built again, or a release whose folder
+    ///   doesn't say it speaks this launcher's `fennec_daemon::PROTOCOL`, as its version;
+    /// - no daemon there to ask, which only the toolchain starts, or no whole answer from it.
+    ///
+    /// Otherwise how the command ends: once the work stopped short and said why, as a failed test
+    /// or check does, or, when the program it built can't be started, an error.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn run_through_daemon(
+        &self,
+        toolchain: &Path,
+        command: &[String],
+    ) -> Option<Result<std::process::ExitCode, String>> {
+        use std::io::Write as _;
+        use std::os::unix::process::CommandExt as _;
+        let toolchain_heeds = ["CI", "FENNEC_NO_DAEMON", "FENNEC_RUN_WAITS"];
+        if toolchain_heeds.iter().any(|name| std::env::var_os(name).is_some()) {
+            return None;
+        }
+        let (path, arguments) = match command {
+            [run] if run == "run" => (".", &[][..]),
+            [run, path, arguments @ ..] if run == "run" && !path.starts_with('-') => {
+                (path.as_str(), arguments)
+            }
+            _ => return None,
+        };
+        if command.iter().any(|word| word == "--cpu") {
+            return None;
+        }
+        let folder = toolchain.parent()?;
+        if folder.parent()? != self.toolchains() {
+            return None;
+        }
+        let spoken = std::fs::read_to_string(folder.join(fennec_daemon::PROTOCOL_FILE)).ok()?;
+        let (version, build) = fennec_daemon::spoken(&spoken)?;
+        if folder.file_name()?.to_str()? != version {
+            return None;
+        }
+        let build = fennec_daemon::Build { version, build };
+        let stream =
+            fennec_daemon::connect(&fennec_daemon::socket_path(build, &self.home, false)?, &self.home)?;
+        // Named in Fennec's `work` folder as the toolchain names one, by this process's id, which
+        // it keeps as the program: so the daemon's sweep of what stopped commands left knows it.
+        let work = self.home.join("work");
+        std::fs::create_dir_all(&work).ok()?;
+        let executable = fennec_daemon::own_temp_in(&work, "run");
+        let here = std::env::current_dir().ok()?;
+        let request = fennec_daemon::work_request(
+            build,
+            "run",
+            here.to_str()?,
+            [path, executable.to_str()?, "tested"],
+            fennec_daemon::one_stream(),
+        )?;
+        let Some(outcome) = fennec_daemon::answer(stream, &request) else {
+            // What a daemon that went away left half made is the toolchain's to make again.
+            let _ = std::fs::remove_file(&executable);
+            return None;
+        };
+        // A run that stopped short made nothing to start.
+        let made = outcome.code == 0 && executable.is_file();
+        let code = outcome.print();
+        if !made {
+            let _ = std::fs::remove_file(&executable);
+            return Some(Ok(code));
+        }
+        fennec_daemon::sweep_now_and_then(&executable);
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        // It becomes the program, called by the path it was run as, as the toolchain's `fennec run`
+        // does, so the program has this process's input, output, signals and exit.
+        let failed = std::process::Command::new(&executable).arg0(path).args(arguments).exec();
+        let _ = std::fs::remove_file(&executable);
+        Some(Err(format!("the program it built didn't start: {failed}")))
     }
 
     /// The newest release there is, checked as one to install would be: what `--latest` asks, and

@@ -576,12 +576,16 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// Takes out each place this instruction changes that was waiting for it.
+    /// Takes out each place this instruction changes that was waiting for it, unless it's been put
+    /// back: what names it after that, as letting go of the local at a lock's end does, would take
+    /// it out again and leave its slot saying it's out, so a crash later in the function would
+    /// write the emptied local over what holds it (#2516).
     pub(crate) fn take_waiting_places(&mut self, inst: &InstKind, span: Span) -> Result<(), String> {
         let (InstKind::Call { args, .. } | InstKind::Builtin { args, .. }) = inst else { return Ok(()) };
         for arg in args {
             if let Operand::Local(local) = arg
                 && self.known.place_waits(*local)
+                && !self.places_back.contains(&local.0)
             {
                 self.take_place(*local, span)?;
             }
@@ -711,29 +715,39 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store ptr {at}, ptr {slot}"));
     }
 
-    /// In a build that checks proofs, before a failure has a lock put back what it changed: no
-    /// value is out of its place. The rollback puts back what the dicts and lists hold, and unlike
-    /// a crash's way out, a failure's doesn't put back what's taken out first. A failure leaves a
-    /// lock's body through a branch of its own, so none comes between a take and its put back,
-    /// which are in one block; this says so if that ever stops holding. Only the places taken out
-    /// earlier in the function's text are known here.
-    pub(crate) fn proof_nothing_out(&mut self) {
+    /// In a build that checks proofs, where a lock's block ends, or a failure has it put back what
+    /// it changed: nothing taken out of the lock's own value is out of its place, `why` saying
+    /// which. A failure's rollback puts back what the value's dicts and lists hold, and unlike a
+    /// crash's way out, doesn't put back what's taken out first; a place left out at the block's end,
+    /// as one taken out again after its put back was, is written over the value by a crash later
+    /// in the function (#2516). A failure leaves a lock's body through a branch of its own, so none
+    /// comes between a take and its put back, which are in one block; this says so if that ever
+    /// stops holding. A value taken out of something else, a dict's value read to set back or a
+    /// `for ref` loop's item, may stay out across the lock, and isn't the lock's to check. Only
+    /// the places taken out earlier in the function's text are known here.
+    pub(crate) fn proof_nothing_out(&mut self, handle: &Operand, why: &str) {
         if !self.checks_proofs() {
             return;
         }
-        let mut slots: Vec<(usize, String)> =
-            self.places_out.iter().map(|(value, slot)| (*value, slot.clone())).collect();
+        let Operand::Local(handle) = handle else { return };
+        let under_the_lock = |root: LocalId| root == *handle || self.known.alias(root) == Some(*handle);
+        let mut slots: Vec<(usize, String)> = self
+            .places_out
+            .iter()
+            .filter(|(value, _)| {
+                self.known
+                    .place_taken(self.function, LocalId(**value))
+                    .is_some_and(|place| under_the_lock(place.root))
+            })
+            .map(|(value, slot)| (*value, slot.clone()))
+            .collect();
         slots.sort_unstable();
         let span = self.here_span();
         for (_, slot) in slots {
             let (home, out) = (self.temp(), self.temp());
             self.line(&format!("{home} = load ptr, ptr {slot}"));
             self.line(&format!("{out} = icmp ne ptr {home}, null"));
-            self.proof_held(
-                &out,
-                "nothing is out of its place when a failure has a lock put back what it changed",
-                span,
-            );
+            self.proof_held(&out, why, span);
         }
     }
 
@@ -760,6 +774,7 @@ impl Emit<'_, '_, '_> {
     }
 
     fn put_place_back(&mut self, value: LocalId) -> Result<(), String> {
+        self.places_back.insert(value.0);
         let (at, kind, access) = self.place_homes.get(&value.0).cloned().ok_or("a place never taken out")?;
         if let Some(slot) = self.places_out.get(&value.0).cloned() {
             self.line(&format!("store ptr null, ptr {slot}"));
@@ -1631,7 +1646,16 @@ impl Emit<'_, '_, '_> {
             Some((low, own)) if matches!(index_operand, Operand::Local(read_at) if *read_at == own) => {
                 self.adjacent_position((list, &length), low, index, span)
             }
-            _ => self.position_checked(&length, index, span),
+            _ => match self.ranged_flag(from) {
+                // In a loop written twice on this read's own check, the copy decides: checked in the
+                // first, not in the second (`Emit::write_second_copies`).
+                Some((id, _)) if self.known.versioned_at(self.at.0).is_some_and(|loop_| loop_.scan == id) => {
+                    self.ranged_position((list, &length), None, index, span)
+                }
+                // Anywhere else the check covers, its flag decides at the read.
+                Some((_, flag)) => self.ranged_position((list, &length), Some(&flag), index, span),
+                None => self.position_checked(&length, index, span),
+            },
         };
         if let Some(fact) = fact {
             let slot = if let Some(slot) = self.inside_slots.get(&fact) {
@@ -1683,6 +1707,136 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{joined}"));
         self.start_block(&inside);
         self.proof_inside(list, index, "both of two reads next to each other inside their list", span);
+        self.line(&format!("br label %{joined}"));
+        let inside_in = self.current.clone();
+        self.start_block(&joined);
+        let position = self.temp();
+        self.line(&format!("{position} = phi i64 [ {index}, %{inside_in} ], [ {checked}, %{checked_in} ]"));
+        position
+    }
+
+    /// The flag of the check of item ranges that covers the read being written from `from`, if
+    /// one does (`find_ranged_reads`).
+    fn ranged_flag(&self, from: Option<LocalId>) -> Option<(usize, String)> {
+        let (id, scan) = self.known.ranged_read(self.at)?;
+        if from != Some(LocalId(scan.read)) {
+            return None;
+        }
+        Some((id, self.ranged_flags.get(&id).cloned()?))
+    }
+
+    /// At the end of the block going into a loop, the checks of item ranges reads in the loop
+    /// lean on (`find_ranged_reads`): whether every item of a list bounding their index is from 0
+    /// to the read list's length. Neither list can change in the function, so a check that held
+    /// holds at every read after it. The greatest item is found as unsigned, where a negative item
+    /// is greater than any length. A check costs a step an item, so it's made only for a list of
+    /// at most 64 items or at most 4 for each turn the loop is to take, and its flag is left clear
+    /// otherwise: it never costs much more than the loop would. It's made once a call: a loop
+    /// entered again, as one inside a `while` is, finds it made and goes by what it found, since
+    /// neither list can have changed since.
+    pub(crate) fn check_item_ranges(&mut self, before: usize) -> Result<(), String> {
+        let scans: Vec<(usize, crate::analysis::RangeScan)> = self
+            .known
+            .range_scans
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, scan)| scan.before == before)
+            .collect();
+        for (id, scan) in scans {
+            let flag = self.ranged_flags.get(&id).cloned().ok_or("a check of item ranges with no flag")?;
+            let made = self.ranged_made.get(&id).cloned().ok_or("a check of item ranges with no mark")?;
+            let (was, trying, kept) = (self.temp(), self.label("range_try"), self.label("range_kept"));
+            self.line(&format!("{was} = load i1, ptr {made}"));
+            self.line(&format!("br i1 {was}, label %{kept}, label %{trying}"));
+            self.start_block(&trying);
+            let (list, slot) = (self.temp(), self.slot(LocalId(scan.bounds)));
+            self.line(&format!("{list} = load ptr, ptr {slot}"));
+            let count = self.list_length(&list);
+            let (first, _) = self.operand(&Operand::Local(LocalId(scan.count)))?;
+            let (stop, _) = self.operand(&Operand::Local(LocalId(scan.stop)))?;
+            let (turns, quarter, enough, small, worth) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{turns} = sub i64 {stop}, {first}"));
+            self.line(&format!("{quarter} = lshr i64 {count}, 2"));
+            // A loop that can be left early may take far fewer turns than its count says.
+            let enough_turns = if scan.early { "false".to_owned() } else { enough.clone() };
+            self.line(&format!("{enough} = icmp sle i64 {quarter}, {turns}"));
+            self.line(&format!("{small} = icmp ule i64 {count}, 64"));
+            self.line(&format!("{worth} = or i1 {small}, {enough_turns}"));
+            let (checking, walk, done) =
+                (self.label("range_check"), self.label("range_walk"), self.label("range_walked"));
+            let skipped = self.current.clone();
+            self.line(&format!("br i1 {worth}, label %{checking}, label %{done}"));
+            self.start_block(&checking);
+            let (other, other_slot) = (self.temp(), self.slot(LocalId(scan.read)));
+            self.line(&format!("{other} = load ptr, ptr {other_slot}"));
+            let limit = self.length_of_list(Some(LocalId(scan.read)), &other);
+            let (items, empty) = (self.temp(), self.temp());
+            self.line(&format!("{items} = getelementptr inbounds i8, ptr {list}, i64 {LIST_ITEMS}"));
+            self.line(&format!("{empty} = icmp eq i64 {count}, 0"));
+            let (summed, walked) = (self.label("range_measured"), self.label("range_none"));
+            self.line(&format!("br i1 {empty}, label %{walked}, label %{walk}"));
+            self.start_block(&walk);
+            let (at, most, place, item, greater, next, end) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{at} = phi i64 [ 0, %{checking} ], [ {next}, %{walk} ]"));
+            self.line(&format!("{most} = phi i64 [ 0, %{checking} ], [ {greater}, %{walk} ]"));
+            self.line(&format!("{place} = getelementptr inbounds i64, ptr {items}, i64 {at}"));
+            self.line(&format!("{item} = load i64, ptr {place}"));
+            self.declare("declare i64 @llvm.umax.i64(i64, i64)");
+            self.line(&format!("{greater} = call i64 @llvm.umax.i64(i64 {most}, i64 {item})"));
+            self.line(&format!("{next} = add nuw i64 {at}, 1"));
+            self.line(&format!("{end} = icmp eq i64 {next}, {count}"));
+            self.line(&format!("br i1 {end}, label %{summed}, label %{walk}"));
+            self.start_block(&walked);
+            self.line(&format!("br label %{summed}"));
+            self.start_block(&summed);
+            let (greatest, ok) = (self.temp(), self.temp());
+            self.line(&format!("{greatest} = phi i64 [ 0, %{walked} ], [ {greater}, %{walk} ]"));
+            self.line(&format!("{ok} = icmp ule i64 {greatest}, {limit}"));
+            self.line(&format!("br label %{done}"));
+            self.start_block(&done);
+            let (held, checked) = (self.temp(), self.temp());
+            self.line(&format!("{held} = phi i1 [ false, %{skipped} ], [ {ok}, %{summed} ]"));
+            // Made only once it's walked the list: one left for too few turns can be made later.
+            self.line(&format!("{checked} = phi i1 [ false, %{skipped} ], [ true, %{summed} ]"));
+            self.line(&format!("store i1 {held}, ptr {flag}"));
+            self.line(&format!("store i1 {checked}, ptr {made}"));
+            self.line(&format!("br label %{kept}"));
+            self.start_block(&kept);
+        }
+        Ok(())
+    }
+
+    /// Where a read `find_ranged_reads` found points: where the function's check of the items
+    /// bounding its index held, the index itself, and otherwise checked as any read is, to fail
+    /// where it always did.
+    /// With no flag, in a loop written twice on the read's own check, the way taken is written
+    /// `false`, to the check, ending in [`crate::emit::CHECKED_ONCE`], which the loop's second copy
+    /// turns to `true`.
+    fn ranged_position(
+        &mut self,
+        (list, length): (&str, &str),
+        flag: Option<&str>,
+        index: &str,
+        span: Span,
+    ) -> String {
+        let (inside, alone, joined) = (self.label("ranged"), self.label("unranged"), self.label("placed"));
+        if let Some(flag) = flag {
+            let held = self.temp();
+            self.line(&format!("{held} = load i1, ptr {flag}"));
+            self.line(&format!("br i1 {held}, label %{inside}, label %{alone}, !prof !8"));
+        } else {
+            let once = crate::emit::CHECKED_ONCE;
+            self.line(&format!("br i1 false, label %{inside}, label %{alone} {once}"));
+        }
+        self.start_block(&alone);
+        let checked = self.position_checked(length, index, span);
+        let checked_in = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&inside);
+        self.proof_inside(list, index, "a count between two items checked to be inside the list", span);
         self.line(&format!("br label %{joined}"));
         let inside_in = self.current.clone();
         self.start_block(&joined);

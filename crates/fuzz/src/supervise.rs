@@ -24,9 +24,20 @@ pub(crate) const STUCK: Duration = Duration::from_secs(10);
 const WAITING_TIMES: u32 = 30;
 /// The most memory a worker may hold.
 pub(crate) const MOST_KILOBYTES: u64 = 4 * 1024 * 1024;
-/// How much CPU time building one program may take, the tools `fennec build` starts included.
-/// A generated program builds in a few seconds; one `opt` once ran 18 hours on one.
-pub(crate) const BUILD_STUCK: Duration = Duration::from_secs(120);
+/// How much CPU time building a program may take, the tools `fennec build` starts included:
+/// `BUILD_STUCK`, and `BUILD_STUCK_PER_LINE` for each of its lines. A short generated program
+/// builds in a few seconds; one `opt` once ran 18 hours on one.
+///
+/// A long one takes far more. One of 1,014 lines (fennec#2554) took 64 to 83 s of CPU time to build
+/// in Fennec's Linux VM, plain or under a thread sanitizer, and up to 181 s with the Mac around it
+/// busy: a VM's processor waiting for the Mac's counts as CPU time there. That's 0.18 s a line at
+/// worst, and the budget gives it more than twice that, so only a runaway build passes it, in
+/// minutes rather than hours.
+pub(crate) fn build_stuck(lines: usize) -> Duration {
+    BUILD_STUCK.saturating_add(BUILD_STUCK_PER_LINE.saturating_mul(u32::try_from(lines).unwrap_or(u32::MAX)))
+}
+const BUILD_STUCK: Duration = Duration::from_secs(120);
+const BUILD_STUCK_PER_LINE: Duration = Duration::from_millis(400);
 
 /// How a worker went wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,12 +195,20 @@ fn kill(target: &str) {
 
 /// Kills `child` and everything it started: the groups any of them lead, as a build's tools are,
 /// and on Unix `child`'s own group when it leads one. A tool whose parent died first is still in
-/// its group, so it goes too.
+/// its group, so it goes too. On Windows, which has no `ps` to find them by, `taskkill` stops every
+/// process it started, however deep.
 fn stop(child: &mut Child) {
     let id = child.id();
     let below = descendants(id);
     if cfg!(unix) {
         kill(&format!("-{id}"));
+    }
+    if cfg!(windows) {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &id.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
     let _ = child.kill();
     for (pid, pgid) in below {
@@ -281,8 +300,57 @@ pub(crate) fn watch(
 enum Watched {
     /// The process alone.
     Process,
-    /// The process group it leads, every process in it summed, where groups can be asked about.
+    /// The process group it leads, every process in it summed, where groups can be asked about:
+    /// on Windows, every process it started, however deep.
     Group,
+}
+
+/// Whether asking what a process has used costs little, so it's asked every tenth check: `ps`
+/// on Unix. Windows' list of processes takes PowerShell about half a second to give, so there
+/// it's asked only when the process could have used `stuck` CPU time since it was last asked.
+const ASKED_OFTEN: bool = cfg!(unix);
+
+/// How recently CPU time must have been asked to stand for what a process had used at a moment.
+const JUST_NOW: Duration = Duration::from_millis(200);
+
+/// What `watch_as` knows of the CPU time a process has used.
+struct Cpu {
+    /// What it had used when last asked, and when that was.
+    known: Option<(Instant, Duration)>,
+    /// What it had used when it last made progress, where that's known. Where CPU time isn't
+    /// asked often, it's what was first asked after the progress, so what it used between the
+    /// two goes uncounted, and a process counts as stuck later rather than sooner.
+    base: Option<Duration>,
+    /// How many cores could have run it at once.
+    cores: u32,
+}
+
+impl Cpu {
+    /// Asks what the process holds and has used, keeping the CPU time, and says whether it holds
+    /// more than `most_kilobytes`.
+    fn ask(&mut self, id: u32, watched: Watched, most_kilobytes: u64) -> bool {
+        let (held, used) = measured(id, watched);
+        if let Some(used) = used {
+            self.known = Some((Instant::now(), used));
+            self.base.get_or_insert(used);
+        }
+        held.is_some_and(|held| held > most_kilobytes)
+    }
+
+    /// The CPU time it's used since it last made progress, as last asked.
+    fn busy(&self) -> Option<Duration> {
+        let ((_, used), base) = self.known.zip(self.base)?;
+        Some(used.saturating_sub(base))
+    }
+
+    /// The most CPU time it could have used since it last made progress, `on_the_clock` ago: what
+    /// was last asked, and every core busy with it since.
+    fn could_have_used(&self, on_the_clock: Duration) -> Duration {
+        match (self.known, self.busy()) {
+            (Some((at, _)), Some(busy)) => busy.saturating_add(at.elapsed().saturating_mul(self.cores)),
+            _ => on_the_clock.saturating_mul(self.cores),
+        }
+    }
 }
 
 /// `watch`, counting over what `watched` says. Stopping it stops what it started too.
@@ -294,34 +362,31 @@ fn watch_as(
     most_kilobytes: u64,
     mut moved: impl FnMut() -> bool,
 ) -> Option<Failure> {
-    // When it last made progress, and the CPU time it had used by then.
-    let mut since = (Instant::now(), Duration::ZERO);
-    // The CPU time it's used, as last asked, if it can be.
-    let mut used = None;
+    // When it last made progress.
+    let mut since = Instant::now();
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let mut cpu =
+        Cpu { known: None, base: Some(Duration::ZERO), cores: u32::try_from(cores).unwrap_or(u32::MAX) };
     let mut checks = 0_u32;
     loop {
         if let Ok(Some(status)) = child.try_wait() {
             return failure_of(status);
         }
         if moved() {
-            since = (Instant::now(), used.unwrap_or_default());
+            since = Instant::now();
+            cpu.base = cpu.known.filter(|(at, _)| at.elapsed() <= JUST_NOW).map(|(_, used)| used);
         }
         checks += 1;
-        let mut too_big = false;
-        if checks.is_multiple_of(10) {
-            let (held, cpu) = measured(child.id(), watched);
-            too_big = held.is_some_and(|held| held > most_kilobytes);
-            used = cpu.or(used);
-        }
-        let on_the_clock = since.0.elapsed();
-        let busy = |used: Option<Duration>| used.map_or(on_the_clock, |used| used.saturating_sub(since.1));
-        let mut is_stuck = busy(used) > stuck || on_the_clock > stuck * WAITING_TIMES;
-        // CPU time is asked for only now and then, and until it's first known the time on the
-        // clock stands in for it, which a busy machine runs up without the process doing
-        // anything. So it's asked again before anything is called stuck.
-        if is_stuck && on_the_clock <= stuck * WAITING_TIMES {
-            used = measured(child.id(), watched).1.or(used);
-            is_stuck = busy(used) > stuck;
+        let mut too_big =
+            ASKED_OFTEN && checks.is_multiple_of(10) && cpu.ask(child.id(), watched, most_kilobytes);
+        let on_the_clock = since.elapsed();
+        let mut is_stuck = on_the_clock > stuck * WAITING_TIMES;
+        // Only what it's used, asked just now, makes it stuck: a busy machine runs up the time on
+        // the clock without the process doing anything. Where CPU time can't be asked at all, the
+        // clock stands in for it.
+        if !is_stuck && !too_big && cpu.could_have_used(on_the_clock) > stuck {
+            too_big = cpu.ask(child.id(), watched, most_kilobytes);
+            is_stuck = cpu.busy().map_or(on_the_clock > stuck, |busy| busy > stuck);
         }
         let out_of_time = deadline.is_some_and(|deadline| Instant::now() >= deadline);
         if too_big || out_of_time || is_stuck {
@@ -338,12 +403,73 @@ fn watch_as(
 
 /// What `id` holds and has used, alone or with its group as `watched` says.
 fn measured(id: u32, watched: Watched) -> (Option<u64>, Option<Duration>) {
+    let both =
+        |found: Option<(u64, Duration)>| found.map_or((None, None), |(held, used)| (Some(held), Some(used)));
+    if cfg!(windows) {
+        return both(windows_use(id, matches!(watched, Watched::Group)));
+    }
     match watched {
-        Watched::Group if cfg!(unix) => {
-            group_use(id).map_or((None, None), |(held, used)| (Some(held), Some(used)))
-        }
+        Watched::Group if cfg!(unix) => both(group_use(id)),
         _ => (kilobytes(id), cpu_time(id)),
     }
+}
+
+/// What PowerShell lists for each process on Windows, a line each: its id, its parent's, when it
+/// started, the CPU time it's used in user and kernel mode, in 100-nanosecond units, and the
+/// memory it holds, in bytes. A process with no start time, as Windows' own have, says 0.
+const WINDOWS_PROCESSES: &str = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2} {3} {4} {5}' -f \
+     $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }), \
+     $_.UserModeTime, $_.KernelModeTime, $_.WorkingSetSize }";
+
+/// What `id` holds and has used on Windows, with every process it started, however deep, where
+/// `tree` says. The standard library can't ask, and asking Windows itself would be new `unsafe`,
+/// so it's asked of Windows' list of processes through PowerShell.
+fn windows_use(id: u32, tree: bool) -> Option<(u64, Duration)> {
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESSES])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    tree_use(&String::from_utf8_lossy(&output.stdout), id, tree)
+}
+
+/// What `listed`, in `WINDOWS_PROCESSES`'s lines, says `id` holds and has used, in kilobytes and
+/// CPU time, with every process it started, however deep, where `tree` says. A process counts as
+/// one `id` started only if it started after it: Windows reuses a process's id once it's gone, so
+/// a parent's id alone may name another process.
+fn tree_use(listed: &str, id: u32, tree: bool) -> Option<(u64, Duration)> {
+    let processes: Vec<[u64; 6]> = listed
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().map(|field| field.parse::<u64>().ok());
+            let mut row = [0; 6];
+            for slot in &mut row {
+                *slot = fields.next()??;
+            }
+            Some(row)
+        })
+        .collect();
+    let first = processes.iter().find(|[pid, ..]| *pid == u64::from(id))?;
+    let mut counted = vec![*first];
+    let mut at = 0;
+    while tree && let Some(&[parent, _, started, ..]) = counted.get(at) {
+        at += 1;
+        for row in &processes {
+            let [child, its_parent, born, ..] = *row;
+            if its_parent == parent
+                && born >= started
+                && child != parent
+                && !counted.iter().any(|seen| seen[0] == child)
+            {
+                counted.push(*row);
+            }
+        }
+    }
+    let (ticks, bytes) = counted.iter().fold((0_u64, 0_u64), |(ticks, bytes), [.., user, kernel, held]| {
+        (ticks.saturating_add(*user).saturating_add(*kernel), bytes.saturating_add(*held))
+    });
+    Some((bytes / 1024, Duration::from_nanos(ticks.saturating_mul(100))))
 }
 
 /// What fuzzing one target found.
@@ -425,7 +551,7 @@ impl Run<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, Failure, Outcome, cpu_time_in};
+    use super::{Duration, Failure, Outcome, cpu_time_in, tree_use};
 
     /// Every input that fails is counted under its kind, in order, the first kept first: a second
     /// failure of a kind once went unseen, as only the first of each was kept.
@@ -450,6 +576,57 @@ mod tests {
         assert_eq!(cpu_time_in("2-00:00:01"), Some(Duration::from_secs(2 * 86_400 + 1)));
         assert_eq!(cpu_time_in(""), None);
         assert_eq!(cpu_time_in("NaN"), None);
+    }
+
+    /// Windows' list of processes is read as PowerShell writes it, a process counted with every one
+    /// it started, however deep, and only those that started after it: one whose parent's id is
+    /// reused, or a line that isn't a process, is left out.
+    #[test]
+    fn a_process_tree_is_read_from_windows_list() {
+        let listed = "\
+            0 0 0 0 0 8192\n\
+            40 4 100 20000000 10000000 2048000\n\
+            41 40 110 5000000 0 1024000\n\
+            42 41 120 0 2500000 512000\n\
+            43 40 90 99000000 0 4096000\n\
+            44 7 130 70000000 0 4096000\n\
+            not a process\n";
+        // 40's own: 3 s and 2,000 kilobytes.
+        assert_eq!(tree_use(listed, 40, false), Some((2000, Duration::from_secs(3))));
+        // With 41 and 42 below it, but not 43, which started before it, nor 44.
+        assert_eq!(tree_use(listed, 40, true), Some((3500, Duration::from_millis(3750))));
+        assert_eq!(tree_use(listed, 0, true), Some((8, Duration::ZERO)));
+        assert_eq!(tree_use(listed, 99, true), None);
+        assert_eq!(tree_use("", 40, true), None);
+    }
+
+    /// On Windows, CPU time counts too: a process that only waits isn't stuck however long it
+    /// takes on the clock, one that keeps the CPU busy is, and so is a build whose tool does.
+    #[cfg(windows)]
+    #[test]
+    fn stuck_counts_cpu_time_on_windows() {
+        use super::{MOST_KILOBYTES, output_watched, watch};
+        use std::process::{Command, Stdio};
+        let mut waits =
+            Command::new("ping").args(["-n", "3", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap();
+        assert_eq!(watch(&mut waits, Duration::from_millis(500), None, MOST_KILOBYTES, || false), None);
+        let mut spins =
+            Command::new("powershell").args(["-NoProfile", "-Command", "while ($true) {}"]).spawn().unwrap();
+        assert_eq!(
+            watch(&mut spins, Duration::from_millis(500), None, MOST_KILOBYTES, || false),
+            Some(Failure::Stuck)
+        );
+        // A tool spinning under a build that only waits for it: the build's own CPU time doesn't
+        // show it. It spins for 30 seconds at most, should the build be stopped without it.
+        let mut builds = Command::new("powershell");
+        builds.args([
+            "-NoProfile",
+            "-Command",
+            "Start-Process powershell -NoNewWindow -Wait -ArgumentList '-NoProfile', '-Command', \
+             '$end = (Get-Date).AddSeconds(30); while ((Get-Date) -lt $end) {}'",
+        ]);
+        let (_, failure) = output_watched(&mut builds, Duration::from_secs(2), MOST_KILOBYTES).unwrap();
+        assert_eq!(failure, Some(Failure::Stuck));
     }
 
     /// A process that only waits isn't stuck however long it takes on the clock, and one that

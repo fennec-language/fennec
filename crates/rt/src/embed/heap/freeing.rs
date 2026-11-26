@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
-use super::{CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, children_into, is_text, shape_word};
+use super::{
+    CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, Taken, children_into, is_text, shape_word,
+};
 use crate::embed::dicts::Entries;
 use crate::embed::plans::{Holds, Plan};
 use crate::embed::table::Released;
@@ -78,24 +80,74 @@ fn let_go(address: i64) {
 /// go of: out of the table and kept for reuse, with nothing to walk. A string's place kept in it,
 /// and the runtime's copy of its text, are forgotten, as [`free_block`] does. False, having done
 /// nothing, for any other block, which [`free_block`] frees.
+///
+/// A list of strings, as `split` makes, is freed here too when this thread counts every block it
+/// can reach, letting go of each string held in a block as it reads its header
+/// ([`let_go_of_texts`]). Freed as any list is, it cost `log_crunch` about 1,400 instructions a
+/// line, more than making it: what its items hold looked up by plan, item by item, through the
+/// queue every freed block takes.
 fn free_plain_list(state: &mut State, address: u64) -> bool {
     if crate::embed::threads::held_elsewhere(address) {
         return false;
     }
-    let (first_list, str_shape) = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
-    let Some(block) =
-        usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, first_list, str_shape))
+    let shapes = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
+    let texts_here = !crate::embed::threads::counted_elsewhere() && state.heap.holds_all();
+    let Some((block, taken)) =
+        usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, shapes, texts_here))
     else {
         return false;
     };
-    if shape_word(&block) == Some(str_shape) {
-        state.heap.forget_place(address);
-        if !state.heap.texts.get_mut().is_empty() {
-            forget_text(state, address);
-        }
+    if shape_word(&block) == Some(shapes.1) {
+        forget_string(state, address);
+    } else if taken == Taken::Texts {
+        let_go_of_texts(state, &block);
     }
     state.heap.recycle(block);
     true
+}
+
+/// Forgets a freed string's place kept in it, and the runtime's copy of its text.
+#[inline]
+fn forget_string(state: &mut State, address: u64) {
+    state.heap.forget_place(address);
+    if !state.heap.texts.get_mut().is_empty() {
+        forget_text(state, address);
+    }
+}
+
+/// Gives up the owner a freed list of strings' headers held of each string in a block, freeing
+/// each it was the last owner of: a string holds nothing, so it's out of the table and kept for
+/// reuse at once. Only for a thread that counts every block it can reach, which `release_one`
+/// finds in its own table.
+fn let_go_of_texts(state: &mut State, list: &[u64]) {
+    let str_shape = state.tables.str_shape;
+    for header in crate::embed::lists::items(list, 3).as_chunks::<3>().0 {
+        let Some(text) = crate::embed::text::block_of(header).filter(|text| *text != 0) else { continue };
+        match state.heap.blocks.release_one(usize::try_from(text).unwrap_or(usize::MAX)) {
+            Released::Held => {}
+            Released::Gone(block) if shape_word(&block) == Some(str_shape) => {
+                forget_string(state, text);
+                state.heap.recycle(block);
+            }
+            released => let_go_of_text_the_long_way(state, text, released),
+        }
+    }
+}
+
+/// [`let_go_of_texts`], for a header's block that isn't a string this table counts: freed, or let
+/// go of, as any block a freed one held is.
+#[cold]
+#[inline(never)]
+fn let_go_of_text_the_long_way(state: &mut State, text: u64, released: Released) {
+    if let Released::Gone(block) = released {
+        state.heap.taken.push(block);
+    } else {
+        let (mut pending, mut taken) =
+            (std::mem::take(&mut state.heap.pending), std::mem::take(&mut state.heap.taken));
+        release_child(state, text, false, &mut pending, &mut taken);
+        (state.heap.pending, state.heap.taken) = (pending, taken);
+    }
+    free_queued(state);
 }
 
 /// Frees what other threads let go of last, which waits for this one, which made it. Only a
@@ -288,10 +340,16 @@ fn is_abandoned(state: &State, block: &[u64]) -> bool {
 /// Frees a block and releases its boxed fields, freeing those with no other owner, all the
 /// way down.
 fn free_block(state: &mut State, address: u64) {
+    state.heap.pending.push(address);
+    free_queued(state);
+}
+
+/// Frees each block queued to be: those waiting in `pending`, whose last owner let them go, and
+/// those taken out already in `taken`, and what each held that had no other owner.
+fn free_queued(state: &mut State) {
     take_up_abandons(state);
     let mut pending = std::mem::take(&mut state.heap.pending);
     let mut taken = std::mem::take(&mut state.heap.taken);
-    pending.push(address);
     while let Some((address, block)) = next_to_free(state, &mut pending, &mut taken) {
         if super::is_handle_block(&block) {
             state.heap.blocks.insert(block);
@@ -411,7 +469,11 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>, ta
             });
             return;
         }
-        Entries::InPlace => {}
+        Entries::InPlace(layout) => {
+            if release_in_place_entries(state, layout, block, direct, pending, taken) {
+                return;
+            }
+        }
         Entries::NotADict => {
             if release_planned_items(state, block, direct, pending, taken) {
                 return;
@@ -493,6 +555,48 @@ fn release_planned_items(
                 walk_item(&mut letting_go, number, item);
             }
         }
+    }
+    state.heap.item_plans = plans;
+    true
+}
+
+/// Lets go of what each entry of a dict whose values are held in place holds, as it's read: its
+/// key's block, then what its value holds by the plan of the value's kind, as a list's items are
+/// let go of. Gathering them into a list by a walk of the kind first was most of what freeing
+/// `api_handler`'s dict of headers cost, each request. False, having done nothing, when the kind
+/// has no plan to read.
+fn release_in_place_entries(
+    state: &mut State,
+    layout: crate::embed::dicts::Layout,
+    block: &[u64],
+    direct: bool,
+    pending: &mut Vec<u64>,
+    taken: &mut Vec<Box<[u64]>>,
+) -> bool {
+    let Some(number) = crate::embed::dicts::in_place_kind(layout) else { return false };
+    let Some(planned) = state.heap.item_plans.get(number) else { return false };
+    if matches!(planned.plan, Plan::Walk) {
+        return false;
+    }
+    let holds_nothing = planned.plan.holds_nothing();
+    // Numbers as keys, and values that hold no blocks, as structs of numbers are, leave nothing to
+    // look through: a path search's dict of visits is freed whole.
+    if holds_nothing && !crate::embed::dicts::keys_held_in_blocks(layout) {
+        return true;
+    }
+    // Letting go of a child changes the table, never the plans, so they're set aside meanwhile.
+    let plans = std::mem::take(&mut state.heap.item_plans);
+    if let Some(planned) = plans.get(number) {
+        let mut letting_go =
+            LettingGo { state: &mut *state, direct, pending: &mut *pending, taken: &mut *taken };
+        crate::embed::dicts::each_in_place(layout, block, |key, value| {
+            letting_go.extend(key);
+            if !holds_nothing
+                && crate::embed::plans::addresses(&planned.plan, value, &mut letting_go).is_none()
+            {
+                walk_item(&mut letting_go, number, value);
+            }
+        });
     }
     state.heap.item_plans = plans;
     true

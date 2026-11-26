@@ -1,0 +1,12 @@
+# The other way round from a1: `starts` is out of range for `order`, `other_starts` is in range.
+def both(starts: list[int], order: list[int], other_starts: list[int], other: list[int]) -> int:
+    mut added = 0
+    for at in range(starts[0], starts[1]):
+        added += order[at]
+        for inner in range(other_starts[0], other_starts[1]):
+            added += other[inner]
+    return added
+
+def main(stdout: Stdout):
+    stdout.print("in range:", both([0, 2], order=[1, 2], other_starts=[0, 1], other=[5]))
+    stdout.print("past the end:", both([0, 3], order=[1, 2], other_starts=[0, 1], other=[5]))

@@ -422,6 +422,46 @@ fn a_freed_dict_lets_go_of_every_block_its_entries_hold_and_no_other() {
     finish();
 }
 
+/// A freed dict whose values are held in place lets go of what each entry holds as it reads it, by
+/// the plan of its values' kind: a key held in a block, a value's strings and lists, and those of
+/// an optional value's `Some`. Nothing's left behind, and a block that's still held elsewhere
+/// loses only the dict's owner.
+#[test]
+fn a_freed_dict_of_values_in_place_lets_go_of_what_each_entry_holds() {
+    started();
+    let before = live();
+    let key = |at: i64| Value::str(&format!("{LONG}, key {at}"));
+    let pair = |at: i64, text: &str| Value::Tuple(Rc::new(vec![Value::Int(at), Value::str(text)]));
+    let kinds = [
+        (Word::Int, 0, vec![(Value::Int(1), a_point(1, LONG, &[2])), (Value::Int(2), a_point(2, "n", &[]))]),
+        (Word::Text, 0, vec![(key(1), a_point(1, LONG, &[2, 3])), (Value::str("k"), a_point(2, "n", &[4]))]),
+        (Word::Text, 1, vec![(key(1), pair(1, LONG)), (Value::str("k"), pair(2, "n"))]),
+        (Word::Text, 2, vec![(key(1), a_point(1, LONG, &[5])), (Value::str("none"), Value::None)]),
+        (Word::Text, TEXT, vec![(key(1), Value::str(LONG)), (key(2), Value::str("short"))]),
+    ];
+    for (key_word, kind, pairs) in kinds {
+        let dict = made(key_word, kind, &dict_of(pairs));
+        audited(&[dict]);
+        let_go(dict);
+        assert_eq!(live(), before, "keys {key_word:?}, values of kind {kind}");
+    }
+    // One block an entry holds is held elsewhere too: the free takes only the dict's owner.
+    let dict = made(Word::Int, 0, &dict_of(vec![(Value::Int(1), a_point(1, LONG, &[7, 8]))]));
+    let held = with(|state| {
+        let mut found = Vec::new();
+        super::children(state, state.heap.block(dict)?, &mut found);
+        found.into_iter().find(|address| *address != 0)
+    })
+    .unwrap();
+    with(|state| heap::retain(state, held));
+    let_go(dict);
+    assert_eq!(live(), before + 1);
+    assert_eq!(with(|state| state.heap.block(held)?.first().copied()), Some(1));
+    let_go(held);
+    assert_eq!(live(), before);
+    finish();
+}
+
 #[test]
 fn a_tuple_in_place_is_a_tuple() {
     started();

@@ -388,11 +388,15 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let start = self.literal("`main` failed: ");
+        // What the error shows as, its `message()`, which is the program's, and let go of after the
+        // stop as the IR would have: a header's block, or one made for an inline header.
+        let mut shown_block = None;
         let text = if let Some(shown) = shown {
-            // The program ends here, so a block made of a header isn't let go of.
             let (shown, kind) = self.operand(shown)?;
             let shown = if kind == Kind::Str && self.headers() { self.text_block(&shown).0 } else { shown };
-            self.joined(&start, &shown, false)
+            let text = self.joined(&start, &shown, false);
+            shown_block = Some(shown);
+            text
         } else {
             let (value, kind) = self.operand(error)?;
             let shown = self.shown_text(&value, &kind)?;
@@ -410,12 +414,22 @@ impl Emit<'_, '_, '_> {
             }
             None => text,
         };
-        if let Some(word) = word {
+        // The message is made for this stop and let go of once the runtime has taken its text, as
+        // `failed_with`'s is: kept, the heap audit found it as the program ended, counted once and
+        // held by nothing.
+        let traced = word.map(|word| format!("call void @fennec_notes_traced(i64 {word})"));
+        if traced.is_some() {
             self.declare("declare void @fennec_notes_traced(i64) nounwind");
-            self.stop_then(&text, span, &format!("call void @fennec_notes_traced(i64 {word})"));
-        } else {
-            self.stop_with(&text, span);
         }
+        self.stop_letting_go(&text, span, |emit| {
+            if let Some(traced) = &traced {
+                emit.line(traced);
+            }
+            emit.release_quietly(&text);
+            if let Some(shown) = &shown_block {
+                emit.release_quietly(shown);
+            }
+        });
         let after = self.label("stopped");
         self.start_block(&after);
         Ok(())

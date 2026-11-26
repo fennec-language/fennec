@@ -21,14 +21,12 @@ use std::time::Instant;
 use fennec_check::{Edit, KeptCheck, Signatures};
 use fennec_syntax::{Diagnostic, Module, Sources};
 
-/// How much the kept checks of every kit may come to, by estimate. Past it, the kit built longest ago
-/// goes first: its next build checks all of it.
+/// How much the daemon may hold between builds, counted as it's allocated: the kept checks of every
+/// kit, and the analyses and objects kept for builds in processes of their own. Past it, the kit
+/// built longest ago goes first, and its next build checks all of it. `FENNEC_KEPT_BUDGET` gives
+/// another, in bytes, for tests.
+#[cfg(unix)]
 const BUDGET: usize = 4 << 30;
-
-/// About what a kit's kept check holds for each byte of its source. It was measured at 451 MB for
-/// 7.4 MB of source at 200,000 lines and 72 MB for 0.8 MB at 20,000, with the parsed standard
-/// library held in both, so this is on the high side.
-const BYTES_PER_SOURCE_BYTE: usize = 100;
 
 /// The checks kept, once the daemon keeps them.
 static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
@@ -53,8 +51,6 @@ struct Kit {
     check: KeptCheck,
     /// The files the check was found in, as it parsed them.
     sources: Sources,
-    /// What it's estimated to hold, in bytes.
-    size: usize,
     built: Instant,
     /// Which check of the kit this is: the kept checks counted when it was kept.
     #[cfg_attr(
@@ -89,12 +85,12 @@ pub(crate) fn keep_checks() {
 pub(crate) fn status() -> Option<String> {
     let kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
     let kept = kept.as_ref().filter(|kept| !kept.kits.is_empty() || kept.last_carried.is_some())?;
-    let size: usize = kept.kits.values().map(|kit| kit.size).sum();
     let kits = if kept.kits.len() == 1 { "1 kit".to_owned() } else { format!("{} kits", kept.kits.len()) };
     let last = kept
         .last_carried
         .map_or_else(String::new, |carried| format!("; the last build carried over {carried} functions"));
-    Some(format!("checks kept: {kits}, about {} MB{last}\n", size >> 20))
+    let held = crate::held_bytes() >> 20;
+    Some(format!("checks kept: {kits}, with {held} MB held in all{last}\n"))
 }
 
 /// The build in progress is noted in the store as `name` once it's built, so the check it keeps
@@ -180,6 +176,8 @@ pub(crate) fn report_wrong_analyses(home: &std::path::Path, differ: &[String]) -
     let _ = std::fs::create_dir_all(home.join("daemon"));
     // The stored programs are taken back only if the count that names them is written.
     let programs = crate::run::cache().is_some_and(|cache| cache.count_analysis_found_wrong().is_ok());
+    // What the daemon holds of runs goes too: any of it may have been found with what's taken back.
+    crate::held::forget_all();
     let taken = std::mem::take(&mut *BUILT_WHILE_KEEPING.lock().unwrap_or_else(PoisonError::into_inner));
     let mut named = Vec::new();
     for built in &taken {
@@ -311,22 +309,37 @@ fn checked_keeping(
     Ok((signatures, as_left))
 }
 
-/// Keeps `check` for `kit`, found in `sources` after an edit to `edited`, letting go of the kits
-/// built longest ago while the kept checks come to more than the budget: this one too, if it's past
-/// it by itself. One that carried anything over is checked all again later (`verify_pending`).
+/// Keeps `check` for `kit`, found in `sources` after an edit to `edited`. One that carried anything
+/// over is checked all again later (`verify_pending`). What's kept is held to the budget once the
+/// build is done (`fit_budget`).
 fn keep(kit: PathBuf, mut check: KeptCheck, sources: Sources, edited: Vec<String>) {
     let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
     let Some(kept) = kept.as_mut() else { return };
     kept.last_carried = Some(check.carried_over());
     kept.generations += 1;
-    let bytes: usize = sources.files().map(|(_, text)| text.len()).sum();
-    let size = bytes.saturating_mul(BYTES_PER_SOURCE_BYTE);
     let pending = check.take_module().map(|module| (module, edited));
     let generation = kept.generations;
     let stored_as = STORED_AS.lock().unwrap_or_else(PoisonError::into_inner).take();
     let built = Instant::now();
-    kept.kits.insert(kit, Kit { check, sources, size, built, generation, pending, stored_as });
-    within_budget(&mut kept.kits, BUDGET);
+    kept.kits.insert(kit, Kit { check, sources, built, generation, pending, stored_as });
+}
+
+/// Lets go of the kits built longest ago while the daemon holds more than its budget, counted as
+/// it's allocated: the last one too, if it's past it by itself. It's done once no build is under
+/// way, as one holds what it's working on besides what's kept.
+#[cfg(unix)]
+pub(crate) fn fit_budget() {
+    let budget =
+        std::env::var("FENNEC_KEPT_BUDGET").ok().and_then(|bytes| bytes.parse().ok()).unwrap_or(BUDGET);
+    let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(kept) = kept.as_mut() {
+        within_budget(&mut kept.kits, budget, &mut |_| crate::held_bytes());
+    }
+    drop(kept);
+    // What runs found is held too, and goes if the checks going wasn't enough.
+    if crate::held_bytes() > budget {
+        crate::held::forget_all();
+    }
 }
 
 /// Whether a kit's kept check carried anything over and hasn't been checked all again yet.
@@ -387,6 +400,8 @@ pub(crate) fn verify_pending(home: &std::path::Path) -> Vec<PathBuf> {
         if let Some(name) = &found.stored_as {
             crate::built::forget(name);
         }
+        // A run's root the daemon holds may be the program taken back.
+        crate::held::forget_all();
         drop(found);
         let report =
             home.join("daemon").join(format!("kept-check-differs-{generation}-{}.txt", std::process::id()));
@@ -411,9 +426,18 @@ pub(crate) fn verify_pending(home: &std::path::Path) -> Vec<PathBuf> {
     }
 }
 
-/// Lets go of the kits built longest ago until the rest come to `budget` or less.
-fn within_budget<K: Clone + Eq + std::hash::Hash, T: Sizes>(kits: &mut HashMap<K, T>, budget: usize) {
-    while kits.values().map(Sizes::size).sum::<usize>() > budget {
+/// Lets go of the kits built longest ago while what's `held` comes to more than `budget`. Each kit
+/// let go of is dropped before `held` is asked again.
+#[cfg_attr(
+    all(not(unix), not(test)),
+    expect(dead_code, reason = "only the build daemon, which is unix's alone, keeps kits")
+)]
+fn within_budget<K: Clone + Eq + std::hash::Hash, T: Built>(
+    kits: &mut HashMap<K, T>,
+    budget: usize,
+    held: &mut dyn FnMut(&HashMap<K, T>) -> usize,
+) {
+    while held(kits) > budget {
         let Some(oldest) = kits.iter().min_by_key(|(_, kit)| kit.built()).map(|(key, _)| key.clone()) else {
             return;
         };
@@ -421,17 +445,12 @@ fn within_budget<K: Clone + Eq + std::hash::Hash, T: Sizes>(kits: &mut HashMap<K
     }
 }
 
-/// What a kept kit comes to, and when it was built: what the budget is kept by.
-trait Sizes {
-    fn size(&self) -> usize;
+/// When a kept kit was built: the budget lets go of the one built longest ago first.
+trait Built {
     fn built(&self) -> Instant;
 }
 
-impl Sizes for Kit {
-    fn size(&self) -> usize {
-        self.size
-    }
-
+impl Built for Kit {
     fn built(&self) -> Instant {
         self.built
     }
@@ -668,28 +687,28 @@ mod tests {
 
     struct Fake(usize, Instant);
 
-    impl Sizes for Fake {
-        fn size(&self) -> usize {
-            self.0
-        }
-
+    impl Built for Fake {
         fn built(&self) -> Instant {
             self.1
         }
     }
 
-    /// Past the budget, the kit built longest ago goes first.
+    /// Past the budget, the kit built longest ago goes first, and what's held is asked again
+    /// after each: here, 1 besides what the kits hold.
     #[test]
     fn the_kit_built_longest_ago_goes_first() {
         let start = Instant::now();
         let at = |seconds| start + std::time::Duration::from_secs(seconds);
         let mut kits: HashMap<&str, Fake> =
             HashMap::from([("old", Fake(3, at(0))), ("middle", Fake(3, at(1))), ("new", Fake(3, at(2)))]);
-        within_budget(&mut kits, 6);
+        let mut held = |kits: &HashMap<&str, Fake>| 1 + kits.values().map(|kit| kit.0).sum::<usize>();
+        within_budget(&mut kits, 7, &mut held);
         let mut left: Vec<&str> = kits.keys().copied().collect();
         left.sort_unstable();
         assert_eq!(left, ["middle", "new"]);
-        within_budget(&mut kits, 2);
+        within_budget(&mut kits, 3, &mut held);
+        assert!(kits.is_empty());
+        within_budget(&mut kits, 0, &mut held);
         assert!(kits.is_empty());
     }
 }

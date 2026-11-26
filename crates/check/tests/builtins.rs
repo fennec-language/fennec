@@ -227,7 +227,7 @@ fn every_modules_names_have_to_be_imported() {
         [
             "can't use `+` on a float and a str @ math.sqrt(2.0) + \"a\"",
             "can't use `+` on a float and a str @ math.PI + \"a\"",
-            "can't use `+` on a float and a str @ math.Vec3.zero().x + \"a\"",
+            "can't use `+` on an f32 and a str @ math.Vec3.zero().x + \"a\"",
             "can't use `+` on an int and a str @ pool[id] + \"a\"",
         ]
     );
@@ -298,14 +298,14 @@ fn bytes_hold_ints_and_decode_to_text_that_might_fail() {
 #[test]
 fn reading_numbers_from_text_can_fail_and_characters_have_codes() {
     let program = "
-        stdout.print(int('4') + 1, float('2.5') + 1.0, int(2.5) + 'a', float(2) + 'a')
+        stdout.print(int.parse('4') + 1, float.parse('2.5') + 1.0, int(2.5) + 'a', float(2) + 'a')
         stdout.print('A'.code() + 'a', 'Fox'.codes()[0] + 'a', str.from_code(65) + 'a', str.from_code('A'))
     ";
     assert_eq!(
         in_main(program),
         [
-            "this is the result of something that can fail @ int(\"4\") + 1",
-            "this is the result of something that can fail @ float(\"2.5\") + 1.0",
+            "this is the result of something that can fail @ int.parse(\"4\") + 1",
+            "this is the result of something that can fail @ float.parse(\"2.5\") + 1.0",
             "can't use `+` on an int and a str @ int(2.5) + \"a\"",
             "can't use `+` on a float and a str @ float(2) + \"a\"",
             "can't use `+` on an int and a str @ \"A\".code() + \"a\"",
@@ -367,11 +367,10 @@ fn patterns_written_in_the_program_are_checked() {
         in_main_after(IMPORTS, "stdout.print(Regex(r'(a'))"),
         ["this pattern isn't valid: this `(` is never closed @ r\"(a\""]
     );
-    // A pattern made while the program runs might not be valid, so making it can fail.
-    assert_eq!(
-        in_main_after(IMPORTS, "stdout.print(Regex('(' + 'a').search('a'))"),
-        ["this is the result of something that can fail @ Regex(\"(\" + \"a\")"]
-    );
+    // A pattern made while the program runs is checked as it's made, and one that isn't valid
+    // stops the program, as any value that breaks a `where` rule does.
+    let empty: [&str; 0] = [];
+    assert_eq!(in_main_after(IMPORTS, "stdout.print(Regex('(' + 'a').search('a'))"), empty);
 }
 
 #[test]

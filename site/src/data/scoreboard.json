@@ -1,0 +1,84 @@
+{
+  "source": "the scoreboard of the eight real programs, measured by instructions on an Apple M5, main at 6d1cd147a",
+  "date": "2026-11-18",
+  "note": "Rust's instruction count over Fennec's: 100% is level, and higher means Fennec ran fewer instructions. Every program prints the same output as its Rust twin.",
+  "programs": [
+    {
+      "name": "pathfind",
+      "instructions": 139.6,
+      "ci_clock": {
+        "linux_arm": 128.0,
+        "linux_x86": 97.4
+      }
+    },
+    {
+      "name": "grep_tool",
+      "instructions": 137.4,
+      "ci_clock": {
+        "linux_arm": 123.1,
+        "linux_x86": 77.0
+      }
+    },
+    {
+      "name": "log_crunch",
+      "instructions": 116.0,
+      "ci_clock": {
+        "linux_arm": 80.2,
+        "linux_x86": 76.6
+      }
+    },
+    {
+      "name": "data_pipeline",
+      "instructions": 112.2,
+      "ci_clock": {
+        "linux_arm": 92.0,
+        "linux_x86": 82.6
+      }
+    },
+    {
+      "name": "api_handler",
+      "instructions": 95.1,
+      "ci_clock": {
+        "linux_arm": 61.5,
+        "linux_x86": 60.9
+      }
+    },
+    {
+      "name": "game_tick",
+      "detail": "1 thread",
+      "instructions": 90.5,
+      "ci_clock": {
+        "linux_arm": 94.3,
+        "linux_x86": 83.6
+      }
+    },
+    {
+      "name": "physics",
+      "instructions": 82.6,
+      "ci_clock": {
+        "linux_arm": 88.6,
+        "linux_x86": 87.0
+      }
+    },
+    {
+      "name": "chat_server",
+      "detail": "1 thread",
+      "instructions": 77.2,
+      "ci_clock": {
+        "linux_arm": 88.6,
+        "linux_x86": 93.1
+      }
+    }
+  ],
+  "ci": {
+    "commit": "13295eefe",
+    "suite": {
+      "linux_arm": 106.2,
+      "linux_x86": 91.1,
+      "macos": 97.2
+    },
+    "api_handler_linux": 61,
+    "note": "CI's own suite runs, by clock: best of the suite's runs on Linux Arm (Neoverse, 4 cores) and Linux x86-64 (Xeon 6975P, 4 cores). The macOS runner (M1, virtual, 3 cores) is left out because its spread is too wide to quote.",
+    "date": "2026-11-18"
+  }
+}

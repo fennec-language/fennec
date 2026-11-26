@@ -198,7 +198,7 @@ impl Reader {
 const RESERVED: [&str; 4] = ["std", "main", "lib", "test"];
 
 /// What `fennec = ...` says for a kit built with a local build of Fennec.
-const DEV: &str = "dev";
+pub const DEV: &str = "dev";
 
 const DEPENDENCY_HELP: &str = "write `name = { git = \"https://...\", commit = \"<its whole hash>\" }`, or `name = { path = \"../name\" }`";
 

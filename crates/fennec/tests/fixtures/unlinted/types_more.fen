@@ -42,7 +42,7 @@ def find(name: str) -> Player?:
 
 def parse(text: str) -> int fails NotANumber:
     if not text.isdigit(): fail NotANumber(text=text)
-    return int(text) else 0
+    return int.parse(text) else 0
 
 def call(make: () -> int) -> int:
     return make()
@@ -62,8 +62,9 @@ def main(stdout: Stdout):
     stdout.print(small <= big, big <= small, small >= big, big >= small, small <= small)
     stdout.print(big / 2, big % 2)
 
-    # `where` rules: literals are checked as the program is read; anything else gives a result.
-    for value in [5, -1]:
+    # `where` rules: literals are checked as the program is read, and a value that breaks one
+    # stops the program where it's built.
+    for value in [5]:
         stdout.print(Score(value=value))
 
     # `?.` skips a method call on None.

@@ -59,8 +59,16 @@ pub(crate) use fennec_daemon::Outcome;
 #[cfg(unix)]
 const THIS: fennec_daemon::Build<'static> = fennec_daemon::Build { version: VERSION, build: BUILD };
 
-/// `fennec daemon status`, `stop` and `serve`.
+/// `fennec daemon status`, `stop`, `serve` and `protocol`.
 pub(crate) fn command(action: &str) -> ExitCode {
+    // What a release's folder says of its `fennec`, so the launcher can ask its daemon itself
+    // (`fennec_daemon::PROTOCOL_FILE`). It's written when a release is packed, with no Fennec
+    // folder needed.
+    #[cfg(unix)]
+    if action == "protocol" {
+        print!("{}", THIS.protocol_line());
+        return ExitCode::SUCCESS;
+    }
     let Some(home) = fennec_build::fennec_home() else {
         eprintln!("error: couldn't find a home folder; set FENNEC_HOME");
         return ExitCode::FAILURE;
@@ -464,17 +472,13 @@ mod unix {
         let folder = folder.to_str()?;
         let request = fennec_daemon::work_request(super::THIS, kind.word(), folder, arguments, one_stream())?;
         let socket = socket_path(home, false)?;
-        let mut stream = if let Some(stream) = connect(&socket, home) {
+        let stream = if let Some(stream) = connect(&socket, home) {
             stream
         } else {
             start(home)?;
             connect(&socket, home)?
         };
-        // The connection stays open while the daemon works: closing it stops the work.
-        let mut reply = String::new();
-        let answered =
-            stream.write_all(request.as_bytes()).is_ok() && stream.read_to_string(&mut reply).is_ok();
-        let outcome = Outcome::decode(&reply).filter(|_| answered);
+        let outcome = fennec_daemon::answer(stream, &request);
         if outcome.is_none() {
             eprintln!("note: the build daemon gave no answer, so {}", kind.done_here());
         }
@@ -513,6 +517,8 @@ mod unix {
     pub(super) fn serve(home: &Path) -> ExitCode {
         // Its builds go to processes of their own, whose memory goes when they end.
         crate::child::serving(home);
+        // What each kit's runs found is held, for runs of the same files after.
+        crate::held::hold();
         // Its owner is whom the socket's folder has to belong to.
         let _ = std::fs::create_dir_all(home);
         let Some(socket) = socket_path(home, true) else { return ExitCode::FAILURE };
@@ -803,6 +809,8 @@ mod unix {
                         // before loading, are let go of as the command's own process would, but
                         // only once they're found: they're found in this folder.
                         crate::lint::forget_errors_found();
+                        // What a run found is held once all of it is found, the lint included.
+                        crate::held::done();
                         code_of(code)
                     };
                     std::thread::Builder::new()
@@ -825,7 +833,12 @@ mod unix {
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         state.sessions = state.sessions.saturating_sub(1);
         state.worked();
+        let idle = state.sessions == 0;
         drop(state);
+        // With no build under way, what's held is what's kept, so it's held to the budget.
+        if idle {
+            crate::kept::fit_budget();
+        }
         // A build that carried over what the kit's last check found is checked all again, off the
         // build's way, once it's answered.
         if crate::kept::pending() {
@@ -958,7 +971,8 @@ mod unix {
                     },
                     megabytes(Cache::new(&state.home).size()),
                     megabytes(Cache::cap()),
-                ) + &crate::kept::status().unwrap_or_default(),
+                ) + &crate::kept::status().unwrap_or_default()
+                    + &crate::held::status().unwrap_or_default(),
                 ..Outcome::default()
             },
             (Some("changes"), Some(path)) => {

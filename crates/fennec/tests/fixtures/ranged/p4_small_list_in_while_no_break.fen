@@ -1,0 +1,23 @@
+# As p3 with no `break`: each bucket holds one item and the bucket loop runs to its end. The loop
+# was found before this change, so its check was already made each time round the `while`.
+def sums(starts: list[int], order: list[int], rounds: int) -> int:
+    mut total = 0
+    mut cell = 0
+    mut round = 0
+    while round < rounds:
+        for at in range(starts[cell], starts[cell + 1]):
+            total += order[at] % 3
+        cell += 1
+        if cell == len(starts) - 1:
+            cell = 0
+            round += 1
+    return total
+
+def main(stdout: Stdout):
+    mut starts = list[int]()
+    mut order = list[int]()
+    for cell in range(60):
+        starts.append(cell)
+        order.append(cell)
+    starts.append(60)
+    stdout.print(sums(starts, order=order, rounds=20000))

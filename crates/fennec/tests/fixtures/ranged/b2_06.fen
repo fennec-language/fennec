@@ -1,0 +1,21 @@
+# Where a read fails, and what it says: one loop written twice (`one`) and one that can't be,
+# since its reads lean on two checks (`two`). This file's case: two lists, items below 0.
+def one(starts: list[int], order: list[int], stdout: Stdout) -> int:
+    mut added = 0
+    for cell in range(len(starts) - 1):
+        for at in range(starts[cell], starts[cell + 1]):
+            added += order[at]
+        stdout.print("one", cell, added)
+    return added
+
+def two(starts: list[int], order: list[int], other: list[int], stdout: Stdout) -> int:
+    mut added = 0
+    for cell in range(len(starts) - 1):
+        for at in range(starts[cell], starts[cell + 1]):
+            added += order[at] * other[at]
+        stdout.print("two", cell, added)
+    return added
+
+def main(stdout: Stdout):
+    order = [10, 20, 30, 40, 50, 60]
+    stdout.print(two([0, 2, -6, -2, -1], order=order, other=order, stdout=stdout))

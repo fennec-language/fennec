@@ -3357,7 +3357,7 @@ def show(stdout: Stdout, units: list[Unit]):
         stdout.print(one.hp, one.tags, one.inner.tags, one.name)
 
 def ruled_at(size: int) -> Ruled:
-    return Ruled(size, []).expect("a size that's allowed")
+    return Ruled(size, [])
 
 def swap_ends(ref a: list[int], ref b: list[int]):
     a.append(len(b))
@@ -4406,6 +4406,41 @@ fn a_write_nothing_after_can_undo_goes_unsaved_and_the_rest_go_back() -> std::io
     Ok(())
 }
 
+/// Values taken out of a dict or a list stay out across a lock and go back after it, with a lock
+/// that fails among them: built checking proofs, a lock's end and a failure's rollback check only
+/// what's taken out of the lock's own value, and both programs print what they do built plainly
+/// (#2516). A check of every value out stopped both, though nothing was wrong.
+#[test]
+fn values_out_of_a_dict_or_a_list_across_a_lock_are_not_the_lock_s_to_check() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("lock_values_out")?;
+        let (program, executable) = (dir.join("values_out.fen"), dir.join("values_out"));
+        std::fs::write(&program, include_str!("fixtures/workers/lock_with_values_out_around_it.fen"))?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_CHECK_PROOFS", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output_within()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            include_str!("fixtures/workers/lock_with_values_out_around_it.out"),
+            "{how:?}: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// Locks taken alone begin and end in native code, with no log; two taken together, a save the
 /// runtime sees, a failure and a crash in a launched task each make the log first. Whatever the
 /// mix, what came before a lock that failed or crashed goes back exactly, and the rest is kept.
@@ -4463,7 +4498,7 @@ fn a_put_where_a_lookup_found_the_key_holds_nothing_more_kept_or_undone() -> std
     if !ready() {
         return Ok(());
     }
-    let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int(args[0]) except InvalidValue(): 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) except Boom():\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
+    let source = "error Boom:\n    step: int\n\nstruct Bins:\n    counts: dict[int, int]\n    names: dict[int, str]\n\ndef put(bins: shared Bins, key: int, name: str, failing: bool) fails Boom:\n    lock bins as ref held:\n        held.counts[key] = (held.counts.get(key) else 0) + 1\n        held.names[key] = held.names.get(key) else name\n        if failing:\n            fail Boom(step=key)\n\ndef main(stdout: Stdout, args: Args):\n    rounds = int.parse(args[0]) except InvalidValue(): 0\n    shared bins = Bins(counts={}, names={})\n    mut failed = 0\n    for step in range(rounds):\n        name = f\"name {step}, long enough to be held in a block of its own\"\n        _ = put(bins, key=step % 2, name=name, failing=step % 3 == 0) except Boom():\n            failed += 1\n    lock bins as held:\n        stdout.print(failed, held.counts[0], held.counts[1], held.names[0], held.names[1])\n";
     for boxed in [true, false] {
         let dir = folder("lock_found_counts")?;
         let program = dir.join("found.fen");
@@ -4953,6 +4988,134 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A read between two items of a list nothing changes, as a counting sort's buckets are read, has
+/// those items checked once before its loop, and the loop is written twice: with no check on the
+/// read where every item was from 0 to the read list's length, and as before otherwise. A bucket
+/// list with an item below 0, or one too long to check for the turns the loop takes, has every read
+/// checked; one with an item past the end fails at the first read outside, with the message and
+/// place it always had, after what the buckets before it printed. Built plain and checking proofs.
+#[test]
+fn a_read_between_two_bucket_items_checked_once_fails_where_it_always_did() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        for proofs in ["0", "1"] {
+            let dir = folder("bucket_reads")?;
+            let (program, executable) = (dir.join("bucket_reads.fen"), dir.join("bucket_reads"));
+            std::fs::write(&program, include_str!("fixtures/bucket_reads.fen"))?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                include_str!("fixtures/bucket_reads.out"),
+                "{how:?} {proofs}: {err}"
+            );
+            assert!(!ran.status.success(), "{how:?} {proofs}");
+            assert!(err.contains("error: index 6 is out of range for length 6\n"), "{how:?} {proofs}: {err}");
+            assert!(err.contains("bucket_reads.fen:9:22"), "{how:?} {proofs}: {err}");
+        }
+    }
+    Ok(())
+}
+
+/// The programs of #9's two reviews (`fixtures/ranged`), each printing and exiting as main's build
+/// did, and failing at the same place, as pinned beside it: lists changed every way a function can,
+/// reads that fail at each place, and other features inside a loop written twice. Each is built checking proofs, so
+/// a read left unchecked wrongly stops it. Those that once read out of range, or didn't build, are
+/// built all four ways: with and without `--release`, each plain and checking proofs.
+#[test]
+fn the_bucket_review_programs_print_what_they_always_did() -> std::io::Result<()> {
+    const EVERY_WAY: [&str; 13] = [
+        "a1_two_scans",
+        "a1b_outer_index",
+        "s01_first_bad",
+        "s02_both_bad",
+        "s03_two_loops",
+        "b1_dict_entry",
+        "c04_take_item",
+        "c07_lock",
+        "c09_dicts",
+        "c10_closures",
+        "c11_failures",
+        "c15_place_waits",
+        "e1_entry_and_leave",
+    ];
+    if !ready() {
+        return Ok(());
+    }
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ranged");
+    let mut programs: Vec<PathBuf> = std::fs::read_dir(&fixtures)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<_>>()?;
+    programs.retain(|path| path.extension().is_some_and(|extension| extension == "fen"));
+    programs.sort();
+    assert_eq!(programs.len(), 80);
+    let dir = folder("bucket_review")?;
+    let executable = dir.join("program");
+    for program in &programs {
+        let name = program.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+        let wanted = std::fs::read_to_string(program.with_extension("out"))?;
+        let ways: &[(&[&str], &str)] = if EVERY_WAY.contains(&name) {
+            &[
+                (&["--llvm"], "0"),
+                (&["--llvm"], "1"),
+                (&["--llvm", "--release"], "0"),
+                (&["--llvm", "--release"], "1"),
+            ]
+        } else {
+            &[(&["--llvm"], "1")]
+        };
+        for (how, proofs) in ways {
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(*how)
+                .arg(program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            // The first error said, and the first place pointed at after it, by the file's name.
+            let first_error = |said: &[u8]| {
+                let said = String::from_utf8_lossy(said);
+                let mut lines = said.lines().skip_while(|line| !line.starts_with("error"));
+                let Some(error) = lines.next() else { return String::new() };
+                let place = lines
+                    .find_map(|line| line.trim_start().strip_prefix("--> "))
+                    .map(|place| format!("--> {}\n", place.rsplit('/').next().unwrap_or(place)))
+                    .unwrap_or_default();
+                format!("{error}\n{place}")
+            };
+            let got = if built.status.success() {
+                let ran = Command::new(&executable).current_dir(&fixtures).output_within()?;
+                format!(
+                    "{}exit {}\n{}",
+                    String::from_utf8_lossy(&ran.stdout),
+                    ran.status.code().unwrap_or(-1),
+                    first_error(&ran.stderr)
+                )
+            } else {
+                format!("build fails\n{}", first_error(&built.stderr))
+            };
+            assert_eq!(got, wanted, "{name} {how:?} proofs {proofs}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What every call gives a helper is known in it: `go`'s sums are proven from positions and a
 /// count stepped once a turn, and a build checking proofs checks what it's given on the way in.
 /// `shifted` is given both ends of int across its calls, so its sum keeps its check, and fails.
@@ -5289,7 +5452,7 @@ def main(stdout: Stdout):
     mut outer = Outer(crowd)
     outer.crowd.numbers = [number + 1 for number in outer.crowd.numbers]
     stdout.print(outer.crowd.numbers, crowd.numbers)
-    mut ruled = Ruled([3, 1, 2]).expect("a list with something in it")
+    mut ruled = Ruled([3, 1, 2])
     ruled.numbers = [number + 10 for number in ruled.numbers]
     stdout.print(ruled.numbers)
 
@@ -7444,6 +7607,48 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A float written out takes `f32` where one goes: on the right of a type's own operator, with `*=`
+/// too, beside an `f32` in `min` and `max`, and as a `case`. Each is the nearest `f32`, so `0.1`
+/// matches a tenth held as an `f32`, and the arithmetic is `f32`'s. What it prints is what the
+/// reference evaluator prints.
+#[test]
+fn a_float_written_out_takes_f32_by_an_operator_min_max_and_a_case() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "f32_literals_where_they_go",
+        r#"struct Velocity:
+    x: f32 = 0.0
+
+    def *(self, scale: f32) -> Velocity:
+        return Velocity(x=self.x * scale)
+
+error TooFast:
+    speed: f32
+
+def check(speed: f32) fails TooFast:
+    if speed > 0.25: fail TooFast(speed)
+
+def named(speed: f32) -> str:
+    match speed:
+        case 0.1: return "a tenth"
+        case _: return "other"
+
+def main(stdout: Stdout):
+    mut velocity = Velocity(x=0.1) * 3.0
+    velocity *= 0.1
+    tenth: f32 = 0.1
+    stdout.print(velocity.x, min(tenth, 0.1) == tenth, max(-1.0, tenth, 0.05), named(tenth))
+    check(0.3) except why:
+        case TooFast(speed=0.3): stdout.print("matched", why)
+        case _: stdout.print("missed", why)
+"#,
+    )?;
+    assert_eq!(printed, "0.030000001 True 0.1 a tenth\nmatched TooFast(speed=0.3)\n");
+    Ok(())
+}
+
 /// Numbers written out and joined by arithmetic, where a sized number goes, are worked out in that
 /// size: `16.0 / 9.0` as an `f32` is `f32` 16 over `f32` 9, rounded to 32 bits, not the `float`
 /// quotient rounded after. Beside a sized number, in a list of them and negated, too.
@@ -7639,6 +7844,34 @@ def main(stdout: Stdout) fails Closed | Crashed:
 
 const NESTED_OPTIONALS_PRINTS: &str =
     "None 7 99\nFalse True\nTrue\ngot 12 False\ngot None True\ngot 3 False\n";
+
+/// A local written as an optional of an optional keeps both levels when it's given an optional
+/// (#2465): `outer: int?? = inner`, with `inner` a `None` the checker can't see, holds a `None`
+/// inside, not `None` itself, and so does one given it again, as a parameter or field already did.
+#[test]
+fn a_local_optional_of_an_optional_keeps_a_none_it_was_given_inside() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("nested_optional_locals", NESTED_OPTIONAL_LOCALS, NESTED_OPTIONAL_LOCALS_PRINTS)
+}
+
+const NESTED_OPTIONAL_LOCALS: &str = r#"def shown(stdout: Stdout, inner: int?, text: str?):
+    outer: int?? = inner
+    stdout.print(outer is None, (outer else 5) is None)
+    mut again: int?? = 4
+    again = inner
+    stdout.print(again is None, (again else 5) is None)
+    words: str?? = text
+    stdout.print(words is None, (words else "none") is None)
+
+def main(stdout: Stdout):
+    shown(stdout, None, None)
+    shown(stdout, 3, "three")
+"#;
+
+const NESTED_OPTIONAL_LOCALS_PRINTS: &str =
+    "False True\nFalse True\nFalse True\nFalse False\nFalse False\nFalse False\n";
 
 const NONE_EVERY_WAY: &str = r#"# Optionals that are `None` going every way a value goes to another task: a channel, a task's
 # captures, `parallel`'s items and what it gives back, and a lock, for `str?`, `list[int]?` and
@@ -10671,6 +10904,66 @@ fn a_program_built_for_a_heap_audit_is_checked_as_it_ends() -> std::io::Result<(
     std::fs::remove_dir_all(&dir)
 }
 
+/// A program whose `main` fails ends as it should under a heap audit, with nothing left: the
+/// message it stops with is let go of once the runtime has its text, and so is what the error's
+/// `message()` gave. Both were left counted once and held by nothing (#2577). It's checked for an
+/// error shown as its raw value, one that says a long string it holds, one whose message is made,
+/// and one that comes up through a call, which says its call chain.
+#[test]
+fn a_failing_main_leaves_nothing_for_the_heap_audit() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let small = "error Small:\n    value: int\n\n";
+    let shapes = [
+        ("raw", format!("{small}def main() fails Small:\n    fail Small(value=1)\n"), "Small(value=1)"),
+        (
+            "held",
+            "error Small:\n    why: str\n\n    def message(self) -> str:\n        return self.why\n\n\
+             def main() fails Small:\n    fail Small(why=\"a reason long enough to need a block of its own\")\n"
+                .to_owned(),
+            "a reason long enough to need a block of its own",
+        ),
+        (
+            "made",
+            "error Small:\n    value: int\n\n    def message(self) -> str:\n        return f\"too small: {self.value}\"\n\n\
+             def main() fails Small:\n    fail Small(value=1)\n"
+                .to_owned(),
+            "too small: 1",
+        ),
+        (
+            "called",
+            format!(
+                "{small}def checked(value: int) -> int fails Small:\n    if value < 0: fail Small(value=value)\n    \
+                 return value * 2\n\ndef main(stdout: Stdout) fails Small:\n    stdout.print(checked(-2)?)\n"
+            ),
+            "Small(value=-2)",
+        ),
+    ];
+    let dir = folder("failing_main_audited")?;
+    for (name, source, shown) in shapes {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let ended = Command::new(&executable).env("FENNEC_AUDIT", "1").output_within()?;
+        let said = String::from_utf8_lossy(&ended.stderr);
+        assert_eq!(ended.status.code(), Some(1), "{name}: {said}");
+        assert!(said.contains(&format!("error: `main` failed: {shown}")), "{name}: {said}");
+        assert!(!said.contains("heap audit"), "{name}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A message a task reads with `for ... in inbox` stays its own while it makes other values: a
 /// struct's text and an enum case's text and list, checked with `==` after fifty other texts are
 /// made, where a text freed under it read as one of those. Fable's thread-crossing reproducer, and
@@ -13442,7 +13735,7 @@ fn keys_made_to_collide_dont_slow_a_dict_down() -> std::io::Result<()> {
 def main(stdout: Stdout, stdin: Stdin):
     mut seen: dict[int, int] = {}
     mut order = 0
-    keys = [int(line).expect("a number") for line in stdin.lines()]
+    keys = [int.parse(line).expect("a number") for line in stdin.lines()]
     for key in keys:
         seen[key] = order
         order += 1
@@ -13710,7 +14003,7 @@ def main(stdout: Stdout, stdin: Stdin):
             key = line[1:]
             texts[key] = len(key)
         else:
-            pairs[Pair(first=1, second=int(line[1:]).expect("a number"))] = 1
+            pairs[Pair(first=1, second=int.parse(line[1:]).expect("a number"))] = 1
     mut whole = 0
     mut sliced = 0
     mut paired = 0
@@ -13720,7 +14013,7 @@ def main(stdout: Stdout, stdin: Stdin):
             whole += texts[key]
             sliced += texts.get(line[1:]) else 0
         else:
-            paired += pairs[Pair(first=1, second=int(line[1:]).expect("a number"))]
+            paired += pairs[Pair(first=1, second=int.parse(line[1:]).expect("a number"))]
     missing = "not one of them" in texts
     mut copied = texts
     copied["added to the copy"] = 1
@@ -20512,7 +20805,7 @@ def main(stdout: Stdout, net: Net, entropy: Entropy, env: Env):
     who = address.split("@")[0]
     place = address.split("@")[1]
     rest = place.split(":")[1]
-    port = int(rest.split("/")[0]) except InvalidValue(): 5432
+    port = int.parse(rest.split("/")[0]) except InvalidValue(): 5432
     server = Server(
         host=place.split(":")[0],
         port=port,
@@ -21438,7 +21731,7 @@ fn a_request_goes_out_in_one_write() -> std::io::Result<()> {
         r#"from std.net import NetError
 
 def main(net: Net, args: Args, stdout: Stdout) fails NetError:
-    port = int(args[0]) except InvalidValue(): 0
+    port = int.parse(args[0]) except InvalidValue(): 0
     for path in ["/a", "/b"]:
         answer = net.post(f"http://127.0.0.1:{port}{path}", body="data", timeout=10s)?
         stdout.print(answer.status, answer.text())
@@ -24243,6 +24536,64 @@ fn a_stale_threads_runtime_fails_the_build_rather_than_running_on_one_thread() -
     Ok(())
 }
 
+/// A release build by a `fennec` whose runtime bitcode is from another build, or stamped with no
+/// build, fails saying so, before the store is looked in: such bitcode once linked without a word
+/// and gave wrong answers, or a program built with other bitcode was handed back from the store.
+/// The stamp in bitcode is in a static's name, which bitcode keeps as written.
+#[test]
+fn release_bitcode_from_another_build_is_refused_before_the_store() -> std::io::Result<()> {
+    if !ready() || !runtime_built() || !crate::executables::runtime_beside_fennec() {
+        return Ok(());
+    }
+    let dir = folder("bitcode-stale")?;
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let mine = dir.join("bin");
+    std::fs::create_dir_all(&mine)?;
+    let fennec_here = mine.join(fennec.file_name().unwrap_or_default());
+    if std::fs::hard_link(fennec, &fennec_here).is_err() {
+        std::fs::copy(fennec, &fennec_here)?;
+    }
+    let plain = fennec.with_file_name(crate::executables::runtime_file());
+    std::fs::copy(&plain, mine.join(crate::executables::runtime_file()))?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n")?;
+    let release = || {
+        Command::new(&fennec_here)
+            .args([
+                "build",
+                "--llvm",
+                "--release",
+                &program.to_string_lossy(),
+                "-o",
+                &dir.join("hello").to_string_lossy(),
+            ])
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)
+    };
+    // With no bitcode, a release links the runtime library, and the program is kept in the store.
+    let first = release()?;
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let bitcode = mine.join("libfennec_runtime.bc");
+    let stale =
+        [b"BC\xc0\xde_RNvCs0_14fennec_runtime84".as_slice(), b"RUNTIME_BUILD_", b"STAMP_", &[b'0'; 64]]
+            .concat();
+    let unstamped = b"BC\xc0\xde bitcode from before stamps".to_vec();
+    let mut said = Vec::new();
+    for (bytes, why) in
+        [(stale, "is from another build of Fennec"), (unstamped, "is stamped with no build of Fennec")]
+    {
+        std::fs::write(&bitcode, bytes)?;
+        let built = release()?;
+        said.push((built.status.success(), String::from_utf8_lossy(&built.stderr).into_owned(), why));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    for (built, said, why) in said {
+        assert!(!built, "built with stale bitcode: {said}");
+        assert!(said.contains("libfennec_runtime.bc") && said.contains(why), "{said}");
+    }
+    Ok(())
+}
+
 /// JSON and TOML of types that save themselves go through std's readers and writers in Fennec,
 /// std's collections among them, so a program reading and writing them builds natively.
 #[test]
@@ -25894,7 +26245,7 @@ fn sqlite_refuses_a_nan() -> std::io::Result<()> {
     // In a Fennec string, a Windows path's `\` starts an escape, so each is written twice.
     let written = path.replace('\\', "\\\\");
     let source = format!(
-        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float(\"nan\") except InvalidValue(): 0.0\n        _ = db.execute(t\"insert into m values ({{nan}})\") except refused:\n            stdout.print(refused.message())\n            0\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
+        "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError:\n    with sqlite.open(fs, \"{written}\")? as db:\n        _ = db.execute(t\"create table m (x real)\")?\n        nan = float.parse(\"nan\") except InvalidValue(): 0.0\n        _ = db.execute(t\"insert into m values ({{nan}})\") except refused:\n            stdout.print(refused.message())\n            0\n        one = 1.5\n        stdout.print(db.execute(t\"insert into m values ({{one}})\")?)\n"
     );
     let printed = printed_by("sqlite_nan", &source)?;
     for ending in ["", "-wal", "-shm"] {
@@ -27194,6 +27545,20 @@ fn pack_headers_are_the_ones_docs_pack_md_pins() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An `f32` saves as itself: JSON's shortest text read back rounded once, `std.pack`'s 4 bytes with
+/// every NaN the one quiet NaN, `0x7FC00000`, and TOML through its float, each giving back the same
+/// `f32`. A float field loads an `f32` saved before, and an `f32` field refuses a float. The
+/// reference evaluator prints the same, in `oracle`'s `an_f32_saves_as_itself`.
+#[test]
+fn an_f32_saves_as_itself_in_json_pack_and_toml() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("f32_saved", include_str!("fixtures/f32_saved.fen"))?;
+    assert_eq!(printed, include_str!("fixtures/f32_saved.out"));
+    Ok(())
+}
+
 /// What the next test builds: many small values in one stream, read in order, by name, fed a
 /// byte at a time, cut off, and two `Packer`s' bytes one after the other.
 const PACK_STREAMS: &str = r#"from std import pack
@@ -27677,7 +28042,8 @@ def main(stdout: Stdout):
         unit = back.units[id]
         target = unit.target
         stdout.print(unit.name, back.units[target].name if target is not None else "-")
-    # Slot for slot: the same slots and generations, and the Id whose item has gone still gone.
+    # Slot for slot: the same slots, and the Id whose item has gone saved as missing, since a
+    # load gives every slot one tag and it would find what's in its slot.
     exact = pack.dumps(world, exact=True)
     mut same = pack.loads[World](exact) except ParseError(): World()
     stdout.print(len(exact), exact[3], len(same.units), same.units[same.selected[1]].name)
@@ -27713,8 +28079,8 @@ def main(stdout: Stdout):
 "#;
 
 /// `std.pack` saves a `Table` as JSON does, by position, with an `Id` whose item has gone saved
-/// as missing, and with `exact=True` slot for slot: the gone `Id` still gone, and the next `add`
-/// in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
+/// as missing, and with `exact=True` slot for slot: the gone `Id` saved as missing there too, and
+/// the next `add` in the same slot. An `Id` past its `Table`, or slots that don't fit the items, don't load, and
 /// no truncation or changed byte crashes a load in either mode.
 #[test]
 fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
@@ -27724,7 +28090,7 @@ fn pack_saves_tables_by_position_and_slot_for_slot() -> std::io::Result<()> {
     let printed = printed_by("pack_tables", PACK_TABLES)?;
     assert_eq!(
         printed,
-        "84 2 True True\nvex -\nkit vex\n95 88 2 kit\nTrue False\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[0]` is item 10 of `units`, which has only 3\nthe data ends too soon, at byte 75\ntruncated 0 changed 2520\ntruncated 0 changed 2850\n"
+        "84 2 True True\nvex -\nkit vex\n91 88 2 kit\nFalse True\nTrue\n`units[0].target` is out of range, at byte 75\n`units` has 1 slot in use but 0 items, at byte 72\n`selected[1]` is item 10 of `units`, which has only 3\na number is written in more bytes than it needs, at byte 71\ntruncated 0 changed 2520\ntruncated 0 changed 2730\n"
     );
     Ok(())
 }
@@ -29316,6 +29682,57 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// Copies of a `Table` never hand out an `Id` that finds the other copy's item (#2424): each `add`
+/// takes a tag no `Id` has had, which its slot keeps. Two copies each adding, an `Id` from before
+/// the copy found in both, both copies taking an item out and adding again into its slot, a copy of
+/// a copy, and the `Id`s `ids()` and `items()` give, each the one `add` gave. In dev and release.
+#[test]
+fn copies_of_a_table_never_hand_out_one_id() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_copies_keep_ids_apart",
+        include_str!("fixtures/table_copies_keep_ids_apart.fen"),
+        include_str!("fixtures/table_copies_keep_ids_apart.out"),
+    )
+}
+
+/// A `Table` saved slot for slot keeps its slots, and an `Id` saves as its slot only where it finds
+/// its item: one whose item has gone saves as missing when it's optional, and stops the save when it
+/// isn't, since after the load it would find whatever is in its slot. A load refuses an `Id` whose
+/// generation isn't its slot's, as main saved one before (#2424). In dev and release.
+#[test]
+fn a_table_saved_exactly_keeps_no_id_whose_item_has_gone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "table_saved_exactly",
+        include_str!("fixtures/table_saved_exactly.fen"),
+        include_str!("fixtures/table_saved_exactly.out"),
+    )?;
+    let program = "from std import pack\nfrom std.collections import Id, Table\n\nstruct Unit:\n    hp: int\n\nstruct Saved:\n    units: Table[Unit]\n    chosen: Id[Unit]\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    stale = units.add(Unit(hp=1))\n    _ = units.remove(stale)\n    data = pack.dumps(Saved(units=units, chosen=stale), exact=True)\n    stdout.print(len(data))\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("table_saved_exactly_stale")?;
+        let (at, executable) = (dir.join("stale.fen"), dir.join("stale"));
+        std::fs::write(&at, program)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([at.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        let why = "`chosen` is an Id that finds nothing in `units`: its item was taken out, or it's from another `Table[Unit]`";
+        assert!(said.contains(why), "{how:?}: {said}");
+    }
+    Ok(())
+}
+
 /// An item taken out of a `Table` to change in place never changes a copy of the `Table`: it's
 /// made alone before the item is taken. A copy kept as a local, as a field of a copied struct,
 /// by a caller passing it as `ref`, and by another task, of items holding a dict and of plain
@@ -29454,6 +29871,23 @@ fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
     Ok(())
 }
 
+/// No two items ever have the same `Id`, in any copy of a `Table`, however it was made (#2424): a copy
+/// changed, one sent on a channel, one a launched task is given, one read out of a lock, and a lock
+/// that fails and puts the `Table` back. An `Id` made before a copy finds its item in both, and one
+/// made after only where it was made. It prints what the reference evaluator prints, in both
+/// builds, with nothing left.
+#[test]
+fn no_two_items_have_the_same_id_in_any_copy_of_a_table() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/tables_copied.fen");
+    let wanted = include_str!("fixtures/tables_copied.out");
+    prints_in_both_builds("tables_copied", source, wanted)?;
+    assert!(counts_of("tables_copied_counts", source)?.ends_with(" live 0"));
+    Ok(())
+}
+
 /// An item read out of a `Table` by `Id`, changed and put back by the same `Id`, goes back where it
 /// was read, with no second lookup, and a build that checks proofs looks it up again and checks
 /// it's the same place. A call, a closure or a task given the `Table` in between, or the key read
@@ -29485,13 +29919,18 @@ fn an_item_taken_by_id_goes_back_where_it_was_read_unless_something_reaches_the_
     let ran = Command::new(&executable).output_within()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
     std::fs::remove_dir_all(&dir)?;
-    // A removed item's `Id`, and another `Table`'s, each stop the program at the read, on line 7.
+    // A removed item's `Id`, and another `Table`'s, each stop the program at the read, on line 7,
+    // saying the same: a `Table` can't tell them apart.
     for (name, made, why) in [
-        ("removed", "_ = units.remove(id)", "this Id refers to something that's been removed"),
+        (
+            "removed",
+            "_ = units.remove(id)",
+            "this Id finds nothing in this Table: its item was taken out, or it's from another Table",
+        ),
         (
             "another",
             "mut other = Table[Unit]()\n    id = other.add(Unit(health=1))",
-            "this Id is from another Table",
+            "this Id finds nothing in this Table: its item was taken out, or it's from another Table",
         ),
     ] {
         let program = format!(
@@ -29553,7 +29992,7 @@ fn an_item_put_back_twice_from_one_read_looks_it_up_each_time() -> std::io::Resu
         let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
         std::fs::remove_dir_all(&dir)?;
         assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
-        let why = "this Id refers to something that's been removed";
+        let why = "this Id finds nothing in this Table: its item was taken out, or it's from another Table";
         assert!(said.contains(why) && said.contains("twice.fen:11:"), "{how:?}: {said}");
     }
     Ok(())
@@ -34054,12 +34493,12 @@ fn a_parallel_comprehension_whose_item_can_fail_matches_what_was_pinned() -> std
     same_as_expected_in_both_builds(
         "parallel_tries",
         r#"def doubled(text: str) -> int fails InvalidValue:
-    return int(text)? * 2
+    return int.parse(text)? * 2
 
 def main(stdout: Stdout) fails InvalidValue:
     texts = ["1", "2", "3"]
-    stdout.print([doubled(t)? for t in parallel(texts)], sum(int(t)? for t in parallel(texts)))
-    stdout.print([int(t)? for t in parallel(["4", "x"])])
+    stdout.print([doubled(t)? for t in parallel(texts)], sum(int.parse(t)? for t in parallel(texts)))
+    stdout.print([int.parse(t)? for t in parallel(["4", "x"])])
 "#,
     )
 }
@@ -34903,6 +35342,82 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The workers of a `parallel` loop race to reach an `embed_file` first, each reading it whole,
+/// slicing it and joining parts of it in the runtime. The one copy the process makes is the
+/// winner's, but nothing a program or its replay sees says which thread won (#2429).
+/// - What it prints and how many blocks it made are the same at 1, 4 and 16 threads.
+/// - A run recorded at each of those replays the same at the other two.
+#[test]
+fn an_embedded_file_is_made_once_whichever_thread_reaches_it_first() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("embedded_raced")?;
+    let data: Vec<u8> =
+        (0..4096u32).map(|n| u8::try_from(n.wrapping_mul(2_654_435_761) >> 24).unwrap_or(0)).collect();
+    std::fs::write(dir.join("data.bin"), &data)?;
+    let source = "def data() -> bytes:\n    return embed_file(\"data.bin\")\n\n\
+                  def looked(n: int) -> int:\n    file = data()\n    mut total = 0\n    \
+                  for i in range(len(file)):\n        total += file[i]\n    \
+                  part = file[n:n + 5] + file[:2]\n    return total + len(part) * 1000 + part[0]\n\n\
+                  def main(stdout: Stdout):\n    mut totals: list[int] = []\n    \
+                  for i in range(64):\n        totals.append(i)\n    \
+                  for ref t in parallel(totals):\n        t = looked(t)\n    \
+                  stdout.print(sum(totals), data()[0], len(data()[1:4]))\n";
+    let program = dir.join("raced.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("raced");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let byte = |at: usize| data.get(at).copied().map_or(0, u64::from);
+    let whole: u64 = data.iter().copied().map(u64::from).sum();
+    let expected: u64 = (0..64).map(|n| whole + 7000 + byte(n)).sum();
+    let shown = format!("{expected} {} 3\n", byte(0));
+    let threads = ["1", "4", "16"];
+    let mut first_made = None;
+    for count in threads {
+        let ran = Command::new(&executable)
+            .env("FENNEC_THREADS", count)
+            .env("FENNEC_COUNTS", "1")
+            .output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let made: u64 = said
+            .split_whitespace()
+            .skip_while(|word| *word != "allocations")
+            .nth(1)
+            .and_then(|made| made.parse().ok())
+            .unwrap_or_else(|| panic!("no counts at {count} threads: {said}"));
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), shown, "at {count} threads");
+        assert_eq!(made, *first_made.get_or_insert(made), "blocks made at {count} threads against 1");
+    }
+    for recorded_at in threads {
+        let log = dir.join(format!("at{recorded_at}.log"));
+        let recorded = crate::executables::fennec_command()
+            .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .current_dir(&dir)
+            .env("FENNEC_THREADS", recorded_at)
+            .output_within()?;
+        assert!(recorded.status.success(), "{}", String::from_utf8_lossy(&recorded.stderr));
+        for replayed_at in threads {
+            let replayed = crate::executables::fennec_command()
+                .args(["replay", &log.to_string_lossy()])
+                .current_dir(&dir)
+                .env("FENNEC_THREADS", replayed_at)
+                .output_within()?;
+            assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+            assert_eq!(
+                replayed.stdout, recorded.stdout,
+                "recorded at {recorded_at} threads, replayed at {replayed_at}"
+            );
+        }
+        assert_eq!(String::from_utf8_lossy(&recorded.stdout), shown, "recorded at {recorded_at}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// In a program with `parallel`, `main` works out each constant before any worker starts, and
 /// throws the value away there: one of a struct type, like a `Duration`, still has its type in
 /// `main`'s module.
@@ -34974,7 +35489,7 @@ def excepted(spots: list[Spot]) -> list[Spot]:
     mut kept = spots
     for ref spot in parallel(kept):
         spot.x = 9
-        _ = int("no") except InvalidValue():
+        _ = int.parse("no") except InvalidValue():
             return kept
     return kept
 
@@ -36036,7 +36551,7 @@ fn a_main_giving_back_a_result_matches_what_was_pinned() -> std::io::Result<()> 
     same_as_pinned(
         "main_gives_back",
         r#"def number(text: str) -> int fails InvalidValue:
-    return int(text)?
+    return int.parse(text)?
 
 def main(stdout: Stdout):
     stdout.print(number("12")?)
@@ -36167,7 +36682,7 @@ fn a_main_giving_back_an_error_fails_as_pinned() -> std::io::Result<()> {
     same_message_as_pinned(
         "main_gives_back_an_error",
         r#"def number(text: str) -> int fails InvalidValue:
-    return int(text)?
+    return int.parse(text)?
 
 def main(stdout: Stdout):
     stdout.print("first")
@@ -36223,14 +36738,20 @@ struct Words:
 
     def int(ref self) -> int fails ParseError:
         word = self.next()?
-        n = int(word) except InvalidValue():
+        n = int.parse(word) except InvalidValue():
             fail ParseError(message=f"`{word}` should be an int", line=0, column=self.at)
         return n
 
     def float(ref self) -> float fails ParseError:
         word = self.next()?
-        x = float(word) except InvalidValue():
+        x = float.parse(word) except InvalidValue():
             fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
+        return x
+
+    def f32(ref self) -> f32 fails ParseError:
+        word = self.next()?
+        x = f32.parse(word) except InvalidValue():
+            fail ParseError(message=f"`{word}` should be an f32", line=0, column=self.at)
         return x
 
     def bool(ref self) -> bool fails ParseError:
@@ -36248,10 +36769,10 @@ struct Words:
     def here(self, message: str) -> ParseError:
         return ParseError(message=message, line=0, column=0)
 
-    def saw_id(ref self, kind: str, position: int):
+    def saw_id(ref self, kind: str, position: int, generation: int):
         pass
 
-    def saw_table(ref self, kind: str, count: int):
+    def saw_table(ref self, kind: str, count: int, words: list[int]):
         pass
 
     def tag(ref self, kind: str) -> int:
@@ -36762,23 +37283,23 @@ fn numbers_and_sets_from_text_match_what_was_pinned() -> std::io::Result<()> {
         r#"from std.re import Regex
 
 def add(a: str, b: str) -> int fails InvalidValue:
-    return int(a)? + int(b)?
+    return int.parse(a)? + int.parse(b)?
 
 def main(stdout: Stdout):
     for text in ["42", " -7 ", "4x2", "", "99999999999999999999"]:
-        n = int(text) except error:
+        n = int.parse(text) except error:
             stdout.print(error.message)
             continue
         stdout.print(n)
     for text in ["2.5", " 1e3 ", "nope", "a \"quoted\" value long enough for a block"]:
-        x = float(text) except error:
+        x = float.parse(text) except error:
             stdout.print(error.message)
             continue
         stdout.print(x)
-    int_value = int("12") except InvalidValue(): 0
-    int_value2 = int("x") except InvalidValue(): -1
-    float_value = float("0.5") except InvalidValue(): 0.0
-    float_value2 = float("y") except InvalidValue(): -1.5
+    int_value = int.parse("12") except InvalidValue(): 0
+    int_value2 = int.parse("x") except InvalidValue(): -1
+    float_value = float.parse("0.5") except InvalidValue(): 0.0
+    float_value2 = float.parse("y") except InvalidValue(): -1.5
     stdout.print(int_value, int_value2, float_value, float_value2)
     add_value = add("1", b="2") except InvalidValue(): -1
     add_value2 = add("1", b="two") except InvalidValue(): -1
@@ -36930,7 +37451,7 @@ struct Point:
     y: int
 
 def parsed(text: str) -> int fails InvalidValue:
-    return int(text)?
+    return int.parse(text)?
 
 test \"floats stay small\" for x: float:
     assert x < 3.5

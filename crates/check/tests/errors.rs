@@ -437,17 +437,47 @@ fn passing_a_result_where_a_value_is_wanted_is_a_mistake() {
     );
 }
 
+/// Building a value with `where` rules can't fail: one that breaks a rule stops the program, as a
+/// bug, so `?` and `except` after it are refused, the latter saying why.
 #[test]
-fn where_rules_make_construction_fail_unless_every_value_is_written_out() {
-    let program = "
-        struct Score:
-            value: int where value >= 0
+fn building_a_value_with_where_rules_cant_fail() {
+    let program = |body: &str| {
+        problems(&format!(
+            "struct Score:\n    value: int where value >= 0\n\ndef main(stdout: Stdout):\n    n = 5\n{body}"
+        ))
+    };
+    let empty: [&str; 0] = [];
+    assert_eq!(program("    stdout.print(Score(value=5).value, Score(value=n).value)\n"), empty);
+    assert_eq!(
+        program(
+            "    score = Score(value=n) except why:\n        stdout.print(why)\n        return\n    stdout.print(score)\n"
+        ),
+        [
+            "building a `Score` can't fail, so `except` has nothing to handle: a value that breaks a `where` rule stops the program @ Score(value=n)"
+        ]
+    );
+}
 
-        def main(stdout: Stdout):
-            n = 5
-            stdout.print(Score(value=5).value, Score(value=n).value, (Score(n)?).value)
+/// A load builds what it reads in the `deserialize` the compiler writes, where a broken rule fails
+/// the load. A default for one of its fields, built there too, is built as anywhere else, so it
+/// isn't a result where its plain value goes.
+#[test]
+fn a_rule_bearing_field_default_builds_plainly_in_a_load() {
+    let program = "
+        from std import json
+
+        struct Gauge:
+            level: int where level >= 0
+
+        struct Kept:
+            mark: int
+            gauge = Gauge(level=0)
+
+        def main(stdout: Stdout) fails ParseError:
+            stdout.print(json.loads[Kept](\"{\\\"mark\\\": 1}\")?.gauge.level)
+            stdout.print(json.loads[Gauge](\"{\\\"level\\\": 2}\")?.level)
     ";
-    assert_eq!(problems(program), ["this is the result of something that can fail @ Score(value=n).value"]);
+    assert_eq!(problems(program), Vec::<String>::new());
 }
 
 #[test]
@@ -642,7 +672,7 @@ def must(ages: dict[str, int], name: str) -> int fails Missing:
     return age
 
 def parse(text: str) -> int:
-    return int(text) except InvalidValue(): return 0
+    return int.parse(text) except InvalidValue(): return 0
 ";
 
 #[test]
@@ -676,12 +706,12 @@ fn an_arrow_function_passes_a_failure_up_only_with_question_mark() {
     assert_eq!(problems(&fixed(unmarked)), Vec::<String>::new());
     // The arrow's `?`s, with `from` too, pass up its own failures, and a `def` takes it as one
     // that fails.
-    let marked = "error Bad:\n    why: str\n\ndef twice(run: () -> int fails Bad | InvalidValue) -> int fails Bad | InvalidValue:\n    return run()? + run()?\n\ndef main(stdout: Stdout):\n    twice_value = twice(() => int(\"1\")? + (int(\"2\")? from Bad(why=\"no\"))) except Bad() | InvalidValue(): 0\n    stdout.print(twice_value)\n";
+    let marked = "error Bad:\n    why: str\n\ndef twice(run: () -> int fails Bad | InvalidValue) -> int fails Bad | InvalidValue:\n    return run()? + run()?\n\ndef main(stdout: Stdout):\n    twice_value = twice(() => int.parse(\"1\")? + (int.parse(\"2\")? from Bad(why=\"no\"))) except Bad() | InvalidValue(): 0\n    stdout.print(twice_value)\n";
     assert_eq!(problems(marked), Vec::<String>::new());
     let said = "this arrow function can fail, but where it's passed takes one that can't";
     for body in [
-        "kept = sorted(['1'], key=text => int(text)?)\nstdout.print(kept)",
-        "kept = sorted(['1'], key=text => [int(part)? for part in [text]][0])\nstdout.print(kept)",
+        "kept = sorted(['1'], key=text => int.parse(text)?)\nstdout.print(kept)",
+        "kept = sorted(['1'], key=text => [int.parse(part)? for part in [text]][0])\nstdout.print(kept)",
     ] {
         let source = format!(
             "error Bad:\n    why: str\n\ndef main(stdout: Stdout):\n    {}\n",
@@ -692,16 +722,16 @@ fn an_arrow_function_passes_a_failure_up_only_with_question_mark() {
         assert_eq!(found.len(), 1, "{body}: {found:?}");
     }
     // The failure is the arrow's, not one more way the function around it fails.
-    let around = "def around() -> list[str]:\n    return sorted(['1'], key=text => int(text)?)\n";
+    let around = "def around() -> list[str]:\n    return sorted(['1'], key=text => int.parse(text)?)\n";
     let found = problems(around);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found.iter().all(|one| one.starts_with(said)), "{found:?}");
     // After an arrow, `?` is as it was.
-    let after = "def after(text: str) -> int fails InvalidValue:\n    kept = sorted(['1'], key=one => one)\n    return int(text)? + len(kept)\n\ndef main(stdout: Stdout):\n    after_value = after(\"1\") except InvalidValue(): 0\n    stdout.print(after_value)\n";
+    let after = "def after(text: str) -> int fails InvalidValue:\n    kept = sorted(['1'], key=one => one)\n    return int.parse(text)? + len(kept)\n\ndef main(stdout: Stdout):\n    after_value = after(\"1\") except InvalidValue(): 0\n    stdout.print(after_value)\n";
     assert_eq!(problems(after), Vec::<String>::new());
     // `?` still leaves from a comprehension, and a function an arrow is given for can still give
     // a value instead.
-    let fine = "def parsed(texts: list[str]) -> list[int] fails InvalidValue:\n    return [int(text)? for text in texts]\n\ndef number(text: str) -> int:\n    found = int(text) except InvalidValue(): 0\n    return found\n\ndef main(stdout: Stdout):\n    stdout.print(sorted(['1'], key=number))\n";
+    let fine = "def parsed(texts: list[str]) -> list[int] fails InvalidValue:\n    return [int.parse(text)? for text in texts]\n\ndef number(text: str) -> int:\n    found = int.parse(text) except InvalidValue(): 0\n    return found\n\ndef main(stdout: Stdout):\n    stdout.print(sorted(['1'], key=number))\n";
     assert_eq!(problems(fine), Vec::<String>::new());
 }
 
@@ -773,8 +803,11 @@ fn an_else_block_gives_a_value_or_leaves() {
 fn a_one_line_if_and_a_fallback_else_need_parentheses_to_mix() {
     let said = "a one-line `if` and a fallback `else` need parentheses to share an expression";
     for (body, fixed) in [
-        ("int(text) else 80 if given else 8080", "int(text) else (80 if given else 8080)"),
-        ("8080 if not given else int(text) else 80", "8080 if not given else (int(text) else 80)"),
+        ("int.parse(text) else 80 if given else 8080", "int.parse(text) else (80 if given else 8080)"),
+        (
+            "8080 if not given else int.parse(text) else 80",
+            "8080 if not given else (int.parse(text) else 80)",
+        ),
     ] {
         let source = format!("def port(text: str, given: bool) -> int:\n    {body}\n");
         let problem = fennec_syntax::parse(&source).err();
@@ -782,12 +815,13 @@ fn a_one_line_if_and_a_fallback_else_need_parentheses_to_mix() {
         let written = fennec_syntax::apply_fixes(&source, 0, problem.as_slice());
         assert_eq!(written, Some(format!("def port(text: str, given: bool) -> int:\n    {fixed}\n")));
     }
-    let parenthesized = "def port(text: str, given: bool) -> int:\n    int_value = int(text) except InvalidValue(): 80\n    return (int_value) if given else 8080\n";
+    let parenthesized = "def port(text: str, given: bool) -> int:\n    int_value = int.parse(text) except InvalidValue(): 80\n    return (int_value) if given else 8080\n";
     assert!(fennec_syntax::parse(parenthesized).is_ok());
     let chained = "def size(n: int) -> int:\n    return 1 if n < 1 else 2 if n < 2 else 3\n";
     assert!(fennec_syntax::parse(chained).is_ok());
-    let unhandled = "def port(text: str, given: bool) -> int:\n    return int(text) if given else 8080\n";
-    assert_eq!(problems(unhandled), ["this can fail, but nothing handles it @ int(text)"]);
+    let unhandled =
+        "def port(text: str, given: bool) -> int:\n    return int.parse(text) if given else 8080\n";
+    assert_eq!(problems(unhandled), ["this can fail, but nothing handles it @ int.parse(text)"]);
 }
 
 /// On `T? fails E`, a plain `else` would handle the failure and the `None` alike, so it's refused,

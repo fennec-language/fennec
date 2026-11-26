@@ -86,12 +86,13 @@ tree_now() {
 }
 
 # What main changed, between the commit that failed and this one, that could have fixed the
-# failure in LOG: the compiler and runtime crates, and each failing test's own file, which is where
+# failure in LOG: the compiler and runtime crates, each failing test's own file, which is where
 # it panicked and the test file its first module is named for (`llvm::a_loop` is in
-# `crates/*/tests/llvm.rs`). Prints each such path. It prints none when the commit that failed
+# `crates/*/tests/llvm.rs`), and the code of that file's crate, which its tests run (#2535 fixed
+# `crates/fuzz/tests/kept.rs`'s tests in `crates/fuzz/src`). Prints each such path. It prints none when the commit that failed
 # can't be read, and the failure stays a flake, as before.
 touched_by_main() {
-  local failed=$1 log=$2 changed files path module
+  local failed=$1 log=$2 changed files code path module
   changed=$(git diff --name-only "$failed" HEAD 2> /dev/null) || return 0
   [ -n "$changed" ] || return 0
   files=$(
@@ -100,6 +101,7 @@ touched_by_main() {
       printf '%s\n' "$changed" | grep -E "^crates/[^/]+/tests/$module(\.rs|/)" || true
     done
   )
+  code=$(printf '%s\n' "$files" | sed -n -E 's#^(crates/[^/]+)/.*#\1/src/#p' | sort -u)
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     case "$path" in
@@ -109,6 +111,15 @@ touched_by_main() {
       *)
         if printf '%s\n' "$files" | grep -qxF -- "$path"; then
           echo "$path"
+        else
+          # Crate folders hold no spaces.
+          for dir in $code; do
+            case "$path" in "$dir"*)
+              echo "$path"
+              break
+              ;;
+            esac
+          done
         fi
         ;;
     esac

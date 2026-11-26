@@ -411,6 +411,180 @@ mod launcher {
         )
     }
 
+    /// A toolchain 0.4.2 installed in a Fennec folder of its own, whose folder says it speaks this
+    /// daemon protocol, with a stand-in for its build daemon listening where the toolchain's would.
+    struct StandIn {
+        dir: Scratch,
+        home: fennec_temp::Temp,
+        /// The toolchain's `daemon-protocol` file.
+        says: PathBuf,
+        socket: PathBuf,
+        daemon: std::os::unix::net::UnixListener,
+        /// The launcher's whole environment, which names the daemon's socket as the toolchain's would.
+        environment: [(String, String); 2],
+    }
+
+    const STAND_IN: fennec_daemon::Build<'static> =
+        fennec_daemon::Build { version: "0.4.2", build: "00112233445566778899aabbccddeeff" };
+
+    impl StandIn {
+        fn new(name: &str) -> StandIn {
+            use std::os::unix::fs::DirBuilderExt as _;
+            let dir = scratch(name);
+            // Short, so the daemon's socket fits in Fennec's folder.
+            let home = PathBuf::from(format!("/tmp/fennec-launcher-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&home);
+            std::fs::create_dir_all(&home).unwrap();
+            let home = fennec_temp::Temp::at(home);
+            installed(&home, "0.4.2");
+            let says = home.join("toolchains/0.4.2").join(fennec_daemon::PROTOCOL_FILE);
+            std::fs::write(&says, STAND_IN.protocol_line()).unwrap();
+            let environment = [
+                ("PATH".to_owned(), std::env::var("PATH").unwrap()),
+                ("FENNEC_HOME".to_owned(), home.to_str().unwrap().to_owned()),
+            ];
+            let hash = fennec_daemon::environment_of(
+                environment.iter().map(|(name, value)| (name.into(), value.into())),
+            );
+            std::fs::DirBuilder::new().mode(0o700).create(home.join("daemon")).unwrap();
+            let socket = home.join("daemon").join(format!("{}{hash}.sock", STAND_IN.socket_start()));
+            let daemon = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            StandIn { dir, home, says, socket, daemon, environment }
+        }
+
+        /// The launcher, started with `args` and only the environment, and `also`.
+        fn launcher(&self, args: &[&str], also: &[(&str, &str)]) -> std::process::Child {
+            std::process::Command::new(env!("CARGO_BIN_EXE_fennec-launcher"))
+                .args(args)
+                .current_dir(&*self.dir)
+                .env_clear()
+                .envs(self.environment.clone())
+                .envs(also.iter().copied())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        }
+
+        /// Reads one request, makes its program unless `outcome` stops it short, and answers: what
+        /// it was asked, one line each.
+        fn serve(&self, outcome: &fennec_daemon::Outcome) -> Vec<String> {
+            use std::io::{BufRead as _, Write as _};
+            use std::os::unix::fs::PermissionsExt as _;
+            let (stream, _) = self.daemon.accept().unwrap();
+            let mut lines = Vec::new();
+            let mut reader = std::io::BufReader::new(&stream);
+            while lines.last().is_none_or(|line| line != "end") {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0, "{lines:?}");
+                lines.push(line.trim_end_matches('\n').to_owned());
+            }
+            if outcome.code == 0 {
+                let program = Path::new(&lines[4]);
+                std::fs::write(program, "#!/bin/sh\necho \"program $0: $*\"\nexit 5\n").unwrap();
+                std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            (&stream).write_all(outcome.encode().as_bytes()).unwrap();
+            lines
+        }
+    }
+
+    /// What a launcher printed, and its exit code.
+    fn ended(child: std::process::Child) -> (String, String, Option<i32>) {
+        let output = child.wait_with_output().unwrap();
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            output.status.code(),
+        )
+    }
+
+    /// A plain `fennec run`, with the toolchain's build daemon up, is asked of the daemon by the
+    /// launcher, with the request the toolchain would send, and the launcher then becomes the
+    /// program the daemon made, with its arguments. A run the daemon stops short ends as it says.
+    #[test]
+    fn a_plain_run_asks_the_toolchains_daemon_and_becomes_the_program() {
+        let stand_in = StandIn::new("daemon");
+        let child = stand_in.launcher(&["+0.4.2", "run", "main.fen", "a", "-b"], &[]);
+        let asked =
+            stand_in.serve(&fennec_daemon::Outcome { stdout: "checked\n".into(), ..Default::default() });
+        // A script's `$0` is its own file, whatever it was called: what it's called is held where
+        // the toolchain does the same, by the CLI tests of `fennec run`.
+        let program = &asked[4];
+        assert_eq!(ended(child), (format!("checked\nprogram {program}: a -b\n"), String::new(), Some(5)));
+        let named = program.strip_prefix(&format!("{}/fennec-run-", stand_in.home.join("work").display()));
+        assert!(named.is_some_and(|rest| rest.split('-').count() == 3), "{program}");
+        let expected = [
+            "fennec 0.4.2 00112233445566778899aabbccddeeff",
+            "run",
+            stand_in.dir.to_str().unwrap(),
+            "main.fen",
+            program,
+            "tested",
+            "two streams",
+            "end",
+        ];
+        assert_eq!(asked, expected);
+
+        // `run` alone is the folder's program, as the toolchain's is.
+        let child = stand_in.launcher(&["+0.4.2", "run"], &[]);
+        let asked = stand_in.serve(&fennec_daemon::Outcome::default());
+        assert_eq!(ended(child), (format!("program {}: \n", asked[4]), String::new(), Some(5)));
+        assert_eq!(asked[3], ".");
+
+        let child = stand_in.launcher(&["+0.4.2", "run", "main.fen"], &[]);
+        let asked = stand_in.serve(&fennec_daemon::Outcome::failure("error: a test failed\n".into()));
+        assert_eq!(ended(child), (String::new(), "error: a test failed\n".to_owned(), Some(1)));
+        assert!(!Path::new(&asked[4]).exists());
+    }
+
+    /// Anything but a plain `fennec run` the launcher can ask a daemon of goes to the toolchain,
+    /// whose `fennec` says so, and the daemon is never asked: `--cpu`, `--offline`, another
+    /// command, `CI`, `FENNEC_NO_DAEMON`, `FENNEC_RUN_WAITS`, a release that doesn't say it speaks
+    /// this protocol, as its version, or no daemon.
+    #[test]
+    fn anything_else_goes_to_the_toolchain_and_the_daemon_is_never_asked() {
+        let stand_in = StandIn::new("handed");
+        stand_in.daemon.set_nonblocking(true).unwrap();
+        let handed = |args: &[&str], also: &[(&str, &str)], said: &str| {
+            let (stdout, _, code) = ended(stand_in.launcher(args, also));
+            assert_eq!((stdout.as_str(), code), (said, Some(3)), "{args:?} {also:?}");
+            let asked = stand_in.daemon.accept();
+            assert!(
+                asked.as_ref().is_err_and(|err| err.kind() == std::io::ErrorKind::WouldBlock),
+                "{asked:?}"
+            );
+        };
+        let plain = ["+0.4.2", "run", "main.fen"];
+        let toolchain = "fennec 0.4.2: run main.fen\n";
+        handed(
+            &["+0.4.2", "run", "--cpu", "baseline", "x.fen"],
+            &[],
+            "fennec 0.4.2: run --cpu baseline x.fen\n",
+        );
+        handed(
+            &["+0.4.2", "run", "x.fen", "--cpu", "baseline"],
+            &[],
+            "fennec 0.4.2: run x.fen --cpu baseline\n",
+        );
+        handed(&["+0.4.2", "run", "--no-test"], &[], "fennec 0.4.2: run --no-test\n");
+        handed(&["+0.4.2", "build"], &[], "fennec 0.4.2: build\n");
+        handed(&["--offline", "+0.4.2", "run", "main.fen"], &[], toolchain);
+        for heeded in ["CI", "FENNEC_NO_DAEMON", "FENNEC_RUN_WAITS", "FENNEC_OFFLINE"] {
+            handed(&plain, &[(heeded, "1")], toolchain);
+        }
+        let other_build = "00112233445566778899aabbccddeeff\n";
+        for other in [format!("2 0.4.2 {other_build}"), format!("1 0.4.3 {other_build}"), String::new()] {
+            std::fs::write(&stand_in.says, other).unwrap();
+            handed(&plain, &[], toolchain);
+        }
+        std::fs::write(&stand_in.says, STAND_IN.protocol_line()).unwrap();
+        // With no daemon to ask, it goes to the toolchain, which starts one.
+        std::fs::remove_file(&stand_in.socket).unwrap();
+        let (stdout, _, code) = ended(stand_in.launcher(&plain, &[]));
+        assert_eq!((stdout.as_str(), code), (toolchain, Some(3)));
+    }
+
     /// `+0.4.2` runs that version anywhere, and leaves what a kit pins alone.
     #[test]
     fn a_plus_runs_that_version_this_once_and_changes_no_pin() {
@@ -754,7 +928,8 @@ mod launcher {
     }
 
     /// A build of your own, linked as `dev`, runs for a kit asking for it, and for `+dev`, with
-    /// nothing fetched or pinned; unlinking it leaves the build where it is.
+    /// nothing fetched or pinned; unlinking it leaves the build where it is. Handed `new`, it's
+    /// told the name it's linked as, for the kit it makes to ask for.
     #[test]
     fn a_linked_build_runs_as_it_is() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -769,15 +944,21 @@ mod launcher {
         let (_, why, code) = run_in(&dir, &home, &["toolchain", "link", "dev", &build.to_string_lossy()]);
         assert_eq!(code, Some(1));
         assert!(why.contains("there's no `fennec`"), "{why}");
-        std::fs::write(build.join("fennec"), script("dev")).unwrap();
+        let says =
+            "#!/bin/sh\necho \"fennec dev: $*${FENNEC_LINKED_AS:+ (linked as $FENNEC_LINKED_AS)}\"\nexit 3\n";
+        std::fs::write(build.join("fennec"), says).unwrap();
         std::fs::set_permissions(build.join("fennec"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let fennec = build.join("fennec").to_string_lossy().into_owned();
         assert_eq!(run_in(&dir, &home, &["toolchain", "link", "dev", &fennec]).2, Some(0));
         assert_eq!(run_in(&kit, &home, &["run", "x"]).0, "fennec dev: run x\n");
         assert!(!kit.join("kit.lock").exists());
         assert_eq!(run_in(&dir, &home, &["+dev", "build"]).0, "fennec dev: build\n");
+        assert_eq!(run_in(&kit, &home, &["+dev", "new", "app"]).0, "fennec dev: new app (linked as dev)\n");
+        assert_eq!(run_in(&dir, &home, &["default", "dev"]).2, Some(0));
+        assert_eq!(run_in(&kit, &home, &["new", "app"]).0, "fennec dev: new app (linked as dev)\n");
+        assert_eq!(run_in(&dir, &home, &["run", "x"]).0, "fennec dev: run x\n");
         let listed = run_in(&dir, &home, &["toolchain", "list"]).0;
-        assert_eq!(listed, format!("dev → {}\n", build.display()));
+        assert_eq!(listed, format!("dev → {} (default)\n", build.display()));
         assert_eq!(run_in(&dir, &home, &["toolchain", "remove", "dev"]).2, Some(0));
         assert!(build.join("fennec").is_file());
         assert_eq!(run_in(&kit, &home, &["run"]).2, Some(1));

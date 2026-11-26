@@ -42,6 +42,11 @@ enum End {
     Drops,
     /// It neither closes nor reads until the server lets it go.
     Quiet,
+    /// It reads the answers its bytes get before their end and resets the connection, as `reset`
+    /// does. No input says this: it's for tests that meet a server with the same clients many
+    /// times, where clients that close their side first would each hold a port (see `reset`).
+    #[cfg(test)]
+    Resets,
 }
 
 /// One client: its bytes in the pieces it sends them in, the pause before each piece but the
@@ -148,6 +153,11 @@ fn met(port: u16, client: &Client) -> Result<(Vec<u8>, bool), String> {
             let _ = stream.shutdown(Shutdown::Write);
         }
         End::Quiet => {}
+        #[cfg(test)]
+        End::Resets => {
+            let heads = answers_before_end(&client.bytes());
+            return heard_then_reset(&mut stream, &heads).map(|said| (said, slow));
+        }
     }
     let mut said = Vec::new();
     if let Err(err) = stream.read_to_end(&mut said)
@@ -302,6 +312,12 @@ fn reset(port: u16, (first, rest): (&[u8], &[u8]), heads: &[bool]) -> Result<Vec
         std::thread::sleep(Duration::from_millis(1));
         stream.write_all(rest)
     });
+    heard_then_reset(&mut stream, heads)
+}
+
+/// What a client heard once it's heard the answers `heads` says come before its bytes' end, or once
+/// the server's closed, after which it resets the connection (see `reset`).
+fn heard_then_reset(stream: &mut TcpStream, heads: &[bool]) -> Result<Vec<u8>, String> {
     let mut said = Vec::new();
     let mut chunk = vec![0; 16 * 1024];
     // Each answer starts with a status line, so until as many have come as are wanted, there's no
@@ -326,7 +342,7 @@ fn reset(port: u16, (first, rest): (&[u8], &[u8]), heads: &[bool]) -> Result<Vec
             Err(_) => break,
         }
     }
-    socket2::SockRef::from(&stream).set_linger(Some(Duration::ZERO)).map_err(|err| err.to_string())?;
+    socket2::SockRef::from(&*stream).set_linger(Some(Duration::ZERO)).map_err(|err| err.to_string())?;
     Ok(said)
 }
 
@@ -337,10 +353,10 @@ fn reset(port: u16, (first, rest): (&[u8], &[u8]), heads: &[bool]) -> Result<Vec
 const EVERY_BYTE_UP_TO: usize = 4096;
 const FEW_SPLITS: usize = 16;
 
-/// Where `http-splits` splits an input `length` bytes long: after each of its bytes but the last,
-/// or, past `EVERY_BYTE_UP_TO`, at a few places from its start, its end and between.
-fn split_points(length: usize) -> Vec<usize> {
-    if length <= EVERY_BYTE_UP_TO {
+/// Where `length` bytes are split: after each of them but the last, or, past `every_byte_up_to`,
+/// at a few places from their start, their end and between.
+pub(crate) fn split_points(length: usize, every_byte_up_to: usize) -> Vec<usize> {
+    if length <= every_byte_up_to.max(3 * FEW_SPLITS) {
         return (1..length).collect();
     }
     let mut points: Vec<usize> = (1..=FEW_SPLITS).collect();
@@ -358,7 +374,7 @@ pub(crate) fn http_splits(input: &[u8]) -> Result<(), String> {
     let Some(executable) = crate::llvm::built_reader("http-server")? else { return Ok(()) };
     let (mut server, port) = started(&executable, None)?;
     let heads = answers_before_end(input);
-    for (nth, at) in split_points(input.len()).into_iter().enumerate() {
+    for (nth, at) in split_points(input.len(), EVERY_BYTE_UP_TO).into_iter().enumerate() {
         let (first, rest) = input.split_at(at);
         let shown = || format!("split after byte {at} of {}", input.len());
         // An input's end is the same however it's split, so the first split closes its side to
@@ -401,7 +417,8 @@ fn written(flags: u8, clients: &[(u8, &[u8])]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        End, MOST_PIECES, answers, descriptors, group_met, http_sessions, script, socket, still_held, written,
+        Client, End, MOST_PIECES, answers, descriptors, group_met, http_sessions, script, socket, still_held,
+        written,
     };
     use crate::http_rules::started;
     use crate::supervise::kilobytes;
@@ -428,7 +445,7 @@ mod tests {
         // An input cut short gives what it has.
         let short = script(&input[..5]);
         assert_eq!(short.clients.len(), 1);
-        assert_eq!(short.clients.first().map(super::Client::bytes), Some(GET[..1].to_vec()));
+        assert_eq!(short.clients.first().map(Client::bytes), Some(GET[..1].to_vec()));
     }
 
     /// Requests sent a byte at a time, halved, dropped half sent, and left unfinished by a client
@@ -481,6 +498,17 @@ mod tests {
             ],
         ))
         .clients;
+        // After the first round, the clients that close their side and read end by resetting: 240
+        // rounds of them each held a port of its own for a minute (CI's time-wait check, main at
+        // b28ce011d). A server that closes first waits on the one port it listens on.
+        let resetting: Vec<Client> = clients
+            .iter()
+            .map(|client| Client {
+                pieces: client.pieces.clone(),
+                pause: client.pause,
+                end: if client.end == End::Reads { End::Resets } else { client.end },
+            })
+            .collect();
         for threads in [1, 4] {
             let (server, port) = match started(&executable, Some(threads)) {
                 Ok(started) => started,
@@ -497,7 +525,7 @@ mod tests {
             );
             let (mut settled, mut every) = (None, None);
             for round in 0..ROUNDS {
-                for heard in group_met(port, &clients) {
+                for heard in group_met(port, if round == 0 { &clients } else { &resetting }) {
                     if let Err(wrong) = heard {
                         unreachable!("round {round} at {threads} workers: {wrong}");
                     }

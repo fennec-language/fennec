@@ -2599,6 +2599,15 @@ fn pack_writes_the_headers_docs_pack_md_pins() {
     assert_eq!(printed, wanted);
 }
 
+/// An `f32` saves as itself in JSON, `std.pack` and TOML, as the compiled program prints it in
+/// `llvm::an_f32_saves_as_itself_in_json_pack_and_toml`.
+#[test]
+fn an_f32_saves_as_itself() {
+    let (printed, ended) = ran(include_str!("../../fennec/tests/fixtures/f32_saved.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/f32_saved.out"));
+}
+
 /// A value saved with `pack.dumps` loads back with `pack.loads`, and data for another type is
 /// refused by its shape hash. What it prints is what the compiled program printed.
 #[test]
@@ -2690,7 +2699,12 @@ fn a_table_gives_each_item_an_id_that_finds_it_or_nothing() {
          Table([Unit(health=12)]) True 9\n"
     );
     let Ended::Stopped(said) = ended else { panic!("it ended {ended:?}") };
-    assert!(said.starts_with("error: this Id refers to something that's been removed\n"), "{said}");
+    assert!(
+        said.starts_with(
+            "error: this Id finds nothing in this Table: its item was taken out, or it's from another Table\n"
+        ),
+        "{said}"
+    );
 }
 
 /// Writes a kit's files into a folder of its own, and runs it.
@@ -2966,7 +2980,7 @@ fn std_math_runs_from_its_own_source() {
             return
         ",
         "Vec3(x=1.5, y=-1.5, z=3.5) Vec3(x=0.5, y=2.5, z=2.5) 1.0 Vec3(x=-2.5, y=1.0, z=1.5)\n\
-         1.0 32.0\n\
+         0.99999994 32.0\n\
          2.5 4.0 0.8414709848078965 1.2311444133449163\n\
          [3, 2, 1] 2 1.5\n",
     );
@@ -3402,6 +3416,9 @@ const OWN_FORMAT: &str = "
             def float(ref self, value: float):
                 self.parts.append(str(value))
 
+            def f32(ref self, value: f32):
+                self.parts.append(str(value))
+
             def bool(ref self, value: bool):
                 self.parts.append('yes' if value else 'no')
 
@@ -3464,13 +3481,13 @@ const OWN_FORMAT: &str = "
             def end_member(ref self):
                 pass
 
-            def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+            def table[T: Serializable](ref self, kind: str, ids: list[Id[T]], items: list[T]):
                 self.sequence(items)
 
             def exact(self) -> bool:
                 return False
 
-            def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+            def slots[T: Serializable](ref self, kind: str, tags: list[int], slots: list[int], items: list[T]):
                 # Never asked for: `exact` says no.
                 pass
 
@@ -5864,6 +5881,41 @@ fn an_optional_of_an_optional_keeps_a_none_inside_apart() {
             return
         "#,
         "False True None 8\nFalse True 1\nFalse True None missing\nFalse True\nnarrowed True None\nshown None found None found None found 3\nnothing False\n",
+    );
+}
+
+/// A `T?` that's `None`, passed to a `T??` parameter or put in a `T??` field, is held there
+/// apart from nothing, as native code holds it and as a `return` does: a `T??` never collapses
+/// into a `T?` (#2465). A `None` written out is nothing at every level, and a `T??` given to a
+/// `T??` is kept as it is. A `T??` local the checker narrows to the `T?` it was given is read as
+/// that `T?`, natively too, until the checker keeps its levels.
+#[test]
+fn a_none_put_in_an_optional_of_an_optional_is_held_apart() {
+    prints(
+        r"
+        struct Holder:
+            value: int??
+
+        def shown(value: int??) -> bool:
+            return value is None
+
+        def given_back(inner: int?) -> int??:
+            return inner
+
+        def probe(inner: int?, stdout: Stdout):
+            stdout.print(shown(inner), shown(None), shown(given_back(inner)))
+            held = Holder(value=inner)
+            stdout.print(held.value is None, (held.value else 1) is None)
+            mut box = Holder(value=None)
+            stdout.print(box.value is None)
+            box.value = inner
+            stdout.print(box.value is None)
+
+        def main(stdout: Stdout):
+            probe(None, stdout)
+            probe(3, stdout)
+        ",
+        "False True False\nFalse True\nTrue\nFalse\nFalse True False\nFalse False\nTrue\nFalse\n",
     );
 }
 

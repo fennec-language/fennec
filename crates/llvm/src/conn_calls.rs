@@ -57,7 +57,6 @@ impl Emit<'_, '_, '_> {
         } else {
             (rest, None)
         };
-        let (from, to) = self.place_in_source(span);
         match (method, given) {
             ("Connection._reads_within", [after]) if timeout.is_none() => {
                 let after = self.nanos_of(after)?;
@@ -75,6 +74,7 @@ impl Emit<'_, '_, '_> {
             }
             ("Connection._room_for_body", [size]) if timeout.is_none() => {
                 let (size, _) = self.operand(size)?;
+                let (from, to) = self.place_in_source(span);
                 self.declare("declare i64 @fennec_conn_room_for_body(i64, i64, i64, i64) nounwind");
                 let word = self.temp();
                 self.line(&format!(
@@ -86,6 +86,7 @@ impl Emit<'_, '_, '_> {
             ("Connection.write", [data]) => {
                 let timeout = self.timeout_of(timeout)?;
                 let (data, made) = self.data_block(data)?;
+                let (from, to) = self.place_in_source(span);
                 let mark = self.mark();
                 self.declare("declare i64 @fennec_conn_write(i64, i64, i64, i64, i64) nounwind");
                 let word = self.temp();
@@ -101,6 +102,7 @@ impl Emit<'_, '_, '_> {
             ("Connection._body", [size]) => {
                 let timeout = self.timeout_of(timeout)?;
                 let (size, _) = self.operand(size)?;
+                let (from, to) = self.place_in_source(span);
                 let mark = self.mark();
                 self.declare("declare i64 @fennec_conn_body(i64, i64, i64, i64, i64) nounwind");
                 let word = self.temp();
@@ -108,6 +110,13 @@ impl Emit<'_, '_, '_> {
                     "{word} = call i64 @fennec_conn_body(i64 {handle}, i64 {size}, i64 {timeout}, i64 {from}, i64 {to})"
                 ));
                 self.leave_if_failed();
+                if dest.is_none() {
+                    // A body no one takes is let go of: the word is its block whenever it isn't below 0.
+                    let (kept, body) = (self.temp(), self.temp());
+                    self.line(&format!("{kept} = icmp sge i64 {word}, 0"));
+                    self.line(&format!("{body} = inttoptr i64 {word} to ptr"));
+                    self.release_if(&kept, &body, &Kind::Bytes);
+                }
                 self.result_into(dest, &word, &mark, span, |emit, word, at, _| {
                     let body = emit.temp();
                     emit.line(&format!("{body} = inttoptr i64 {word} to ptr"));
@@ -123,6 +132,7 @@ impl Emit<'_, '_, '_> {
                 let strings = self.element_number(ListItem::Str);
                 let lines = self.place_for(&Kind::Int);
                 self.line(&format!("store i64 0, ptr {lines}"));
+                let (from, to) = self.place_in_source(span);
                 let mark = self.mark();
                 self.declare(
                     "declare i64 @fennec_conn_read_head(i64, i64, i64, i64, i64, i64, ptr, i64, i64) nounwind",
@@ -134,6 +144,13 @@ impl Emit<'_, '_, '_> {
                 ));
                 // A stop gives back 0 too, which is `Lines`, so the flag goes first.
                 self.leave_if_failed();
+                if dest.is_none() {
+                    // `Lines`' list, which only case 0 sets, is let go of when no one takes it.
+                    let (kept, list) = (self.temp(), self.temp());
+                    self.line(&format!("{kept} = icmp eq i64 {word}, 0"));
+                    self.line(&format!("{list} = load ptr, ptr {lines}"));
+                    self.release_if(&kept, &list, &Kind::List(ListItem::Str));
+                }
                 self.result_into(dest, &word, &mark, span, |emit, word, at, head| {
                     emit.head_at(word, at, head, &lines)
                 })?;
@@ -141,6 +158,16 @@ impl Emit<'_, '_, '_> {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// Lets go of `block`, a `kind`, when `kept` holds.
+    fn release_if(&mut self, kept: &str, block: &str, kind: &Kind) {
+        let (release, after) = (self.label("conn_drop"), self.label("conn_dropped"));
+        self.line(&format!("br i1 {kept}, label %{release}, label %{after}"));
+        self.start_block(&release);
+        self.release_block(block, kind);
+        self.line(&format!("br label %{after}"));
+        self.start_block(&after);
     }
 
     /// The nanoseconds of a `Duration`.

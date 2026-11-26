@@ -1,0 +1,25 @@
+# As p4, reading a copy of the list held in a local, which no check covers: what the loop costs
+# with a check at each read and none before it.
+def sums(starts: list[int], order: list[int], rounds: int) -> int:
+    mut total = 0
+    mut cell = 0
+    mut round = 0
+    mut read = order
+    read.append(0)
+    while round < rounds:
+        for at in range(starts[cell], starts[cell + 1]):
+            total += read[at] % 3
+        cell += 1
+        if cell == len(starts) - 1:
+            cell = 0
+            round += 1
+    return total
+
+def main(stdout: Stdout):
+    mut starts = list[int]()
+    mut order = list[int]()
+    for cell in range(60):
+        starts.append(cell)
+        order.append(cell)
+    starts.append(60)
+    stdout.print(sums(starts, order=order, rounds=20000))

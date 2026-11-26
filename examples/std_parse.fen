@@ -54,10 +54,6 @@ test "math.NAN is a NaN, equal to itself, and INFINITY is bigger than any other 
     assert -math.INFINITY < -1.7976931348623157e308
     assert math.INFINITY - math.INFINITY != 0.0
 
-test "int(text) and float(text) still read as they did"():
-    assert int("42")? == int.parse("42")?
-    assert float("1.5")? == float.parse("1.5")?
-
 def main(stdout: Stdout):
     parse_value = int.parse("42") except InvalidValue(): 0
     parse_value2 = float.parse("2.5") except InvalidValue(): 0.0

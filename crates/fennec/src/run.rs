@@ -65,16 +65,18 @@ pub(crate) fn run_logged(
 /// if `tested`, and shows the lint errors it has. Or else how the command ends, once it's said why:
 /// a test failed, or the program doesn't check or can't be built.
 pub(crate) fn prepared(path: &str, tested: bool, executable: &std::path::Path) -> Result<(), ExitCode> {
+    // In the build daemon, the kit's files are looked at once, here, for what it holds of them.
+    crate::held::begin(path);
     if tested && let Some(failed) = crate::test::before_a_run(path) {
         return Err(failed);
     }
     // What the linter finds doesn't stop a run, so iteration stays fast, but it's shown first, on
     // standard error. It's found while the program is built, which takes as long or longer.
     crate::lint::find_errors_beside(path);
-    let (program, checked, kept) = reached(path).inspect_err(|_| crate::lint::show_errors_found())?;
+    let (program, kept) = reached(path).inspect_err(|_| crate::lint::show_errors_found())?;
     // What LLVM can't take yet, or a tool or library that isn't there, is said as `fennec build`
     // says it.
-    match built((program, checked, kept.as_deref()), path, executable) {
+    match built((program, kept.as_deref()), path, executable) {
         Ok(None) => {
             crate::lint::show_errors_found();
             Ok(())
@@ -88,20 +90,20 @@ pub(crate) fn prepared(path: &str, tested: bool, executable: &std::path::Path) -
     }
 }
 
-/// What a run knows of its program's check.
-enum Checked {
-    /// Checked and resolved for a build, with what the check found, when that's known.
-    Resolved(Option<Box<fennec_check::Signatures>>),
-    /// A kept image, the program as it was checked when it was kept: its files are the ones it was
-    /// kept from, so it checks the same. It's checked again, which resolves it, only if it has to
-    /// be built.
-    Kept,
+/// The program a run starts from.
+enum Reached {
+    /// Loaded, checked and resolved for a build, with what the check found, when that's known.
+    Loaded(Box<fennec_kit::Program>, Option<Box<fennec_check::Signatures>>),
+    /// A kept image, by the hash it was written with: the program as it was checked when it was
+    /// kept, from the files it was kept from, so it checks the same. It's read, decoded and
+    /// checked again, which resolves it, only if it has to be built.
+    Kept(fennec_blake3::Hash),
 }
 
 /// Builds the program to `executable` through LLVM's cached dev build. Some code when it's to stop
 /// instead, having said why.
 fn built(
-    (mut program, checked, kept): (fennec_kit::Program, Checked, Option<&str>),
+    (reached, kept): (Reached, Option<&str>),
     path: &str,
     executable: &std::path::Path,
 ) -> Result<Option<ExitCode>, String> {
@@ -109,46 +111,44 @@ fn built(
     // A program the same as a run before had, kept as an image, starts from what that run built,
     // with nothing lowered or compiled to find it again: never one built before the build daemon
     // last found an analysis it kept wrong (`kept::analyses_found_wrong`).
-    let started_from = kept.zip(cache()).map(|(kept, cache)| {
-        let name = format!(
-            "{}.root",
-            fennec_blake3::hash(
-                format!(
-                    "{kept} {} {} {}",
-                    env!("FENNEC_BUILD"),
-                    crate::aot::dev_build_settings(),
-                    crate::kept::analyses_found_wrong()
-                )
-                .as_bytes()
-            )
-            .to_hex()
-        );
-        (cache, name)
-    });
+    let mut started_from = kept.zip(cache()).map(|(kept, cache)| (cache, root_name(kept)));
     // A count of analyses found wrong that can't be read names nothing that can be trusted.
     let trusted = crate::kept::analyses_found_wrong() != u64::MAX;
     let ready = trusted
         && started_from.as_ref().is_some_and(|(cache, name)| {
-            cache
-                .read(RUN_ROOTS, name)
-                .and_then(|root| String::from_utf8(root).ok())
-                .is_some_and(|root| crate::aot::stored_executable(cache, &root, executable).is_some())
+            // The build daemon holds it with the image, or it's read from where it was noted.
+            let root = crate::held::root(path, name)
+                .or_else(|| cache.read(RUN_ROOTS, name).and_then(|root| String::from_utf8(root).ok()));
+            root.is_some_and(|root| {
+                let stored = crate::aot::stored_executable(cache, &root, executable).is_some();
+                if stored {
+                    crate::held::note_root(path, name, &root);
+                }
+                stored
+            })
         });
     if !ready {
-        let checked = match checked {
-            Checked::Resolved(signatures) => signatures.map(|signatures| *signatures),
-            Checked::Kept => match fennec_check::check_to_build(&mut program.module) {
-                Ok(signatures) => signatures,
-                // A kept image that doesn't check as it did is passed over for the files.
-                Err(_) => match cache().map(|cache| loaded(path, &cache)) {
-                    Some(Ok((loaded, Checked::Resolved(signatures), _))) => {
-                        program = loaded;
-                        signatures.map(|signatures| *signatures)
-                    }
-                    Some(Err(code)) => return Ok(Some(code)),
-                    _ => return Err("its kept image couldn't be checked again".to_owned()),
-                },
-            },
+        let (program, checked) = match reached {
+            Reached::Loaded(program, signatures) => (*program, signatures.map(|signatures| *signatures)),
+            Reached::Kept(image) => {
+                let read = cache().and_then(|cache| crate::image::program(path, &cache, image));
+                let checked =
+                    read.map(|mut program| (fennec_check::check_to_build(&mut program.module), program));
+                match checked {
+                    Some((Ok(signatures), program)) => (program, signatures),
+                    // A kept image that's gone, changed or doesn't check as it did is passed over
+                    // for the files, kept again as they're loaded, and what's built is noted for
+                    // that image.
+                    _ => match cache().map(|cache| loaded(path, &cache)) {
+                        Some(Ok((Reached::Loaded(program, signatures), kept))) => {
+                            started_from = kept.zip(cache()).map(|(kept, cache)| (cache, root_name(&kept)));
+                            (*program, signatures.map(|signatures| *signatures))
+                        }
+                        Some(Err(code)) => return Ok(Some(code)),
+                        _ => return Err("its kept image couldn't be checked again".to_owned()),
+                    },
+                }
+            }
         };
         let built = build_for_run((&program, checked), path, executable)?;
         if let (Some((cache, name)), Some(root)) = (&started_from, &built.root) {
@@ -157,9 +157,23 @@ fn built(
                 "keep which program a run built",
                 cache.write(RUN_ROOTS, name, root.as_bytes()),
             );
+            crate::held::note_root(path, name, root);
         }
     }
     Ok(None)
+}
+
+/// The name the root of what a kept image built is kept by, in `RUN_ROOTS`: the image, as
+/// `image::kept` hashes it, and this build of Fennec, its settings, and how many analyses the build
+/// daemon found wrong.
+fn root_name(kept: &str) -> String {
+    let named = format!(
+        "{kept} {} {} {}",
+        env!("FENNEC_BUILD"),
+        crate::aot::dev_build_settings(),
+        crate::kept::analyses_found_wrong()
+    );
+    format!("{}.root", fennec_blake3::hash(named.as_bytes()).to_hex())
 }
 
 /// Where the root of what a kept image built is kept, by the image and what else the build read.
@@ -220,7 +234,7 @@ fn started(
     if std::env::var_os("FENNEC_RUN_WAITS").is_none() {
         use std::io::Write as _;
         use std::os::unix::process::CommandExt as _;
-        sweep_now_and_then(executable);
+        fennec_daemon::sweep_now_and_then(executable);
         let _ = std::io::stdout().flush();
         let _ = std::io::stderr().flush();
         let failed = command.exec();
@@ -313,67 +327,6 @@ fn exception_name(code: u32) -> &'static str {
     }
 }
 
-/// How old what an earlier `fennec run` built has to be before a run sweeps it up: far longer than
-/// a run takes from building its program to starting it, so another run's is never taken from it
-/// in between. One still running can go: on Unix a running program keeps its file until it ends.
-#[cfg(unix)]
-const SWEPT_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
-
-/// How long after one sweep the next waits: a sweep looks at every file beside the program, which
-/// costs each run about 50 thousand instructions a file, and an agent running a program in a loop,
-/// or a machine running many tests, leaves a thousand there. Each run then only looks at when the
-/// last sweep was, and a file is never left there much past `SWEPT_AFTER`.
-#[cfg(unix)]
-const SWEPT_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// The file whose time says when the last sweep was, beside the programs runs built. It isn't a
-/// `fennec-run-` file, so no sweep takes it.
-#[cfg(unix)]
-const LAST_SWEPT: &str = "fennec-swept";
-
-/// Sweeps what earlier runs built, beside `executable`, unless that was done in the last
-/// `SWEPT_EVERY`.
-#[cfg(unix)]
-fn sweep_now_and_then(executable: &std::path::Path) {
-    let Some(folder) = executable.parent() else { return };
-    let marker = folder.join(LAST_SWEPT);
-    let recent = std::fs::metadata(&marker)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|swept| swept.elapsed().ok())
-        .is_some_and(|since| since < SWEPT_EVERY);
-    if recent {
-        return;
-    }
-    // Noted before sweeping, so runs that start meanwhile leave it to this one. A marker that
-    // can't be written only means the next run sweeps too.
-    let _ = std::fs::write(&marker, b"");
-    sweep_old_runs(executable);
-}
-
-/// Removes what earlier runs built and started, beside `executable`, once they're old enough.
-#[cfg(unix)]
-fn sweep_old_runs(executable: &std::path::Path) {
-    let Some(folder) = executable.parent() else { return };
-    let Ok(entries) = std::fs::read_dir(folder) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let ours = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("fennec-run-"));
-        let old = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > SWEPT_AFTER);
-        if ours && old && path != executable {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-}
-
 /// Loads and checks all of a program.
 fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
@@ -390,25 +343,22 @@ fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), 
 /// its text changes; the cache remembers the text that passed. The cut-down program is what
 /// always runs, so its machine code is reused from the very first run.
 /// With the program, the signatures a build of it would work out, when its check gave them.
-fn reached(path: &str) -> Result<(fennec_kit::Program, Checked, Option<String>), ExitCode> {
+fn reached(path: &str) -> Result<(Reached, Option<String>), ExitCode> {
     let Some(cache) = cache() else {
-        return whole(path).map(|(program, _)| (program, Checked::Resolved(None), None));
+        return whole(path).map(|(program, _)| (Reached::Loaded(Box::new(program), None), None));
     };
-    // A kept image is checked again only when the run has to build it: a program the store has,
-    // by a key that holds the image's own, needs nothing more from it.
-    if let Some((program, kept)) = crate::image::load(path, &cache) {
+    // A kept image is read and checked again only when the run has to build it: a program the
+    // store has, by a key that holds the image's own, needs nothing more from it.
+    if let Some((image, kept)) = crate::image::kept(path, &cache) {
         crate::lint::lend_loaded(None, path);
-        return Ok((program, Checked::Kept, Some(kept)));
+        return Ok((Reached::Kept(image), Some(kept)));
     }
     loaded(path, &cache)
 }
 
 /// The program at `path` loaded from its files, checked when its text is new, cut down to what
 /// `main` reaches and kept as an image.
-fn loaded(
-    path: &str,
-    cache: &fennec_build::Cache,
-) -> Result<(fennec_kit::Program, Checked, Option<String>), ExitCode> {
+fn loaded(path: &str, cache: &fennec_build::Cache) -> Result<(Reached, Option<String>), ExitCode> {
     let cache = cache.clone();
     let files = crate::image::files_now(path, &cache);
     let loaded = crate::load(path, fennec_kit::Entry::Main).map(std::sync::Arc::new);
@@ -461,9 +411,9 @@ fn loaded(
         None
     };
     match fennec_check::check_to_build(&mut program.module) {
-        Ok(signatures) => Ok((program, Checked::Resolved(signatures.map(Box::new)), kept)),
+        Ok(signatures) => Ok((Reached::Loaded(Box::new(program), signatures.map(Box::new)), kept)),
         // Cutting it down missed something the whole program has.
-        Err(_) => whole(path).map(|(program, _)| (program, Checked::Resolved(None), None)),
+        Err(_) => whole(path).map(|(program, _)| (Reached::Loaded(Box::new(program), None), None)),
     }
 }
 
@@ -610,44 +560,14 @@ mod tests {
         // own, sweeps.
         let second = work.join("fennec-run-2-b-0");
         assert!(cache.link_out("programs", "root", &second).unwrap());
-        super::sweep_old_runs(&work.join("fennec-run-3-c-0"));
+        fennec_daemon::sweep_old_runs(&work.join("fennec-run-3-c-0"));
         assert!(second.exists(), "the sweep took a program about to start");
         // One an earlier run started long ago goes.
         let old = work.join("fennec-run-4-d-0");
         std::fs::write(&old, b"another program").unwrap();
         std::fs::File::open(&old).unwrap().set_modified(hours_ago).unwrap();
-        super::sweep_old_runs(&work.join("fennec-run-3-c-0"));
+        fennec_daemon::sweep_old_runs(&work.join("fennec-run-3-c-0"));
         assert!(!old.exists() && second.exists());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// A run sweeps only when the last sweep was a while ago, so with a thousand programs left
-    /// beside it, it looks at one file, not a thousand; once it's a while, it sweeps them all.
-    #[test]
-    fn a_run_sweeps_only_now_and_then() {
-        let dir =
-            fennec_temp::Temp::at(std::env::temp_dir().join(format!("fennec-sweeps-{}", std::process::id())));
-        let _ = std::fs::remove_dir_all(&dir);
-        let work = dir.join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        let hours_ago = SystemTime::now() - Duration::from_hours(4);
-        let old = |name: &str| {
-            let path = work.join(name);
-            std::fs::write(&path, b"a program").unwrap();
-            std::fs::File::open(&path).unwrap().set_modified(hours_ago).unwrap();
-            path
-        };
-        let first = old("fennec-run-1-a-0");
-        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
-        assert!(!first.exists(), "the first run sweeps");
-        let second = old("fennec-run-2-b-0");
-        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
-        assert!(second.exists(), "a run just after one that swept doesn't");
-        let marker = work.join(super::LAST_SWEPT);
-        let a_while_ago = SystemTime::now() - super::SWEPT_EVERY - Duration::from_secs(1);
-        std::fs::File::options().write(true).open(&marker).unwrap().set_modified(a_while_ago).unwrap();
-        super::sweep_now_and_then(&work.join("fennec-run-9-z-0"));
-        assert!(!second.exists() && marker.exists(), "a run a while after one that swept does");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

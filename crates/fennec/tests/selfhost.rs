@@ -89,12 +89,12 @@ const PARSE_CASES: &[(&str, &str)] = &[
     ("lend", "def f(a: int) -> with int:\n    lend a + 1 except:\n        pass\n    lend f\"{a}\"\n"),
     (
         "except",
-        "def f(t: str) -> int:\n    a = g(t) except why:\n        return 0\n    b = g(t) except why:\n        case .Gone(at):\n            at\n        case _:\n            fail why\n    c = int(t) except InvalidValue(): 8080\n    d = g(t) except .Gone(): return 1\n    h(t) except why:\n        log(why)\n    return a + b + c + d\n",
+        "def f(t: str) -> int:\n    a = g(t) except why:\n        return 0\n    b = g(t) except why:\n        case .Gone(at):\n            at\n        case _:\n            fail why\n    c = int.parse(t) except InvalidValue(): 8080\n    d = g(t) except .Gone(): return 1\n    h(t) except why:\n        log(why)\n    return a + b + c + d\n",
     ),
     ("lend_except", "def f(a: int) -> with int:\n    lend a except:\n        pass\n"),
     (
         "except_case_block",
-        "def f(t: str) -> int:\n    c = int(t) except InvalidValue():\n        log(t)\n        return 0\n    return c\n",
+        "def f(t: str) -> int:\n    c = int.parse(t) except InvalidValue():\n        log(t)\n        return 0\n    return c\n",
     ),
     ("bare_except", "def f():\n    g() except:\n        pass\n"),
     ("except_first", "def f():\n    except why:\n        pass\n"),
@@ -267,15 +267,15 @@ test \"any list\" for items: list[int], n: int:
     ("fails_only_in_assert", "def f():\n    if load(\"bad\") fails Oops():\n        pass\n"),
     (
         "one_line_if_in_a_fallback",
-        "def port(text: str, given: bool) -> int:\n    int(text) else 80 if given else 8080\n",
+        "def port(text: str, given: bool) -> int:\n    int.parse(text) else 80 if given else 8080\n",
     ),
     (
         "fallback_in_a_one_line_if",
-        "def port(text: str, given: bool) -> int:\n    8080 if not given else int(text) else 80\n",
+        "def port(text: str, given: bool) -> int:\n    8080 if not given else int.parse(text) else 80\n",
     ),
     (
         "one_line_if_and_fallback_apart",
-        "def port(text: str, given: bool) -> int:\n    int_value = int(text) except InvalidValue(): 80\n    return (int_value) if given else (8080 else 1)\n",
+        "def port(text: str, given: bool) -> int:\n    int_value = int.parse(text) except InvalidValue(): 80\n    return (int_value) if given else (8080 else 1)\n",
     ),
     ("local_ref", "def main():\n    mut units = [1, 2]\n    ref first = units[0]\n    first += 1\n"),
     ("local_ref_without_a_name", "def main():\n    ref units[0] = 1\n"),

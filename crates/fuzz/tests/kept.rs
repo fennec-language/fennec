@@ -4,6 +4,23 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+/// The short run of every target builds and runs programs for minutes, and so do most tests here.
+/// The others run beside each other, but never beside it. On CI's Windows runners, with four
+/// cores, this binary took 940 s with them all at once, where the short run takes about 200 s
+/// alone.
+static SHORT_RUN: RwLock<()> = RwLock::new(());
+
+/// Held by the short run, alone.
+fn alone() -> RwLockWriteGuard<'static, ()> {
+    SHORT_RUN.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Held by every other test, beside each other.
+fn beside_others() -> RwLockReadGuard<'static, ()> {
+    SHORT_RUN.read().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Whether a file beside the inputs is an output pinned for one.
 fn pinned_output(path: &Path) -> bool {
@@ -35,6 +52,7 @@ fn ended(output: &std::process::Output) -> String {
 
 #[test]
 fn every_kept_input_runs_clean() {
+    let _beside = beside_others();
     let found = Path::new(env!("CARGO_MANIFEST_DIR")).join("found");
     for folder in std::fs::read_dir(found).unwrap() {
         let folder = folder.unwrap().path();
@@ -64,6 +82,7 @@ fn every_kept_input_runs_clean() {
 /// limit, and an input counts as stuck only after two minutes of CPU time, far more than any takes.
 #[test]
 fn a_short_run_of_every_target_finds_nothing() {
+    let _alone = alone();
     let dir = std::env::temp_dir().join(format!("fennec-fuzz-short-{}", std::process::id()));
     let output = fuzz()
         .args(["run", "--seed", "1", "--inputs", "100", "--stuck", "120", "--found"])
@@ -88,6 +107,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         "toml-rules",
         "http-client",
         "http-client-scripts",
+        "http-client-splits",
         "http-server",
         "http-sessions",
         "http-splits",
@@ -109,6 +129,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         "html",
         "http-client",
         "http-client-scripts",
+        "http-client-splits",
         "http-server",
         "http-sessions",
         "http-splits",
@@ -125,8 +146,8 @@ fn a_short_run_of_every_target_finds_nothing() {
         "utf8",
     ];
     let left_out = printed.contains(
-        "base64, csv, html, http-client, http-client-scripts, http-server, http-sessions, http-splits, json, json-rules, \
-         numbers, pack, postgres, router, time, toml, toml-rules, url, utf8: left out",
+        "base64, csv, html, http-client, http-client-scripts, http-client-splits, http-server, http-sessions, http-splits, \
+         json, json-rules, numbers, pack, postgres, router, time, toml, toml-rules, url, utf8: left out",
     );
     for target in targets {
         if left_out && native.contains(&target) {
@@ -148,6 +169,7 @@ fn a_short_run_of_every_target_finds_nothing() {
 /// Where nothing can be built natively, each passes without running.
 #[test]
 fn large_hostile_inputs_run_clean() {
+    let _beside = beside_others();
     // A packed `list[int]`'s header, up to where the count of its items starts, from its seed.
     let ints = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds/pack/ints.bin")).unwrap();
     let inputs = [large_data(ints.get(..16).unwrap_or_default()), large_messages(), large_text()].concat();
@@ -173,6 +195,7 @@ fn large_hostile_inputs_run_clean() {
 /// one, gets what the whole of it gets.
 #[test]
 fn every_http_seed_and_kept_input_is_heard_the_same_split_anywhere() {
+    let _beside = beside_others();
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     for folder in [here.join("seeds/http"), here.join("found/http-server")] {
@@ -203,6 +226,32 @@ fn every_http_seed_and_kept_input_is_heard_the_same_split_anywhere() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every script the `http-client-scripts` target starts from or has kept is read the same with each
+/// server's answer split at every byte (`http-client-splits`): a status line, a header, a length, a
+/// chunk or a body cut across two reads gets what the whole of it gets.
+#[test]
+fn every_client_seed_and_kept_input_reads_the_same_split_anywhere() {
+    let _beside = beside_others();
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for folder in [here.join("seeds/http-client-scripts"), here.join("found/http-client-scripts")] {
+        for input in std::fs::read_dir(&folder).unwrap() {
+            let input = input.unwrap().path();
+            if pinned_output(&input) {
+                continue;
+            }
+            let output = fuzz().args(["one", "http-client-splits"]).arg(&input).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}: {}\n{}{}",
+                input.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
 }
 
 /// Large inputs for the readers of data: JSON, TOML, `std.pack` after the `header` of a packed
@@ -350,6 +399,7 @@ fn large_text() -> Vec<(&'static str, &'static str, Vec<u8>)> {
 /// where LLVM's tools are here.
 #[test]
 fn every_program_to_start_from_prints_what_is_pinned() {
+    let _beside = beside_others();
     let seeds = Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds/llvm");
     for input in std::fs::read_dir(seeds).unwrap() {
         let input = input.unwrap().path();
@@ -373,6 +423,7 @@ fn every_program_to_start_from_prints_what_is_pinned() {
 /// and on Windows, which has no signals, with the exit code `TerminateProcess` gives it, 1.
 #[test]
 fn a_run_stopped_from_outside_says_where() {
+    let _beside = beside_others();
     let mut child = fuzz()
         .args(["run", "--seed", "1", "--inputs", "300", "lexer"])
         .stdout(Stdio::piped())
@@ -400,6 +451,7 @@ fn a_run_stopped_from_outside_says_where() {
 
 #[test]
 fn a_target_that_isnt_there_is_an_error() {
+    let _beside = beside_others();
     let output = fuzz().args(["run", "no such target"]).output().unwrap();
     assert_eq!(output.status.code(), Some(2));
 }

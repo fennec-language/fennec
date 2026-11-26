@@ -679,7 +679,8 @@ impl FnCx<'_> {
             (_, Some((_, function))) => function.named,
             _ => &[],
         };
-        let plain = self.builtin_args(name, args, named, (&[], std::slice::from_ref(&item)), span);
+        let sized = self.sized_among(name, args);
+        let plain = self.builtin_args(name, args, named, (&sized, std::slice::from_ref(&item)), span);
         let (low, high) = match stdlib::function(name) {
             Some((_, function)) => function.arity,
             None => BUILTINS
@@ -711,6 +712,27 @@ impl FnCx<'_> {
             self.needs_order(name, &result, span);
         }
         result
+    }
+
+    /// For `min` and `max` of two or more values, the sized number one of them is, given for
+    /// each, so a number literal among them takes that size: `max(speed, 0.0)` for an `f32`
+    /// `speed`. Nothing for any other builtin.
+    fn sized_among(&mut self, name: &str, args: &[Arg]) -> Vec<Type> {
+        let plain: Vec<&Arg> = args.iter().filter(|arg| arg.name.is_none()).collect();
+        if !matches!(name, "min" | "max") || plain.len() < 2 {
+            return Vec::new();
+        }
+        let mut sized = None;
+        for arg in &plain {
+            if !crate::expect::number_literal(&arg.value) {
+                let ty = self.peek_type(&arg.value);
+                if let ty @ Type::Sized(_) = self.checker.settled(&ty) {
+                    sized = Some(ty);
+                    break;
+                }
+            }
+        }
+        sized.map_or_else(Vec::new, |ty| vec![ty; plain.len()])
     }
 
     /// A number written out, or one negated, given to `u8(...)` and the like, which has to fit.
@@ -797,36 +819,55 @@ impl FnCx<'_> {
                 Type::Bytes
             }
             name if let Some(num) = crate::types::Num::named(name) => self.sized_conversion(num, &first, at),
-            "int" | "float" | "i64" | "f64" => {
-                // `i64` is `int` and `f64` is `float`, so they're their conversions, and what's built
-                // from them is written as theirs.
-                let plain = if matches!(name, "int" | "i64") { "int" } else { "float" };
-                if plain != name {
-                    self.checker.std_calls.insert((span.start, span.end), plain.to_owned());
-                }
-                if !matches!(
-                    first,
-                    Type::Sized(_) | Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown
-                ) {
-                    let message = format!("`{name}` converts a number or text, not {}", a(&first));
-                    let help = match self.checker.settled(&first) {
-                        Type::List(_) | Type::Set(_) => {
-                            format!("convert each item, as `[{name}(item) for item in items]`")
-                        }
-                        _ => format!("pass a number or text, as `{name}(\"42\")`"),
-                    };
-                    self.error(Diagnostic::new(message, at).with_help(help));
-                }
-                let number = if plain == "int" { Type::Int } else { Type::Float };
-                // Text might not be a number, so reading one can fail.
-                if self.checker.settled(&first) == Type::Str {
-                    return Type::result(number, Type::named("InvalidValue"));
-                }
-                number
-            }
+            "int" | "float" | "i64" | "f64" => self.number_conversion(name, &first, span, at),
             "round" => self.math(name, &types, span),
             _ => self.collection_builtin(name, plain, span),
         }
+    }
+
+    /// `int(x)` or `float(x)`, `i64` and `f64` among them: a number of another kind as this one.
+    /// Text isn't converted: it's read with `.parse`, which can fail.
+    fn number_conversion(&mut self, name: &str, first: &Type, span: Span, at: Span) -> Type {
+        // `i64` is `int` and `f64` is `float`, so they're their conversions, and what's built
+        // from them is written as theirs.
+        let plain = if matches!(name, "int" | "i64") { "int" } else { "float" };
+        if plain != name {
+            self.checker.std_calls.insert((span.start, span.end), plain.to_owned());
+        }
+        if !matches!(
+            *first,
+            Type::Sized(_) | Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown
+        ) {
+            let message = format!("`{name}` converts a number, not {}", a(first));
+            let help = match self.checker.settled(first) {
+                Type::List(item) | Type::Set(item) if *item == Type::Str => {
+                    format!("read each item with `.parse`, as `[{plain}.parse(item)? for item in items]`")
+                }
+                Type::List(_) | Type::Set(_) => {
+                    format!("convert each item, as `[{name}(item) for item in items]`")
+                }
+                _ => format!("pass a number, as `{name}(2.5)`, or read text with `{plain}.parse(text)`"),
+            };
+            self.error(Diagnostic::new(message, at).with_help(help));
+        }
+        let number = if plain == "int" { Type::Int } else { Type::Float };
+        // Text is read as a number with `.parse`, which can fail: a conversion never does.
+        // std's own `parse` is written over this, so std's code may.
+        if self.checker.settled(first) == Type::Str {
+            if !span.in_prelude() && !crate::lend_lowering::not_written_by_hand(span) {
+                let message = format!(
+                    "`{name}(...)` converts a number, and never fails: text is read with `{plain}.parse(text)`, which can"
+                );
+                let named =
+                    Span { start: span.start, end: span.start + u32::try_from(name.len()).unwrap_or(0) };
+                let help = format!("write `{plain}.parse(...)`, keeping the `?` or `except` after it");
+                self.error(
+                    Diagnostic::new(message, at).with_help(help).with_fix(named, format!("{plain}.parse")),
+                );
+            }
+            return Type::result(number, Type::named("InvalidValue"));
+        }
+        number
     }
 
     /// `f32(x)`, the `f32` nearest a number, or `u8(x)`, an integer of another size as this one,
@@ -1099,7 +1140,8 @@ fn cased_param<'p>(arg: &Arg, params: &'p [Type], position: &mut usize) -> Optio
     }
     *position += 1;
     let cased = crate::expect::leading_dot(&arg.value) || crate::expect::written_with_cases(&arg.value);
-    params.get(*position - 1).filter(|_| cased)
+    let sized = |param: &&Type| matches!(param, Type::Sized(_)) && crate::expect::number_literal(&arg.value);
+    params.get(*position - 1).filter(|param| cased || sized(param))
 }
 
 #[cfg(test)]

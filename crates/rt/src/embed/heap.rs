@@ -286,6 +286,24 @@ pub(super) fn shared_static(address: u64) -> bool {
     usize::try_from(address).is_ok_and(|at| shared_block(at).is_some())
 }
 
+/// The process's blocks of bytes written into the program, by their addresses: each made once, by
+/// whichever thread reached it first, and read by every thread after (`bytes::embedded`). They're
+/// in no thread's table, so no thread counts or audits them, and which thread made one shows
+/// nowhere.
+static EMBEDDED: std::sync::RwLock<HashMap<usize, &'static [u64], BuildHasherDefault<AddressHasher>>> =
+    std::sync::RwLock::new(HashMap::with_hasher(BuildHasherDefault::new()));
+
+/// Makes a block of embedded bytes, filled in, one every thread can read.
+pub(super) fn add_embedded(block: &'static [u64]) {
+    let mut embedded = EMBEDDED.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    embedded.insert(block.as_ptr().addr(), block);
+}
+
+/// The block of embedded bytes at `at`, if it's one.
+fn embedded_block(at: usize) -> Option<&'static [u64]> {
+    EMBEDDED.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(&at).copied()
+}
+
 /// `fennec_constant_kept(block)`: a constant's value, worked out once, lives for the whole run, and
 /// so does every block it holds. Marked so, a task on another thread can read it, and nothing frees
 /// or changes it in place.
@@ -774,6 +792,14 @@ fn zero(block: &mut [u64]) {
 /// Zeroes a block of `N` words, if it is that long.
 fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
     <&mut [u64; N]>::try_from(block).map(|words| *words = [0; N]).is_ok()
+}
+
+/// What [`Heap::take_plain_list`] took: a block that holds nothing, or a list of strings' headers
+/// whose strings may hold blocks, for the caller to let go of.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Taken {
+    Plain,
+    Texts,
 }
 
 /// Whether every item of a list of strings' headers is inline, holding its text in itself: then
@@ -1422,6 +1448,7 @@ impl Heap {
             .or_else(|| self.reading.iter().rev().find_map(|table| table.get(at)))
             .or_else(|| self.lent.as_ref()?.get(at))
             .or_else(|| shared_block(at))
+            .or_else(|| embedded_block(at))
     }
 
     /// Makes a `shared` value's table the current one, with what's made in it owned as `owner_bits`
@@ -1496,14 +1523,19 @@ impl Heap {
     /// Takes a list out of this thread's own table, not one behind it, if its items hold nothing and
     /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
     /// `None`, having taken nothing, for any other block.
+    ///
+    /// A list of strings' headers is taken too when `texts_here`, which says this thread counts
+    /// every block it can reach, whatever its strings hold: what they hold are strings, which
+    /// hold nothing, and the caller lets go of them (`Taken::Texts`).
     pub(super) fn take_plain_list(
         &mut self,
         at: usize,
-        first_list: u64,
-        str_shape: u64,
-    ) -> Option<Box<[u64]>> {
+        (first_list, str_shape): (u64, u64),
+        texts_here: bool,
+    ) -> Option<(Box<[u64]>, Taken)> {
         let (empty_items, text_items) = (&self.empty_items, &self.text_items);
-        self.blocks.take_if(at, |block| {
+        let mut taken = Taken::Plain;
+        let block = self.blocks.take_if(at, |block| {
             // A string, which holds no other block, or a list of a kind whose items hold nothing,
             // or one with no items at all, as a list made empty and never added to is, or one of
             // strings' headers all inline, as a `split` into short parts makes. Only a kind of
@@ -1516,12 +1548,23 @@ impl Heap {
                             .checked_sub(first_list)
                             .and_then(|number| usize::try_from(number).ok())
                             .is_some_and(|number| {
-                                empty_items.get(number).is_some_and(|empty| *empty)
+                                if empty_items.get(number).is_some_and(|empty| *empty)
                                     || block.get(2) == Some(&0)
-                                    || (text_items.get(number).is_some_and(|text| *text) && all_inline(block))
+                                {
+                                    return true;
+                                }
+                                if !text_items.get(number).is_some_and(|text| *text) {
+                                    return false;
+                                }
+                                if texts_here {
+                                    taken = Taken::Texts;
+                                    return true;
+                                }
+                                all_inline(block)
                             })
                 })
-        })
+        })?;
+        Some((block, taken))
     }
 
     /// Takes a block out of the current table or one behind it.
@@ -2015,6 +2058,21 @@ fn children(state: &State, block: &[u64]) -> Vec<u64> {
 /// again, so an `Id` from another `Table` finds nothing.
 pub extern "C" fn new_tag() -> i64 {
     crate::value::new_tag().cast_signed()
+}
+
+/// `fennec_tag_run()`: where this thread's run of tags is, two `u64`s, the next tag and where the run
+/// ends, both 0 at first, at one place for the thread's life. Native code hands out `next` with a
+/// plain add, and takes a new run from `fennec_tag_count`'s count with one atomic add when `next`
+/// reaches `end`. The runtime never touches them.
+pub extern "C" fn tag_run() -> i64 {
+    i64::try_from(crate::value::tag_run()).unwrap_or(0)
+}
+
+/// `fennec_tag_count()`: where the count `fennec_new_tag` takes from is, a `u64` every thread adds
+/// to, for native code to take a tag with `atomicrmw add ... 1 monotonic` and no call. The old value
+/// is the tag. It never moves while the run goes on.
+pub extern "C" fn tag_count() -> i64 {
+    i64::try_from(crate::value::tag_count()).unwrap_or(0)
 }
 
 /// A new block of a shape, owned once, its fields zero.
@@ -2527,24 +2585,40 @@ fn same_here(state: &State, a: u64, b: u64, later: &mut Vec<(u64, u64)>) -> bool
     if let Element::Struct { name, fields } = shape.as_ref()
         && named::is_id_map(name)
     {
-        return same_tables(fields, left, right, later);
+        return same_tables(state, fields, (left, right), later);
     }
     same_words_here(state, &shape, left, right, later)
 }
 
-/// Whether two `Table`s are equal: the same items in the same slots, with the same generations.
-/// Which `Table` each is, its tag, and where a search for a free slot starts don't count.
+/// Whether two `Table`s are equal: the same slots in use, holding the same items (#2424). A free
+/// slot's item is zero, so which slots are in use is compared too, or an item all zero, as
+/// `Point(x=0)`, would be the same as no item. The tags each slot's `Id` has, and where a search
+/// for a free slot starts, don't count.
 fn same_tables(
+    state: &State,
     fields: &[(Rc<str>, Element)],
-    left: &[u64],
-    right: &[u64],
+    (left, right): (&[u64], &[u64]),
     later: &mut Vec<(u64, u64)>,
 ) -> bool {
     let mut at = 0;
     for (field, element) in fields {
-        if matches!(field.as_ref(), "items" | "generations") {
-            let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
-            compare_later(later, *x, *y);
+        let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
+        match field.as_ref() {
+            "items" => {
+                compare_later(later, *x, *y);
+            }
+            // Each slot's tag, 0 where it's free: only whether each is in use is compared.
+            "slots" => {
+                let in_use = |list: u64| {
+                    state.heap.block(list).map(|block| {
+                        super::lists::items(block, 1).iter().map(|tag| *tag != 0).collect::<Vec<bool>>()
+                    })
+                };
+                if in_use(*x) != in_use(*y) {
+                    return false;
+                }
+            }
+            _ => {}
         }
         at += element.words();
     }

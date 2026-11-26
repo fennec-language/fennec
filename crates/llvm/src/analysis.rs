@@ -1306,6 +1306,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         }
     }
     // Each counted loop's blocks, its start among them, and the one block going into it.
+    let back = crate::emit::back_edges(function);
     let mut ways_in: HashMap<usize, Vec<usize>> = HashMap::new();
     for (from, block) in function.blocks.iter().enumerate() {
         for to in block.end.targets() {
@@ -1327,7 +1328,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         else {
             continue;
         };
-        let blocks = natural_loop(function, header, then.0, &ways_in);
+        let blocks = natural_loop(function, (header, then.0), &ways_in, &back);
         let outside: Vec<usize> = ways_in
             .get(&header)
             .map_or(&[][..], Vec::as_slice)
@@ -1373,7 +1374,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         });
         reads.insert((at, index), id);
     }
-    known.versioned = find_versioned_loops(function, &reads, &counted_by, &ways_in);
+    known.versioned = find_versioned_loops(function, &reads, &counted_by, (&ways_in, &back));
     known.ranged_reads = reads;
     known.range_scans = scans;
 }
@@ -1396,7 +1397,7 @@ fn find_versioned_loops(
     function: &Function,
     reads: &HashMap<(usize, usize), usize>,
     counted_by: &HashMap<(usize, usize), fennec_ir::Count>,
-    ways_in: &HashMap<usize, Vec<usize>>,
+    (ways_in, back): (&HashMap<usize, Vec<usize>>, &HashSet<(usize, usize)>),
 ) -> Vec<Versioned> {
     let mut by_count: BTreeMap<usize, (fennec_ir::Count, BTreeSet<usize>)> = BTreeMap::new();
     let mut places: Vec<(&(usize, usize), &usize)> = reads.iter().collect();
@@ -1422,7 +1423,7 @@ fn find_versioned_loops(
         else {
             continue;
         };
-        let natural = natural_loop(function, header, then.0, ways_in);
+        let natural = natural_loop(function, (header, then.0), ways_in, back);
         let into = ways_in.get(&header).map_or(&[][..], Vec::as_slice);
         let outside: Vec<usize> = into.iter().copied().filter(|from| !natural.contains(from)).collect();
         let [before] = outside[..] else { continue };
@@ -1468,17 +1469,25 @@ fn find_versioned_loops(
 }
 
 /// A loop's blocks: its start, and every block reached from its body that goes back to the start
-/// without passing through it. A block that ends in a `break` or a `return` isn't one.
+/// without passing through it. A block that ends in a `break` or a `return` isn't one. It's found
+/// back from the loop's own jumps back to its start (`back`, from [`crate::emit::back_edges`]),
+/// not from every way into the start the body reaches: a `break` inside another loop reaches the
+/// block going into this one by way of the other's, which would count it as one of this loop's
+/// and leave it no way in.
 fn natural_loop(
     function: &Function,
-    header: usize,
-    body: usize,
+    (header, body): (usize, usize),
     ways_in: &HashMap<usize, Vec<usize>>,
+    back: &HashSet<(usize, usize)>,
 ) -> BTreeSet<usize> {
     let reached = loop_blocks(function, header, body);
     let into = ways_in.get(&header).map_or(&[][..], Vec::as_slice);
     let mut blocks: BTreeSet<usize> = BTreeSet::from([header]);
-    let mut waiting: Vec<usize> = into.iter().copied().filter(|from| reached.contains(from)).collect();
+    let mut waiting: Vec<usize> = into
+        .iter()
+        .copied()
+        .filter(|from| reached.contains(from) && back.contains(&(*from, header)))
+        .collect();
     while let Some(at) = waiting.pop() {
         if blocks.insert(at) {
             waiting.extend(

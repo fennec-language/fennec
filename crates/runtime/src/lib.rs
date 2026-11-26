@@ -47,6 +47,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_f32_header",
     "fennec_float_header",
     "fennec_code_header",
+    // A block of bytes for native code to fill, as `bytes()` is, given by the heap: it can't fail.
+    "fennec_bytes_new",
     // A block freed whose type can't hold a generator that closes something when it's let go
     // partway, as the compiler works out: it runs no program code. Any generator it finds others
     // let go of waits for `fennec_free`, which can fail. A string's block holds nothing at all.

@@ -10,7 +10,8 @@ name: Proofs
 # another hash seed, more threads and load, and recorded and replayed, and must print the same each
 # way (`.github/scripts/determinism.sh`). Every program that uses threads runs under ThreadSanitizer too
 # (`.github/scripts/tsan-programs.sh`). Every example and kit is built for a heap audit and run under
-# it too, with each block's owners counted again as it ends (`.github/scripts/audit.sh`). The
+# it too, with each block's owners counted again as it ends (`.github/scripts/audit.sh`), and the
+# fuzzer's random programs and its recorded and replayed tasks are built and run under it. The
 # runtime's tests run under Miri, which stops on undefined behavior in the crates under it
 # (`.github/scripts/miri.sh`). The game server and the web backend each run for an hour under
 # their own load, and what they hold has to level off (`.github/scripts/soak.sh`). A generated
@@ -81,6 +82,17 @@ jobs:
           FENNEC_AUDIT: "1"
           FENNEC_NO_DAEMON: "1"
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 900 --stuck 180 --found found | tee audited.txt
+      # The same for tasks and a server's rounds that crash, stop, deadlock, take locks and serve
+      # HTTP, each recorded and replayed: the shapes where a task's blocks are handed over, which the
+      # random programs above rarely reach. A line of the audit's breaks the target's rule that a
+      # run says nothing on standard error but what its crashes say.
+      - name: Fuzz recorded and replayed tasks under the heap audit
+        id: audited_replay
+        if: always()
+        env:
+          FENNEC_AUDIT: "1"
+          FENNEC_NO_DAEMON: "1"
+        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run replay --seed "$GITHUB_RUN_ID" --seconds 900 --found found | tee audited-replay.txt
       - name: Run every program four ways, which must print the same
         id: determinism
         if: always()
@@ -125,6 +137,7 @@ jobs:
           FUZZ: ${{ steps.fuzz.outcome }}
           PROGRAMS: ${{ steps.programs.outcome }}
           AUDITED: ${{ steps.audited.outcome }}
+          AUDITED_REPLAY: ${{ steps.audited_replay.outcome }}
           DETERMINISM: ${{ steps.determinism.outcome }}
           AUDIT: ${{ steps.audit.outcome }}
           TIMING: ${{ steps.timing.outcome }}
@@ -135,7 +148,7 @@ jobs:
             echo
             echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
-            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Random programs under the heap audit: $AUDITED. Determinism: $DETERMINISM. Heap audit: $AUDIT. Formatting in proportion: $TIMING. Tests: $TESTS."
+            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Random programs under the heap audit: $AUDITED. Replayed tasks under the heap audit: $AUDITED_REPLAY. Determinism: $DETERMINISM. Heap audit: $AUDIT. Formatting in proportion: $TIMING. Tests: $TESTS."
             # The tests that failed by name, on a line of their own that `nightly-report.sh` reads.
             if [ -s failed-tests.txt ]; then
               echo
@@ -145,7 +158,7 @@ jobs:
             [ -f report.md ] && cat report.md
             echo
             echo "## Fuzzing"
-            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck|the oracle ran" fuzz.txt programs.txt oracle-share.txt audited.txt 2>/dev/null | sed 's/^/- /'
+            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck|the oracle ran" fuzz.txt programs.txt oracle-share.txt audited.txt audited-replay.txt 2>/dev/null | sed 's/^/- /'
           } > nightly.md
           cat nightly.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the report

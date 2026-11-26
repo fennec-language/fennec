@@ -263,18 +263,98 @@ pub(crate) fn wait_before(
             return Ok(status);
         }
         if Instant::now() > until {
+            // Where it waited, before it's killed: a wait that never ends leaves nothing else
+            // behind to say why, as `within.sh` says for the gate's own commands.
+            let waiting = where_it_waits(child.id());
             child.kill()?;
             child.wait()?;
-            let why =
-                format!("a test's program was still running after {}s by the clock", deadline.as_secs());
+            let why = format!(
+                "a test's program was still running after {}s by the clock{waiting}",
+                deadline.as_secs()
+            );
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
+/// How long the look at where a program waits may take by the clock: `sample` samples for a second,
+/// and then writes what it saw.
+const LOOKING: Duration = Duration::from_secs(20);
+
+/// The most lines of a sample of where a program waits that a failure says.
+const LOOKED_LINES: usize = 150;
+
+/// Where the process `pid` waits, each of its threads, for a test that stops it for its time by
+/// the clock to say: by a second's `sample` on macOS, and by what the kernel says each thread waits
+/// on elsewhere. Empty where neither can be asked. It's asked only of a program that's failing its
+/// test already, and the look is held to `LOOKING` and to its own `LOOKED_LINES`, so it can't make
+/// a test fail that wouldn't have, or hold one up for long.
+fn where_it_waits(pid: u32) -> String {
+    if cfg!(target_os = "macos") {
+        let Some(file) = std::env::temp_dir().to_str().map(|dir| format!("{dir}/fennec-wait-{pid}.txt"))
+        else {
+            return String::new();
+        };
+        let sampled = Command::new("sample")
+            .args([pid.to_string().as_str(), "1", "-mayDie", "-file", file.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .and_then(|mut sampling| {
+                let until = Instant::now() + LOOKING;
+                loop {
+                    if sampling.try_wait()?.is_some() {
+                        return Ok(());
+                    }
+                    if Instant::now() > until {
+                        let _ = sampling.kill();
+                        let _ = sampling.wait();
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            });
+        let text = sampled.ok().and_then(|()| fs::read_to_string(&file).ok()).unwrap_or_default();
+        let _ = fs::remove_file(&file);
+        let graph: Vec<&str> = text
+            .lines()
+            .skip_while(|line| !line.starts_with("Call graph:"))
+            .take_while(|line| !line.starts_with("Total number in stack"))
+            .take(LOOKED_LINES)
+            .collect();
+        if graph.is_empty() {
+            return String::new();
+        }
+        return format!("; where it was, sampled for a second, each thread:\n{}", graph.join("\n"));
+    }
+    let Ok(threads) = fs::read_dir(format!("/proc/{pid}/task")) else { return String::new() };
+    let mut waits: Vec<String> = threads
+        .flatten()
+        .map(|thread| {
+            let path = thread.path();
+            let wchan = fs::read_to_string(path.join("wchan")).unwrap_or_default();
+            let name = fs::read_to_string(path.join("comm")).unwrap_or_default();
+            format!(
+                "  thread {} ({}) waits on {}",
+                thread.file_name().to_string_lossy(),
+                name.trim(),
+                wchan.trim()
+            )
+        })
+        .collect();
+    waits.sort();
+    waits.truncate(LOOKED_LINES);
+    if waits.is_empty() {
+        return String::new();
+    }
+    format!("; what each thread waited on:\n{}", waits.join("\n"))
+}
+
 /// A program that waits forever, spending no CPU time, is killed at its limit by the clock, and
-/// the test hears which limit it was.
+/// the test hears which limit it was, and where it waited: each thread's stack, sampled, on macOS,
+/// and what each thread waited on, on Linux.
 #[test]
 fn a_program_past_its_deadline_is_killed() {
     let started = Instant::now();
@@ -286,6 +366,12 @@ fn a_program_past_its_deadline_is_killed() {
             .is_some_and(|(kind, why)| *kind == std::io::ErrorKind::TimedOut && why.contains("by the clock")),
         "{why:?}"
     );
+    let said = why.map(|(_, why)| why).unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        assert!(said.contains("sampled for a second") && said.contains("Thread_"), "{said}");
+    } else if cfg!(target_os = "linux") {
+        assert!(said.contains("waits on"), "{said}");
+    }
     assert!(started.elapsed() < Duration::from_secs(30));
 }
 

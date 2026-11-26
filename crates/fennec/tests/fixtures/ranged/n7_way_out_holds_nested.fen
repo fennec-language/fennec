@@ -1,0 +1,18 @@
+# A way out of one bucket loop holds a loop over buckets with a bucket loop left by `break` in it.
+def find(starts: list[int], order: list[int], other_starts: list[int], other: list[int], wanted: int) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        total += order[at]
+        if order[at] == wanted:
+            for cell in range(len(other_starts) - 1):
+                for inner in range(other_starts[cell], other_starts[cell + 1]):
+                    if other[inner] > 6: break
+                    total += other[inner]
+            return total
+    return -total
+
+def main(stdout: Stdout):
+    stdout.print(find([0, 3], order=[1, 2, 3], other_starts=[0, 2, 4], other=[5, 6, 7, 8], wanted=2))
+    stdout.print(find([0, 3], order=[1, 2, 3], other_starts=[0, 2, 4], other=[5, 6, 7, 8], wanted=9))
+    stdout.print(find([0, 3], order=[1, 2, 3], other_starts=[0, 2, 9], other=[5, 6, 1, 2], wanted=9))
+    stdout.print(find([0, 3], order=[1, 2, 3], other_starts=[0, 2, 9], other=[5, 6, 1, 2], wanted=3))

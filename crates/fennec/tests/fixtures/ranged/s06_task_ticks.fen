@@ -1,0 +1,25 @@
+# The loop written twice in a function run as a task, which counts its loops' turns.
+from std.concurrent import Crashed
+
+struct Sum:
+    total: int
+
+def scan(ledger: shared Sum, starts: list[int], order: list[int]):
+    mut added = 0
+    for round in range(3000):
+        for cell in range(len(starts) - 1):
+            for at in range(starts[cell], starts[cell + 1]):
+                added += order[at]
+                if added < 0: return
+    lock ledger as ref held:
+        held.total = added
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared ledger = Sum(total=0)
+    starts = [0, 2, 4]
+    order = [1, 2, 3, 4]
+    with launch(() => scan(ledger, starts=starts, order=order))?:
+        stdout.print("waiting")
+    lock ledger as held:
+        stdout.print(held.total)

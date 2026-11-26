@@ -1,0 +1,4 @@
+1893
+exit 1
+error: index 9 is out of range for length 4
+--> s16b_other_read_in_copy.fen:6:18

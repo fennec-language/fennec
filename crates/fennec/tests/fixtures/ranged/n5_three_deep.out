@@ -1,0 +1,6 @@
+12
+48
+-63
+exit 1
+error: index 5 is out of range for length 5
+--> n5_three_deep.fen:9:20

@@ -1,0 +1,18 @@
+# A dict looked up inside the loop written twice and put to on a way out of the loop. The way
+# out isn't part of the loop, so it's written once, from what the first copy knew, and both
+# copies go to it.
+def tally(ref seen: dict[int, int], starts: list[int], order: list[int]) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        found = seen.get(value) else 0
+        if found > 1:
+            seen[value] = found + 100
+            break
+        total += found + 1
+    return total
+
+def main(stdout: Stdout):
+    mut seen = {3: 2, 1: 0}
+    stdout.print(tally(ref seen, starts=[0, 4], order=[1, 1, 3, 1]))
+    stdout.print(seen)

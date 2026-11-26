@@ -1,0 +1,4 @@
+18000000000000
+exit 1
+error: this calculation overflows an int
+--> s15_crash_in_copy.fen:5:9

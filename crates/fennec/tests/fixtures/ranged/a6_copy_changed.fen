@@ -1,0 +1,15 @@
+# A copy of each list changed inside the loop: the parameters keep what they held.
+def scan(starts: list[int], order: list[int]) -> int:
+    mut added = 0
+    for cell in range(len(starts) - 1):
+        mut mine = starts
+        mine[cell + 1] = 50000000
+        mut short = order
+        _ = short.pop()
+        for at in range(starts[cell], starts[cell + 1]):
+            added += order[at]
+        added += len(mine) + len(short)
+    return added
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 2, 4], order=[1, 2, 3, 4]))

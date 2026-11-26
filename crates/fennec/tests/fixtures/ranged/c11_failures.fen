@@ -1,0 +1,28 @@
+# Failures raised, passed up and handled inside the loop written twice.
+error Small:
+    value: int
+
+def checked(value: int) -> int fails Small:
+    if value < 6: fail Small(value=value)
+    return value * 2
+
+def scan(starts: list[int], order: list[int]) -> int fails Small:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        doubled = checked(value) except why:
+            total -= why.value
+            continue
+        total += doubled
+        total += checked(value + at - 2)?
+    return total
+
+def shown(starts: list[int], order: list[int]) -> int:
+    total = scan(starts, order=order) except why:
+        return -why.value
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(shown([0, 4], order=[5, 6, 7, 8]))
+    stdout.print(shown([1, 2], order=[5, 2, 7, 8]))
+    stdout.print(shown([0, 2], order=[7, 6, 7, 3]))

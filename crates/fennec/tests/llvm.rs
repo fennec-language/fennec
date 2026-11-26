@@ -35372,6 +35372,39 @@ fn a_constant_of_empty_bytes_is_kept_with_threads() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A list made empty and then filled is not empty bytes: `bytes(...)` of it gives every item,
+/// whichever way it was filled. Each form makes the list with `[]` or `list[int]()` and then
+/// fills it, as a comprehension's lowering does, which once had a list "written once as `[]`"
+/// taken for `bytes([])`, and HMAC keys came out empty.
+#[test]
+fn bytes_of_a_list_filled_after_it_was_made_empty_holds_its_items() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "bytes_filled",
+        r#"def filled(ref items: list[int]):
+    items.append(9)
+    items.append(8)
+
+def main(stdout: Stdout):
+    comprehension = bytes([11 for _ in range(3)])
+    mut looped = list[int]()
+    for n in range(4):
+        looped.append(n)
+    mut extended: list[int] = []
+    extended.extend([5, 6])
+    mut by_ref: list[int] = []
+    filled(ref by_ref)
+    mut added: list[int] = []
+    added = added + [7]
+    stdout.print(list(comprehension), list(bytes(looped)), list(bytes(extended)), list(bytes(by_ref)), list(bytes(added)), list(bytes([])))
+"#,
+    )?;
+    assert_eq!(printed, "[11, 11, 11] [0, 1, 2, 3] [5, 6] [9, 8] [7] []\n");
+    Ok(())
+}
+
 /// The workers of a `parallel` loop race to reach an `embed_file` first, each reading it whole,
 /// slicing it and joining parts of it in the runtime. The one copy the process makes is the
 /// winner's, but nothing a program or its replay sees says which thread won (#2429).

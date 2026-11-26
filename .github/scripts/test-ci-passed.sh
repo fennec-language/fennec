@@ -60,7 +60,7 @@ not_acquired() {
 decide() {
   local event=$1 needs=$2
   : > "$work/summary"
-  env PATH="$work/bin:$PATH" ANSWERS="$work/answers" NEEDS="$needs" EVENT="$event" PLATFORMS=all \
+  env PATH="$work/bin:$PATH" ANSWERS="$work/answers" NEEDS="$needs" EVENT="$event" PLATFORMS=all COVERED="${COVERED:-false}" \
     RUN_ID=7 RUN_ATTEMPT=1 GITHUB_REPOSITORY=owner/name GITHUB_STEP_SUMMARY="$work/summary" \
     "$here/ci-passed.sh" > "$work/said" 2>&1
 }
@@ -109,6 +109,16 @@ grep -q 'never got a runner' "$work/said" && fail "it spoke of runners for a fai
 answers "$(job 1 "Test (macos-latest, fennec)" success "runner 3" 9)" "$linux" "$intel"
 decide push '{"changes":{"result":"success"},"test":{"result":"success"},"x86-mac":{"result":"success"}}' \
   || fail "every job passing didn't pass: $(cat "$work/said")"
+
+# A scheduled run a push run covers skips what the push runs too, and passes; but coverage and the
+# heap audit, which it runs alone, still have to pass, and a skip with no push run is a failure.
+answers "$linux" "$intel"
+covered_needs='{"changes":{"result":"success"},"test":{"result":"skipped"},"bench":{"result":"skipped"},"coverage":{"result":"success"},"audit":{"result":"success"}}'
+COVERED=true decide schedule "$covered_needs" || fail "a covered scheduled run's skips failed it: $(cat "$work/said")"
+COVERED=true decide schedule '{"changes":{"result":"success"},"test":{"result":"skipped"},"coverage":{"result":"skipped"},"audit":{"result":"success"}}' \
+  && fail "a covered scheduled run passed without its coverage"
+COVERED=false decide schedule "$covered_needs" && fail "a scheduled run no push covers passed with its jobs skipped"
+COVERED=true decide push "$covered_needs" && fail "a push passed with its jobs skipped as covered"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failed"

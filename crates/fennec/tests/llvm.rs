@@ -7608,6 +7608,27 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A number written out after `else` takes the size of the optional it stands in for where the
+/// optional is a name known to be `None` (#2588), as it does where nothing is known: `0.1` here is
+/// an `f32`, so three of it are the `f32` 0.3, not the `float` 0.30000000000000004.
+#[test]
+fn an_else_default_takes_the_size_of_a_name_known_to_be_none() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "else_known_none",
+        "def main(stdout: Stdout):
+    found: f32? = None
+    tiny: u8? = None
+    level: f32 = found else 0.1
+    stdout.print(level * 3.0, (tiny else 200) + 55)
+",
+    )?;
+    assert_eq!(printed, "0.3 255\n");
+    Ok(())
+}
+
 /// A float written out takes `f32` where one goes: on the right of a type's own operator, with `*=`
 /// too, beside an `f32` in `min` and `max`, and as a `case`. Each is the nearest `f32`, so `0.1`
 /// matches a tenth held as an `f32`, and the arithmetic is `f32`'s. What it prints is what the
@@ -23373,8 +23394,10 @@ def main(net: Net, stdout: Stdout) fails NetError:
 /// connection's round answer: a `while True` whose only way back is `continue`, a `for` whose body
 /// tests a value and goes on to its step, a loop whose inner loop is left by `break` on its first
 /// turn, and a loop walking a generator that yields on every turn of its own, where the walking
-/// loop ticks for each. A task ticks once a turn, on its jump back to the loop's start, and each
-/// spinning round here was started, and is still spinning, when its ping comes.
+/// loop ticks for each. And one with no loop at all, calling itself (#2594), whose calls are
+/// counted on the thread. A task ticks once a turn, on its jump back to the loop's start, or at
+/// each call of a function that can call itself again, and each spinning round here was started,
+/// and is still spinning, when its ping comes.
 #[test]
 fn a_round_spinning_through_any_way_back_lets_the_others_answer() -> std::io::Result<()> {
     use std::io::{BufRead as _, Write as _};
@@ -23412,7 +23435,7 @@ fn a_round_spinning_through_any_way_back_lets_the_others_answer() -> std::io::Re
     let port: u16 = port.trim().parse().unwrap_or(0);
     let mut spinning = Vec::new();
     let mut answers = Vec::new();
-    for way in ["skipping", "testing", "leaving", "walking"] {
+    for way in ["skipping", "testing", "leaving", "walking", "recursing"] {
         // The round has read its line before the ping comes, so it's spinning.
         let mut spinner = std::net::TcpStream::connect(("127.0.0.1", port))?;
         spinner.write_all(format!("{way}\n").as_bytes())?;
@@ -23480,6 +23503,11 @@ def walking() -> int:
             return x
     return 0
 
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return (fib(n - 1) + fib(n - 2)) % 1000003
+
 def main(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
         stdout.print(server.port)
@@ -23494,6 +23522,8 @@ def main(net: Net, stdout: Stdout) fails NetError:
                 conn.write(f\"{leaving(many)}\\n\")?
             elif line == \"walking\":
                 conn.write(f\"{walking()}\\n\")?
+            elif line == \"recursing\":
+                conn.write(f\"{fib(90)}\\n\")?
             else:
                 conn.write(\"pong\\n\")?
 ";

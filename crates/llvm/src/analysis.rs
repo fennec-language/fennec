@@ -321,6 +321,9 @@ pub(crate) struct Whole<'p> {
     pub(crate) cells: bool,
     /// The functions that can run as a parked task, which count their loops' turns.
     pub(crate) tasks: HashSet<&'p str>,
+    /// The tasks that can call themselves again, through others or not, which count their calls
+    /// too (see `ticks::recurring`).
+    pub(crate) recurring: HashSet<&'p str>,
     /// Whether its closures are blocks in the runtime's table, since it keeps one where the
     /// runtime reads (see `closures`).
     pub(crate) runtime_closures: bool,
@@ -5429,7 +5432,11 @@ pub(crate) fn whole_keeping<'p>(
     let whole = std::thread::scope(|scope| {
         let signs = scope.spawn(|| crate::signs::non_negative(program));
         let builders = scope.spawn(|| crate::builders::builders(program, &functions));
-        let tasks = scope.spawn(|| crate::ticks::tasks(program, &functions));
+        let tasks = scope.spawn(|| {
+            let tasks = crate::ticks::tasks(program, &functions);
+            let recurring = crate::ticks::recurring(program, &functions, &tasks);
+            (tasks, recurring)
+        });
         let layouts = scope.spawn(|| crate::layouts_of(program).ok());
         let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
         let kept = parameters_kept(&functions);
@@ -5438,6 +5445,7 @@ pub(crate) fn whole_keeping<'p>(
         };
         let params = param_ranges(program, &changes, &keeps);
         let layouts = joined(layouts);
+        let (tasks, recurring) = joined(tasks);
         let held = in_entries_of(program, layouts.as_ref());
         let abandons = program.generators.iter().any(|def| def.abandon.is_some());
         let loud = if abandons { lets_go_loudly(program, layouts.as_ref()) } else { HashSet::new() };
@@ -5511,7 +5519,8 @@ pub(crate) fn whole_keeping<'p>(
             constants,
             on_workers,
             cells: crate::parallel::has_cells(program),
-            tasks: joined(tasks),
+            tasks,
+            recurring,
             runtime_closures: crate::closures::runtime_holds_closures(program),
             tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
             abandons,

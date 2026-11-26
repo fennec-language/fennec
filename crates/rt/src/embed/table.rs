@@ -177,6 +177,8 @@ struct Regions {
 }
 
 impl Regions {
+    /// Every region, the first first: for counting pages and the audit's checks.
+    #[cfg(any(test, feature = "threads", feature = "audit"))]
     fn iter(&self) -> impl Iterator<Item = &(usize, Pages)> {
         self.first.iter().chain(&self.rest)
     }

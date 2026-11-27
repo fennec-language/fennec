@@ -28,8 +28,10 @@ else
   if [ "$release_os" = Darwin ]; then
     # macOS's linker names a program by a hash of it before it's stripped, which notes where each
     # object it linked was and when it was made: the checkout's path is taken out of those, and
-    # their times are zero.
-    release_flags="$release_flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/"
+    # their times are zero. `-S` leaves those notes out altogether, as stripping would: `fennec`
+    # links objects named by their paths under rustup's and Cargo's homes, `/Users/runner/...` on
+    # GitHub, so its UUID differed from one machine's home to another's.
+    release_flags="$release_flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/ -C link-arg=-Wl,-S"
     export ZERO_AR_DATE=1
     # The runtime's C parts are built for the macOS a program is built for, as LLVM's code is,
     # rather than for the machine's SDK.

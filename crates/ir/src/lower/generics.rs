@@ -269,6 +269,14 @@ impl Context<'_> {
                 }
                 self.unify_returns(returns, &signature.returns, subst);
             }
+            // A union given where a union goes, as a handler's passed on to `serve`: its function
+            // member says what the wanted one's types stand for, as the checker has it, and with
+            // none, the wanted one's failure is nothing.
+            (Type::Union(members), Type::Union(others)) => match (one_arrow(members), one_arrow(others)) {
+                (Some(arrow), Some(other)) => self.unify(arrow, other, subst),
+                (Some(_), None) => fails_with_nothing(members, subst),
+                _ => {}
+            },
             (Type::Generic(name, args), Type::Named(copy)) => {
                 let Some(instance) = self.type_instance(copy).filter(|instance| instance.base == *name)
                 else {
@@ -421,5 +429,27 @@ fn field_written(expr: &mut Expr, held: &str, field: &str) {
             }
         }
         _ => {}
+    }
+}
+
+/// A union's function member, when it has just one.
+fn one_arrow(members: &[Type]) -> Option<&Type> {
+    let mut arrows = members.iter().filter(|member| matches!(member, Type::Arrow(..)));
+    match (arrows.next(), arrows.next()) {
+        (Some(arrow), None) => Some(arrow),
+        _ => None,
+    }
+}
+
+/// A union's function member's failure stands for nothing, as when a `Router` is given for
+/// `Router | (Request) -> Response fails E`.
+fn fails_with_nothing(members: &[Type], subst: &mut Subst) {
+    for member in members {
+        if let Type::Arrow(_, returns) = member
+            && let Type::Result(_, error) = &**returns
+            && let Type::Param(name) = &**error
+        {
+            subst.entry(name.clone()).or_insert_with(Type::nothing_failed);
+        }
     }
 }

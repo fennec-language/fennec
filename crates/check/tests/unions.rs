@@ -95,6 +95,27 @@ fn a_union_with_a_function_member_takes_a_function_and_calls_it_once_narrowed() 
     );
 }
 
+/// A union goes where a union is wanted when its function member is the wanted one's once a
+/// type parameter is worked out, as a handler's `Router | (Request) -> Response` passed on to a
+/// generic `serve`: one that can't fail, `E` nothing, and one that `fails Oops`, `E` that. One
+/// that can't fail doesn't go where the function member is one that `fails Oops`: a function in
+/// a union is passed on as it is.
+#[test]
+fn a_union_goes_where_one_with_its_function_member_is_wanted_once_worked_out() {
+    let start = "error Oops:\n    why: str\n\n    def message(self) -> str:\n        return self.why\n\n\
+        struct Table:\n    rows: int\n\n\
+        def run[E: Worded](step: Table | (int) -> int fails E) -> int:\n    if step is Table:\n        return step.rows\n    \
+        got = step(2) except why:\n        return len(why.message())\n    return got\n\n\
+        def strict(step: Table | (int) -> int fails Oops) -> int:\n    return run(step)\n\n";
+    let fine = format!("{start}def plain(step: Table | (int) -> int) -> int:\n    return run(step)\n");
+    assert_eq!(problems(&fine), Vec::<String>::new());
+    let narrower = format!("{start}def loose(step: Table | (int) -> int) -> int:\n    return strict(step)\n");
+    assert_eq!(
+        problems(&narrower),
+        ["`step` should be a Table | (int) -> int fails Oops, but this is a Table | (int) -> int @ step"]
+    );
+}
+
 /// What a function type gives back runs on to the end of it, so `(int) -> str | (str) -> str` is
 /// one function giving back `str | (str) -> str`, and a union's function member is shown last, as
 /// it reads back. A union of two function types, made of two names for them, has no written form:

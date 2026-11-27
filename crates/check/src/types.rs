@@ -148,6 +148,20 @@ impl Num {
     }
 }
 
+/// Whether a float is finite but rounds to an infinite `f32`, past an `f32`'s largest: one that
+/// doesn't fit. Rounding to the nearest `f32` is silent, so one a little past the largest that
+/// rounds back to it fits, and NaN and infinity convert as themselves.
+#[must_use]
+#[expect(clippy::cast_possible_truncation, reason = "rounding to the nearest f32 is what's asked")]
+pub fn past_f32(x: f64) -> bool {
+    x.is_finite() && (x as f32).is_infinite()
+}
+
+/// What a program says as it stops when `f32(x)` is given a finite float past an `f32`'s largest,
+/// before the float: in the words a sized integer's conversion uses, with the range an `f32`
+/// prints as.
+pub const F32_DOESNT_FIT: &str = "it doesn't fit in f32, which holds -3.4028235e+38 to 3.4028235e+38: ";
+
 impl Type {
     pub(crate) fn list(item: Type) -> Type {
         Type::List(Box::new(item))

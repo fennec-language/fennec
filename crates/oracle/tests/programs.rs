@@ -551,6 +551,34 @@ fn an_int_that_overflows_stops_the_program() {
     assert!(matches!(&ended, Ended::Stopped(said) if said.contains("overflows an int")), "{ended:?}");
 }
 
+/// `f32(x)` of a finite float past an `f32`'s largest stops the program, in compiled code's words,
+/// where one that rounds to the largest, NaN and infinity convert without a word.
+#[test]
+fn an_f32_of_a_float_past_its_largest_stops_the_program() {
+    prints(
+        "
+        from std.math import INFINITY, NAN
+
+        def main(stdout: Stdout):
+            stdout.print(f32(3.4028235e38), f32(NAN), f32(-INFINITY), f32(3.0e38) * f32(3.0e38))
+        ",
+        "3.4028235e+38 nan -inf inf\n",
+    );
+    let (printed, ended) = ran("
+        def main(stdout: Stdout):
+            x = -1e300
+            stdout.print('before')
+            stdout.print(f32(x))
+        ");
+    assert_eq!(printed, "before\n");
+    assert!(
+        matches!(&ended, Ended::Stopped(said) if said.starts_with(
+            "error: it doesn't fit in f32, which holds -3.4028235e+38 to 3.4028235e+38: -1e+300\n"
+        )),
+        "{ended:?}"
+    );
+}
+
 /// The oracle checks a program with the checker compiled code is checked with, so a `list[int]`
 /// passed with `ref` where a `list[int?]` is changed is refused before it runs, in the checker's
 /// words (#2596).
@@ -3732,7 +3760,7 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
             three = f32(3)
             summed = tenth + tenth + tenth
             stdout.print(tenth, three, summed, tenth * three, three / f32(7), -tenth, summed == f32(0.3), summed < three)
-            stdout.print(float(tenth), int(three / f32(2)), f32(16777217), f32(1e39), f32(2.5e-7), f32(123456789.0))
+            stdout.print(float(tenth), int(three / f32(2)), f32(16777217), f32(3.4028235e38), f32(2.5e-7), f32(123456789.0))
             body = Body(mass=1.5, speed=f32(1) / f32(3))
             stdout.print(body, [tenth, three], {tenth: 'tenth'}, f'{summed}')
             mut total: f32 = 0.0
@@ -3742,7 +3770,7 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
             return
         ",
         "0.1 3.0 0.3 0.3 0.42857143 -0.1 True True\n\
-         0.10000000149011612 1 16777216.0 inf 2.5e-07 123456790.0\n\
+         0.10000000149011612 1 16777216.0 3.4028235e+38 2.5e-07 123456790.0\n\
          Body(mass=1.5, speed=0.33333334) [0.1, 3.0] {0.1: \"tenth\"} 0.3\n\
          4.5 200.0 -0.0 1e+20\n",
     );

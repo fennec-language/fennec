@@ -5184,6 +5184,39 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// `f32(9.8)`, a float written out that fits, can't fail, so a constant of it is kept in a
+    /// program using `parallel`, worked out once before any worker starts, and never checked for
+    /// being past an `f32`'s largest. `f32` of a float that isn't written out is still checked.
+    #[test]
+    fn an_f32_of_a_float_written_out_is_kept_with_threads_and_never_checked() -> Result<(), String> {
+        let source = "GRAVITY = f32(9.8)\n\ndef narrowed(wide: float) -> f32:\n    return f32(wide)\n\n\
+                      def main(stdout: Stdout):\n    mut speeds = [f32(1.0), f32(2.0)]\n    \
+                      for ref speed in parallel(speeds):\n        speed += GRAVITY\n    \
+                      stdout.print(speeds, narrowed(0.5))\n";
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower_with(
+            &module,
+            &checked,
+            fennec_ir::Options { outline_parallel: true, ..fennec_ir::Options::default() },
+        );
+        assert!(crate::parallel::uses_parallel(&program), "{:?}", program.not_lowered);
+        let (units, _, _) = emit(&program)?;
+        let text =
+            |name: &str| units.iter().find(|unit| unit.function == name).map(|unit| unit.text.as_str());
+        let kept = text("GRAVITY").ok_or("`GRAVITY` isn't lowered")?;
+        assert!(kept.contains("@\"f_GRAVITY.kept\""), "{kept}");
+        assert!(!kept.contains("too_big"), "{kept}");
+        let main = text("main").ok_or("`main` isn't lowered")?;
+        assert!(
+            main.contains("call swiftcc double @\"f_GRAVITY\""),
+            "`main` doesn't work out `GRAVITY`:\n{main}"
+        );
+        let narrowed = text("narrowed").ok_or("`narrowed` isn't lowered")?;
+        assert!(narrowed.contains("too_big"), "{narrowed}");
+        Ok(())
+    }
+
     /// A field of a local list's item, changed by `append`, is taken out for the change rather
     /// than given a second owner, whether the list is the local itself or a field of it.
     #[test]

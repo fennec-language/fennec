@@ -25,6 +25,10 @@
 from std.intrinsics import new_tag
 from std.string import quoted_input
 
+## The least float that rounds to an infinite `f32`, 2**128 - 2**103: halfway between an `f32`'s
+## largest and 2**128. `f32(x)` of a finite float this big or bigger stops the program.
+PAST_F32 = 3.4028235677973366e38
+
 ## What can go into a query, as a parameter. A `bool` goes in as 1 or 0.
 export type SqlValue = int | float | str | bytes | bool
 
@@ -137,13 +141,12 @@ struct SqlRowReader:
         return self._rows.floats[at]
 
     def f32(ref self) -> f32 fails ParseError:
-        # A database's floats are doubles, so it's the column's float, rounded once. One too big
-        # for an f32 would come out as infinity, which isn't what it held.
+        # A database's floats are doubles, so it's the column's float, rounded once. A finite one too
+        # big for an f32 isn't one, and would stop the program.
         wide = self.float()?
-        narrow = f32(wide)
-        if narrow - narrow != 0.0 and wide - wide == 0.0:
+        if wide - wide == 0.0 and (wide >= PAST_F32 or wide <= -PAST_F32):
             fail self._bad(f"it holds {wide}, which is too big for an f32")
-        return narrow
+        return f32(wide)
 
     def bool(ref self) -> bool fails ParseError:
         kind = self._kind()?

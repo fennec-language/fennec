@@ -149,7 +149,7 @@ pub fn compiler_written(span: Span) -> bool {
 pub fn reaches(caller: &str, caller_std: bool, name: &str, std: bool) -> bool {
     reach::Code::of(caller, caller_std).reaches(name, std)
 }
-pub use types::{Num, Type};
+pub use types::{F32_DOESNT_FIT, Num, Type, past_f32};
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
 /// problem found, in source order.

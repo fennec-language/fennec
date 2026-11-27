@@ -122,6 +122,24 @@ fn sized_integers_convert_when_written_out() {
     );
 }
 
+/// `f32(x)` of a float written out past an `f32`'s largest is an error, as `u8(300)` is, where one
+/// a little past the largest that rounds back to it isn't, written in the call or for an `f32`.
+#[test]
+fn an_f32_of_a_float_written_out_too_big_is_an_error() {
+    let program = "
+        def sizes(stdout: Stdout, wide: float):
+            edge: f32 = 3.4028235e38
+            stdout.print(f32(wide), f32(3.4028235e38), f32(-3.4028235e38), edge)
+            stdout.print(f32(1e39), f32(-3.5e38))
+    ";
+    assert_eq!(problems(program), ["1e39 doesn't fit in f32 @ 1e39", "-3.5e38 doesn't fit in f32 @ -3.5e38"]);
+    let helps = helps("def f(stdout: Stdout):\n    stdout.print(f32(1e39))\n");
+    assert_eq!(
+        helps,
+        ["an f32 holds -3.4028235e+38 to 3.4028235e+38: write one in that range, or use `float`"]
+    );
+}
+
 /// `i64(x)` and `f64(x)` are `int(x)` and `float(x)`, by the names of their sizes, as language.md
 /// writes widening (#2307): the same conversions, and the same mistakes.
 #[test]

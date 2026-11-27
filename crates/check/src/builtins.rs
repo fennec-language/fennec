@@ -738,9 +738,25 @@ impl FnCx<'_> {
         sized.map_or_else(Vec::new, |ty| vec![ty; plain.len()])
     }
 
-    /// A number written out, or one negated, given to `u8(...)` and the like, which has to fit.
+    /// A number written out, or one negated, given to `u8(...)`, `f32(...)` and the like, which has
+    /// to fit.
     fn literal_fits(&mut self, num: crate::types::Num, value: &Expr) {
         use fennec_syntax::{ExprKind, UnaryOp};
+        // `f32(1e39)`: a float written out past an `f32`'s largest, which would stop the program.
+        let float = match &value.kind {
+            ExprKind::Float(x) => Some(*x),
+            ExprKind::Unary { op: UnaryOp::Neg, expr } if let ExprKind::Float(x) = expr.kind => Some(-x),
+            _ => None,
+        };
+        if num.is_float() {
+            if let Some(written) = float.filter(|x| crate::types::past_f32(*x)) {
+                let message = format!("{written:e} doesn't fit in f32");
+                let help =
+                    "an f32 holds -3.4028235e+38 to 3.4028235e+38: write one in that range, or use `float`";
+                self.error(Diagnostic::new(message, value.span).with_help(help));
+            }
+            return;
+        }
         let written = match &value.kind {
             ExprKind::Int(n) => i128::from(*n),
             ExprKind::Unary { op: UnaryOp::Neg, expr } if let ExprKind::Int(n) = expr.kind => -i128::from(n),

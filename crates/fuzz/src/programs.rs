@@ -1288,6 +1288,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
+    /// Every way of an `Exchanged` step, three times over, with places of both signs, for each type,
+    /// in a local and in a field, checks, and the evaluator prints what the oracle prints: items
+    /// swapped where the list is long enough, directly and through `ref`, and rows updated where
+    /// their `Id` is live, `False` where it's been removed.
+    #[test]
+    fn the_exchanged_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{EXCHANGE_WAYS, ExchangeStep, Exchanging, POP_TYS, Program, Stmt};
+        let body = POP_TYS
+            .iter()
+            .enumerate()
+            .flat_map(|(round, ty)| {
+                [false, true].into_iter().map(move |in_field| {
+                    let place = |at: usize| i64::try_from(at % 8).unwrap_or(0) - 4;
+                    let steps = EXCHANGE_WAYS
+                        .iter()
+                        .chain(EXCHANGE_WAYS.iter())
+                        .chain(EXCHANGE_WAYS.iter())
+                        .enumerate()
+                        .map(|(at, way)| ExchangeStep {
+                            way: *way,
+                            first: place(at + round),
+                            second: place(at * 3 + round + usize::from(in_field)),
+                            which: (at + round) % 3,
+                            row: (at + round) % 3,
+                        })
+                        .collect();
+                    let id = round * 2 + usize::from(in_field) + 1;
+                    Stmt::Exchanged(Exchanging { id, ty: *ty, in_field, steps })
+                })
+            })
+            .collect();
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
     /// Every way of a `Popped` step, twice over, for each type, in a local and in a field, checks,
     /// and the evaluator prints what the oracle prints: an optional of a heap type taken out of a
     /// list is the item it was, and a missing one, or one that's `None`, is what `else` gives.

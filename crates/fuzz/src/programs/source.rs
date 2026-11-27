@@ -14,6 +14,7 @@ use super::ast::{
     Between, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, Looping, REF_TEXTS,
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
+use super::ast::{ExchangeStep, ExchangeWay, Exchanging};
 use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{GenStep, GenWay, Generating};
 use super::ast::{GenericStep, GenericTy, Genericking};
@@ -658,12 +659,14 @@ pub(crate) fn source(program: &Program) -> String {
     };
     // Only a program holding a `Filed` statement reaches the disk, so only it takes an `Fs`.
     let fs = if writer.helpers.contains("(fs: Fs, stdout: Stdout)") { ", fs: Fs" } else { "" };
-    // Only a program holding a `Saved` statement saves values, so only it imports the formats and
-    // names `Id`.
-    let (formats, header) = if writer.helpers.contains("json.loads[") {
-        ("from std import json, pack, toml\n", HEADER.replacen("import Table", "import Id, Table", 1))
+    // Only a program holding a `Saved` statement saves values, so only it imports the formats, and
+    // only it or one holding an `Exchanged` statement names `Id`.
+    let formats =
+        if writer.helpers.contains("json.loads[") { "from std import json, pack, toml\n" } else { "" };
+    let header = if writer.helpers.contains("Id[") {
+        HEADER.replacen("import Table", "import Id, Table", 1)
     } else {
-        ("", HEADER.to_owned())
+        HEADER.to_owned()
     };
     // Only a program holding a `Stored` statement opens a database, so only it imports them.
     let databases = if writer.helpers.contains("sqlite.open(") {
@@ -2766,21 +2769,77 @@ fn ruled_written(ruling: &Ruling) -> String {
     out
 }
 
+/// The struct a `PopTy` names for statement `id`, declared, or nothing for a type that's built in.
+fn pop_ty_declared(ty: PopTy, id: usize) -> String {
+    match ty {
+        PopTy::Point => format!("struct Pt{id}:\n    x: int\n\n"),
+        PopTy::Bag => format!("struct Bag{id}:\n    tag = \"b\"\n    items = list[int]()\n\n"),
+        PopTy::Short | PopTy::Long | PopTy::Ints => String::new(),
+    }
+}
+
+/// `exchanged{id}`, the function an `Exchanged` calls, after the types and the function it uses: a
+/// list given three items and a Table given three rows, a step at a time on them, then what the
+/// list, the struct holding one and each row hold.
+fn exchanged_written(exchanging: &Exchanging) -> String {
+    let Exchanging { id, ty, in_field, steps } = exchanging;
+    let mut out = pop_ty_declared(*ty, *id);
+    let t = ty.written(*id);
+    let values = ty.values(*id);
+    let value = |at: usize| values.get(at).map_or("None", |(written, _, _)| written.as_str()).to_owned();
+    let missing = value(3);
+    let _ = write!(
+        out,
+        "struct Shelf{id}:\n    items = list[{t}]()\n\ndef exchanged_in{id}(ref items: list[{t}], first: int, second: \
+         int):\n    items.swap(first, second)\n\ndef exchanged{id}(stdout: Stdout):\n    mut shelf = Shelf{id}()\n    \
+         mut items = list[{t}]()\n    mut rows = Table[{t}]()\n    mut row_ids = list[Id[{t}]]()\n"
+    );
+    let place = if *in_field { "shelf.items" } else { "items" };
+    for at in 0..3 {
+        let _ = writeln!(out, "    {place}.append({})", value(at));
+        let _ = writeln!(out, "    row_ids.append(rows.add({}))", value(at));
+    }
+    for step in steps {
+        let ExchangeStep { way, first, second, which, row } = *step;
+        let v = value(which);
+        let line = match way {
+            ExchangeWay::Swap => {
+                format!("if len({place}) >= {}:\n        {place}.swap({first}, {second})", step.needs())
+            }
+            ExchangeWay::SwapSame => {
+                let same = ExchangeStep { second: first, ..*step };
+                format!("if len({place}) >= {}:\n        {place}.swap({first}, {first})", same.needs())
+            }
+            ExchangeWay::SwapByRef => format!(
+                "if len({place}) >= {}:\n        exchanged_in{id}(ref {place}, first={first}, second={second})",
+                step.needs()
+            ),
+            ExchangeWay::Pushed => format!("{place}.append({v})"),
+            ExchangeWay::Dropped => format!("_ = {place}.pop()"),
+            ExchangeWay::Shown => format!("stdout.print({place})"),
+            ExchangeWay::Updated => format!("stdout.print(rows.update(row_ids[{row}], {v}))"),
+            ExchangeWay::UpdatedThenRead => {
+                format!("if rows.update(row_ids[{row}], {v}):\n        stdout.print(rows[row_ids[{row}]])")
+            }
+            ExchangeWay::RowRemoved => format!("_ = rows.remove(row_ids[{row}])"),
+            ExchangeWay::RowAdded => format!("row_ids.append(rows.add({v}))"),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    let _ = write!(
+        out,
+        "    stdout.print(items)\n    stdout.print(shelf)\n    for row_id in row_ids:\n        \
+         stdout.print(rows.get(row_id) else {missing})\n\n"
+    );
+    out
+}
+
 /// `popped{id}`, the function a `Popped` calls, after the types and the function it uses: a list
 /// of optionals given three items, a step at a time on it, then what the list and the struct
 /// holding a list of them hold.
 fn popped_written(popping: &Popping) -> String {
     let Popping { id, ty, in_field, steps } = popping;
-    let mut out = String::new();
-    match ty {
-        PopTy::Point => {
-            let _ = write!(out, "struct Pt{id}:\n    x: int\n\n");
-        }
-        PopTy::Bag => {
-            let _ = write!(out, "struct Bag{id}:\n    tag = \"b\"\n    items = list[int]()\n\n");
-        }
-        PopTy::Short | PopTy::Long | PopTy::Ints => {}
-    }
+    let mut out = pop_ty_declared(*ty, *id);
     let t = ty.written(*id);
     let values = ty.values(*id);
     let value = |at: usize| values.get(at).map_or("None", |(written, _, _)| written.as_str()).to_owned();
@@ -3870,6 +3929,10 @@ impl Writer {
             Stmt::Popped(popping) => {
                 let _ = write!(self.helpers, "{}", popped_written(popping));
                 self.line(indent, &format!("popped{}(stdout)", popping.id));
+            }
+            Stmt::Exchanged(exchanging) => {
+                let _ = write!(self.helpers, "{}", exchanged_written(exchanging));
+                self.line(indent, &format!("exchanged{}(stdout)", exchanging.id));
             }
             Stmt::Sized(sizing) => {
                 let _ = write!(self.helpers, "{}", sized_written(sizing));

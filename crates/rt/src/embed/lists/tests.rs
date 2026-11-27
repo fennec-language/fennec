@@ -79,6 +79,28 @@ fn a_list_of_structs_holding_strings_owns_them() {
     finish();
 }
 
+/// What the `runtime` fuzz target found, cut down: an item's address before the list's own, as a
+/// made-up one is, took the header for an item, moved its words down and took 1 from a length of
+/// 0. A place partway into an item, or past the last, is no item either: each changes nothing.
+#[test]
+fn an_item_taken_out_of_a_list_at_a_place_no_item_starts_changes_nothing() {
+    begin();
+    let before = live();
+    let all = list(&["archer one", "medic two"]);
+    let word = 8 * i64::try_from(super::LIST_HEADER_WORDS).unwrap();
+    for item in [all - 8, all, all + 8, all + word + 8, all + word + 32, all + word + 40] {
+        super::remove_at(all, item);
+        let both = Value::list(vec![unit("archer one", 1), unit("medic two", 2)]);
+        assert_eq!(read(all), both, "at {}", item - all);
+    }
+    // The second item starts two words past the first, and taking it out still works.
+    super::remove_at(all, all + word + 16);
+    assert_eq!(read(all), Value::list(vec![unit("archer one", 1)]));
+    heap::free(all);
+    assert_eq!(live(), before);
+    finish();
+}
+
 #[test]
 fn a_shared_list_of_structs_holding_strings_is_copied_with_its_names() {
     begin();

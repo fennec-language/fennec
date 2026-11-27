@@ -51,6 +51,30 @@ fn lexer_errors_point_at_one_character() {
     }
 }
 
+/// Past characters wider than a byte, an error's span is still in bytes, as the lexer reads them,
+/// and one at a wide character covers all of it.
+#[test]
+fn lexer_errors_after_wide_characters_point_at_their_bytes() {
+    let cases = [
+        ("x = \"é\" $ 1", 9, 10, "unexpected character `$`"),
+        ("x = \"🦊 \\q\"", 10, 11, "`\\q` isn't an escape Fennec knows"),
+        ("x = \"日本", 4, 5, "this string never ends"),
+        (
+            "x = \"\"\"\n        ü\n      é short\n        \"\"\"",
+            25,
+            27,
+            "this line is indented less than the closing `\"\"\"`",
+        ),
+        ("x = f\"\"\"\n    🦊 {\"q\"}\n    \"\"\"", 19, 20, "a `\"` can't go inside `{}` in a string"),
+    ];
+    for (source, start, end, message) in cases {
+        let error = fennec_syntax::parse(&format!("{source}\n"))
+            .err()
+            .map(|diagnostic| (diagnostic.message, diagnostic.span));
+        assert_eq!(error, Some((message.to_owned(), fennec_syntax::Span { start, end })), "{source}");
+    }
+}
+
 /// A character that changes the direction text is shown in, without showing itself, is refused
 /// wherever it is: in a comment, a string of any kind, or the code. One can make code read
 /// differently from what it does. A string that needs one writes its escape, and the error's own

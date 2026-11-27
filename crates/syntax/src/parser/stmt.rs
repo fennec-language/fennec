@@ -17,6 +17,9 @@ impl Parser {
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
             stmts.push(self.stmt()?);
         }
+        // Grown by pushing, a block holds room for 4 statements, of 280 bytes each, when it's most
+        // often one: the tree is kept, by `check` and the language server, so it's made to fit.
+        stmts.shrink_to_fit();
         Ok(stmts)
     }
 
@@ -40,7 +43,7 @@ impl Parser {
             Tok::Kw(Kw::Def) => {
                 let function = self.def()?;
                 let span = function.span;
-                Ok(Stmt { kind: StmtKind::Def(function), span })
+                Ok(Stmt { kind: StmtKind::Def(Box::new(function)), span })
             }
             _ => self.simple_stmt(),
         }
@@ -245,6 +248,7 @@ impl Parser {
                 break;
             }
         }
+        branches.shrink_to_fit();
         Ok(Stmt { kind: StmtKind::If { branches, otherwise }, span: start.to(self.prev_span()) })
     }
 

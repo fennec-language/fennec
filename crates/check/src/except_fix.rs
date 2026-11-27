@@ -541,7 +541,7 @@ fn whole_values(module: &Module) -> HashSet<(u32, u32)> {
     let mut defs: Vec<&FnDef> = stmts
         .iter()
         .filter_map(|stmt| match &stmt.kind {
-            StmtKind::Def(def) => Some(def),
+            StmtKind::Def(def) => Some(&**def),
             _ => None,
         })
         .collect();
@@ -549,7 +549,7 @@ fn whole_values(module: &Module) -> HashSet<(u32, u32)> {
         let at = stmts.len();
         statements(&def.body, &mut stmts);
         defs.extend(stmts.get(at..).unwrap_or_default().iter().filter_map(|stmt| match &stmt.kind {
-            StmtKind::Def(def) => Some(def),
+            StmtKind::Def(def) => Some(&**def),
             _ => None,
         }));
     }

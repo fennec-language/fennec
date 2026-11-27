@@ -915,6 +915,10 @@ impl Io {
 
     /// Starts a task, or gives it back when there's no stack for it.
     fn try_start(&mut self, deferred: Deferred) -> Result<TaskId, Deferred> {
+        #[cfg(test)]
+        if NO_STACKS.get() {
+            return Err(deferred);
+        }
         let Deferred { run, accounts, started } = deferred;
         let mut accounts = *accounts;
         // The task runs it from its first resume, so it's kept here until then in case it can't.
@@ -1747,6 +1751,19 @@ fn accept_failed(error: &std::io::Error) -> AfterAccept {
         ErrorKind::OutOfMemory => AfterAccept::Later,
         _ => AfterAccept::Stop,
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// For tests: this worker gets no stack for a task, as when the system refuses the memory.
+    static NO_STACKS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// For tests: has this worker get no stack for any task from now on, or again, so what it starts
+/// runs where it is and can't park.
+#[cfg(test)]
+pub(in crate::embed) fn refuse_stacks_here(refuse: bool) {
+    NO_STACKS.set(refuse);
 }
 
 /// Whether a wait here can park its task: it's a task on a worker, whose poll it can register with,

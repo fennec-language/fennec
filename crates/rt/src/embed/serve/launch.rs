@@ -381,6 +381,8 @@ fn stop(launched: &Arc<Launched>, level: u8) {
     // A read blocking the task's thread, as one by a task that can't park does, hears of nothing
     // run there: it's ended from here, by shutting its socket.
     crate::stdlib::net::cut_blocked_reads(&launched.stop);
+    // So do the other waits that hold its thread: in a poll of its own, or for a lookup's answer.
+    threads::wake_held_waits(&launched.stop);
     let stopping = Arc::clone(launched);
     launched.pool.run_on(
         launched.worker,

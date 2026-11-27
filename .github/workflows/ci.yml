@@ -684,6 +684,8 @@ jobs:
         run: .github/scripts/test-site-deploys.sh
       - name: The release workflow's nightly run building nothing on a commit that passed, against a GitHub answering from a file
         run: .github/scripts/test-release-passed.sh
+      - name: Uploading a launcher release only once it's signed, rebuilt and its own, with latest last, to a bucket in a folder
+        run: .github/scripts/test-release-upload.sh
       - name: The morning report failing on any scheduled workflow's failed night, against a GitHub answering from files
         run: .github/scripts/test-nightly-report.sh
       - name: A mutants run's counts, a timeout neither caught nor missed, and one where most timed out failing

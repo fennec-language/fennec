@@ -236,6 +236,72 @@ pub(crate) fn task_stop() -> Option<Arc<AtomicU8>> {
     STOP.with_borrow(Clone::clone)
 }
 
+/// What wakes a wait that holds its thread.
+#[cfg(any(test, feature = "threads"))]
+type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// The waits launched tasks are in that hold their threads, each by its task's stop and its
+/// wait's number, with what wakes it. A task that can't park waits this way, in a poll of its
+/// thread's own or on a lookup's answer, so nothing run there can end the wait: its stop wakes it
+/// (#1803).
+#[cfg(any(test, feature = "threads"))]
+static HELD_WAITS: Mutex<Vec<(usize, u64, Wake)>> = Mutex::new(Vec::new());
+
+/// The next held wait's number.
+#[cfg(any(test, feature = "threads"))]
+static NEXT_HELD_WAIT: AtomicU64 = AtomicU64::new(0);
+
+/// A launched task's wait that holds its thread, noted under its stop while it lasts.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) struct HeldWait {
+    noted: Option<(usize, u64)>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl HeldWait {
+    /// Notes a wait that `wake` wakes under this task's stop, if this is a launched task's. Its
+    /// waiter looks at whether it's stopped after this and before it waits, as a stop that came
+    /// first woke nobody: a stop either finds the note or is seen there.
+    pub(crate) fn noted(wake: Wake) -> HeldWait {
+        let Some(stop) = task_stop().map(|stop| Arc::as_ptr(&stop).addr()) else {
+            return HeldWait { noted: None };
+        };
+        let number = NEXT_HELD_WAIT.fetch_add(1, Ordering::Relaxed);
+        HELD_WAITS.lock().unwrap_or_else(PoisonError::into_inner).push((stop, number, wake));
+        HeldWait { noted: Some((stop, number)) }
+    }
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Drop for HeldWait {
+    fn drop(&mut self) {
+        if let Some((stop, number)) = self.noted {
+            let mut waits = HELD_WAITS.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = waits.iter().position(|(task, wait, _)| *task == stop && *wait == number) {
+                waits.swap_remove(at);
+            }
+        }
+    }
+}
+
+/// Wakes every wait holding its thread that the launched task with this stop is in, which then
+/// finds it stopped.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn wake_held_waits(stop: &Arc<AtomicU8>) {
+    let stop = Arc::as_ptr(stop).addr();
+    let wakes: Vec<Wake> = HELD_WAITS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter(|(task, ..)| *task == stop)
+        .map(|(.., wake)| Arc::clone(wake))
+        .collect();
+    // Woken with the list let go, as a wake may take a lock its waiter holds as it ends its wait.
+    for wake in wakes {
+        wake();
+    }
+}
+
 /// What the ranges of a `parallel` call on the pool take with them from the code that made it,
 /// whichever thread each runs on: they're that code's, so what cuts its waits short cuts theirs.
 #[cfg(any(test, feature = "threads"))]

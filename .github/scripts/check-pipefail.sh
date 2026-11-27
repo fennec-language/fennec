@@ -13,8 +13,10 @@
 # What it finds:
 # - With no `pipefail`, a pipe that's a command of its own. A pipe whose exit the script tests
 #   itself isn't: a condition of `if`, `elif`, `while` or `until`, one after `!`, and one in an
-#   `&&` or `||` list. With `pipefail` there, `cmd | grep -q` would fail when grep stops `cmd`
-#   early, so it isn't asked for.
+#   `&&` or `||` list whose last command only reads quietly, as `grep -q`, `cmp -s` or
+#   `diff --quiet`. With `pipefail` there, `cmd | grep -q` would fail when grep stops `cmd` early,
+#   so it isn't asked for. One like `cmd | tee out || status=$?` is found: `status` gets the exit
+#   of tee, and the exit of cmd is lost.
 # - A pipe inside `$( )` or backquotes, unless the substitution is all of an assignment,
 #   `name=$(a | b)`, and `pipefail` is in force: anywhere else, as `[ "$(a | b)" = x ]`,
 #   `echo "$(a | b)"`, an argument or `local name=$(a | b)`, its exit is lost even with it.
@@ -115,6 +117,13 @@ def commands(flat)
       .split(/;|\bthen\b|\bdo\b|\belse\b|\{|\}/).map(&:strip)
 end
 
+# Whether the last command of a pipe only reads, and says what it found by its exit alone.
+def quiet_tail?(pipe)
+  last = pipe.split("|").last.to_s.strip
+  last.match?(/\A(\S*\/)?(grep|egrep|fgrep|rg|cmp|diff)\b/) &&
+    last.match?(/\s(-[A-Za-z]*[qs][A-Za-z]*|--quiet|--silent)\b/)
+end
+
 def piped?(flat)
   commands(flat).any? { |command| command.gsub("||", "").include?("|") }
 end
@@ -126,9 +135,13 @@ def lost(text, pipefail, inside = false)
   said = []
   unless pipefail || inside
     lone = commands(flat).any? do |command|
-      next false if command.include?("&&") || command.include?("||")
       next false if command.match?(/\A(if|elif|while|until)\b/) || command.start_with?("!")
-      command.include?("|")
+      # In an `&&` or `||` list a pipe is tested only when its last command reads quietly, as
+      # `cmd | grep -q x || …`, where `pipefail` would fail it when grep stops `cmd` early. One
+      # like `cmd | tee out || status=$?` takes the exit of tee, and loses the exit of cmd.
+      parts = command.split(/&&|\|\|/, -1)
+      next command.include?("|") if parts.size == 1
+      parts.any? { |part| part.include?("|") && !quiet_tail?(part) }
     end
     said << "pipes with no pipefail" if lone
   end

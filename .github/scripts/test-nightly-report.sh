@@ -68,7 +68,9 @@ case "${words[0]} $path" in
   "run view")
     # A run's log, a line `<job>\t<step>\t<time> <what it printed>`, or its jobs.
     if [[ " ${words[*]} " == *" --log "* ]]; then
-      [ -f "$FAKE_GH/log-${words[2]}.txt" ] && cat "$FAKE_GH/log-${words[2]}.txt"
+      # A folder in the file's place stands for a log GitHub wouldn't give.
+      [ -d "$FAKE_GH/log-${words[2]}.txt" ] && exit 1
+      [ ! -f "$FAKE_GH/log-${words[2]}.txt" ] || cat "$FAKE_GH/log-${words[2]}.txt"
     else
       answer "$FAKE_GH/jobs-${words[2]}.json" '{"jobs": []}'
     fi ;;
@@ -141,12 +143,24 @@ green
 printf 'Fuzz (checked)\tFuzz every target\t2026-11-27T05:00:00.0000000Z floor: fuzz-checked/lexer did 2400000 inputs (at least 600000)\n' > "$work/gh/log-10.txt"
 printf 'Fuzz (checked)\tFuzz every target\t2026-11-27T05:00:00.0000000Z floor: fuzz-checked/parser did 0 inputs, under its floor of 450000\n' >> "$work/gh/log-10.txt"
 check "a run's floors don't change how the report ends" 0 "$(report)"
-check "a step's count is said beside its floor" yes "$(said '  fuzz-checked/lexer did 2400000 inputs (at least 600000)')"
-check "a step under its floor is said so" yes "$(said '  fuzz-checked/parser did 0 inputs, under its floor of 450000')"
+check "a step's count is said beside its floor, by its job" yes "$(said '  Fuzz (checked): fuzz-checked/lexer did 2400000 inputs (at least 600000)')"
+check "a step under its floor is said so" yes "$(said '  Fuzz (checked): fuzz-checked/parser did 0 inputs, under its floor of 450000')"
+# Two jobs saying the same count of one key are each said, not merged.
+green
+printf 'Miri (shard 1 of 8)\tRun\t2026-11-27T05:00:00.0000000Z floor: miri/passed did 50 tests (at least 11)\n' > "$work/gh/log-10.txt"
+printf 'Miri (shard 2 of 8)\tRun\t2026-11-27T05:00:00.0000000Z floor: miri/passed did 50 tests (at least 11)\n' >> "$work/gh/log-10.txt"
+report > /dev/null
+check "the first of two shards saying the same is said" yes "$(said '  Miri (shard 1 of 8): miri/passed did 50 tests')"
+check "the second of two shards saying the same is said" yes "$(said '  Miri (shard 2 of 8): miri/passed did 50 tests')"
 # A workflow whose steps are held to floors, whose run said none, is said so.
 echo '# .github/scripts/floor.sh --fuzz fuzz-checked fuzz.txt' >> "$work/repo/.github/workflows/weekly.yml"
 report > /dev/null
 check "a run of a workflow with floors that said none is said so" yes "$(said '  no step said how much it did')"
+# A log GitHub wouldn't give is said so, not read as no counts.
+mkdir -p "$work/gh/log-20.txt"
+report > /dev/null
+check "a log that couldn't be read is said so" yes "$(said "  its log couldn't be read")"
+/bin/rm -rf "$work/gh/log-20.txt"
 sed -i.bak '$d' "$work/repo/.github/workflows/weekly.yml" && /bin/rm -f "$work/repo/.github/workflows/weekly.yml.bak"
 
 green

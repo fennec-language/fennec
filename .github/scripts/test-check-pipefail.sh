@@ -3,8 +3,9 @@
 # to be found: one that is a command of its own with no `pipefail` in force, as `fennec-fuzz run … |
 # tee` was (273), and one in a substitution anywhere but all of an assignment with `pipefail`, as
 # `[ "$(./checked | sort)" = … ]` was. Nothing else may be: a pipe the script tests itself, one
-# where `pipefail` is set, a Windows job's, a `case` pattern, an `||`, and a `|` in quotes,
-# `${{ }}` or a comment.
+# where `pipefail` is set, a Windows job's, a `case` pattern, an `||` ending a pipe that reads
+# quietly, and a `|` in quotes, `${{ }}` or a comment. A pipe kept with `|| status=$?` is found: its
+# exit is tee's.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d)"
@@ -44,6 +45,11 @@ jobs:
           echo starting
           set -o pipefail
           ./fuzz run | tee fuzz.txt
+      - name: an exit kept from tee
+        run: |
+          status=0
+          ./fuzz run | tee fuzz.txt || status=$?
+          exit "$status"
   matrix:
     runs-on: ${{ matrix.os }}
     steps:
@@ -62,10 +68,10 @@ said=$("$here/check-pipefail.sh" "$work")
 status=$?
 [ $status -eq 1 ] || fail "pipes with no pipefail gave $status, not 1"
 for step in "tee" "in a loop" "after then" "carried on" "a shell of its own with no pipefail" \
-  "pipefail set too late" "on a runner that may not be Windows" "an action's step"; do
+  "pipefail set too late" "an exit kept from tee" "on a runner that may not be Windows" "an action's step"; do
   grep -qF "\"$step\" pipes with no pipefail" <<< "$said" || fail "the step \"$step\" wasn't found: $said"
 done
-[ "$(grep -c '::error::' <<< "$said")" -eq 8 ] || fail "more than the 8 pipes were found: $said"
+[ "$(grep -c '::error::' <<< "$said")" -eq 9 ] || fail "more than the 9 pipes were found: $said"
 
 # Every step here pipes inside a substitution whose exit is lost, each in its own way, all but
 # the last with `pipefail`.
@@ -154,6 +160,7 @@ jobs:
           while ./next | grep -q more; do :; done
           ! ./run 2>&1 | grep -q "a message"
           nm checked | grep -q "$SYMBOL" || failed=1
+          ./gen | cmp -s - want || echo differs
           sha256sum < <(sort x)
           case "$x" in push | schedule) ;; *) exit 1 ;; esac
           case "$status" in

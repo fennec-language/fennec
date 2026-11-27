@@ -878,6 +878,7 @@ jobs:
       - name: Fuzz programs built through LLVM
         if: matrix.half == 1
         run: |
+          set -o pipefail
           status=0
           FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed 1 --inputs 150 --seconds 300 --found found | tee fuzz.txt || status=$?
           .github/scripts/floor.sh --fuzz ci-asan-llvm fuzz.txt || status=1
@@ -891,6 +892,7 @@ jobs:
           # As the workers' job has it, since a task's stack isn't the thread's.
           ASAN_OPTIONS: detect_leaks=0:exitcode=86:detect_stack_use_after_return=0
         run: |
+          set -o pipefail
           [ -f target/release/libfennec_runtime_threads.a ] || { echo "::error::no threads runtime"; exit 1; }
           status=0
           FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed 1 --seconds 300 --stuck 60 --found found | tee fuzz.txt || status=$?

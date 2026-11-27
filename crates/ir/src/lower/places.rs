@@ -9,6 +9,15 @@ use fennec_syntax::{BinOp, Expr, ExprKind, Span, WithName};
 use super::{Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, Terminator};
 
+/// The help under a broken `where` rule at a write, `copy`'s included.
+pub(super) const WRITTEN: &str = "`where` rules are checked on every write: check the value first";
+
+/// What stops the program where `owner.field`'s `where` rule is broken, with `help`, which the
+/// runtime shows under it, after the marker.
+pub(super) fn broken_rule(owner: &str, field: &str, help: &str) -> String {
+    format!("this breaks the `where` rule on `{owner}.{field}`{}{help}", fennec_syntax::HELP_MARK)
+}
+
 /// One step from a local towards what's changed. An index is worked out once, ahead of time.
 #[derive(Clone)]
 pub(super) enum Step {
@@ -272,8 +281,7 @@ impl Lowering<'_> {
         let (then, broken) = (self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: cond?, then, otherwise: broken });
         self.current = broken;
-        let message = format!("this breaks the `where` rule on `{owner}.{field}`");
-        self.finish(Terminator::Stop { message, span });
+        self.finish(Terminator::Stop { message: broken_rule(owner, field, WRITTEN), span });
         self.current = then;
         Ok(())
     }

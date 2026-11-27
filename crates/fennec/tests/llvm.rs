@@ -35384,7 +35384,7 @@ fn copy_with_fields_runs_their_rules() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "copy_with_fields",
         r#"struct Player:
     name: str
@@ -37122,13 +37122,14 @@ def main(stdout: Stdout):
     )
 }
 
-/// An error from a set that nothing handles ends the program as pinned.
+/// An error from a set that nothing handles ends the program as one error does: said at the `fail`
+/// it started from, with the calls it passed up through.
 #[test]
 fn an_unhandled_error_of_a_set_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "error_set_unhandled",
         "error NotFound:
     name: str

@@ -1732,7 +1732,7 @@ def g() -> Score:
     _3 = make Score(_0)
     jump bb1
   bb3:
-    stop \"this breaks the `where` rule on `Score.value`\"
+    stop \"this breaks the `where` rule on `Score.value`\\u{1}help\\u{1}`where` rules are checked whenever a value is made\"
 "
     );
     assert_eq!(
@@ -1751,7 +1751,7 @@ def g() -> Score:
     _2 = make Score(1)
     jump bb1
   bb3:
-    stop \"this breaks the `where` rule on `Score.value`\"
+    stop \"this breaks the `where` rule on `Score.value`\\u{1}help\\u{1}`where` rules are checked whenever a value is made\"
 "
     );
 }

@@ -9,6 +9,9 @@ use super::places::Step;
 use super::{Context, Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, StructDef, Terminator, type_in};
 
+/// The help under a broken `where` rule where a value is made.
+const MADE: &str = "`where` rules are checked whenever a value is made";
+
 /// The module's structs the IR can hold: not generic ones.
 pub(super) fn definitions(modules: &[&Module], signatures: &Signatures) -> Vec<StructDef> {
     let mut seen = HashSet::new();
@@ -214,7 +217,7 @@ impl Lowering<'_> {
             self.emit(InstKind::MakeErr { dest, error: Operand::Local(error) }, span);
             self.finish(Terminator::Jump(join));
         } else {
-            let message = format!("this breaks the `where` rule on `{type_name}.{field}`");
+            let message = super::places::broken_rule(type_name, field, MADE);
             self.finish(Terminator::Stop { message, span });
         }
         self.current = then;

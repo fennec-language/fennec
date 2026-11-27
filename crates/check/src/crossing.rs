@@ -11,7 +11,9 @@
 //! library's included, as each copy's types are: a `Pool[T]`'s own channels make its `T` cross,
 //! and a generic function that sends a `T` makes each type it's called with cross. A function
 //! whose making can't be seen, as a parameter, captures what any arrow function or nested `def`
-//! of its type does, in any copy: that's where every such value is made.
+//! that fits its type does, in any copy: that's where every such value is made. Any taking as many
+//! values is counted, as one that can't fail fits where `fails E` is wanted, and one giving back an
+//! `int` fits where an `int?` is.
 //!
 //! What can't be worked out counts as crossing: signatures made without it say every type does,
 //! and so does a check that meets a type parameter it can't place.
@@ -371,7 +373,9 @@ struct Walk<'c> {
 impl<'c> Walk<'c> {
     fn new(checker: &'c mut Checker, reached: BTreeSet<String>) -> Self {
         let mut calls: BTreeMap<String, Vec<crate::generic_copies::Call>> = BTreeMap::new();
-        for call in checker.generic_calls.values() {
+        // A generic method's calls, as `server.serve(respond)`'s, are kept apart from a generic
+        // function's, and its copies hand on what they hand on too.
+        for call in checker.generic_calls.values().chain(checker.generic_method_calls.values()) {
             calls.entry(call.caller.clone()).or_default().push(call.clone());
         }
         let mut methods: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -550,9 +554,17 @@ impl<'c> Walk<'c> {
         let mut copies = Vec::new();
         for call in self.calls.get(key).into_iter().flatten() {
             let Some(entry) = self.checker.program.functions.get(&call.callee) else { continue };
-            let names = self.checker.program.generics_of(entry).into_iter().map(|generic| generic.name);
+            // Each type with the name it was chosen for. A nested function's call chooses none of
+            // the parameters it has from the function it's in: they're as this copy has them.
             let types = call.types.iter().map(|ty| self.checker.settled(ty).substitute(given));
-            copies.push((call.callee.clone(), names.zip(types).collect()));
+            let mut chosen: Given = call.names.iter().cloned().zip(types).collect();
+            chosen.extend(
+                given
+                    .iter()
+                    .filter(|(name, _)| entry.inherited.iter().any(|generic| generic.name == *name))
+                    .cloned(),
+            );
+            copies.push((call.callee.clone(), chosen));
         }
         let mut made: BTreeSet<(String, Vec<Type>)> = BTreeSet::new();
         for ty in types.values() {
@@ -589,8 +601,17 @@ impl<'c> Walk<'c> {
                 Type::Param(_) => self.unplaced = true,
                 // A function crossing takes what it captures with it, and runs where it's sent,
                 // given what it's called with there, and giving back what it gives, or fails with.
-                Type::Arrow(..) => {
-                    queue.extend(self.arrows.get(&ty).into_iter().flatten().cloned());
+                // It may be any function that fits its type: one that can't fail where `fails E` is
+                // wanted, gives back an `int` where an `int?` is, or takes an `int?` where an `int`
+                // is given. Only one taking as many values fits it.
+                Type::Arrow(params, _) => {
+                    for (made, captured) in &self.arrows {
+                        if let Type::Arrow(taken, _) = made
+                            && taken.len() == params.len()
+                        {
+                            queue.extend(captured.iter().cloned());
+                        }
+                    }
                     queue.extend(ty.children().into_iter().cloned());
                 }
                 Type::Function(key) => {

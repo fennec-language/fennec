@@ -232,3 +232,93 @@ fn what_crosses_is_worked_out_only_when_asked_for() {
     assert!(unwound.is_err());
     assert!(!checked().worked_out());
 }
+
+/// What every program of the tests below starts with: `Kept`, which a function handed to a task
+/// captures, and `Mine`, which the program keeps to itself.
+const KEPT_AND_MINE: &str = "from std.concurrent import Crashed\n\n\
+    struct Kept:\n    level: int\n\n\
+    struct Mine:\n    n: int\n\n\
+    error Oops:\n    why: str\n\n    def message(self) -> str:\n        return self.why\n\n\
+    struct Circle:\n    r: int\n\n\
+    struct Square:\n    side: int\n\n\
+    type Shape = Circle | Square\n\n";
+
+/// A function goes where a wider one is wanted, and a task runs it as the wider one: what it
+/// captures crosses with it, whichever way it's narrower. It's an arrow function or a nested
+/// `def`, here, or one a function gives back as wider than it's made.
+#[test]
+fn a_function_given_where_a_wider_one_goes_takes_what_it_captures_across() {
+    // What the task runs, called as `step` is, what it's given, and what's made to give it.
+    let ways = [
+        ("() -> int fails Oops", "step()?", "() => kept.level"),
+        ("() -> int?", "step()", "() => kept.level"),
+        ("(int) -> int fails Oops", "step(1)?", "nested(by: int) -> int:\n        return by + kept.level"),
+        ("(int) -> int?", "step(1)", "nested(by: int) -> int:\n        return by + kept.level"),
+        ("(int) -> int", "step(1)", "nested(by: int?) -> int:\n        return (by else 0) + kept.level"),
+        ("() -> Shape", "step()", "nested() -> Circle:\n        return Circle(r=kept.level)"),
+        ("() -> int?", "step()", "making(kept)"),
+    ];
+    for (wanted, called, made) in ways {
+        let fails = if wanted.contains("fails") { " | Oops" } else { "" };
+        let (written, given) = match made.strip_prefix("nested") {
+            Some(def) => (format!("def step{def}\n    "), "step"),
+            None => (String::new(), made),
+        };
+        let source = format!(
+            "{KEPT_AND_MINE}def run(step: {wanted}) fails Crashed{fails}:\n    with launch(() => {called})? as task:\n        _ = task\n\n\
+             def making(kept: Kept) -> () -> int?:\n    def step() -> int:\n        return kept.level\n    return step\n\n\
+             def main(stdout: Stdout) fails Crashed{fails}:\n    kept = Kept(level=3)\n    mine = Mine(n=1)\n    \
+             {written}run({given})?\n    stdout.print(kept.level, mine.n)\n"
+        );
+        crosses(&source, &["Kept"], &["Mine"]).unwrap_or_else(|problems| panic!("{wanted}: {problems}"));
+    }
+}
+
+/// A function the standard library runs on other tasks takes what it captures across, given to
+/// a generic method as the program's own `run` is, with nothing for its `E`, or to a server's
+/// router or a pool's `open`.
+#[test]
+fn a_function_handed_to_a_generic_method_takes_what_it_captures_across() {
+    let generic = format!(
+        "{KEPT_AND_MINE}def calm[E: Worded](step: () -> int fails E) -> int:\n    got = step() except why:\n        return len(why.message())\n    return got\n\n\
+         struct Runner:\n    name: str\n\n    \
+         def run[E: Worded](self, step: () -> int fails E) fails Crashed:\n        with launch(() => calm(step))? as task:\n            _ = task\n\n\
+         def main(stdout: Stdout) fails Crashed:\n    kept = Kept(level=3)\n    mine = Mine(n=1)\n    \
+         runner = Runner(name=\"r\")\n    runner.run(() => kept.level)?\n    stdout.print(runner.name, mine.n)\n"
+    );
+    crosses(&generic, &["Kept"], &["Mine"]).unwrap();
+    let routed = "from std.net import NetError, Request, Response, Router\n\n\
+        struct Kept:\n    text: str\n\n\
+        struct Mine:\n    n: int\n\n\
+        def main(net: Net, stdout: Stdout) fails NetError:\n    kept = Kept(text=\"hi\")\n    mine = Mine(n=0)\n    \
+        def item(request: Request, id: int) -> Response:\n        return Response(status=200, body=f\"{kept.text}{id}{request.path}\".encode())\n    \
+        mut router = Router()\n    router.get(\"/n/{id}\", item)\n    \
+        with net.listen(0)? as server:\n        server.serve(router)\n    stdout.print(mine.n)\n";
+    crosses(routed, &["Kept"], &["Mine"]).unwrap();
+    let pooled = "from std.concurrent import Crashed, PoolError, pool\n\n\
+        struct Kept:\n    level: int\n\n\
+        struct Mine:\n    n: int\n\n\
+        struct Link:\n    number: int\n\n    def reset(self) -> bool:\n        return True\n\n    def close(self):\n        pass\n\n\
+        error Refused:\n    why: str\n\n    def message(self) -> str:\n        return self.why\n\n\
+        def opened(level: int) -> Link fails Refused:\n    return Link(number=level)\n\n\
+        def main(stdout: Stdout) fails PoolError | Crashed | Refused:\n    kept = Kept(level=2)\n    mine = Mine(n=0)\n    \
+        with pool[Link, Refused](open=() => opened(kept.level)?, size=1)? as links:\n        with links.take()? as link:\n            \
+        stdout.print(link.number + mine.n)\n";
+    crosses(pooled, &["Kept"], &["Mine"]).unwrap();
+}
+
+/// A nested generic function has its own type parameters as its call chooses them, and the
+/// ones it has from the function it's in as that function's copy has them: what it sends of the
+/// outer one's crosses, and what it's given for its own, kept to itself, doesn't.
+#[test]
+fn a_nested_generic_function_sends_its_outer_types_as_the_outer_copy_has_them() {
+    let source = "from std.concurrent import Closed, Sender, Timeout, channel\n\n\
+        struct Point:\n    x: int\n\n\
+        struct Size:\n    w: int\n\n\
+        def outer[T](to: Sender[T], item: T) fails Closed:\n    \
+        def inner[U](extra: U) -> U fails Closed:\n        to.send(item)?\n        return extra\n    \
+        _ = inner(Size(w=1))?\n\n\
+        def main(stdout: Stdout) fails Closed | Timeout:\n    \
+        with channel[Point](size=2) as points:\n        outer(points.sender(), Point(x=1))?\n        stdout.print(points.receive())\n";
+    crosses(source, &["Point"], &["Size"]).unwrap();
+}

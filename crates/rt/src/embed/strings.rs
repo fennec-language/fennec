@@ -518,6 +518,36 @@ pub(super) const WORD_BYTES: usize = 8;
 const LOW_BITS: u64 = u64::from_ne_bytes([1; 8]);
 const HIGH_BITS: u64 = LOW_BITS << 7;
 
+/// The top bit of each byte of `word` that's `byte`, and of no other: unlike the look
+/// [`word_in_place_from`] takes, which can also set one above a byte that is, it needs no second
+/// look. Each byte's low seven bits plus `0x7f` carry into its top bit when any is set, never into
+/// the next byte, so only a byte that's all zeros once `byte` is taken away keeps its top bit clear.
+#[inline]
+fn bytes_that_are(word: u64, byte: u64) -> u64 {
+    const LOW_SEVEN: u64 = !HIGH_BITS;
+    let others = word ^ (byte * LOW_BITS);
+    !(((others & LOW_SEVEN) + LOW_SEVEN) | others) & HIGH_BITS
+}
+
+/// Where `byte` next is in `whole`'s bytes from byte `from` on, or `None`: a separator of one
+/// byte, as most `split`s are, found with one look per word and none per place.
+#[inline]
+fn byte_place_from((whole, length): (&[u64], usize), byte: u64, from: usize) -> Option<usize> {
+    let skipped = from / WORD_BYTES;
+    let used = whole.get(..length.div_ceil(8)).unwrap_or(whole).get(skipped..).unwrap_or_default();
+    // The bytes before `from` in its word are passed over.
+    let mut before = u64::MAX << ((from % WORD_BYTES) * 8);
+    for (at, word) in used.iter().enumerate() {
+        let places = bytes_that_are(u64::from_le(*word), byte) & before;
+        if places != 0 {
+            let place = (skipped + at) * 8 + usize::try_from(places.trailing_zeros() / 8).unwrap_or(0);
+            return (place < length).then_some(place);
+        }
+        before = u64::MAX;
+    }
+    None
+}
+
 /// Where `part`, of one to eight bytes, first is in `whole`, in bytes, with nothing copied: a word
 /// at a time to where `part`'s first byte is, then whether the rest follows. It takes one look per
 /// place, so it's linear whatever the strings hold.
@@ -579,17 +609,16 @@ fn each_place_of_from(
     start: usize,
     mut found: impl FnMut(usize),
 ) {
+    let used = whole.get(..length.div_ceil(8)).unwrap_or(whole);
     let mask = if size >= WORD_BYTES { u64::MAX } else { (1 << (size * 8)) - 1 };
     let (part, first) = (part & mask, part & 0xff);
-    let used = whole.get(..length.div_ceil(8)).unwrap_or(whole);
     // Where the next one may start: after the last found.
     let mut from = start;
     for (at, word) in used.iter().enumerate() {
         let word = u64::from_le(*word);
-        let others = word ^ (first * LOW_BITS);
-        // Each byte that's `first` has its top bit set here, along with perhaps some byte above
-        // one that is, which the look below turns down.
-        let mut places = others.wrapping_sub(LOW_BITS) & !others & HIGH_BITS;
+        // Each byte that's `first` has its top bit set here, and no other, so a separator of one
+        // byte, as most are, needs no second look.
+        let mut places = bytes_that_are(word, first);
         while places != 0 {
             let byte = usize::try_from(places.trailing_zeros() / 8).unwrap_or(0);
             places &= places - 1;
@@ -600,10 +629,13 @@ fn each_place_of_from(
             if place + size > length {
                 return;
             }
-            let next = used.get(at + 1).map_or(0, |next| u64::from_le(*next));
-            let shift = byte * 8;
-            let here = if shift == 0 { word } else { (word >> shift) | (next << (64 - shift)) };
-            if here & mask == part {
+            // One place to call `found` from, so the work it does for each part stays inlined here.
+            if size == 1 || {
+                let next = used.get(at + 1).map_or(0, |next| u64::from_le(*next));
+                let shift = byte * 8;
+                let here = if shift == 0 { word } else { (word >> shift) | (next << (64 - shift)) };
+                here & mask == part
+            } {
                 found(place);
                 from = place + size;
             }
@@ -1140,7 +1172,8 @@ fn find_long(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> i64 {
 
 /// Where `part` next is in `whole` from byte `from` on, in bytes, or `None`, with nothing
 /// copied: its first eight bytes are looked for as [`word_in_place_from`] does, then the rest
-/// compared eight at a time. For a loop over a `split`, which looks again from past each one.
+/// compared eight at a time, and a part of one byte as [`byte_place_from`] looks. For a loop over
+/// a `split`, which looks again from past each one.
 #[expect(
     clippy::inline_always,
     reason = "a loop over a `split` calls it for each part, through `split_at_header`, and once `find_range` called it too it stopped being inlined there, which cost log_crunch 0.8%"
@@ -1155,6 +1188,9 @@ pub(super) fn place_from(
         return None;
     }
     let head = part.first().map_or(0, |word| u64::from_le(*word));
+    if size == 1 {
+        return byte_place_from(whole, head & 0xff, from);
+    }
     let mut start = from;
     while let Some(at) = word_in_place_from(whole, head, size.min(WORD_BYTES), start) {
         if at + size > whole.1 {
@@ -1608,6 +1644,52 @@ mod place_tests {
         finish();
     }
 
+    /// Every byte's top bit is set in what `bytes_that_are` gives exactly when that byte is the
+    /// one looked for, for every byte, beside the bytes the faster look trips on: one more or less,
+    /// and with its lowest bit turned, above and below a byte that is.
+    #[test]
+    fn bytes_that_are_a_byte_are_exactly_those() {
+        for looked in 0..=255_u8 {
+            let near =
+                [looked, looked ^ 1, looked.wrapping_add(1), looked.wrapping_sub(1), 0, 0x80, 0xff, b'/'];
+            for first in near {
+                for second in near {
+                    let bytes = [first, second, looked, second, first, looked ^ 1, second, looked];
+                    let marked = super::bytes_that_are(u64::from_le_bytes(bytes), u64::from(looked));
+                    let wanted = bytes.iter().enumerate().fold(0_u64, |marks, (at, byte)| {
+                        if *byte == looked { marks | (0x80 << (at * 8)) } else { marks }
+                    });
+                    assert_eq!(marked, wanted, "{looked:#x} in {bytes:x?}");
+                }
+            }
+        }
+    }
+
+    /// `byte_place_from` finds where Rust's own search finds a byte, from every place in texts
+    /// where the byte one below the looked-for one follows it, which the faster look calls a match.
+    #[test]
+    fn a_byte_is_found_from_each_place_where_rusts_own_search_finds_it() {
+        let texts = ["a/./b//.c", "././././././././x", "", "/", "no slash at all here", "\u{e9}/\u{e9}."];
+        for text in texts {
+            let mut packed = text.as_bytes().to_vec();
+            packed.resize(text.len().div_ceil(8) * 8, 0);
+            let words: Vec<u64> = packed
+                .chunks(8)
+                .map(|eight| u64::from_le_bytes(eight.try_into().unwrap_or([0; 8])))
+                .collect();
+            for looked in [b'/', b'.', b'x', 0] {
+                for from in 0..=text.len() + 1 {
+                    let wanted = text
+                        .as_bytes()
+                        .get(from..)
+                        .and_then(|rest| rest.iter().position(|byte| *byte == looked).map(|at| at + from));
+                    let found = super::byte_place_from((&words, text.len()), u64::from(looked), from);
+                    assert_eq!(found, wanted, "{looked:#x} in {text:?} from {from}");
+                }
+            }
+        }
+    }
+
     /// A slice of a long ASCII text that ends where or before it starts, by its positions or
     /// once they're counted from the end, is the empty string.
     #[test]
@@ -1730,6 +1812,8 @@ mod split_tests {
             // ASCII, whose long parts' characters are their bytes, with none counted.
             format!("/{long}/x/{long}"),
             "  spaced \t out\nwords  ".to_owned(),
+            // A `.` after each `/`, which looking for `/` a word at a time could take for one.
+            format!("a/./b/./{long}/./c//."),
         ];
         for headers in [true, false] {
             let tables =

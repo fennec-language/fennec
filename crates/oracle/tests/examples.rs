@@ -77,3 +77,65 @@ fn the_examples_it_can_never_model_are_examples_it_doesnt_run() {
         assert!(!running.lines().any(|line| line.trim() == name), "{name} runs now: take it off never.txt");
     }
 }
+
+/// Every example is in exactly one of `runs.txt`, `never.txt`, `excluded.txt` and `gaps.txt`. So a
+/// new example the oracle runs is held to its `.out` file from the day it comes, and one it can't
+/// run comes with a line saying why, rather than the share it checks going down without a word.
+#[test]
+fn every_example_is_in_one_list() {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let running = std::fs::read_to_string(here.join("runs.txt")).unwrap();
+    let mut lists: Vec<(&str, Vec<&str>)> = vec![(
+        "runs.txt",
+        running.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect(),
+    )];
+    lists.push(("never.txt", fennec_oracle::report::never().into_iter().map(|(name, _)| name).collect()));
+    lists.push((
+        "excluded.txt",
+        fennec_oracle::report::excluded().into_iter().map(|(name, ..)| name).collect(),
+    ));
+    lists.push(("gaps.txt", fennec_oracle::report::gaps().into_iter().map(|(name, _)| name).collect()));
+    let mut wrong = Vec::new();
+    for example in every_example(here).unwrap() {
+        let holding: Vec<&str> = lists
+            .iter()
+            .filter(|(_, names)| names.contains(&example.name.as_str()))
+            .map(|(list, _)| *list)
+            .collect();
+        match holding.as_slice() {
+            [_] => {}
+            [] => wrong.push(format!(
+                "{} is in no list: add it to runs.txt if the oracle runs it, or to gaps.txt with what stops it",
+                example.name
+            )),
+            several => wrong.push(format!("{} is in {}", example.name, several.join(" and "))),
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every example in `gaps.txt` is an example, says what stops it, and still doesn't run: one that
+/// comes to run is taken off for `runs.txt`, where it's held to its `.out` file.
+#[test]
+fn the_gaps_are_examples_it_doesnt_run_yet() {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let all = every_example(here).unwrap();
+    let mut wrong = Vec::new();
+    for (name, why) in fennec_oracle::report::gaps() {
+        let Some(example) = all.iter().find(|example| example.name == name) else {
+            wrong.push(format!("{name} in gaps.txt isn't an example with a .out file"));
+            continue;
+        };
+        if why.is_empty() {
+            wrong.push(format!("{name} in gaps.txt says nothing of what stops it"));
+        }
+        match judge(example) {
+            Verdict::Skipped(_) => {}
+            Verdict::Matches => {
+                wrong.push(format!("{name} runs now: take it off gaps.txt and add it to runs.txt"))
+            }
+            Verdict::Differs(how) => wrong.push(format!("{name} runs now and prints something else:\n{how}")),
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

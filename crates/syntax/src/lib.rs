@@ -33,7 +33,7 @@ pub use modules::{
     member as std_member, module_as_value, package_member, python_module, shared_declaration, short_module,
     std_import, std_module, written_type,
 };
-pub use parser::{parse, parse_at, parse_prelude, parse_written};
+pub use parser::{NESTING_LIMIT, parse, parse_at, parse_prelude, parse_written};
 pub use sources::{Sources, Trace};
 pub use span::{Copied, Span};
 pub use stdlib::{

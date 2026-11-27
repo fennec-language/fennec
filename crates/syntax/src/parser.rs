@@ -207,7 +207,16 @@ pub(crate) struct Parser {
     /// assignment, a bare call or what `return` gives. Only there may `except` follow it, so the
     /// next expression takes it and what it holds sees it unset.
     value_at_top: bool,
+    /// How deep the tree being read is here: each bracket, block, type argument, pattern and
+    /// prefix operator around this point, and each link of a chain like `a + b + c` or
+    /// `x.f().g()`. Past `NESTING_LIMIT`, reading stops with an error, as everything that walks the
+    /// tree after, here and in the checker, the formatter and the compiler, would run out of stack.
+    depth: usize,
 }
+
+/// How deep a program may nest, counted as `Parser::depth` counts it. Real code nests a few dozen
+/// deep. A thousand is far past that, and reads in well under the stack every reader has.
+pub const NESTING_LIMIT: usize = 1_000;
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
@@ -220,7 +229,27 @@ impl Parser {
             old_mut: Vec::new(),
             old_pub: Vec::new(),
             value_at_top: false,
+            depth: 0,
         }
+    }
+
+    /// One level deeper, or an error past `NESTING_LIMIT`. Whoever goes deeper comes back up with
+    /// `self.depth -= 1`; `nested` does both.
+    fn deeper(&mut self) -> Result<(), Diagnostic> {
+        if self.depth >= NESTING_LIMIT {
+            return Err(Diagnostic::new(format!("this nests more than {NESTING_LIMIT} deep"), self.span())
+                .with_help("put a part of it in a variable or a function of its own, and use that"));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Reads with `parse` one level deeper.
+    fn nested<T>(&mut self, parse: impl FnOnce(&mut Self) -> Result<T, Diagnostic>) -> Result<T, Diagnostic> {
+        self.deeper()?;
+        let read = parse(self);
+        self.depth -= 1;
+        read
     }
 
     fn current(&self) -> &Token {
@@ -950,6 +979,11 @@ impl Parser {
     /// A type, or several joined by `|`: a union, like `Circle | Square`, or the errors after
     /// `fails` or in `Result[int, A | B]`. Either is one written type named `|`.
     pub(crate) fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+        self.nested(Self::type_here)
+    }
+
+    /// A type, one level deeper than what holds it.
+    fn type_here(&mut self) -> Result<TypeExpr, Diagnostic> {
         let first = self.member_type()?;
         if !self.at_p(Punct::Pipe) {
             return Ok(first);
@@ -976,7 +1010,7 @@ impl Parser {
             && matches!(self.peek_at(1), Tok::Name(_) | Tok::P(Punct::LParen))
         {
             self.advance();
-            let mut held = self.member_type()?;
+            let mut held = self.nested(Self::member_type)?;
             let optional = std::mem::take(&mut held.optional);
             let span = start.to(self.prev_span());
             return Ok(TypeExpr { name: "shared".to_owned(), args: vec![held], optional, span });

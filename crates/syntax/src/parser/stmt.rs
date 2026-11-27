@@ -9,6 +9,11 @@ use crate::token::{Kw, Punct, Tok};
 impl Parser {
     /// The body after a `:`: an indented block, or one simple statement on the same line.
     pub(super) fn block(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
+        self.nested(Self::block_here)
+    }
+
+    /// A block, one level deeper than what holds it.
+    fn block_here(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
         if !self.at(&Tok::Newline) {
             return Ok(vec![self.simple_stmt()?]);
         }

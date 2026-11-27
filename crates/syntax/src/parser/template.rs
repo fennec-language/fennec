@@ -21,7 +21,7 @@ use crate::token::FPart;
 pub(crate) const TEMPLATE: &str = "Template";
 
 /// A template string's parts, written in as the `Template` call that builds it.
-pub(super) fn template(parts: Vec<FPart>, span: Span) -> Result<Expr, Diagnostic> {
+pub(super) fn template(parts: Vec<FPart>, span: Span, depth: usize) -> Result<Expr, Diagnostic> {
     let mut strings = Vec::new();
     let mut values = Vec::new();
     let mut expressions = Vec::new();
@@ -32,7 +32,7 @@ pub(super) fn template(parts: Vec<FPart>, span: Span) -> Result<Expr, Diagnostic
             FPart::Text(more) => text.push_str(&more),
             FPart::Expr { source, offset, spec } => {
                 strings.push(std::mem::take(&mut text));
-                values.push(super::expr::interpolated(&source, offset, "template")?);
+                values.push(super::expr::interpolated(&source, offset, "template", depth)?);
                 expressions.push(source);
                 specs.push(spec.unwrap_or_default());
             }

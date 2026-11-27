@@ -49,6 +49,11 @@ impl Parser {
 
     /// A pattern, or several separated by `|`, any of which matches.
     pub(super) fn pattern(&mut self) -> Result<Pattern, Diagnostic> {
+        self.nested(Self::pattern_here)
+    }
+
+    /// A pattern, one level deeper than what holds it.
+    fn pattern_here(&mut self) -> Result<Pattern, Diagnostic> {
         let first = self.one_pattern()?;
         if !self.at_p(Punct::Pipe) {
             return Ok(first);

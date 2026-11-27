@@ -173,3 +173,142 @@ fn a_name_with_two_underscores_in_a_row_is_the_compilers() {
         .is_ok()
     );
 }
+
+/// Every way a program nests, each a different way to read deeper: prefix operators, brackets,
+/// calls, chains of operators, of `.` and of `?`, a conditional's `else`, lambdas, what's in an
+/// f-string's or a template's braces, types, patterns and blocks.
+pub(crate) const NESTINGS: [&str; 24] = [
+    "minus",
+    "tilde",
+    "not",
+    "parens",
+    "list",
+    "dict",
+    "call",
+    "sum",
+    "power",
+    "comparison",
+    "or",
+    "and",
+    "field",
+    "method",
+    "index",
+    "try",
+    "conditional",
+    "lambda",
+    "fstring",
+    "template",
+    "type",
+    "pattern",
+    "block",
+    "shared",
+];
+
+/// A program nesting `depth` deep the way `nesting` names.
+pub(crate) fn nested(nesting: &str, depth: usize) -> String {
+    let around = |open: &str, inner: &str, close: &str| {
+        format!("{}{inner}{}", open.repeat(depth), close.repeat(depth))
+    };
+    let chain = |between: &str| vec!["a"; depth + 1].join(between);
+    let value = match nesting {
+        "minus" => format!("{}1", "-".repeat(depth)),
+        "tilde" => format!("{}1", "~".repeat(depth)),
+        "not" => format!("{}True", "not ".repeat(depth)),
+        "parens" => around("(", "1", ")"),
+        "list" => around("[", "1", "]"),
+        "dict" => around("{1: ", "1", "}"),
+        "call" => around("f(", "1", ")"),
+        "sum" => chain(" + "),
+        "power" => chain(" ** "),
+        "comparison" => chain(" < "),
+        "or" => chain(" or "),
+        "and" => chain(" and "),
+        "field" => format!("a{}", ".b".repeat(depth)),
+        "method" => format!("a{}", ".f()".repeat(depth)),
+        "index" => format!("a{}", "[0]".repeat(depth)),
+        "try" => format!("a{}", "?".repeat(depth)),
+        "conditional" => format!("{}b", "a if c else ".repeat(depth)),
+        "lambda" => format!("{}x", "x => ".repeat(depth)),
+        "fstring" => format!("f\"{{{}}}\"", around("(", "1", ")")),
+        "template" => format!("t\"{{{}}}\"", around("(", "1", ")")),
+        "type" => return format!("def f(x: {}):\n    pass\n", around("list[", "int", "]")),
+        "shared" => return format!("def f(x: {}Scores):\n    pass\n", "shared ".repeat(depth)),
+        "pattern" => {
+            return format!(
+                "def f(x: int):\n    match x:\n        case {}:\n            pass\n",
+                around("Some(", "y", ")")
+            );
+        }
+        "block" => {
+            let mut lines = vec!["def f():".to_owned()];
+            lines.extend((1..=depth).map(|level| format!("{}if c:", "    ".repeat(level))));
+            lines.push(format!("{}pass", "    ".repeat(depth + 1)));
+            return lines.join("\n") + "\n";
+        }
+        _ => unreachable!("no nesting called {nesting}"),
+    };
+    format!("def f():\n    x = {value}\n")
+}
+
+/// The deepest `nesting` reads at, found by halving.
+pub(crate) fn deepest(nesting: &str) -> usize {
+    let (mut fits, mut too_deep) = (0, fennec_syntax::NESTING_LIMIT + 1);
+    while too_deep - fits > 1 {
+        let depth = usize::midpoint(fits, too_deep);
+        if fennec_syntax::parse(&nested(nesting, depth)).is_ok() { fits = depth } else { too_deep = depth }
+    }
+    fits
+}
+
+/// Runs `test` on a stack as big as the one the commands parse on.
+pub(crate) fn on_a_big_stack(test: impl FnOnce() + Send + 'static) {
+    let ran =
+        std::thread::Builder::new().stack_size(512 << 20).spawn(test).map(std::thread::JoinHandle::join);
+    assert!(matches!(ran, Ok(Ok(()))), "the test failed on its big stack, as it says above");
+}
+
+/// Past `NESTING_LIMIT`, every way a program nests stops reading with an error, rather than
+/// running out of stack, as it did at 1,000,000 deep and, in `fennec fmt`, at 2,000 brackets. Each
+/// still reads hundreds deep. Blocks can't be written a million deep, which would take terabytes of
+/// indentation, so they're tried at a few thousand.
+#[test]
+fn every_way_to_nest_is_refused_past_the_limit() {
+    on_a_big_stack(|| {
+        for nesting in NESTINGS {
+            let depth = if nesting == "block" { 3_000 } else { 1_000_000 };
+            let error = fennec_syntax::parse(&nested(nesting, depth)).err();
+            assert_eq!(
+                error.as_ref().map(|diagnostic| diagnostic.message.as_str()),
+                Some("this nests more than 1000 deep"),
+                "{nesting}"
+            );
+            assert!(error.is_some_and(|diagnostic| diagnostic.help.is_some()), "{nesting}");
+            let deepest = deepest(nesting);
+            assert!(deepest >= 300, "{nesting} reads only {deepest} deep");
+        }
+    });
+}
+
+/// What reads at the limit, the checker, the formatter and everything after them take without
+/// running out of stack: `fennec check` and `fennec fmt` answer for each way to nest at its
+/// deepest, rather than stopping on a signal.
+#[test]
+fn the_commands_take_the_deepest_program_that_reads() {
+    let dir = std::env::temp_dir().join(format!("fennec-nesting-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let folder = fennec_temp::Temp::at(dir);
+    on_a_big_stack(move || {
+        for nesting in NESTINGS {
+            let file = folder.path().join(format!("{nesting}.fen"));
+            std::fs::write(&file, nested(nesting, deepest(nesting))).unwrap();
+            for command in ["check", "fmt"] {
+                let ran = crate::executables::fennec_command().arg(command).arg(&file).output().unwrap();
+                let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+                assert!(
+                    ran.status.code().is_some() && !said.contains("overflow"),
+                    "{command} {nesting}: {said}"
+                );
+            }
+        }
+    });
+}

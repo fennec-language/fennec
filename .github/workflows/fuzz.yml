@@ -152,17 +152,27 @@ jobs:
         id: fuzz
         env:
           ONLY: ${{ matrix.only }}
-        # With no target named, every target runs. ONLY may name several, a word each.
+          JOB: ${{ matrix.name }}
+          # A job that builds natively has to: a program that can't be built fails, rather than
+          # passing as an input run. The others leave the native targets out, as they say.
+          FENNEC_EXPECT_LLVM: ${{ matrix.only != '' && '1' || '' }}
+        # With no target named, every target runs. ONLY may name several, a word each. Each target
+        # is then held to the least it does a night, in `.github/floors.txt`.
         run: |
           read -ra names <<< "$ONLY"
-          ./fennec-fuzz run --seed "$GITHUB_RUN_ID" --seconds 240 --found found "${names[@]}" | tee fuzz.txt
+          status=0
+          ./fennec-fuzz run --seed "$GITHUB_RUN_ID" --seconds 240 --found found "${names[@]}" | tee fuzz.txt || status=$?
+          .github/scripts/floor.sh --fuzz "fuzz-$JOB" fuzz.txt || status=1
+          exit "$status"
       - name: Keep what was found
         if: failure() && steps.fuzz.outcome == 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-found-${{ matrix.name }}
           retention-days: 7
-          path: found
+          path: |
+            found
+            fuzz.txt
       - name: File an issue
         if: failure() && steps.fuzz.outcome == 'failure'
         env:

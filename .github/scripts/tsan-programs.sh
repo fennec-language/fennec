@@ -113,7 +113,10 @@ if [ "$seconds" -gt 0 ]; then
     echo "::error::random programs failed under ThreadSanitizer"
     failed=1
   fi
+  # The fuzzer's whole output, kept with what it found, since `$work` goes when this ends.
+  mkdir -p "$root/found" && cp "$work/fuzz.txt" "$root/found/tsan-fuzz.txt"
+  "$(dirname "$0")/floor.sh" --fuzz "${FLOOR_PREFIX:-tsan}-programs" "$work/fuzz.txt" || failed=1
 fi
-[ "$runs" -ge 60 ] || { echo "::error::only $runs runs"; failed=1; }
+"$(dirname "$0")/floor.sh" "${FLOOR_PREFIX:-tsan}/runs" "$runs" || failed=1
 
 exit "$failed"

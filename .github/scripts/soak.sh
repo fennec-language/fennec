@@ -94,6 +94,11 @@ echo "minute rss_kb live_blocks printed_lines task_held spare_words table_pages"
 stopped=no
 stalled=no
 printed=0
+# Minutes read whole, and of them those where the runtime's live report said how many blocks it
+# held: with none, every measure but resident memory reads 0 a minute and fits as level, measuring
+# nothing.
+read_minutes=0
+reported=0
 for minute in $(seq 1 "$minutes"); do
   rss='' live='' held='' spare='' pages=''
   for _ in $(seq 1 60); do
@@ -123,6 +128,8 @@ for minute in $(seq 1 "$minutes"); do
   [ "$now" -gt "$printed" ] || [ "$stalled" != no ] || stalled=$minute
   printed=$now
   echo "$minute ${rss:-0} ${live:-0} $printed ${held:-0} ${spare:-0} ${pages:-0}" >> "$work/samples"
+  read_minutes=$minute
+  [ -n "$live" ] && reported=$((reported + 1))
   echo "$name $([ "$where" = task ] && echo "in a task" || echo "on its own thread"), minute $minute: at least ${rss:-?} KB resident and ${live:-?} live blocks, $printed lines printed"
 done
 kill "$pid" 2> /dev/null
@@ -155,6 +162,11 @@ failed=0
   else
     echo "One round run to its end blocked no thread: \`$counted\`."
     echo
+  fi
+  if [ "$read_minutes" -gt 0 ] && [ "$reported" -eq 0 ]; then
+    echo "The runtime's live report (\`FENNEC_LIVE_REPORT\`) was never written, so its blocks, a task's list and what's kept for reuse were never read: only resident memory was."
+    echo
+    failed=1
   fi
   if [ "$stalled" != no ]; then
     echo "No round finished in minute $stalled: it stopped making progress, so its curves say nothing."
@@ -210,5 +222,6 @@ if [ -n "$waiting" ]; then
   echo "::error::the soak of $name $where passes now: take SOAK_WAITING=$waiting out of its job"
   exit 1
 fi
+"$(dirname "$0")/floor.sh" soak/minutes "$read_minutes" || failed=1
 [ "$failed" -eq 0 ] || echo "::error::the soak of $name failed: see its report"
 exit "$failed"

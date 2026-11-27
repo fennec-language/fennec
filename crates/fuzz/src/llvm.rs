@@ -77,10 +77,12 @@ fn forget_ended() {
 
 /// The process a folder in the temporary folder belongs to, when fuzzing made it: a run's
 /// `fennec-fuzz-`, a builder's `fennec-fuzz-llvm-` or a cutter's `fennec-fuzz-small-`, then
-/// its process id.
+/// its process id, and for a run, which of its runs it is.
 fn fuzzing_process(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("fennec-fuzz-")?;
     let pid = rest.strip_prefix("llvm-").or_else(|| rest.strip_prefix("small-")).unwrap_or(rest);
+    let (pid, run) = pid.split_once('-').unwrap_or((pid, "0"));
+    run.parse::<u64>().ok()?;
     pid.parse().ok()
 }
 
@@ -950,15 +952,16 @@ mod tests {
     /// readers, the tests' own folders and anything else alone.
     #[test]
     fn it_knows_the_folders_fuzzing_made() {
-        let names = ["fennec-fuzz-12", "fennec-fuzz-llvm-34", "fennec-fuzz-small-56"];
-        assert_eq!(names.map(fuzzing_process), [Some(12), Some(34), Some(56)]);
+        let names = ["fennec-fuzz-12", "fennec-fuzz-12-3", "fennec-fuzz-llvm-34", "fennec-fuzz-small-56"];
+        assert_eq!(names.map(fuzzing_process), [Some(12), Some(12), Some(34), Some(56)]);
         let others = [
             "fennec-fuzz-readers",
             "fennec-fuzz-group-7",
             "fennec-fuzz-short-8",
             "fennec-cli-9",
             "fennec-fuzz-",
+            "fennec-fuzz-12-x",
         ];
-        assert_eq!(others.map(fuzzing_process), [None; 5]);
+        assert_eq!(others.map(fuzzing_process), [None; 6]);
     }
 }

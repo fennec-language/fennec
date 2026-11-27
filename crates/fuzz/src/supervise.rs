@@ -563,7 +563,11 @@ impl Run<'_> {
     /// that ended the last.
     pub(crate) fn until(&self, seconds: Option<u64>, inputs: u64) -> Result<Outcome, String> {
         let deadline = seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds));
-        let folder = std::env::temp_dir().join(format!("fennec-fuzz-{}", std::process::id()));
+        // A folder of each run's own: two runs in one process, as tests are, would otherwise share
+        // one, and the first to end would take the other's progress with it.
+        static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let folder = std::env::temp_dir().join(format!("fennec-fuzz-{}-{run}", std::process::id()));
         crate::owned::own(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
         let progress = folder.join(self.target.name);
         let said = folder.join(format!("{}.stderr", self.target.name));
@@ -577,9 +581,15 @@ impl Run<'_> {
                 watch(&mut child, self.stuck, deadline, MOST_KILOBYTES, || heard.check(&progress, &said));
             // A stopped worker can't remove its own.
             crate::llvm::forget(child.id());
+            // The worker notes an input as it starts it, and `inputs` once it's run them all. So
+            // only inputs before the one it last noted are done, and the one it failed on: one it
+            // was stopped in at the deadline isn't counted, nor one it never got to.
             let reached = noted(&progress).unwrap_or(next);
+            let Some(failure) = failure else {
+                outcome.inputs = reached;
+                break;
+            };
             outcome.inputs = reached + 1;
-            let Some(failure) = failure else { break };
             outcome.note(failure, reached, said_in(&said, heard.from(Some(reached))));
             next = reached + 1;
         }
@@ -763,6 +773,43 @@ mod tests {
         assert_eq!((failed.failure, failed.inputs.clone()), (Failure::Wrong, vec![1]));
         let said = String::from_utf8_lossy(&failed.said[0]).into_owned();
         assert!(said.ends_with("why input 1 failed\n"), "{said:?}");
+    }
+
+    /// Only inputs a worker finished are counted: every one when it notes the end, those before the
+    /// one it was stopped in at the deadline, and none when it ends having noted nothing, as a
+    /// worker that dies at its start does. Counting the input it last noted, done or not, read a
+    /// worker that ran nothing as one input run.
+    #[cfg(unix)]
+    #[test]
+    fn only_inputs_a_worker_finished_are_counted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fennec-fuzz-counted-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let note =
+            |number: u8| format!("printf '\\{number:03o}\\000\\000\\000\\000\\000\\000\\000' > \"$6\"\n");
+        let counted = |name: &str, body: &str, seconds: Option<u64>| {
+            let worker = dir.join(name);
+            std::fs::write(&worker, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let run = super::Run {
+                fennec_fuzz: &worker,
+                target: &crate::targets::UTF8,
+                seed: 1,
+                stuck: Duration::from_secs(30),
+            };
+            let outcome = run.until(seconds, 3).unwrap();
+            assert!(outcome.failures.is_empty(), "{name}");
+            outcome.inputs
+        };
+        let all = format!("{}{}{}{}exit 0\n", note(0), note(1), note(2), note(3));
+        let stopped = format!("{}{}{}sleep 30\n", note(0), note(1), note(2));
+        let counts = (
+            counted("all", &all, None),
+            counted("stopped", &stopped, Some(1)),
+            counted("nothing", "exit 0\n", None),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(counts, (3, 2, 0));
     }
 
     #[test]

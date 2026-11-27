@@ -88,6 +88,18 @@ failed_steps() {
     | [.steps[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | .name] as $steps
     | "  failed: \(.name) :: \(if ($steps | length) == 0 then "no step failed, the job ended \($how)" else $steps | join(", ") end)"'
 }
+# How much each step of run `$1` did, beside its floor, a line each as `floor.sh` said it in the
+# run's log, so "ran 0 inputs" can't look green. A workflow `$2` whose steps are held to floors but
+# whose run said none is said so: its steps didn't get as far as counting.
+floors_of() {
+  local said
+  said=$(gh run view "$1" --repo "$repository" --log 2> /dev/null | sed -n 's/^.*floor: /  /p' | awk '!seen[$0]++')
+  if [ -n "$said" ]; then
+    echo "$said"
+  elif grep -q 'floor\.sh' "$here/../workflows/$2" 2> /dev/null; then
+    echo "  no step said how much it did"
+  fi
+}
 # Whether a scheduled workflow's night failed, which fails the report as main's CI does.
 nights=0
 # How the newest finished scheduled run of the workflow `file`, called `name`, ended, in a line:
@@ -127,6 +139,7 @@ nightly() {
   read -r run _ conclusion started _ <<< "$(awk '$2 == "completed" { print; exit }' <<< "$runs")"
   [ -n "${run:-}" ] || return 0
   echo "$name on ${started%%T*}: $conclusion, https://github.com/$repository/actions/runs/$run"
+  floors_of "$run" "$file"
   if [ "$conclusion" != success ]; then
     nights=1
     failed_steps "$run" || echo "  failed: its jobs couldn't be read"

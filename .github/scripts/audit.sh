@@ -96,7 +96,7 @@ for kit in examples/projects/*/; do
 done
 echo "- The heap audit ran $ran examples and kits, and $failed failed." | tee -a "$report"
 # So a run that found no programs can't pass for one that found nothing wrong.
-if [ "$ran" -lt 100 ]; then
+if ! "$(dirname "$0")/floor.sh" audit/programs "$ran"; then
   echo "audit: only $ran programs ran" >&2
   exit 1
 fi

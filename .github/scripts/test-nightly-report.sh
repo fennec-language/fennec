@@ -65,7 +65,13 @@ case "${words[0]} $path" in
     [ -f "$FAKE_GH/workflow-${path##*/}.json" ] || exit 1
     answer "$FAKE_GH/workflow-${path##*/}.json" ;;
   "run list") answer "$FAKE_GH/runs-$workflow${event:+-$event}.json" ;;
-  "run view") answer "$FAKE_GH/jobs-${words[2]}.json" '{"jobs": []}' ;;
+  "run view")
+    # A run's log, a line `<job>\t<step>\t<time> <what it printed>`, or its jobs.
+    if [[ " ${words[*]} " == *" --log "* ]]; then
+      [ -f "$FAKE_GH/log-${words[2]}.txt" ] && cat "$FAKE_GH/log-${words[2]}.txt"
+    else
+      answer "$FAKE_GH/jobs-${words[2]}.json" '{"jobs": []}'
+    fi ;;
   "run download")
     [ -d "$FAKE_GH/download-${words[2]}" ] || exit 1
     mkdir -p "$dir" && cp -R "$FAKE_GH/download-${words[2]}/." "$dir/" ;;
@@ -100,7 +106,7 @@ made() {
 day=86400
 # Every workflow made a month ago, each scheduled one's newest run a success, and main's CI green.
 green() {
-  /bin/rm -f "$work"/gh/*.json
+  /bin/rm -f "$work"/gh/*.json "$work"/gh/*.txt
   for file in nightly.yml weekly.yml proofs.yml; do
     made "$file" active $((30 * day))
   done
@@ -129,6 +135,19 @@ check "a quoted name is read without its quotes" yes "$(said 'Weekly, quoted on 
 check "Proofs' scheduled run is read" yes "$(said 'Proofs on ')"
 check "a workflow with no schedule isn't read" no "$(said 'Pushed')"
 [ "$(report)" = 0 ] || cat "$work/out"
+
+# Each step's count beside its floor, as `floor.sh` printed it in the run's log, under the run.
+green
+printf 'Fuzz (checked)\tFuzz every target\t2026-11-27T05:00:00.0000000Z floor: fuzz-checked/lexer did 2400000 inputs (at least 600000)\n' > "$work/gh/log-10.txt"
+printf 'Fuzz (checked)\tFuzz every target\t2026-11-27T05:00:00.0000000Z floor: fuzz-checked/parser did 0 inputs, under its floor of 450000\n' >> "$work/gh/log-10.txt"
+check "a run's floors don't change how the report ends" 0 "$(report)"
+check "a step's count is said beside its floor" yes "$(said '  fuzz-checked/lexer did 2400000 inputs (at least 600000)')"
+check "a step under its floor is said so" yes "$(said '  fuzz-checked/parser did 0 inputs, under its floor of 450000')"
+# A workflow whose steps are held to floors, whose run said none, is said so.
+echo '# .github/scripts/floor.sh --fuzz fuzz-checked fuzz.txt' >> "$work/repo/.github/workflows/weekly.yml"
+report > /dev/null
+check "a run of a workflow with floors that said none is said so" yes "$(said '  no step said how much it did')"
+sed -i.bak '$d' "$work/repo/.github/workflows/weekly.yml" && /bin/rm -f "$work/repo/.github/workflows/weekly.yml.bak"
 
 green
 runs nightly.yml-schedule "$(run 12 completed failure $((day / 2)))"

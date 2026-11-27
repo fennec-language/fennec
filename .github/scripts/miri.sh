@@ -153,4 +153,8 @@ done < "$work/mine"
     done
   done
 } >> "$report"
-[ "$bad" -eq 0 ]
+# Listed isn't checked: a shard whose tests all failed, ran out of time or weren't supported by
+# Miri checked nothing, so it's held to the tests that passed. MIRI_ONLY, a try by hand, isn't.
+held=0
+[ -n "$only" ] || "$(dirname "$0")/floor.sh" miri/passed "$passed" || held=1
+[ "$bad" -eq 0 ] && [ "$held" -eq 0 ]

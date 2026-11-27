@@ -113,7 +113,10 @@ jobs:
           # Ubuntu, `fennec` needed glibc 2.39, and the runtime 2.38 to link a program.
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, container: "almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b" }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, container: "almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b" }
-          - { os: macos-latest, target: aarch64-apple-darwin }
+          # Each Mac is built with the Xcode `release-env.sh` pins, and fails if its image hasn't
+          # it. The Arm Mac's is the signing Mac's, 27.2, so a rebuild before signing checks it
+          # too (`rebuild-release.sh`); GitHub's `xcode-27` image has it.
+          - { os: xcode-27, target: aarch64-apple-darwin }
           # On an Intel Mac, so its archive is tried on the machine it's for.
           - { os: macos-15-intel, target: x86_64-apple-darwin }
           # Programs link with LLD and MinGW-w64's libraries there: see `.github/scripts/windows.sh`.
@@ -177,14 +180,20 @@ jobs:
             env PATH="$reach" RUSTUP_HOME="$RUNNER_TEMP/no-rustup" CARGO_HOME="$RUNNER_TEMP/no-cargo" \
               FENNEC_HOME="$RUNNER_TEMP/fennec-home" "$@"
           }
+          # What each program printed is read by an assignment, which fails the step when the
+          # program does: inside `[ "$( )" = … ]`, or piped to `sort`, its exit was lost.
           try "$fennec" build "$source/hello.fen" -o hello
-          [ "$(try ./hello)" = "$(cat "$source/hello.out")" ]
+          printed=$(try ./hello)
+          [ "$printed" = "$(cat "$source/hello.out")" ]
           try "$fennec" build --release "$source/hello.fen" -o hello_release
-          [ "$(try ./hello_release)" = "$(cat "$source/hello.out")" ]
+          printed=$(try ./hello_release)
+          [ "$printed" = "$(cat "$source/hello.out")" ]
           try "$fennec" build "$source/parallel_loops.fen" -o threads
-          [ "$(try ./threads | sort)" = "$(sort "$source/parallel_loops.out")" ]
+          printed=$(try ./threads)
+          [ "$(sort <<< "$printed")" = "$(sort "$source/parallel_loops.out")" ]
           try "$fennec" build --release "$source/parallel_loops.fen" -o threads_release
-          [ "$(try ./threads_release | sort)" = "$(sort "$source/parallel_loops.out")" ]
+          printed=$(try ./threads_release)
+          [ "$(sort <<< "$printed")" = "$(sort "$source/parallel_loops.out")" ]
           # On Linux, a release build asks for no loader, so it runs with nothing from the machine.
           if [ "$RUNNER_OS" = Linux ]; then
             for program in hello_release threads_release; do
@@ -314,7 +323,8 @@ jobs:
           for again in second/*; do
             archive="${again#second/}"
             if cmp -s "first/$archive" "$again"; then
-              echo "the same: $archive $(sha256sum < "$again" | cut -c1-16)"
+              sum=$(sha256sum < "$again")
+              echo "the same: $archive ${sum:0:16}"
               continue
             fi
             differ=1

@@ -1097,11 +1097,19 @@ mod tests {
     #[test]
     fn a_loop_over_a_split_ends_each_part_where_rusts_own_split_does() {
         begin();
-        let texts =
-            ["/api/orders/42", "a//b/", "", "/", "\u{e9}t\u{e9}/x", "2026-11-12T09:00:00.000Z INFO api GET"];
+        let texts = [
+            "/api/orders/42",
+            "a//b/",
+            "",
+            "/",
+            "\u{e9}t\u{e9}/x",
+            "2026-11-12T09:00:00.000Z INFO api GET",
+            "a/./b",
+            "a block's worth: /./. /api/./v2/./users/./42/.",
+        ];
         for text in texts {
             let words = with(|state| Some(super::header(state, text))).unwrap();
-            for separator in ["/", " ", "//", "\u{e9}", "00:"] {
+            for separator in ["/", " ", "//", "\u{e9}", "00:", "."] {
                 let between = super::inline(separator.as_bytes());
                 let mut parts = Vec::new();
                 let mut at = 0;

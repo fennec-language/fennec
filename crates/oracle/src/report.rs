@@ -105,6 +105,16 @@ pub fn excluded() -> Vec<(&'static str, &'static str, &'static str)> {
         .collect()
 }
 
+/// The examples the oracle could model but doesn't yet, from `gaps.txt`, each with what stops it.
+pub fn gaps() -> Vec<(&'static str, &'static str)> {
+    include_str!("../gaps.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_once(" | "))
+        .collect()
+}
+
 /// Why an example is left out of the useful set, and what covers it, when it's one.
 fn excluded_why(name: &str) -> Option<(&'static str, &'static str)> {
     excluded().into_iter().find(|(excluded, ..)| *excluded == name).map(|(_, why, check)| (why, check))

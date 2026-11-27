@@ -15,6 +15,13 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# Every step runs in bash with `pipefail`, so a step that pipes what it runs through `tee` fails
+# when what it ran does, and its "Keep what was found" and "File an issue" steps run. Without it
+# the step took `tee`'s exit, and every failure found from 10-31 to 11-26 was dropped.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   fuzz:
     name: Fuzz (${{ matrix.name }})
@@ -110,9 +117,9 @@ jobs:
               # The runtimes with the heap's audit in them, beside `fennec`, which `http-audited`'s
               # server is built with, under FENNEC_AUDIT=1, so its heap is audited as it ends.
               for features in audit threads,audit; do
-                dir="target/$(echo "$features" | tr , -)"
+                dir="target/${features//,/-}"
                 cargo build --release --locked -p fennec-runtime --features "$features" --target-dir "$dir"
-                cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_$(echo "$features" | tr , _).a"
+                cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_${features//,/_}.a"
               done
             fi
             if [[ " $ONLY " == *" fault-writes "* ]]; then
@@ -127,6 +134,14 @@ jobs:
               echo "FENNEC_FAULTED=$PWD/faulted/fennec" >> "$GITHUB_ENV"
             fi
           elif [ -n "$BUILD_FOR" ]; then
+            # The C in it (SQLite, mimalloc) is built by clang, so it's instrumented the way
+            # rustc's LLVM instruments the Rust, for the LLVM sanitizer runtime it links. GCC
+            # folds SQLite's two identical `aiOff` tables (FTS3's and FTS5's) into one, yet still
+            # registers both with AddressSanitizer at that one address. The runtime took that for
+            # an odr-violation and stopped the fuzzer before its first input, every night from
+            # 11-08. Clang keeps the two apart.
+            target=${BUILD_FOR//-/_}
+            export "CC_$target=clang" "CXX_$target=clang++"
             cargo build --release --locked -p fennec-fuzz -Zbuild-std --target "$BUILD_FOR"
             cp "target/$BUILD_FOR/release/fennec-fuzz" fennec-fuzz
           else
@@ -158,9 +173,9 @@ jobs:
             echo "The daily fuzzing run ($HOW) found something: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
             echo '```'
-            grep -E 'failures|kept in' fuzz.txt
+            grep -E 'failures|kept in|^  ' fuzz.txt
             echo '```'
             echo
-            echo "The cut-down inputs are in the run's artifact. Each one runs with \`fennec-fuzz one <target> <file>\`. Once it's fixed, add it to \`crates/fuzz/found/<target>/\`."
+            echo "The cut-down inputs are in the run's artifact, each with what it wrote to standard error beside it as \`<input>.stderr\`. Each one runs with \`fennec-fuzz one <target> <file>\`. Once it's fixed, add it to \`crates/fuzz/found/<target>/\`."
           } > issue.md
           gh issue create --title "Fuzzing found a failure ($HOW)" --body-file issue.md --label "area: tooling" --repo "$GITHUB_REPOSITORY"

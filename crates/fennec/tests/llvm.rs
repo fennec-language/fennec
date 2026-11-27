@@ -12187,6 +12187,21 @@ def main(stdout: Stdout):
     stdout.print(run(Back(width=1)))
 "#;
 
+/// A function that can't fail, given where one that `fails E` goes, runs as itself: through a
+/// generic whose `E` is then nothing, whose `?` and `except` have nothing to leave with or take,
+/// through a named error's parameter and a field, and with `E` bound by `Worded`. One that does
+/// fail, given beside it, still fails as it says. What it prints is what the reference evaluator
+/// prints (`a_function_that_cant_fail_runs_where_one_that_fails_goes`).
+#[test]
+fn a_function_that_cant_fail_runs_where_one_that_fails_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("no_fail_fits_fails", include_str!("fixtures/no_fail_fits_fails.fen"))?;
+    assert_eq!(printed, include_str!("fixtures/no_fail_fits_fails.out"));
+    Ok(())
+}
+
 /// A type parameter named only in a parameter's type, as `E` is in `make: () -> T fails E`: a
 /// generic source written in where it's used doesn't know it, and a call to a generic function
 /// learns it from the function it's given.
@@ -26840,6 +26855,50 @@ fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
     ] {
         assert!(said.contains(sides), "{sides}: {said}");
     }
+    Ok(())
+}
+
+/// A generic struct's `shared list[T]` field is refused as not built yet, in the checker's words,
+/// where it once checked and stopped once rewritten for running with an internal error asking to
+/// be reported (#2650). A generic struct whose `shared` field's type is written out builds and runs.
+#[test]
+fn a_shared_value_of_a_type_parameter_is_refused_and_one_written_out_runs() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared_type_parameter")?;
+    let build = |name: &str, source: &str| -> std::io::Result<Output> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join(name).to_string_lossy()],
+            &dir,
+        )
+    };
+    let refused = build(
+        "of_t",
+        "struct Pool[T]:\n    items: shared list[T]\n\ndef add_one(pool: Pool[int]):\n    lock pool.items as ref held:\n        \
+         held.append(1)\n    return\n\ndef main(stdout: Stdout):\n    shared numbers = [1, 2]\n    \
+         add_one(Pool(items=numbers))\n    lock numbers as held:\n        stdout.print(held[2] + 1)\n    return\n",
+    )?;
+    let said = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(!refused.status.success(), "it built");
+    assert!(
+        said.contains("a `shared` value of a type parameter, as `shared list[T]`, isn't built yet"),
+        "{said}"
+    );
+    assert!(!said.contains("internal error"), "{said}");
+    let written_out = build(
+        "written_out",
+        "struct Pool[T]:\n    first: T\n    counts: shared list[int]\n\ndef add_one[T](pool: Pool[T]):\n    \
+         lock pool.counts as ref held:\n        held.append(1)\n    return\n\ndef main(stdout: Stdout):\n    \
+         shared counts = [1, 2]\n    add_one(Pool(first=\"a\", counts=counts))\n    lock counts as held:\n        \
+         stdout.print(held[2] + 1)\n    return\n",
+    )?;
+    assert!(written_out.status.success(), "{}", String::from_utf8_lossy(&written_out.stderr));
+    let ran = Command::new(dir.join("written_out")).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2\n");
     Ok(())
 }
 

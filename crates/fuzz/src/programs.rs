@@ -531,7 +531,7 @@ mod tests {
             "print(ran_fine(() => capped(",
             "print(either(() => paired(capped(",
             "dict[Gauge, int]()",
-            "dict[Gauge32, int]()",
+            "dict[F32Gauge, int]()",
             "dict[Level, int]()",
             "dict[Level32, int]()",
             ": set[Marked] = {",
@@ -1091,7 +1091,7 @@ mod tests {
     /// exit code 1 after what it printed, saying so.
     #[test]
     fn the_deadlock_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
-        use super::ast::{Program, STUCK_WAYS, Sticking, Stmt, StuckWay};
+        use super::ast::{Expr, Program, STUCK_WAYS, Sticking, Stmt, StuckWay};
         let run = |body: Vec<Stmt>| {
             let program = Program { body, threadless: false };
             let source = source::source(&program);
@@ -1124,6 +1124,17 @@ mod tests {
             assert_eq!(
                 said.as_deref(),
                 Some("a deadlock: every task is waiting for another, and nothing can wake them")
+            );
+            // Inside a `with` block, the deadlock stops the program where it waits: the block
+            // never ends, so its source neither closes nor runs its `except:` (seed 45818761612,
+            // input 200, which the nightly hid).
+            let stuck = Stmt::Stuck(Sticking { id: 1, way: *way, n });
+            let (printed, _) = run(vec![Stmt::With("held".to_owned(), Expr::Int(1), vec![stuck])]);
+            assert!(
+                printed.contains("open 1\n")
+                    && !printed.contains("undone 1")
+                    && !printed.contains("closed 1"),
+                "{way:?}: {printed}"
             );
         }
     }
@@ -1255,6 +1266,71 @@ mod tests {
                 assert!(stopped, "{way:?}: {:?}\n{source}", oracle.ended);
             }
         }
+    }
+
+    /// A `Ruled` statement's `Gauge{id}` at every id a program gives, 32 among them, is a type no
+    /// other part of a program names: `Gauge32` was the `f32` struct every program has, so a
+    /// program with a 32nd statement ruled was refused (seed 45818761612, input 189). It's loaded
+    /// as `fennec build` loads it, whose names are checked once for the whole file.
+    #[test]
+    fn a_ruled_statement_names_no_type_a_program_has_already() {
+        use super::ast::{Program, RuleStep, RuleWay, Ruling, Stmt};
+        let folder = std::env::temp_dir().join(format!("fennec-fuzz-ruled-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap_or_else(|err| unreachable!("{err}"));
+        let path = folder.join("program.fen");
+        for id in [1, 32, 64] {
+            let steps = vec![RuleStep { way: RuleWay::Raised, value: 2, breaks: false }];
+            let program = Program { body: vec![Stmt::Ruled(Ruling { id, steps })], threadless: true };
+            std::fs::write(&path, source::source(&program)).unwrap_or_else(|err| unreachable!("{err}"));
+            let loaded = fennec_kit::load(&path, "program.fen", fennec_kit::Entry::Main);
+            assert!(loaded.is_ok(), "id {id}: {}", loaded.err().unwrap_or_default());
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// Every way of an `Exchanged` step, three times over, with places of both signs, for each type,
+    /// in a local and in a field, checks, and the evaluator prints what the oracle prints: items
+    /// swapped where the list is long enough, directly and through `ref`, and rows updated where
+    /// their `Id` is live, `False` where it's been removed.
+    #[test]
+    fn the_exchanged_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{EXCHANGE_WAYS, ExchangeStep, Exchanging, POP_TYS, Program, Stmt};
+        let body = POP_TYS
+            .iter()
+            .enumerate()
+            .flat_map(|(round, ty)| {
+                [false, true].into_iter().map(move |in_field| {
+                    let place = |at: usize| i64::try_from(at % 8).unwrap_or(0) - 4;
+                    let steps = EXCHANGE_WAYS
+                        .iter()
+                        .chain(EXCHANGE_WAYS.iter())
+                        .chain(EXCHANGE_WAYS.iter())
+                        .enumerate()
+                        .map(|(at, way)| ExchangeStep {
+                            way: *way,
+                            first: place(at + round),
+                            second: place(at * 3 + round + usize::from(in_field)),
+                            which: (at + round) % 3,
+                            row: (at + round) % 3,
+                        })
+                        .collect();
+                    let id = round * 2 + usize::from(in_field) + 1;
+                    Stmt::Exchanged(Exchanging { id, ty: *ty, in_field, steps })
+                })
+            })
+            .collect();
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 
     /// Every way of a `Popped` step, twice over, for each type, in a local and in a field, checks,
@@ -1523,6 +1599,7 @@ mod tests {
                 Crew {
                     id,
                     items: items.to_vec(),
+                    rows: vec![vec![1], vec![2]],
                     counts: counts.to_vec(),
                     locks,
                     tasks,
@@ -1568,6 +1645,16 @@ mod tests {
                 ],
                 vec![vec![1, 2, 3, 4]],
             )),
+            Stmt::Crewed(crew(
+                5,
+                &[1, 2],
+                &[(0, 1)],
+                vec![
+                    vec![Change::Turns(2, vec![Change::AppendRow(0, Arg::Times(2))])],
+                    vec![Change::Bump(3, Arg::Literal(1))],
+                ],
+                vec![vec![0, 5], vec![1, 7]],
+            )),
         ]
     }
 
@@ -1577,6 +1664,8 @@ mod tests {
     ///   task crashes on its second number;
     /// - a crash in a later lock after an earlier one's `ref self` call with a computed argument;
     /// - a place outside the list, an overflow, and a task with nothing to crash on;
+    /// - a loop appending to a row in one lock, then a crash in the next, which segfaulted as the
+    ///   first lock's end took the row out again and the crash wrote it over the bag as `None`;
     /// - 20 crews picked at random.
     ///
     /// Run with `FENNEC_CHECK_PROOFS=1` or `FENNEC_AUDIT=1`, a false proof or a block left fails it.
@@ -1589,7 +1678,7 @@ mod tests {
             state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
         };
-        body.extend((5..25).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
+        body.extend((6..26).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
         let native = crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}"));
         let mut crashed = 0;
         for stmt in body {

@@ -28,12 +28,44 @@ else
   if [ "$release_os" = Darwin ]; then
     # macOS's linker names a program by a hash of it before it's stripped, which notes where each
     # object it linked was and when it was made: the checkout's path is taken out of those, and
-    # their times are zero.
-    release_flags="$release_flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/"
+    # their times are zero. `-S` leaves those notes out altogether, as stripping would: `fennec`
+    # links objects named by their paths under rustup's and Cargo's homes, `/Users/runner/...` on
+    # GitHub, so its UUID differed from one machine's home to another's.
+    release_flags="$release_flags -C link-arg=-Wl,-reproducible -C link-arg=-Wl,-oso_prefix,$PWD/ -C link-arg=-Wl,-S"
     export ZERO_AR_DATE=1
     # The runtime's C parts are built for the macOS a program is built for, as LLVM's code is,
     # rather than for the machine's SDK.
     export MACOSX_DEPLOYMENT_TARGET=14.0
+    # Xcode's linker and compiler lay out what they make differently from one version to the next,
+    # so each Mac target is built with one Xcode, by its build number, here and in a rebuild before
+    # signing: GitHub's default Xcode moved from 26.5 to 26.6 between two runs. One of that build
+    # is used: the one selected, or one named for its version in /Applications, as GitHub's images
+    # name theirs. Without it, nothing is built. When the signing Mac's Xcode moves on, the pin is
+    # moved here first, in a pull request, and a rebuild has to match before the next signing.
+    case "$release_target" in
+      aarch64-apple-darwin) release_xcode=27.2 release_xcode_build=27B52 ;;
+      x86_64-apple-darwin) release_xcode=26.3 release_xcode_build=17C529 ;;
+      *) echo "release-env: no Xcode is pinned for $release_target" >&2; return 1 ;;
+    esac
+    release_found=""
+    for release_developer in "${DEVELOPER_DIR:-}" "$(xcode-select -p 2> /dev/null)" \
+      "/Applications/Xcode_$release_xcode.app/Contents/Developer" "/Applications/Xcode_$release_xcode.0.app/Contents/Developer"; do
+      [ -n "$release_developer" ] && [ -d "$release_developer" ] || continue
+      if [ "$(DEVELOPER_DIR="$release_developer" xcodebuild -version 2> /dev/null | sed -n 's/^Build version //p')" = "$release_xcode_build" ]; then
+        release_found=$release_developer
+        break
+      fi
+    done
+    if [ -z "$release_found" ]; then
+      echo "release-env: $release_target is built with Xcode $release_xcode ($release_xcode_build), and this machine has no Xcode of that build: install it beside yours, as /Applications/Xcode_$release_xcode.app, or select it with DEVELOPER_DIR. This one has $(xcodebuild -version 2> /dev/null | paste -s -d ' ' -)" >&2
+      return 1
+    fi
+    export DEVELOPER_DIR="$release_found"
+    # Where that Xcode is installed differs, `Xcode_27.2.app` on GitHub and `Xcode.app` on the
+    # signing Mac, and clang notes its SDK's and headers' paths in what the runtime's C parts are
+    # built into: they're written as /xcode. Clang finds its own headers by its real path, past
+    # any link, so that's mapped too.
+    release_cflags="$release_cflags -ffile-prefix-map=$release_found=/xcode -ffile-prefix-map=$(cd "$release_found" && pwd -P)=/xcode"
   else
     # GCC doesn't hand its prefix maps to the assembler, which notes where each assembly file
     # was, as ring's are, in what it writes: `/github/home/.cargo/registry/...` in CI's container.

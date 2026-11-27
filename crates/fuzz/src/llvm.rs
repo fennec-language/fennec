@@ -408,9 +408,11 @@ fn outcome(source: &str, work: &Path, release: bool) -> Result<Option<Outcome>, 
 /// were pinned before the engines were removed.
 const PINNED: [&str; 2] = ["seeds/llvm", "found/llvm"];
 
-/// Whether a file is a pinned output rather than an input.
+/// Whether a file is a pinned output rather than an input, or what a kept input wrote to standard
+/// error when it was found, as `<input>.stderr`.
 pub(crate) fn is_pinned_output(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| extension == "out" || extension == "fails")
+    path.extension()
+        .is_some_and(|extension| extension == "out" || extension == "fails" || extension == "stderr")
 }
 
 /// The outcome pinned for an input, if it's one of those with an output pinned.

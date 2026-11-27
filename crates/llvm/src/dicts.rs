@@ -2500,7 +2500,16 @@ found:
             return Err("a walk over something else".to_owned());
         };
         let (entries, used) = self.entries_of(&block);
-        let (next_place, entry_place) = (self.place_for(&Kind::Int), self.place_for(&Kind::Int));
+        let next_place = self.place_for(&Kind::Int);
+        // Where the walk is, for its pair's parts: one slot for the item's local, wherever it's
+        // walked to, as the blocks aren't written in the order they run.
+        let entry_place = if let Some((place, _)) = self.walks.get(&dest.0) {
+            place.clone()
+        } else {
+            let place = self.place_for(&Kind::Int);
+            self.walks.insert(dest.0, (place.clone(), String::new()));
+            place
+        };
         let (count, _) = self.operand(index)?;
         let (saved, first, start) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{saved} = load i64, ptr {next_place}"));
@@ -2534,7 +2543,6 @@ found:
         self.start_block(&found);
         self.line(&format!("store i64 {step}, ptr {next_place}"));
         self.line(&format!("store i64 {going}, ptr {entry_place}"));
-        self.walks.insert(dest.0, (entry_place, String::new()));
         if self.known.walk_items.get(&dest.0).is_some_and(|(_, pair)| *pair) {
             // A pair never made holds nothing, so letting go of it lets go of nothing.
             let (held, text) = (self.slot(dest), self.text_of(&self.kind_of(dest)?.clone()));

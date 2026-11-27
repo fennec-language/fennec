@@ -109,7 +109,12 @@ impl Context<'_> {
             Type::Table(item) => Type::Table(inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
             Type::Dict(key, value) => Type::Dict(inner(key), inner(value)),
-            Type::Result(ok, error) => Type::Result(inner(ok), inner(error)),
+            // What fails with nothing, as a `T fails E` whose `E` a function that can't fail filled
+            // in, is the `T`, as the checker has it.
+            Type::Result(ok, error) => match self.concrete(error, subst) {
+                error if error.fails_with_nothing() => self.concrete(ok, subst),
+                error => Type::Result(inner(ok), Box::new(error)),
+            },
             Type::Tuple(items) => Type::Tuple(items.iter().map(|item| self.concrete(item, subst)).collect()),
             // A generic type among a union's members, like `Secret[str]` in `str | Secret[str]`, is
             // its copy, as anywhere else.
@@ -205,6 +210,23 @@ impl Context<'_> {
         Some(name)
     }
 
+    /// What a function's type gives back says of its type parameters, given a function's: a
+    /// function that can't fail, given where one that `fails E` goes, says `E` is nothing, as
+    /// the checker has it.
+    fn unify_returns(&self, pattern: &Type, actual: &Type, subst: &mut Subst) {
+        match (pattern, actual) {
+            (Type::Result(ok, error), plain)
+                if !matches!(plain, Type::Result(..) | Type::Unknown | Type::Var(_)) =>
+            {
+                self.unify(ok, plain, subst);
+                if let Type::Param(name) = &**error {
+                    subst.entry(name.clone()).or_insert_with(Type::nothing_failed);
+                }
+            }
+            _ => self.unify(pattern, actual, subst),
+        }
+    }
+
     /// Works out what the type parameters in `pattern` stand for, given a value's type.
     fn unify(&self, pattern: &Type, actual: &Type, subst: &mut Subst) {
         match (pattern, actual) {
@@ -236,7 +258,7 @@ impl Context<'_> {
                 for (param, other) in params.iter().zip(others) {
                     self.unify(param, other, subst);
                 }
-                self.unify(returns, other_returns, subst);
+                self.unify_returns(returns, other_returns, subst);
             }
             // A function passed by name, like `one` for `make: () -> T fails E`: its signature
             // says what `T` and `E` are.
@@ -245,7 +267,7 @@ impl Context<'_> {
                 for (param, other) in params.iter().zip(&signature.params) {
                     self.unify(param, &other.ty, subst);
                 }
-                self.unify(returns, &signature.returns, subst);
+                self.unify_returns(returns, &signature.returns, subst);
             }
             (Type::Generic(name, args), Type::Named(copy)) => {
                 let Some(instance) = self.type_instance(copy).filter(|instance| instance.base == *name)

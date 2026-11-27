@@ -239,8 +239,8 @@ jobs:
           # minutes. The `others` part has no such test.
           if [ "$PART" != others ]; then variants+=(audit 'threads,audit'); fi
           for features in "${variants[@]}"; do
-            dir="target/$(echo "$features" | tr , -)"
-            name="fennec_runtime_$(echo "$features" | tr , _)"
+            dir="target/${features//,/-}"
+            name="fennec_runtime_${features//,/_}"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
             cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
           done
@@ -295,7 +295,8 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          echo "load when it failed: $(uptime | sed -E 's/.*load averages?: *//')"
+          load=$(uptime | sed -E 's/.*load averages?: *//')
+          echo "load when it failed: $load"
       - name: Check the tests left nothing in the temporary folder
         if: ${{ !cancelled() }}
         shell: bash
@@ -438,8 +439,8 @@ jobs:
           # With the two audited ones, which tests of a program built for an audit link, so none
           # builds them in the middle of the run (see the test job).
           for features in threads audit threads,audit; do
-            dir="target/$(echo "$features" | tr , -)"
-            name="fennec_runtime_$(echo "$features" | tr , _)"
+            dir="target/${features//,/-}"
+            name="fennec_runtime_${features//,/_}"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
             cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
           done
@@ -500,8 +501,8 @@ jobs:
         run: |
           cargo build --locked -p fennec-runtime
           for features in threads; do
-            dir="target/$(echo "$features" | tr , -)"
-            name="fennec_runtime_$(echo "$features" | tr , _)"
+            dir="target/${features//,/-}"
+            name="fennec_runtime_${features//,/_}"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
             cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
           done
@@ -571,9 +572,9 @@ jobs:
           cargo build --release --locked -p fennec -p fennec-runtime
           # A build for an audit links one of the last two. A program with a task needs threads.
           for features in threads audit threads,audit; do
-            dir="target/$(echo "$features" | tr , -)"
+            dir="target/${features//,/-}"
             cargo build --release --locked -p fennec-runtime --features "$features" --target-dir "$dir"
-            cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_$(echo "$features" | tr , _).a"
+            cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_${features//,/_}.a"
           done
       # It checks itself first: a block left on purpose has to be found.
       - name: Audit every example and kit
@@ -649,6 +650,12 @@ jobs:
           tool: zizmor@1.31.1
       - name: zizmor
         run: zizmor --offline --min-severity low .github/workflows
+      # A pipe that is a command of its own takes its last command's exit without `pipefail`:
+      # `fennec-fuzz run | tee` hid every failure the nightly runs found from 10-31 to 11-26.
+      - name: Every pipe in a workflow runs with pipefail
+        run: .github/scripts/check-pipefail.sh
+      - name: Finding the pipes with no pipefail, on a throwaway repository
+        run: .github/scripts/test-check-pipefail.sh
       - name: The landing hook and helper, on a throwaway repository
         run: .github/scripts/test-landing.sh
       - name: Opening a pull request, on a throwaway repository
@@ -763,7 +770,11 @@ jobs:
       # this repository's toolchain file, so it's told where this toolchain's tools are.
       - name: Point fennec at LLVM's tools, and install musl's C compiler
         run: |
-          echo "FENNEC_LLVM_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin" >> "$GITHUB_ENV"
+          # Each read on its own, so a rustc that fails fails the step, rather than naming no folder.
+          sysroot=$(rustc --print sysroot)
+          about=$(rustc -vV)
+          host=$(sed -n 's/^host: //p' <<< "$about")
+          echo "FENNEC_LLVM_BIN=$sysroot/lib/rustlib/$host/bin" >> "$GITHUB_ENV"
           .github/scripts/apt.sh musl-tools
       - run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
       # The `musl` folder a release has beside `fennec`, so builds here link as an installed
@@ -911,8 +922,8 @@ jobs:
           # With the two audited ones, which tests of a program built for an audit link, so none
           # builds them in the middle of the run (see the test job).
           for features in threads audit threads,audit; do
-            dir="target/$(echo "$features" | tr , -)"
-            name="fennec_runtime_$(echo "$features" | tr , _)"
+            dir="target/${features//,/-}"
+            name="fennec_runtime_${features//,/_}"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
             cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
           done
@@ -972,7 +983,7 @@ jobs:
           # What a program should print, its lines sorted: its `.out`, or for one that prints too
           # much to keep, the hash of that in its `.sorted.sha256`.
           wanted() {
-            if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
+            if [ -f "${1%.fen}.out" ]; then sha256sum < <(LC_ALL=C sort "${1%.fen}.out"); else cat "${1%.fen}.sorted.sha256"; fi
           }
           for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
             # A fixture with no pinned output is driven by its own test, which connects to it or stops it.
@@ -980,7 +991,13 @@ jobs:
             wanted "$program" > wanted.txt
             ./target/release/fennec build "$program" -o checked > /dev/null
             for threads in 1 4 8; do
-              if [ "$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)" != "$(cat wanted.txt)" ]; then
+              # Its exit is read, not lost in a pipe: past the time limit or ended by a signal, as a
+              # segfault is, it fails here, whatever it printed first.
+              status=0
+              FENNEC_THREADS=$threads timeout 120 ./checked > printed.txt 2> said.txt || status=$?
+              if [ "$status" -ge 124 ]; then
+                echo "::error::$program at $threads threads ended with $status, past the time limit or by a signal"; cat said.txt; failed=1
+              elif [ "$(sha256sum < <(LC_ALL=C sort printed.txt))" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
               fi
             done
@@ -1023,12 +1040,15 @@ jobs:
           for example in $examples; do
             ./target/debug/fennec build --release "examples/$example.fen" -o "empty/$example"
           done
-          ./target/debug/fennec notices empty/hello | grep -q 'Rich Felker'
+          ./target/debug/fennec notices empty/hello > notices.txt
+          grep -q 'Rich Felker' notices.txt
           printf 'FROM scratch\nCOPY . /\n' > empty/Dockerfile
           docker build -q -t fennec-empty empty
           for example in $examples; do
             # `parallel` prints in the order its tasks finish.
-            docker run --rm fennec-empty "/$example" | sort > printed.txt
+            # Its exit is the step's: piped, a program that crashed after printing would pass.
+            docker run --rm fennec-empty "/$example" > printed.txt
+            sort -o printed.txt printed.txt
             if ! sort "examples/$example.out" | cmp -s printed.txt -; then
               echo "::error::$example printed something different in an empty container"
               exit 1
@@ -1053,7 +1073,12 @@ jobs:
       - run: env FENNEC_HOME="$RUNNER_TEMP/fennec-home" .github/scripts/install.sh
       - name: Use it from a new kit, with nothing but what was installed
         run: |
-          reach="$RUNNER_TEMP/fennec-home/bin:$(printf '%s' "$PATH" | tr ':' '\n' | grep -viE 'cargo|rustup' | paste -sd: -)"
+          # What's on the PATH but Rust's toolchain, by bash, with no pipe whose exit would be lost.
+          reach="$RUNNER_TEMP/fennec-home/bin"
+          IFS=: read -ra folders <<< "$PATH"
+          for folder in "${folders[@]}"; do
+            case "${folder,,}" in *cargo* | *rustup*) ;; *) reach="$reach:$folder" ;; esac
+          done
           cd "$RUNNER_TEMP"
           try() {
             env PATH="$reach" RUSTUP_HOME="$RUNNER_TEMP/no-rustup" CARGO_HOME="$RUNNER_TEMP/no-cargo" \
@@ -1118,10 +1143,11 @@ jobs:
           failed=0
           runs=0
           export "${OPTIONS?}"
-          programs=$(grep -lE 'parallel\(' examples/*.fen | xargs grep -L Net)
+          mapfile -t parallel < <(grep -lE 'parallel\(' examples/*.fen)
+          programs=$(grep -L Net "${parallel[@]}")
           # As in the job above: a program's sorted `.out`, or the hash of it.
           wanted() {
-            if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
+            if [ -f "${1%.fen}.out" ]; then sha256sum < <(LC_ALL=C sort "${1%.fen}.out"); else cat "${1%.fen}.sorted.sha256"; fi
           }
           for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
             # As above: a fixture with no pinned output is driven by its own test.
@@ -1132,14 +1158,20 @@ jobs:
             fi
             nm checked | grep -q "$SYMBOL" || { echo "::error::$program built without the sanitizer"; failed=1; }
             for threads in 1 4 8 stress; do
+              # Its exit is read, not lost in a pipe: past the time limit or ended by a signal, as a
+              # segfault is, it fails here, whatever it printed first.
+              status=0
               if [ "$threads" = stress ]; then
-                got=$(FENNEC_PARALLEL_STRESS=1 FENNEC_THREADS=4 timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)
+                FENNEC_PARALLEL_STRESS=1 FENNEC_THREADS=4 timeout 120 ./checked > printed.txt 2> said.txt || status=$?
               else
-                got=$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)
+                FENNEC_THREADS=$threads timeout 120 ./checked > printed.txt 2> said.txt || status=$?
               fi
+              got=$(sha256sum < <(LC_ALL=C sort printed.txt))
               runs=$((runs + 1))
               if grep -q "$REPORT" said.txt; then
                 echo "::error::$program at $threads threads: $REPORT reported"; cat said.txt; failed=1
+              elif [ "$status" -ge 124 ]; then
+                echo "::error::$program at $threads threads ended with $status, past the time limit or by a signal"; cat said.txt; failed=1
               elif [ "$got" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
               fi

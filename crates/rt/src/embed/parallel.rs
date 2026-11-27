@@ -2266,6 +2266,56 @@ mod tests {
         finish();
     }
 
+    /// Sleeps for ten seconds, as a launched task that lives long does.
+    extern "C" fn sleeps_beside_the_call(_env: i64, _thread: i64) -> i64 {
+        super::super::capabilities::clock_sleep(10_000_000_000);
+        0
+    }
+
+    static RANGES_RAN: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn notes_its_range(_env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        RANGES_RAN.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    /// A range whose body may wait, on a worker that can't get it a stack, runs where it is when no
+    /// other range there could end and free one, though a launched task lives there. It waited for
+    /// a task there to end, and a launched one that lives long held the call for as long (#1817).
+    #[test]
+    fn a_range_that_cant_get_a_stack_runs_where_it_is_beside_a_task_that_lives_long() {
+        use std::time::{Duration, Instant};
+        begin();
+        let pool = super::pool::with_threads(1);
+        let task = super::super::serve::launch_on(pool, sleeps_beside_the_call, 0);
+        assert_ne!(task, 0);
+        // From now on its worker gets no stack, as when the system refuses the memory.
+        pool.run_on(0, Box::new(|_| super::super::serve::refuse_stacks_here(true)));
+        // If the range never starts, the worker gets stacks again after ten seconds, so the test
+        // fails rather than holding on.
+        let over = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watching = Arc::clone(&over);
+        let releasing = std::thread::spawn(move || {
+            let started = Instant::now();
+            while !watching.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            pool.run_on(0, Box::new(|_| super::super::serve::refuse_stacks_here(false)));
+        });
+        let started = Instant::now();
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, 1, super::Leaf::For(notes_its_range, 0));
+        assert_eq!(run.finish(), 0);
+        let took = started.elapsed();
+        over.store(true, Ordering::SeqCst);
+        releasing.join().unwrap();
+        assert_eq!(RANGES_RAN.load(Ordering::SeqCst), 1);
+        assert!(took < Duration::from_secs(5), "the range waited {took:?} for a stack");
+        let mut failure = 0;
+        super::super::serve::launch_end(task, 1_000_000, 0, &mut failure);
+        finish();
+    }
+
     /// Whether the wait after a lookup that was given up on, parked on the lookup's token, was woken
     /// by anything before its own deadline.
     static WOKEN_EARLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);

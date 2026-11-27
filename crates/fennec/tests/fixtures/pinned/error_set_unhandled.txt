@@ -2,9 +2,11 @@ source f384ae9d04c34dfdab5fccab0776a742eec1d58126047168bc25f089bbc6fef2
 code 1
 stdout 2
 9
-stderr 160
+stderr 243
 error: `main` failed: TooWeak(level=1)
-  --> <dir>/error_set_unhandled.fen:12:1
-   |
-12 | def main(stdout: Stdout) -> int:
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ --> <dir>/error_set_unhandled.fen:9:19
+  |
+9 |     if level < 5: fail TooWeak(level)
+  |                   ^^^^^^^^^^^^^^^^^^^
+  = in `pick`
+  = called from `main` at <dir>/error_set_unhandled.fen:14:18

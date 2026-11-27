@@ -822,10 +822,8 @@ const FAILS_DIFFERENTLY: &[(&str, &str)] = &[
         "change_missing_key.fen",
         "native code underlines all of `+=`, as `llvm.rs` notes, and adds a help line",
     ),
-    ("where_on_copy.fen", "native code leaves out the help line"),
-    ("where_on_write.fen", "native code underlines all of the write and leaves out the help line"),
-    ("where_rule.fen", "native code leaves out the help line"),
-    ("where_through_an_item.fen", "native code underlines all of the write and leaves out the help line"),
+    ("where_on_write.fen", "native code underlines all of the write"),
+    ("where_through_an_item.fen", "native code underlines all of the write"),
 ];
 
 #[test]

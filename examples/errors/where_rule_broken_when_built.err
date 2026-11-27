@@ -3,3 +3,5 @@ error: this breaks the `where` rule on `Score.value`
   |
 9 |     stdout.print(Score(value=given))
   |                  ^^^^^^^^^^^^^^^^^^
+  |
+  = help: `where` rules are checked whenever a value is made

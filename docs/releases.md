@@ -47,7 +47,7 @@ Print the private key, then destroy the file. Each `.pub` file's line goes in `R
 ## Signing a release
 
 1. Download `fennec-v0.4.2.manifest` and `fennec-launcher-v0.4.2.manifest` from the prerelease.
-2. Check that the release's `Built twice, the same` job passed. CI builds each archive twice, from checkouts in two places on two machines, and that job holds that both builds made the same bytes, on every platform. One script builds them, `.github/scripts/release-build.sh`, with the environment in `release-env.sh`. On Linux they're built in containers pinned by digest, with their compilers pinned by version in `release-container.sh`, so the same commit builds the same bytes off GitHub too: no path of the machine's, and no time but the commit's, goes in what's built.
+2. Check that the release's `Built twice, the same` job passed. CI builds each archive twice, from checkouts in two places on two machines, and that job holds that both builds made the same bytes, on every platform. One script builds them, `.github/scripts/release-build.sh`, with the environment in `release-env.sh`. On Linux they're built in containers pinned by digest, with their compilers pinned by version in `release-container.sh`, and every Ubuntu package by its SHA-256 in `.github/release-debs.lock`, fetched from Launchpad, which keeps every version (`.github/scripts/release-debs.sh` writes it, and a bump is that one command and a review of the diff), so the same commit builds the same bytes off GitHub too: no path of the machine's, and no time but the commit's, goes in what's built.
 3. Build it again yourself, off GitHub, and sign only if it says every archive is the same:
 
    ```bash

@@ -59,6 +59,11 @@ else
       return 1
     fi
     export DEVELOPER_DIR="$release_found"
+    # Where that Xcode is installed differs, `Xcode_27.2.app` on GitHub and `Xcode.app` on the
+    # signing Mac, and clang notes its SDK's and headers' paths in what the runtime's C parts are
+    # built into: they're written as /xcode. Clang finds its own headers by its real path, past
+    # any link, so that's mapped too.
+    release_cflags="$release_cflags -ffile-prefix-map=$release_found=/xcode -ffile-prefix-map=$(cd "$release_found" && pwd -P)=/xcode"
   else
     # GCC doesn't hand its prefix maps to the assembler, which notes where each assembly file
     # was, as ring's are, in what it writes: `/github/home/.cargo/registry/...` in CI's container.

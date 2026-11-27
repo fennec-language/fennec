@@ -26,14 +26,22 @@
 # - Floats: Miri gives a slightly different answer for a float function whose precision Rust
 #   doesn't promise, like `powi`, so a test of exact bits that relies on one fails here.
 #
+# A test that spends its CPU time is slow: it runs again, once, with four times as much
+# (MIRI_SLOW_SECONDS), since Tree Borrows checks each access against the tree of borrows over it
+# and takes about twice what Stacked Borrows did, which put tests that took near the limit past
+# it. One that passes then counts as passed, and is named in the report. One still over is slow:
+# it didn't run to its end, so it counts as not run, never as passed or failed.
+#
 # MIRI_TOOLCHAIN names the nightly (the sanitizers' unless set), MIRI_SECONDS the CPU time each
-# test gets (240 unless set), MIRI_SEED a seed for Miri's choices of thread order and addresses,
-# and MIRI_ONLY a pattern a test's name must match, as `grep -E` reads it, to try a few.
+# test gets (240 unless set), MIRI_SLOW_SECONDS what a slow one gets the second time (four times
+# that unless set), MIRI_SEED a seed for Miri's choices of thread order and addresses, and
+# MIRI_ONLY a pattern a test's name must match, as `grep -E` reads it, to try a few.
 set -u
 report=$1
 shard=${2:-1/1}
 toolchain=${MIRI_TOOLCHAIN:-nightly-2026-10-15}
 seconds=${MIRI_SECONDS:-240}
+slow_seconds=${MIRI_SLOW_SECONDS:-$((seconds * 4))}
 only=${MIRI_ONLY:-}
 first=${shard%/*}
 shards=${shard#*/}
@@ -79,19 +87,22 @@ done
 [ -n "$only" ] && { grep -E -e "$only" "$work/all" > "$work/only"; mv "$work/only" "$work/all"; }
 awk -v first="$first" -v shards="$shards" '(NR - 1) % shards == first - 1' "$work/all" > "$work/mine"
 total=$(wc -l < "$work/mine" | tr -d ' ')
-echo "Miri: $total tests in shard $shard, $seconds s of CPU each, with $MIRIFLAGS"
+echo "Miri: $total tests in shard $shard, $seconds s of CPU each, $slow_seconds s for a slow one the second time, with $MIRIFLAGS"
 # None means the tests weren't listed, or MIRI_ONLY matched none: either way nothing was checked.
 [ "$total" -gt 0 ] || { echo "::error::no tests to run under Miri in shard $shard"; exit 1; }
 
 # The first line of a test's log that says why, without its `error: `.
 why() { grep -m1 -E "$1" "$log" | sed -E 's/^ *(error: )?//' | cut -c1-200; }
-# What a run of Miri that wrote `$log` and exited with `$1` came to, in `outcome` and `reason`.
+# What a run of Miri that wrote `$log`, given `$2` seconds of CPU, and exited with `$1` came to,
+# in `outcome` and `reason`.
 classify() {
-  local code=$1
-  # Past its CPU time, Miri is stopped by SIGXCPU and cargo says so; past the clock, `within.sh`
-  # stops it and exits 124.
-  if [ "$code" -eq 124 ] || grep -q SIGXCPU "$log"; then
-    outcome=slow reason="over $seconds s of CPU"
+  local code=$1 limit=$2
+  # Past its CPU time, Miri is stopped by SIGXCPU, and cargo says so: by name on macOS, but on
+  # Linux only by its number, `(signal: 24)`. Looking for the name alone called every test the
+  # limit stopped on Linux failed, the nightly's every night. Past the clock, `within.sh` stops it
+  # and exits 124.
+  if [ "$code" -eq 124 ] || grep -qE 'SIGXCPU|\(signal: 24[,)]' "$log"; then
+    outcome=slow reason="over $limit s of CPU"
   # An exception, until rustix is upgraded: rustix 1.1.6 calls `assume_init` on a `stat` whose
   # spare fields the system isn't bound to set, which Miri's `fstatat` for macOS leaves unset, as
   # https://github.com/rust-lang/miri/issues/5553 settled it should. A Mac's kernel does zero them,
@@ -120,20 +131,29 @@ mkdir -p "$work/check/src"
 printf '[package]\nname = "check"\nversion = "0.0.0"\nedition = "2024"\n[workspace]\n' > "$work/check/Cargo.toml"
 printf 'fn main() {\n    let freed = vec![1_u8];\n    let at = freed.as_ptr();\n    drop(freed);\n    println!("{}", unsafe { *at });\n}\n' > "$work/check/src/main.rs"
 (cd "$work/check" && cargo "+$toolchain" miri run -q) > "$log" 2>&1
-classify $?
+classify $? "$seconds"
 if [ "$outcome" != UB ]; then
   echo "::error::Miri didn't find a read of freed memory, or this script didn't see it: it said $outcome"
   cat "$log"
   exit 1
 fi
-passed=0 bad=0
+# Runs test `$name` of `$target` with `$1` seconds of CPU, and says what it came to.
+run_one() {
+  # shellcheck disable=SC2086
+  WITHIN_WALL=$(($1 * 3)) .github/scripts/within.sh "$1" \
+    cargo "+$toolchain" miri test --locked -q -p $target --features sanitize -- --exact "$name" > "$log" 2>&1
+  classify $? "$1"
+}
+passed=0 bad=0 longer=0 slow=0
 : > "$work/outcomes"
 while IFS='|' read -r target name; do
-  # shellcheck disable=SC2086
-  WITHIN_WALL=$((seconds * 3)) .github/scripts/within.sh "$seconds" \
-    cargo "+$toolchain" miri test --locked -q -p $target --features sanitize -- --exact "$name" > "$log" 2>&1
-  code=$?
-  classify "$code"
+  run_one "$seconds"
+  if [ "$outcome" = slow ] && [ "$slow_seconds" -gt "$seconds" ]; then
+    echo "slow $name: again with $slow_seconds s"
+    run_one "$slow_seconds"
+    [ "$outcome" = passed ] && { longer=$((longer + 1)); echo "longer|$target|$name|" >> "$work/outcomes"; }
+  fi
+  [ "$outcome" = slow ] && slow=$((slow + 1))
   echo "$outcome|$target|$name|$reason" >> "$work/outcomes"
   case "$outcome" in
     passed) passed=$((passed + 1)) ;;
@@ -150,12 +170,15 @@ done < "$work/mine"
 {
   echo "## Miri, shard $shard"
   echo
-  echo "$passed of $total tests passed, with \`$MIRIFLAGS\`."
-  for outcome in UB deadlock failed slow unsupported; do
+  echo "$passed of $total tests passed, with \`$MIRIFLAGS\`: $longer of them with $slow_seconds s of CPU, past $seconds s. $slow slow, not run to their end."
+  for outcome in UB deadlock failed slow unsupported longer; do
     count=$(grep -c "^$outcome|" "$work/outcomes")
     [ "$count" -eq 0 ] && continue
     echo
-    echo "### $outcome: $count"
+    case "$outcome" in
+      longer) echo "### passed with $slow_seconds s: $count" ;;
+      *) echo "### $outcome: $count" ;;
+    esac
     echo
     grep "^$outcome|" "$work/outcomes" | while IFS='|' read -r _ target name reason; do
       echo "- \`${target%% *}\` \`$name\`${reason:+: $reason}"

@@ -338,7 +338,9 @@ jobs:
   miri:
     name: Runtime tests under Miri (shard ${{ matrix.shard }} of 8)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # A shard took about half an hour under Stacked Borrows. Tree Borrows takes about twice that,
+    # and each test past its 240 s runs again with 960 s (see `miri.sh`), so there's room for both.
+    timeout-minutes: 240
     permissions:
       contents: read
       issues: write

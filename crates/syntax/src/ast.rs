@@ -325,7 +325,7 @@ pub enum StmtKind {
         body: Vec<Stmt>,
         lock: bool,
     },
-    Def(FnDef),
+    Def(Box<FnDef>),
     /// Written in for a `with` block whose source has an `else:`. A `?` or `fail` in `body` runs
     /// that cleanup where it's written, but a failure can also leave from inside what the block
     /// calls: from a generator it reads, or a `parallel` loop's round. Those run `cleanup`

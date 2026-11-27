@@ -3748,6 +3748,35 @@ fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
     );
 }
 
+/// Numbers written out and joined by arithmetic, where an `f32` goes, are worked out in `f32`, as
+/// compiled code works them out (`llvm::sums_of_literals_are_worked_out_in_the_size_they_go_into`).
+#[test]
+fn sums_of_literals_are_worked_out_in_the_size_they_go_into() {
+    prints(
+        "
+        struct Velocity:
+            x: f32 = 0.0
+
+            def *(self, scale: f32) -> Velocity:
+                return Velocity(x=self.x * scale)
+
+        def picked(found: f32?) -> f32:
+            return found else 16.0 / 9.0
+
+        def main(stdout: Stdout):
+            aspect: f32 = 16.0 / 9.0
+            mut level: u8 = 200 + 55
+            level -= 2 * 3
+            sized: list[f32] = [16.0 / 9.0, 0.5 - 0.25]
+            speed: f32 = 0.1
+            fast = Velocity(x=1.5) * (1.0 / 3.0)
+            stdout.print(aspect, level, sized, 16.0 / 9.0, aspect * (1.0 / 3.0))
+            stdout.print(fast.x, max(speed, 1.0 / 3.0), min(-(0.5 + 0.25), speed), picked(None))
+        ",
+        "1.7777778 249 [1.7777778, 0.25] 1.7777777777777777 0.5925926\n0.5 0.33333334 -0.75 1.7777778\n",
+    );
+}
+
 /// A number written out after `else` takes the size of the optional it stands in for where the
 /// optional is a name known to be `None` (#2588), as compiled code works it out
 /// (`llvm::an_else_default_takes_the_size_of_a_name_known_to_be_none`).

@@ -155,7 +155,8 @@ impl FnCx<'_> {
     }
 
     /// A number literal written where a sized number goes takes that size, checked to fit:
-    /// `pixel: u8 = 255`, `speed: f32 = 1.5`. `None` for anything else.
+    /// `pixel: u8 = 255`, `speed: f32 = 1.5`, and so do sums of them (`sized_literal_sum`).
+    /// `None` for anything else.
     fn sized_literal(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
         let Type::Sized(num) = self.checker.settled(expected).without_none() else { return None };
         let (negated, value) = match &expr.kind {
@@ -179,12 +180,36 @@ impl FnCx<'_> {
                     self.error(Diagnostic::new(message, expr.span).with_help(help));
                 }
             }
-            _ => return None,
+            _ => return self.sized_literal_sum(expr, expected),
         }
         if negated && let ExprKind::Unary { expr: inner, .. } = &expr.kind {
             self.record(inner.span, &ty);
         }
         Some(ty)
+    }
+
+    /// Numbers written out joined by arithmetic, as `16.0 / 9.0` or `-(2 + 3) * 4`, where a sized
+    /// number goes: each number takes that size, as one written alone does, so it's worked out in
+    /// that size, as `small / 9.0` is. Each has to be one that takes it alone, a float for an `f32`
+    /// and a whole number for the others, so `16.0 / 9` is still a `float`, refused as one.
+    fn sized_literal_sum(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
+        let sized @ Type::Sized(num) = self.checker.settled(expected).without_none() else { return None };
+        if !literal_sum(expr, num.is_float()) {
+            return None;
+        }
+        match &expr.kind {
+            ExprKind::Binary { op, lhs, rhs } => {
+                let left = self.expr_as(lhs, &sized);
+                let right = self.expr_as(rhs, &sized);
+                Some(self.binary(*op, &left, &right, expr.span, (lhs.span, rhs.span)))
+            }
+            // `-(2 + 3)`: what's negated is checked first, as that size.
+            ExprKind::Unary { op, expr: inner } => {
+                self.expecting = Some(sized);
+                Some(self.unary(*op, inner, expr.span))
+            }
+            _ => None,
+        }
     }
 
     /// The two sides of an operator. A number literal on one side, opposite a sized number,
@@ -499,14 +524,42 @@ pub(crate) fn leading_dot(expr: &Expr) -> bool {
     }
 }
 
-/// Whether this is a number written out, or one negated: what takes a size from where it goes.
+/// Whether this is numbers written out, all floats or all whole numbers as `floats` says, joined
+/// by arithmetic and maybe negated, as `16.0 / 9.0`: one sum of them at least, since a number
+/// alone is `number_literal`'s.
+fn literal_sum(expr: &Expr, floats: bool) -> bool {
+    use fennec_syntax::BinOp::{Add, Div, FloorDiv, Mod, Mul, Pow, Sub};
+    let part = |expr: &Expr| {
+        let written = match &expr.kind {
+            ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr: inner } => &inner.kind,
+            kind => kind,
+        };
+        match written {
+            ExprKind::Float(_) => floats,
+            ExprKind::Int(_) => !floats,
+            _ => literal_sum(expr, floats),
+        }
+    };
+    match &expr.kind {
+        ExprKind::Binary { op: Add | Sub | Mul | Div | FloorDiv | Mod | Pow, lhs, rhs } => {
+            part(lhs) && part(rhs)
+        }
+        ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr: inner } => literal_sum(inner, floats),
+        _ => false,
+    }
+}
+
+/// Whether this is a number written out, or one negated, or numbers written out joined by
+/// arithmetic, all floats or all whole numbers: what takes a size from where it goes.
 pub(crate) fn number_literal(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Int(_) | ExprKind::Float(_) => true,
-        ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr: inner } => {
-            matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_))
+        ExprKind::Unary { op: fennec_syntax::UnaryOp::Neg, expr: inner }
+            if matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_)) =>
+        {
+            true
         }
-        _ => false,
+        _ => literal_sum(expr, true) || literal_sum(expr, false),
     }
 }
 

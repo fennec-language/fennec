@@ -14,8 +14,10 @@ pub(super) fn inline_body(toks: &[Tok<'_>], kind: BlockKind) -> Option<usize> {
     let mut words = toks.iter().skip_while(|tok| tok.text == "export");
     let first = words.next()?;
     let is_bench = first.text == "bench" && toks.get(1).is_some_and(|tok| tok.text.starts_with('"'));
+    // In a type's body, a word with `:` straight after it is a field, as in `for: Target`.
+    let field = kind == BlockKind::TypeBody && words.clone().next().is_some_and(|tok| tok.text == ":");
     let opens_block =
-        matches!(first.text, "def" | "if" | "elif" | "else" | "while" | "for" | "with" | "test")
+        matches!(first.text, "def" | "if" | "elif" | "else" | "while" | "for" | "with" | "test") && !field
             || is_bench
             || first.text == "case" && kind == BlockKind::MatchBody;
     if !opens_block || toks.last().is_some_and(|tok| tok.text == ":") {

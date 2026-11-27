@@ -972,6 +972,23 @@ fn the_validator_finds_malformed_ir() {
         problems(function(Vec::new(), Terminator::Return(None))),
         ["f: returns nothing, but has a return type"]
     );
+    // A type the checker didn't work out, which fits anything, is an error the checker left out.
+    assert_eq!(
+        problems(function(
+            vec![Type::List(Box::new(Type::Unknown))],
+            Terminator::Return(Some(Operand::Int(1)))
+        )),
+        ["f: `_0` is of a type the checker didn't work out: List(Unknown)"]
+    );
+    let mut gives_unknown = function(Vec::new(), Terminator::Return(None));
+    gives_unknown.returns = Type::Unknown;
+    assert_eq!(
+        problems(gives_unknown),
+        [
+            "f: it gives back a type the checker didn't work out: Unknown",
+            "f: returns nothing, but has a return type"
+        ]
+    );
     let mut locks =
         function(vec![Type::Named("Point".to_owned())], Terminator::Return(Some(Operand::Int(1))));
     let handle = Operand::Local(LocalId(0));

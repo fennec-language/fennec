@@ -256,6 +256,7 @@ def main(stdout: Stdout):
 ```
 
 - `shared T` is a type, so it goes in fields and collections too: `dict[str, shared Room]`. It works on any type, and there's no `shared Name:` declaration.
+- Not built yet: a `shared` value of a type with a type parameter in it, as `shared list[T]` in a generic struct or function. It's a compile error that says so: write the type out, as `shared list[int]`, outside generic code, and pass the shared value to what needs it. A generic struct may still hold a `shared` value whose type is written out.
 - A `shared` value is made in a function, usually `main`, and passed to whoever needs it, like a capability. There's no top-level shared state, so a function's signature says what shared state it touches.
 - Making one from a plain value is written out, as `shared scores = Scores()`. A plain value never becomes `shared` at a call.
 - It's reached only inside `lock x as s:`, to read, or `lock x as ref s:`, to change. Any way out of the block releases it, `?`, `fail` and `return` included. Leaving with `return`, `break` or `continue` keeps the changes made so far, and a crash undoes them, below. A `fail` or `?` leaving `lock ... as ref` undoes them too.

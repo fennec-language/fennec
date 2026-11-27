@@ -259,6 +259,12 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
         Diagnostic::new(format!("{what} should be {}, but this is {}", a(expected), a(actual)), span);
     match (expected, actual) {
         (expected, _) if expected.has_literal() => diagnostic.with_help(LITERAL_HELP),
+        (Type::Generic(wanted, _), Type::Generic(given, _)) if wanted == given => diagnostic.with_help(format!(
+            "a generic type's arguments have to be the same on both sides, since a `shared` value or a channel's \
+             end is one value, read and written through every name for it: make both {}, or both {}",
+            a(expected),
+            a(actual)
+        )),
         (Type::Float, Type::Int) => {
             diagnostic.with_help("write it with a decimal point, like `1.0`, or convert it with float(...)")
         }

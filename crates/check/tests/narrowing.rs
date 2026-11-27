@@ -676,6 +676,111 @@ fn a_ref_argument_has_to_hold_all_its_parameter_does() {
     );
 }
 
+/// A generic type's arguments are exact, since a `shared` value or a channel's end is one value
+/// written and read through every name for it. A `shared list[int]` given where a
+/// `shared list[int?]` goes could be given a `None`, and a `Sender[int]` where a `Sender[int?]`
+/// goes could send one, which the other end reads as an int. So is an `Inbox[int]` read as an
+/// `Inbox[int | str]`, whose items are laid out otherwise. Before, the checker let them all through,
+/// and each stopped later: an internal error or "isn't lowered yet". Each way in is refused: a
+/// call, a struct's field, a generic struct's, what's given back.
+#[test]
+fn a_generic_types_arguments_are_exactly_whats_wanted() {
+    let program = "
+        from std.concurrent import Inbox, Sender, channel
+
+        struct Feed:
+            out: Sender[int?]
+
+        struct Pool[T]:
+            out: Sender[T]
+
+        def add_missing(numbers: shared list[int?]):
+            lock numbers as ref held:
+                held.append(None)
+            return
+
+        def send_missing(out: Sender[int?]) -> str:
+            out.send(None) except why:
+                return f\"{why}\"
+            return \"sent\"
+
+        def fed(feed: Feed) -> int:
+            return 1
+
+        def pooled(pool: Pool[int?]) -> int:
+            return 1
+
+        def widened(numbers: shared list[int]) -> shared list[int?]:
+            return numbers
+
+        def first_of(inbox: Inbox[int | str]) -> int:
+            return 1
+
+        def sent_exactly[T](out: Sender[T]) -> int:
+            return 1
+
+        def main(stdout: Stdout):
+            shared numbers = [1, 2]
+            add_missing(numbers)
+            with channel[int](4) as ints:
+                said = send_missing(ints.sender())
+                fine = sent_exactly(ints.sender())
+                stdout.print(said, fine, fed(Feed(out=ints.sender())), pooled(Pool(out=ints.sender())))
+                stdout.print(first_of(ints.inbox()))
+            with channel[int?](4) as maybe:
+                stdout.print(send_missing(maybe.sender()), pooled(Pool(out=maybe.sender())))
+            return
+    ";
+    let sender = "`out` should be a Sender[int?], but this is a Sender[int] @ ints.sender()";
+    assert_eq!(
+        problems(program),
+        [
+            "`widened` returns a shared list[int?], but this is a shared list[int] @ numbers",
+            "`numbers` should be a shared list[int?], but this is a shared list[int] @ numbers",
+            sender,
+            sender,
+            sender,
+            "`inbox` should be an Inbox[int | str], but this is an Inbox[int] @ ints.inbox()",
+        ]
+    );
+    // Every other generic in std that holds a runtime's handle: a channel itself, a pool and what's
+    // borrowed from one.
+    let others = "
+        from std.concurrent import Borrowed, Channel, Pool, channel
+
+        struct Crate:
+            size: int
+
+        struct Heap:
+            weight: int
+
+        def channel_of(numbers: Channel[int?]) -> int:
+            return 1
+
+        def pool_of(pool: Pool[Crate | Heap]) -> int:
+            return 1
+
+        def borrowed_of(lent: Borrowed[Crate | Heap]) -> int:
+            return 1
+
+        def given(pool: Pool[Crate], lent: Borrowed[Crate]) -> int:
+            return pool_of(pool) + borrowed_of(lent)
+
+        def main(stdout: Stdout):
+            with channel[int](4) as numbers:
+                stdout.print(channel_of(numbers))
+            return
+    ";
+    assert_eq!(
+        problems(others),
+        [
+            "`pool` should be a Pool[Crate | Heap], but this is a Pool[Crate] @ pool",
+            "`lent` should be a Borrowed[Crate | Heap], but this is a Borrowed[Crate] @ lent",
+            "`numbers` should be a Channel[int?], but this is a Channel[int] @ numbers",
+        ]
+    );
+}
+
 /// A union known to hold one member, given by `ref` where the whole union is taken, can come back
 /// holding another, so it's known as the union again, however it was narrowed: by `is`, by what
 /// it was given, by what's left after one member leaves, in a `match` case or as a `for ref`

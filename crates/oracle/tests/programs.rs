@@ -575,6 +575,33 @@ fn a_ref_argument_that_holds_less_is_refused_before_it_runs() {
     );
 }
 
+/// The oracle checks a program with the checker compiled code is checked with, so a channel's
+/// `Sender[int]` given where a `Sender[int?]` goes is refused before it runs, in the checker's
+/// words, and the `None` it would send is never read as an int.
+#[test]
+fn a_channels_end_given_a_wider_type_is_refused_before_it_runs() {
+    let (printed, ended) = ran("
+        from std.concurrent import Sender, channel
+
+        def send_missing(out: Sender[int?]) -> str:
+            out.send(None) except why:
+                return f\"{why}\"
+            return \"sent\"
+
+        def main(stdout: Stdout):
+            with channel[int](4) as numbers:
+                said = send_missing(numbers.sender())
+                got = numbers.receive() else 0
+                stdout.print(said, got + 1)
+            return
+        ");
+    assert_eq!(printed, "");
+    assert!(
+        matches!(&ended, Ended::Unsupported(said) if said.contains("`out` should be a Sender[int?], but this is a Sender[int]")),
+        "{ended:?}"
+    );
+}
+
 /// A generator held in a name fails through its loop as what it fails with, in a function that fails
 /// with a union of errors, as compiled code does since #2086.
 #[test]

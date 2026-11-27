@@ -2629,6 +2629,51 @@ fn another_kits_underscore_fields_are_out_of_reach() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Another kit's function or generic struct taking a `Sender[int?]` is given a `Sender[int]` no
+/// more than the program's own is: across the kit's boundary, a channel's end is the same one
+/// value, and the kit could send a `None` that the program reads as an int.
+#[test]
+fn another_kits_channel_end_is_given_exactly_its_type() {
+    let dir = scratch("exact_handles_kits").unwrap();
+    let feeds = "from std.concurrent import Sender\n\n## Where a feed sends.\nexport struct Feed[T]:\n    out: Sender[T]\n\n\
+                 ## Sends nothing through `out`.\nexport def send_missing(out: Sender[int?]) -> str:\n    \
+                 out.send(None) except why:\n        return f\"{why}\"\n    return \"sent\"\n\n\
+                 ## Sends nothing through what `feed` sends to.\nexport def feed_missing(feed: Feed[int?]) -> str:\n    \
+                 return send_missing(feed.out)\n";
+    write_kit(&dir.join("feeds"), "feeds", "", &[("lib.fen", feeds)]).unwrap();
+    let check = |kind: &str, given: &str| {
+        let main = format!(
+            "from std.concurrent import channel\n\nfrom feeds import Feed, feed_missing, send_missing\n\n\
+             def main(stdout: Stdout):\n    with channel[{kind}](4) as numbers:\n        \
+             stdout.print(send_missing(numbers.sender()), feed_missing({given}))\n    return\n"
+        );
+        write_kit(
+            &dir.join("app"),
+            "app",
+            "[dependencies]\nfeeds = { path = \"../feeds\" }\n",
+            &[("main.fen", &main)],
+        )
+        .unwrap();
+        crate::executables::fennec_command()
+            .args(["check"])
+            .current_dir(dir.join("app"))
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let fine = check("int?", "Feed(out=numbers.sender())");
+    assert!(fine.status.success(), "{}", text(&fine.stderr));
+    let refused = check("int", "Feed(out=numbers.sender())");
+    let said = text(&refused.stderr);
+    assert!(!refused.status.success(), "{said}");
+    assert_eq!(
+        said.matches("`out` should be a Sender[int?], but this is a Sender[int]").count(),
+        2,
+        "{said}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// What each file imports is its own, in a program's files and in its kits'. A kit's
 /// `from std.html import escape as sha256` once made the program's own `sha256(...)` give escaped
 /// text, as one table of imports served every file and the last import of a name decided it for

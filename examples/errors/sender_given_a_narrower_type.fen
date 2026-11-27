@@ -1,0 +1,13 @@
+from std.concurrent import Sender, channel
+
+def send_missing(out: Sender[int?]) -> str:
+    out.send(None) except why:
+        return f"{why}"
+    return "sent"
+
+def main(stdout: Stdout):
+    with channel[int](4) as numbers:
+        said = send_missing(numbers.sender())
+        got = numbers.receive() else 0
+        stdout.print(said, got + 1)
+    return

@@ -576,16 +576,23 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// Takes out each place this instruction changes that was waiting for it, unless it's been put
-    /// back: what names it after that, as letting go of the local at a lock's end does, would take
-    /// it out again and leave its slot saying it's out, so a crash later in the function would
-    /// write the emptied local over what holds it (#2516).
+    /// Takes out each place this instruction changes that was waiting for it. Letting go of the
+    /// local, as a lock's end does, changes no place, so it takes nothing out: a take there would
+    /// leave the slot saying the place is out with nothing to put it back, and a crash later in
+    /// the function would write the emptied local over what holds it (#2516). Whether the place
+    /// was put back can't say so here, as a lock's end may be written before the loop body
+    /// that puts it back.
     pub(crate) fn take_waiting_places(&mut self, inst: &InstKind, span: Span) -> Result<(), String> {
-        let (InstKind::Call { args, .. } | InstKind::Builtin { args, .. }) = inst else { return Ok(()) };
+        let args = match inst {
+            InstKind::Builtin { name, .. } if matches!(name.as_str(), "shared.drop" | "value.let_go") => {
+                return Ok(());
+            }
+            InstKind::Call { args, .. } | InstKind::Builtin { args, .. } => args,
+            _ => return Ok(()),
+        };
         for arg in args {
             if let Operand::Local(local) = arg
                 && self.known.place_waits(*local)
-                && !self.places_back.contains(&local.0)
             {
                 self.take_place(*local, span)?;
             }
@@ -703,16 +710,22 @@ impl Emit<'_, '_, '_> {
         if !self.lets_go_after_crash() {
             return;
         }
-        let slot = if let Some(slot) = self.places_out.get(&value.0) {
-            slot.clone()
-        } else {
-            let slot = self.label("%place");
-            let _ = writeln!(self.allocas, "  {slot} = alloca ptr");
-            let _ = writeln!(self.allocas, "  store ptr null, ptr {slot}");
-            self.places_out.insert(value.0, slot.clone());
-            slot
-        };
+        let slot = self.place_out_slot(value);
         self.line(&format!("store ptr {at}, ptr {slot}"));
+    }
+
+    /// The stack slot saying where a place goes back while it's out, null on the way in and
+    /// whenever it's in: the same one wherever it's asked for first, as the blocks aren't written
+    /// in the order they run.
+    fn place_out_slot(&mut self, value: LocalId) -> String {
+        if let Some(slot) = self.places_out.get(&value.0) {
+            return slot.clone();
+        }
+        let slot = self.label("%place");
+        let _ = writeln!(self.allocas, "  {slot} = alloca ptr");
+        let _ = writeln!(self.allocas, "  store ptr null, ptr {slot}");
+        self.places_out.insert(value.0, slot.clone());
+        slot
     }
 
     /// In a build that checks proofs, where a lock's block ends, or a failure has it put back what
@@ -723,27 +736,29 @@ impl Emit<'_, '_, '_> {
     /// in the function (#2516). A failure leaves a lock's body through a branch of its own, so none
     /// comes between a take and its put back, which are in one block; this says so if that ever
     /// stops holding. A value taken out of something else, a dict's value read to set back or a
-    /// `for ref` loop's item, may stay out across the lock, and isn't the lock's to check. Only
-    /// the places taken out earlier in the function's text are known here.
+    /// `for ref` loop's item, may stay out across the lock, and isn't the lock's to check. Every
+    /// place a call takes out of the lock's value is checked, those taken in blocks written after
+    /// this one too, as a loop in the lock's body is.
     pub(crate) fn proof_nothing_out(&mut self, handle: &Operand, why: &str) {
-        if !self.checks_proofs() {
+        if !self.checks_proofs() || !self.lets_go_after_crash() {
             return;
         }
         let Operand::Local(handle) = handle else { return };
         let under_the_lock = |root: LocalId| root == *handle || self.known.alias(root) == Some(*handle);
-        let mut slots: Vec<(usize, String)> = self
-            .places_out
+        let function = self.function;
+        let mut values: Vec<LocalId> = function
+            .places
             .iter()
-            .filter(|(value, _)| {
-                self.known
-                    .place_taken(self.function, LocalId(**value))
-                    .is_some_and(|place| under_the_lock(place.root))
+            .map(|place| place.value)
+            .filter(|value| {
+                self.known.place_taken(function, *value).is_some_and(|place| under_the_lock(place.root))
             })
-            .map(|(value, slot)| (*value, slot.clone()))
             .collect();
-        slots.sort_unstable();
+        values.sort_unstable_by_key(|value| value.0);
+        values.dedup();
         let span = self.here_span();
-        for (_, slot) in slots {
+        for value in values {
+            let slot = self.place_out_slot(value);
             let (home, out) = (self.temp(), self.temp());
             self.line(&format!("{home} = load ptr, ptr {slot}"));
             self.line(&format!("{out} = icmp ne ptr {home}, null"));
@@ -759,7 +774,9 @@ impl Emit<'_, '_, '_> {
         // A value out of a dict or a list last, so what's out of it in turn is back in it by then.
         out.sort_unstable_by_key(|(value, _)| (self.out_of_dicts.contains(value), *value));
         for (value, slot) in out {
-            let (_, kind, access) = self.place_homes.get(&value).cloned().ok_or("a place never taken out")?;
+            // A slot a lock's end checked, for a place no block takes out, is never anything but
+            // null.
+            let Some((_, kind, access)) = self.place_homes.get(&value).cloned() else { continue };
             let (home, is_out) = (self.temp(), self.temp());
             self.line(&format!("{home} = load ptr, ptr {slot}"));
             self.line(&format!("{is_out} = icmp ne ptr {home}, null"));
@@ -774,7 +791,6 @@ impl Emit<'_, '_, '_> {
     }
 
     fn put_place_back(&mut self, value: LocalId) -> Result<(), String> {
-        self.places_back.insert(value.0);
         let (at, kind, access) = self.place_homes.get(&value.0).cloned().ok_or("a place never taken out")?;
         if let Some(slot) = self.places_out.get(&value.0).cloned() {
             self.line(&format!("store ptr null, ptr {slot}"));

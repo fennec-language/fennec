@@ -134,6 +134,9 @@ fn start_of(
     // A program running `parallel` keeps a stack limit and a failure flag for each thread.
     let local = if crate::parallel::uses_parallel(program) { "thread_local(initialexec) " } else { "" };
     let _ = writeln!(out, "@fennec_stack_limit = dso_local {local}global i64 0");
+    // How many calls of a task's functions that can call themselves again are left until the
+    // next tick, on this thread: a frame's own count starts again at each call.
+    let _ = writeln!(out, "@fennec_call_ticks = dso_local {local}global i64 {}", crate::ticks::TICKS);
     let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
     // Where this thread's buffer is for a message's words or a dict's value held in place.
     let _ = writeln!(out, "@fennec_words = dso_local {local}global ptr null");

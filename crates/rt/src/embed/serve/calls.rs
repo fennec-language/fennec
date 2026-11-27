@@ -490,6 +490,10 @@ pub(in crate::embed) fn served_call(
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             on(&conn, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
         }
+        ("_write_parts", [head @ Value::Str(_), body @ Value::Bytes(_)]) => {
+            let parts = crate::stdlib::net::parts_of(head, body);
+            on(&conn, |conn| conn.write_within(&parts, timeout)).map(|()| Value::Unit)
+        }
         ("_reads_within", [after]) => {
             let after = match crate::stdlib::net::duration_of(after, at) {
                 Ok(after) => after,

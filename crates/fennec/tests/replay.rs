@@ -1219,6 +1219,41 @@ fn flat_messages_replay_as_they_ran_on_one_thread_and_four() -> std::io::Result<
     Ok(())
 }
 
+/// A listener of a channel to `.Every`, two messages behind before its task starts, whose first
+/// take crashes its task, which `main` handles.
+const FALLEN_BEHIND: &str = "from std.concurrent import Closed, Crashed, Inbox, channel
+
+# Takes every number from an inbox that has fallen behind its channel, so its first take crashes.
+def read(hits: Inbox[int], stdout: Stdout):
+    for hit in hits:
+        stdout.print(\"took\", hit)
+
+def reading(hits: Inbox[int], stdout: Stdout) fails Crashed:
+    with launch(() => read(hits, stdout)) as task:
+        pass
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=2, to=.Every) as hits:
+        behind = hits.inbox()
+        for hit in range(1, 5):
+            hits.send(hit)?
+        reading(behind, stdout) except Crashed():
+            stdout.print(\"behind\")
+    stdout.print(\"over\")
+";
+
+/// A listener that fell behind a channel to `.Every` crashes its task at its next take, and a
+/// replay crashes it there too. The take wasn't recorded, so every replay stopped at it, asking
+/// for a receive where its recording had the channel's close: the nightly's determinism run found
+/// one to three random programs like this every night from 2026-11-21.
+#[test]
+fn a_listener_that_fell_behind_replays_its_crash() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("fallen-behind", FALLEN_BEHIND, 2, 0)
+}
+
 /// `Table`s copied every way a run can copy one replay as they ran (#2424): every item added takes a
 /// tag of its own from one count, which a replay has to hand out the same way. Recorded on 4
 /// threads and replayed on 1, and the other way.
@@ -1262,6 +1297,51 @@ fn copied_tables_replay_as_they_ran_on_four_threads_and_one() -> std::io::Result
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// `main` printing before and after receives that time out, which a recording waits out and a
+/// replay doesn't.
+const KEPT_TO_THE_END: &str = "from std.concurrent import Closed, Timeout, channel
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=1) as jobs:
+        stdout.print(\"before the wait\")
+        first = jobs.receive_within(1ms) except Timeout(): -1
+        stdout.print(\"after the wait\", first)
+        second = jobs.receive_within(1ms) except Timeout(): -2
+        stdout.print(\"at the end\", second)
+";
+
+/// The same, with a `parallel` loop printing from its pieces between, run on `main`'s thread.
+const KEPT_BEFORE_A_RANGE: &str = "from std.concurrent import Closed, Timeout, channel
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=1) as jobs:
+        stdout.print(\"before the wait\")
+        first = jobs.receive_within(1ms) except Timeout(): -1
+        stdout.print(\"after the wait\", first)
+        for item in parallel([1, 2, 3]):
+            stdout.print(\"piece\", item)
+        stdout.print(\"after the pieces\")
+        second = jobs.receive_within(1ms) except Timeout(): -2
+        stdout.print(\"at the end\", second)
+";
+
+/// What a thread printed comes out in a replay in its recording's bursts, though a replay waits less.
+/// A wait writes what its thread printed first, and a receive its recording says timed out gives up
+/// at once, without waiting. So a replay kept bytes its recording wrote at the wait, and
+/// - kept them to the end, where they came out past the bursts, so it ended asking for one;
+/// - or wrote them when a range run on the same thread wrote, as the range's, so the burst of
+///   `main`'s was never filled, and nothing after it came out.
+///
+/// The nightly's determinism run found both in its random programs.
+#[test]
+fn what_a_thread_kept_past_a_wait_a_replay_skips_comes_out_as_recorded() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("kept-to-the-end", KEPT_TO_THE_END, 2, 0)?;
+    replays_at_one_four_and_sixteen("kept-before-a-range", KEPT_BEFORE_A_RANGE, 2, 0)
 }
 
 /// A replay that can't follow its recording says where it first couldn't, once, and ends. Here

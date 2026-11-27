@@ -887,6 +887,19 @@ pub fn compile(
 mod tests {
     use super::*;
 
+    /// LLVM's tools, or None where they aren't here, which a test building with them passes over.
+    /// Where `FENNEC_EXPECT_LLVM` is set, as CI's test jobs and the gate set it, their missing is
+    /// the test's failure, never a pass with nothing built (fennec#2557).
+    fn tools_here() -> Result<Option<Tools>, String> {
+        match Tools::find() {
+            Ok(tools) => Ok(Some(tools)),
+            Err(missing) if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|set| !set.is_empty()) => {
+                Err(format!("FENNEC_EXPECT_LLVM is set, but {missing}"))
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
     /// A remembered file read while it's written again is the old text or the new, whole.
     #[test]
     fn a_remembered_file_is_never_read_half_written() {
@@ -1026,7 +1039,7 @@ mod tests {
     fn an_f32s_math_and_reading_one_from_text_are_its_own() -> Result<(), String> {
         use fennec_check::{Num, Type};
         use fennec_ir::{Block, Inst, InstKind, Local, LocalId, Operand, Terminator};
-        let Ok(tools) = Tools::find() else {
+        let Some(tools) = tools_here()? else {
             return Ok(());
         };
         let source = "def main(stdout: Stdout):\n    got = float.parse(\"1.5\") except why:\n        stdout.print(why)\n        return\n    stdout.print(got)\n";
@@ -1112,7 +1125,7 @@ mod tests {
     #[test]
     fn an_optional_of_an_optional_is_made_copied_and_read_out_for_every_inner_kind() -> Result<(), String> {
         use fennec_check::Type;
-        let Ok(tools) = Tools::find() else {
+        let Some(tools) = tools_here()? else {
             return Ok(());
         };
         let source = "struct Point:\n    x: int\n    y: int\n\nstruct Node:\n    x: int\n    next: Node?\n\ndef main(stdout: Stdout):\n    point = Point(x=1, y=2)\n    node = Node(x=3, next=None)\n    stdout.print(point.x, node.x)\n";
@@ -1233,7 +1246,7 @@ mod tests {
     /// order.
     #[test]
     fn modules_linked_in_groups_make_the_module_linked_at_once() -> Result<(), String> {
-        let Ok(tools) = Tools::find() else {
+        let Some(tools) = tools_here()? else {
             return Ok(());
         };
         let source = "struct Spot:\n    across: int\n    down: int\n\ndef moved(spot: Spot, by: int) -> Spot:\n    return Spot(across=spot.across + by, down=spot.down)\n\ndef named(spot: Spot) -> str:\n    return f\"{spot.across},{spot.down}\"\n\ndef walked(steps: list[int]) -> list[Spot]:\n    mut spots: list[Spot] = []\n    mut at = Spot(across=0, down=0)\n    for step in steps:\n        at = moved(at, by=step)\n        spots.append(at)\n    return spots\n\ndef main(stdout: Stdout):\n    for spot in walked([1, 2, 3]):\n        stdout.print(named(spot))\n";
@@ -1275,7 +1288,7 @@ mod tests {
     /// given instead, which crashed. This builds the assembly, so it runs on any machine.
     #[test]
     fn a_huge_function_checks_errors_where_calls_leave_them_on_x86_64() -> Result<(), String> {
-        let Ok(tools) = Tools::find() else {
+        let Some(tools) = tools_here()? else {
             return Ok(());
         };
         let units = units(&long_program(400))?;
@@ -1320,7 +1333,7 @@ mod tests {
     /// This builds ELF objects, so it runs on any machine.
     #[test]
     fn a_function_is_the_same_object_whatever_its_number_and_folder() -> Result<(), String> {
-        let Ok(tools) = Tools::find() else {
+        let Some(tools) = tools_here()? else {
             return Ok(());
         };
         let units = units(&long_program(3))?;

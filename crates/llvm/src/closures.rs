@@ -126,7 +126,7 @@ fn holds_one(ty: &Type) -> bool {
 }
 
 /// Whether this type is a closure or holds one.
-fn has_one(ty: &Type) -> bool {
+pub(crate) fn has_one(ty: &Type) -> bool {
     matches!(ty, Type::Arrow(..) | Type::Function(_)) || inside(ty).iter().any(|inner| has_one(inner))
 }
 

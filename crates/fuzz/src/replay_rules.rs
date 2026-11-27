@@ -55,6 +55,10 @@
 //!   than a head may have for a 431, or a head the client closes the connection partway through.
 //!   The server prints each path it serves, and each client the response it read. Which order those
 //!   came in is the recording's. A program with it gets no deadlock, as with a server's rounds.
+//! - **A task outside the program,** past the message's byte, which writes three rows to a SQLite
+//!   database and reads them back, runs `echo`, or reads from a connection nothing writes to until
+//!   its 10ms timeout has given up, or any of them, by the byte's bits. A replay reads none of the
+//!   database, the program or the network: it gets what each gave from its recording.
 //!
 //! The program is built once, with `fennec build --llvm`, and run with `FENNEC_RECORD` and then
 //! `FENNEC_REPLAY`, as `fennec run --record` and `fennec replay` run it. It needs what `llvm`
@@ -470,7 +474,16 @@ struct Plan {
     shape: Shape,
     /// Each HTTP client's requests, in order, on its one connection.
     clients: Vec<Vec<Ask>>,
+    /// What a task of its own does outside the program, by bits: [`SQLITE`], [`PROCESS`], [`READ`].
+    outside: u8,
 }
+
+/// The outside task writes rows to a database and reads them back.
+const SQLITE: u8 = 1;
+/// It runs another program and prints what it said.
+const PROCESS: u8 = 2;
+/// It reads from a connection nothing writes to until it's given up.
+const READ: u8 = 4;
 
 /// Tasks sending numbers into one channel, which `main` takes them all from once its steps are
 /// done: the order they arrive in is the recording's.
@@ -570,6 +583,26 @@ impl Bytes<'_> {
         asks
     }
 
+    /// Where `main` gets stuck, if it does.
+    fn stuck(&mut self) -> Option<Stuck> {
+        match self.below(3) {
+            1 => Some(Stuck::Receiving),
+            2 => Some(Stuck::Sending),
+            _ => None,
+        }
+    }
+
+    /// What a message is, when numbers go inside one.
+    fn shape(&mut self) -> Shape {
+        match self.below(5) {
+            1 => Shape::Flat,
+            2 => Shape::Carried,
+            3 => Shape::Wrapped,
+            4 => Shape::Listed,
+            _ => Shape::Note,
+        }
+    }
+
     fn steps(&mut self, receives: bool) -> Vec<Step> {
         let count = 1 + self.below(MOST_STEPS);
         (0..count)
@@ -662,12 +695,7 @@ fn plan(input: &[u8]) -> Plan {
     });
     // A server's rounds wait on the network, which isn't a wait on the program's own tasks, so a
     // program with them never deadlocks: it would wait for good, so it gets no stuck step.
-    let stuck = match bytes.below(3) {
-        1 => Some(Stuck::Receiving),
-        2 => Some(Stuck::Sending),
-        _ => None,
-    };
-    if let Some(stuck) = stuck.filter(|_| rounds.is_empty()) {
+    if let Some(stuck) = bytes.stuck().filter(|_| rounds.is_empty()) {
         main.insert(bytes.below(main.len() + 1), MainStep::Stuck(stuck));
     }
     // Which of the locks that would be kept read instead, by their numbers' bits.
@@ -679,18 +707,27 @@ fn plan(input: &[u8]) -> Plan {
     }
     let notes = bytes.below(2) == 1;
     let clients: Vec<Vec<Ask>> = (0..bytes.below(MOST_CLIENTS + 1)).map(|_| bytes.asks()).collect();
-    let shape = match bytes.below(5) {
-        1 => Shape::Flat,
-        2 => Shape::Carried,
-        3 => Shape::Wrapped,
-        4 => Shape::Listed,
-        _ => Shape::Note,
-    };
+    let shape = bytes.shape();
+    let outside = bytes.next() & (SQLITE | PROCESS | READ);
     // The HTTP server waits on the network too, so `main` never deadlocks beside it.
     if !clients.is_empty() {
         main.retain(|step| !matches!(step, MainStep::Stuck(_)));
     }
-    Plan { tasks, rounds, main, timed, queue, pieces, locks, pieces_lock, gather, notes, shape, clients }
+    Plan {
+        tasks,
+        rounds,
+        main,
+        timed,
+        queue,
+        pieces,
+        locks,
+        pieces_lock,
+        gather,
+        notes,
+        shape,
+        clients,
+        outside,
+    }
 }
 
 impl Plan {
@@ -733,6 +770,45 @@ impl Plan {
             }
         }
         lines
+    }
+
+    fn outside_does(&self, part: u8) -> bool {
+        self.outside & part != 0
+    }
+
+    /// What the outside task prints, without its new line, in its order.
+    fn outside_lines(&self) -> Vec<String> {
+        [(SQLITE, "outside kept [0, 1, 2]"), (PROCESS, "outside ran True"), (READ, "outside gave up")]
+            .into_iter()
+            .filter(|(part, _)| self.outside_does(*part))
+            .map(|(_, line)| line.to_owned())
+            .collect()
+    }
+
+    /// The errors the outside task fails with.
+    fn outside_errors(&self) -> Vec<&'static str> {
+        [(SQLITE, "SqlError"), (PROCESS, "ProcessError"), (READ, "NetError")]
+            .into_iter()
+            .filter(|(part, _)| self.outside_does(*part))
+            .map(|(_, error)| error)
+            .collect()
+    }
+
+    /// The capabilities the outside task takes, as `name: Type` and as the names `main` passes.
+    fn outside_given(&self) -> (String, String) {
+        let mut parameters = Vec::new();
+        let mut arguments = Vec::new();
+        for (part, name, kind) in
+            [(SQLITE, "fs", "Fs"), (PROCESS, "process", "Process"), (READ, "net", "Net")]
+        {
+            if self.outside_does(part) {
+                parameters.push(format!("{name}: {kind}"));
+                arguments.push(name);
+            }
+        }
+        parameters.push("stdout: Stdout".to_owned());
+        arguments.push("stdout");
+        (parameters.join(", "), arguments.join(", "))
     }
 
     /// Whether any `Note` is sent: the input asked for them, and some task takes from its inbox or
@@ -904,6 +980,7 @@ impl Plan {
         }
         printed.extend(self.pieces_over().map(|over| format!("{over}\n")));
         printed.extend(self.http_lines().into_iter().map(|line| format!("{line}\n")));
+        printed.extend(self.outside_lines().into_iter().map(|line| format!("{line}\n")));
         printed.push("over\n".to_owned());
         printed.sort();
         printed
@@ -962,6 +1039,7 @@ impl Plan {
         );
         lines.extend(self.pieces_over().map(str::to_owned));
         lines.extend(self.http_lines());
+        lines.extend(self.outside_lines());
         lines.push("over".to_owned());
         lines
     }
@@ -1281,7 +1359,11 @@ fn heading(plan: &Plan) -> String {
     if plan.queue.is_some() || plan.gather.is_some() || plan.deadlocks() {
         imported.push("channel");
     }
-    let mut out = format!("from std.concurrent import {}\n", imported.join(", "));
+    let mut out = String::new();
+    if plan.outside_does(SQLITE) {
+        out.push_str("from std import sqlite\n");
+    }
+    let _ = writeln!(out, "from std.concurrent import {}", imported.join(", "));
     if plan.serves() {
         let mut net = vec!["Connection", "NetError"];
         if !plan.clients.is_empty() {
@@ -1292,7 +1374,8 @@ fn heading(plan: &Plan) -> String {
         }
         let _ = writeln!(out, "from std.net import {}", net.join(", "));
     }
-    if plan.any_timed() {
+    out.push_str(&outside_imports(plan));
+    if plan.any_timed() || plan.outside_does(READ) {
         out.push_str("from std.time import Duration\n");
     }
     if plan.pieces.as_ref().is_some_and(|pieces| pieces.fails) {
@@ -1328,6 +1411,63 @@ fn heading(plan: &Plan) -> String {
              \n# Sends `sent` within `wait`, or gives up, when the task has ended or its inbox stays full.\n\
              def handed(to: Sender[{message}], sent: {message}, wait: Duration):\n    \
              to.send_within(sent, wait) except Closed() | Timeout(): return\n",
+        );
+    }
+    if plan.outside != 0 {
+        out.push_str(&outside(plan));
+    }
+    out
+}
+
+/// What the outside task's errors are imported from, but `std.net` where the program serves, which
+/// imports `NetError` already.
+fn outside_imports(plan: &Plan) -> String {
+    let mut out = String::new();
+    if plan.outside_does(READ) && !plan.serves() {
+        out.push_str("from std.net import NetError\n");
+    }
+    if plan.outside_does(PROCESS) {
+        out.push_str("from std.process import ProcessError\n");
+    }
+    if plan.outside_does(SQLITE) {
+        out.push_str("from std.sql import SqlError\n");
+    }
+    out
+}
+
+/// The outside task: what it writes to a database and reads back, what another program said, and
+/// that a read nothing answered in time gave up. A database left by an earlier input is emptied.
+fn outside(plan: &Plan) -> String {
+    let (parameters, _) = plan.outside_given();
+    let fails = plan.outside_errors().join(" | ");
+    let mut out = format!(
+        "\n# What a task does outside the program, which a replay reads from its recording.\n\
+         def outside({parameters}) fails {fails}:\n"
+    );
+    if plan.outside_does(SQLITE) {
+        out.push_str(
+            "    with sqlite.open(fs, \"outside.db\")? as db:\n        \
+             _ = db.execute(t\"create table if not exists seen (n int)\")?\n        \
+             _ = db.execute(t\"delete from seen\")?\n        for n in range(3):\n            \
+             _ = db.execute(t\"insert into seen values ({n})\")?\n        \
+             stdout.print(\"outside kept\", db.query[int](t\"select n from seen order by n\")?)\n",
+        );
+    }
+    if plan.outside_does(PROCESS) {
+        out.push_str(
+            "    ran = process.run(\"echo\", [\"outside ran\"])?\n    stdout.print(ran.stdout.strip(), ran.ok())\n",
+        );
+    }
+    if plan.outside_does(READ) {
+        out.push_str(
+            "    with net.listen(0)? as quiet:\n        with net.connect(\"127.0.0.1\", quiet.port)? as client:\n            \
+             with quiet.accept()? as conn:\n                \
+             _ = client.read_line(timeout=Duration.millis(10)) except why:\n                    \
+             case .TimedOut(after=_):\n                        stdout.print(\"outside gave up\")\n                        \
+             \"\"\n                    \
+             case .NotFound() | .Refused() | .Closed | .Denied() | .Tls() | .Status() | .Other():\n                        \
+             stdout.print(\"outside heard something\")\n                        \"\"\n                \
+             conn.write(\"late\\n\")?\n",
         );
     }
     out
@@ -1597,24 +1737,23 @@ fn parallel(pieces: &Pieces, locks: bool, parameters: &str, arguments: &str) -> 
 /// one, and `handed` is what the server's handed.
 fn main(plan: &Plan, clock: bool, handed: &str) -> String {
     let serves = plan.serves();
-    let mut fails = Vec::new();
-    if serves {
-        fails.push("NetError");
-    }
-    fails.push("Crashed");
-    if sends_plainly(plan) {
-        fails.push("Closed");
-    }
-    let fails = fails.join(" | ");
-    let net = if serves { "net: Net, " } else { "" };
+    let fails = main_fails(plan);
+    let fs = if plan.outside_does(SQLITE) { "fs: Fs, " } else { "" };
+    let process = if plan.outside_does(PROCESS) { "process: Process, " } else { "" };
+    let net = if serves || plan.outside_does(READ) { "net: Net, " } else { "" };
     let main_clock = if clock { "clock: Clock, " } else { "" };
-    let mut out = format!("\ndef main({net}{main_clock}stdout: Stdout) fails {fails}:\n");
+    let mut out = format!("\ndef main({fs}{process}{net}{main_clock}stdout: Stdout) fails {fails}:\n");
     if plan.shares() {
         out.push_str(
             "    shared a = Account(total=0, moves=[])\n    shared b = Account(total=0, moves=[])\n",
         );
     }
     let mut indent = String::from("    ");
+    if plan.outside != 0 {
+        let (_, arguments) = plan.outside_given();
+        let _ = writeln!(out, "{indent}with launch(() => outside({arguments})?)?:");
+        indent.push_str("    ");
+    }
     out.push_str(&http_blocks(plan, &mut indent));
     if !plan.rounds.is_empty() {
         let _ = writeln!(out, "{indent}with net.listen(0)? as server:");
@@ -1668,6 +1807,25 @@ fn main(plan: &Plan, clock: bool, handed: &str) -> String {
     }
     out.push_str("    stdout.print(\"over\")\n");
     out
+}
+
+/// The errors `main` fails with: the network's, a task's crash, a send to a closed inbox, and
+/// the outside task's.
+fn main_fails(plan: &Plan) -> String {
+    let mut fails = Vec::new();
+    if plan.serves() {
+        fails.push("NetError");
+    }
+    fails.push("Crashed");
+    if sends_plainly(plan) {
+        fails.push("Closed");
+    }
+    for error in plan.outside_errors() {
+        if !fails.contains(&error) {
+            fails.push(error);
+        }
+    }
+    fails.join(" | ")
 }
 
 /// `main`'s own steps, at `indent`, then a stop for each worker.

@@ -53,6 +53,7 @@ pub mod parallel;
 pub(crate) use parallel::{stress_asked, workers_wanted};
 mod plans;
 pub mod regex;
+pub mod report;
 #[cfg(any(test, feature = "threads"))]
 pub mod serve;
 

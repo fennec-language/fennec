@@ -16,6 +16,7 @@ mod eval;
 mod generate;
 mod messaging;
 mod opening;
+mod pools;
 mod saving;
 mod source;
 mod storing;
@@ -1256,6 +1257,51 @@ mod tests {
         }
     }
 
+    /// Every way of an `Exchanged` step, three times over, with places of both signs, for each type,
+    /// in a local and in a field, checks, and the evaluator prints what the oracle prints: items
+    /// swapped where the list is long enough, directly and through `ref`, and rows updated where
+    /// their `Id` is live, `False` where it's been removed.
+    #[test]
+    fn the_exchanged_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{EXCHANGE_WAYS, ExchangeStep, Exchanging, POP_TYS, Program, Stmt};
+        let body = POP_TYS
+            .iter()
+            .enumerate()
+            .flat_map(|(round, ty)| {
+                [false, true].into_iter().map(move |in_field| {
+                    let place = |at: usize| i64::try_from(at % 8).unwrap_or(0) - 4;
+                    let steps = EXCHANGE_WAYS
+                        .iter()
+                        .chain(EXCHANGE_WAYS.iter())
+                        .chain(EXCHANGE_WAYS.iter())
+                        .enumerate()
+                        .map(|(at, way)| ExchangeStep {
+                            way: *way,
+                            first: place(at + round),
+                            second: place(at * 3 + round + usize::from(in_field)),
+                            which: (at + round) % 3,
+                            row: (at + round) % 3,
+                        })
+                        .collect();
+                    let id = round * 2 + usize::from(in_field) + 1;
+                    Stmt::Exchanged(Exchanging { id, ty: *ty, in_field, steps })
+                })
+            })
+            .collect();
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
     /// Every way of a `Popped` step, twice over, for each type, in a local and in a field, checks,
     /// and the evaluator prints what the oracle prints: an optional of a heap type taken out of a
     /// list is the item it was, and a missing one, or one that's `None`, is what `else` gives.
@@ -1414,6 +1460,104 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 
+    /// The pools `keeper_pools_check_and_the_evaluator_agrees_with_the_oracle_and_the_builds`
+    /// starts with, before those picked at random.
+    fn fixed_pools() -> Vec<super::ast::Stmt> {
+        use super::ast::Stmt;
+        use super::pools::{Pooling, Step};
+        let take = |inner: Vec<Step>, breaks| Step::Take { inner, breaks };
+        let pool =
+            |id, size, resets, refuse, steps| Stmt::Pooled(Pooling { id, size, resets, refuse, steps });
+        vec![
+            // One link: a failed block's link reset and lent again, a crash with it, a short wait.
+            pool(1, 1, true, 0, vec![take(vec![Step::Waits], true), Step::Crashes, take(vec![], false)]),
+            // One link that can't be reset: replaced after each failure.
+            pool(2, 1, false, 0, vec![take(vec![], true), Step::Crashes, take(vec![Step::Waits], false)]),
+            // Two links lent back in the order they were given back, the inner one first.
+            pool(3, 2, true, 0, vec![take(vec![take(vec![Step::Waits], false)], false), take(vec![], false)]),
+            // Three links that can't be reset, the third open refused.
+            pool(
+                4,
+                3,
+                false,
+                3,
+                vec![
+                    take(vec![take(vec![Step::Crashes], true), take(vec![], false)], false),
+                    take(vec![take(vec![take(vec![Step::Waits], true)], false)], true),
+                    take(vec![], false),
+                ],
+            ),
+            // The first link refused: the pool fails at its `with`.
+            pool(5, 2, true, 1, vec![take(vec![], false), take(vec![], false)]),
+        ]
+    }
+
+    /// `Pooled` statements check, and the evaluator prints what the oracle prints, and what a dev
+    /// and a release build print where they can be built here: a link reset and lent again, one
+    /// replaced, the order links come back in, an open refused, a pool failing at its `with`, a
+    /// task crashing with a link and a short wait timing out, then 20 pools picked at random.
+    ///
+    /// Run with `FENNEC_CHECK_PROOFS=1` or `FENNEC_AUDIT=1`, a false proof or a block left fails it.
+    #[test]
+    fn keeper_pools_check_and_the_evaluator_agrees_with_the_oracle_and_the_builds() {
+        use super::ast::{Program, Stmt};
+        let mut body = fixed_pools();
+        let mut state: u64 = 18;
+        let mut choose = |n: usize| {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
+        };
+        body.extend((6..26).map(|id| Stmt::Pooled(super::pools::picked(id, &mut choose))));
+        let mut refused = 0;
+        // The oracle meets each pool alone, as some of them it refuses.
+        for stmt in &body {
+            let program = Program { body: vec![stmt.clone()], threadless: false };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some((printed, true, _)) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+            };
+            // Two keepers opening links bump one `shared` tally from a task and the block it was
+            // launched from, which the oracle refuses: it can't see that `main` takes one at a time.
+            // A pool with many tasks may have more orders of their messages than it tries.
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            match &oracle.ended {
+                fennec_oracle::Ended::Unsupported(why)
+                    if why.contains("a launched task or its `with` block")
+                        || why.contains("orders of its tasks' messages") =>
+                {
+                    refused += 1;
+                }
+                _ => {
+                    assert_eq!(oracle.exit_code(), Some(0), "{:?}\n{source}", oracle.ended);
+                    assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+                }
+            }
+        }
+        assert!(refused <= 10, "the oracle refused {refused} of 25 pools");
+        // The builds meet them all in one program, as two builds take far less than fifty.
+        if !crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}")) {
+            return;
+        }
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        for release in [false, true] {
+            let built = crate::llvm::built_and_run(&source, "programs-pooled", release);
+            let Ok((said, told, _)) = built else { unreachable!("{built:?}\n{source}") };
+            if let Some(wrong) = super::caught(if release { "release" } else { "dev" }, &told) {
+                unreachable!("{wrong}\n{source}");
+            }
+            assert_eq!(String::from_utf8_lossy(&said), printed, "release {release}\n{source}");
+        }
+    }
+
     /// The crews `locked_crews_check_and_the_evaluator_agrees_with_the_oracle_and_the_builds` starts
     /// with, before those picked at random.
     fn fixed_crews() -> Vec<super::ast::Stmt> {
@@ -1424,6 +1568,7 @@ mod tests {
                 Crew {
                     id,
                     items: items.to_vec(),
+                    rows: vec![vec![1], vec![2]],
                     counts: counts.to_vec(),
                     locks,
                     tasks,
@@ -1469,6 +1614,16 @@ mod tests {
                 ],
                 vec![vec![1, 2, 3, 4]],
             )),
+            Stmt::Crewed(crew(
+                5,
+                &[1, 2],
+                &[(0, 1)],
+                vec![
+                    vec![Change::Turns(2, vec![Change::AppendRow(0, Arg::Times(2))])],
+                    vec![Change::Bump(3, Arg::Literal(1))],
+                ],
+                vec![vec![0, 5], vec![1, 7]],
+            )),
         ]
     }
 
@@ -1478,6 +1633,8 @@ mod tests {
     ///   task crashes on its second number;
     /// - a crash in a later lock after an earlier one's `ref self` call with a computed argument;
     /// - a place outside the list, an overflow, and a task with nothing to crash on;
+    /// - a loop appending to a row in one lock, then a crash in the next, which segfaulted as the
+    ///   first lock's end took the row out again and the crash wrote it over the bag as `None`;
     /// - 20 crews picked at random.
     ///
     /// Run with `FENNEC_CHECK_PROOFS=1` or `FENNEC_AUDIT=1`, a false proof or a block left fails it.
@@ -1490,7 +1647,7 @@ mod tests {
             state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
         };
-        body.extend((5..25).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
+        body.extend((6..26).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
         let native = crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}"));
         let mut crashed = 0;
         for stmt in body {

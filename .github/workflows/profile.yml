@@ -120,7 +120,7 @@ jobs:
             perf report -i "perf-$program.data" --children --sort symbol --stdio -g none > "children-$program.txt" 2>> "report-$program.err"
             perf report -i "perf-$program.data" --no-children --sort dso --stdio > "dso-$program.txt" 2>> "report-$program.err"
             # A report with no samples, or with its functions only as addresses, says nothing.
-            grep -E '^ +[0-9.]+%' "self-$program.txt" | head -20 > "top-$program.txt"
+            grep -m 20 -E '^ +[0-9.]+%' "self-$program.txt" > "top-$program.txt" || true
             if [ ! -s "top-$program.txt" ]; then
               echo "::error::perf found no samples of $program"; cat "record-$program.err" "report-$program.err"; exit 1
             fi
@@ -133,7 +133,7 @@ jobs:
               echo "### $program: where its samples are, by function"
               echo
               echo '```'
-              grep -E '^ +[0-9.]+%' "self-$program.txt" | head -40
+              grep -m 40 -E '^ +[0-9.]+%' "self-$program.txt" || true
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
@@ -141,6 +141,7 @@ jobs:
         if: always()
         with:
           name: profile-${{ inputs.kernel }}-${{ matrix.os }}
+          retention-days: 7
           path: |
             profile/*.txt
             profile/*.err

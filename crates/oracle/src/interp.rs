@@ -37,8 +37,8 @@ use fennec_syntax::{BinOp, Expr, ExprKind, Span, Stmt, StmtKind};
 use crate::load::Program;
 use crate::value::{Cap, Held, Reach, Text, Value};
 
-/// How many expressions and statements a run may take, across every thread, before it's stopped
-/// as one the oracle can't finish.
+/// How many expressions and statements a program's runs may take, across every thread and every
+/// order of its tasks' messages, before it's stopped as one the oracle can't finish.
 pub(crate) const MOST_STEPS: u64 = 40_000_000;
 
 /// How deep calls may nest.
@@ -175,6 +175,11 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// The steps this run has taken, across every thread.
+    pub(crate) fn steps_taken(&self) -> u64 {
+        self.steps.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn new(program: &'static Program, most_steps: u64, workdir: &disk::Workdir) -> Shared {
         Shared {
             program,

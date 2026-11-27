@@ -537,6 +537,27 @@ impl Program {
         Ok(Type::result(returns, self.resolve_within(errors, generics, depth)?))
     }
 
+    /// `with T` or `shared T`, written as `written` around `held`. Once lowered, a `shared T` is
+    /// the declaration made to hold a `T`, and a `T` with a type parameter in it isn't built yet.
+    fn shared_or_lent(
+        &self,
+        name: &str,
+        written: &TypeExpr,
+        held: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        let made = crate::lock_lowering::made_name(&self::written(held));
+        if name == crate::lock::SHARED && self.types.contains_key(&made) {
+            return Ok(Type::named(&made));
+        }
+        let inner = self.resolve_within(held, generics, depth)?;
+        if name == crate::lock::SHARED && inner.has_params() {
+            return Err(crate::lock::shared_of_a_type_parameter(written.span));
+        }
+        Ok(Type::Generic(name.to_owned(), vec![inner]))
+    }
+
     /// How many types in brackets a type takes, when `given` are written.
     fn wanted_args(&self, name: &str, given: usize) -> usize {
         match name {
@@ -582,13 +603,7 @@ impl Program {
         if matches!(name, crate::lend::WITH | crate::lock::SHARED)
             && let [held] = written.args.as_slice()
         {
-            // Once lowered, a `shared T` is the declaration made to hold a `T`.
-            let made = crate::lock_lowering::made_name(&self::written(held));
-            let ty = if name == crate::lock::SHARED && self.types.contains_key(&made) {
-                Type::named(&made)
-            } else {
-                Type::Generic(name.to_owned(), vec![self.resolve_within(held, generics, depth)?])
-            };
+            let ty = self.shared_or_lent(name, written, held, generics, depth)?;
             return Ok(if written.optional { Type::optional(ty) } else { ty });
         }
         let builtin = BUILT_IN_TYPES.contains(&name);

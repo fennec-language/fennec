@@ -223,7 +223,9 @@ export struct Unpacker:
         mut place = at
         while place < len(self._data):
             b = self._data[place]
-            if shift > 63 or (shift == 63 and b > 1): fail self._fail(at, "a number is too long")
+            # A tag or a size is never past the largest int: one that is would come out negative,
+            # and get past the checks that a size fits in what's left.
+            if shift > 63 or (shift == 63 and b > 0): fail self._fail(at, "a number is too long")
             # A last byte of 0 after others adds nothing: see `PackReader._varint`.
             if b == 0 and shift > 0:
                 fail self._fail(at, "a number is written in more bytes than it needs")

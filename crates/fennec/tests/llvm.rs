@@ -26858,6 +26858,50 @@ fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A generic struct's `shared list[T]` field is refused as not built yet, in the checker's words,
+/// where it once checked and stopped once rewritten for running with an internal error asking to
+/// be reported (#2650). A generic struct whose `shared` field's type is written out builds and runs.
+#[test]
+fn a_shared_value_of_a_type_parameter_is_refused_and_one_written_out_runs() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared_type_parameter")?;
+    let build = |name: &str, source: &str| -> std::io::Result<Output> {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join(name).to_string_lossy()],
+            &dir,
+        )
+    };
+    let refused = build(
+        "of_t",
+        "struct Pool[T]:\n    items: shared list[T]\n\ndef add_one(pool: Pool[int]):\n    lock pool.items as ref held:\n        \
+         held.append(1)\n    return\n\ndef main(stdout: Stdout):\n    shared numbers = [1, 2]\n    \
+         add_one(Pool(items=numbers))\n    lock numbers as held:\n        stdout.print(held[2] + 1)\n    return\n",
+    )?;
+    let said = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(!refused.status.success(), "it built");
+    assert!(
+        said.contains("a `shared` value of a type parameter, as `shared list[T]`, isn't built yet"),
+        "{said}"
+    );
+    assert!(!said.contains("internal error"), "{said}");
+    let written_out = build(
+        "written_out",
+        "struct Pool[T]:\n    first: T\n    counts: shared list[int]\n\ndef add_one[T](pool: Pool[T]):\n    \
+         lock pool.counts as ref held:\n        held.append(1)\n    return\n\ndef main(stdout: Stdout):\n    \
+         shared counts = [1, 2]\n    add_one(Pool(first=\"a\", counts=counts))\n    lock counts as held:\n        \
+         stdout.print(held[2] + 1)\n    return\n",
+    )?;
+    assert!(written_out.status.success(), "{}", String::from_utf8_lossy(&written_out.stderr));
+    let ran = Command::new(dir.join("written_out")).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2\n");
+    Ok(())
+}
+
 /// Replacing a file keeps what was true of it: who can read it, and that a link stays a link to
 /// the file it points at. What's being written is never readable by more than the file was.
 #[cfg(unix)]

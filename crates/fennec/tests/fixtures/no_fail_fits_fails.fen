@@ -1,0 +1,36 @@
+error Broken:
+    reason: str
+
+def run_it[T, E](run: () -> T fails E) -> T fails E:
+    return run()?
+
+def handled[E](run: () -> int fails E) -> int:
+    got = run() except why:
+        return len(f"{why}")
+    return got
+
+def fixed(make: () -> int fails Broken) -> int:
+    got = make() except Broken():
+        return -2
+    return got
+
+def worded[E: Worded](make: () -> int fails E) -> int:
+    got = make() except why:
+        return len(why.message())
+    return got
+
+def five() -> int:
+    return 5
+
+def broken() -> int fails Broken:
+    fail Broken(reason="no")
+
+struct Holder:
+    make: () -> int fails Broken
+
+def main(stdout: Stdout):
+    plain = run_it(() => 7)
+    stdout.print(plain + 1, run_it(five), handled(five), fixed(five), fixed(() => 3))
+    holder = Holder(make=five)
+    stdout.print(fixed(holder.make), fixed(broken), worded(() => 4), worded(broken))
+    return

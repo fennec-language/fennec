@@ -87,6 +87,11 @@ fn builds_checking() {
     // A build without the facts the compiler hands LLVM beside the code, which runs the same, only
     // slower: one printing otherwise was handed a wrong fact.
     fennec_llvm::strip_facts(on("FENNEC_STRIP_FACTS"));
+    // A build claiming every list index is inside its list, for a test to show a build checking
+    // proofs stops at a false one. A release compiler ignores it.
+    fennec_llvm::plant_false_proof(
+        std::env::var_os("FENNEC_PROOF_CANARY").is_some_and(|kind| kind == "bounds"),
+    );
 }
 
 const USAGE: &str = "usage:

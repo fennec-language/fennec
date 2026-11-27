@@ -95,7 +95,7 @@ pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use copies_made::{CopyMade, Why as CopyWhy, changed_in_place, copies_made};
 pub use emit::{
     Cpu, Reuse, Unit, check_proofs, emit, emit_for, emit_reusing, emit_traced, emit_tracing_costs,
-    strip_facts, trust_native_blocks,
+    plant_false_proof, strip_facts, trust_native_blocks,
 };
 pub use entry::{Image, entry, tests_entry};
 pub use failure_checks::unchecked_failures;

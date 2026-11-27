@@ -190,7 +190,7 @@ pub fn sanitize_flag() -> Option<String> {
 }
 
 /// Every switch outside the program that changes what a build makes, as a line for a cache key: the
-/// sanitizer, whether proofs are checked and facts stripped, whether results and other types are
+/// sanitizer, whether proofs are checked, facts stripped and a false proof planted, whether results and other types are
 /// kept in place, whether a flat message crosses a channel as its words, and whether it's built for
 /// a heap audit.
 /// A program built one way is never handed back for another, as a plain one was for a build asked
@@ -200,10 +200,11 @@ pub fn sanitize_flag() -> Option<String> {
 #[must_use]
 pub fn output_switches() -> String {
     format!(
-        "sanitize={:?} proofs_checked={} facts_stripped={} results_in_place={} types_in_place={} dict_values_in_place={} messages_as_words={} named_conn_calls={} audited={}",
+        "sanitize={:?} proofs_checked={} facts_stripped={} false_proof={} results_in_place={} types_in_place={} dict_values_in_place={} messages_as_words={} named_conn_calls={} audited={}",
         sanitizer(),
         crate::emit::proofs_checked(),
         crate::emit::facts_stripped(),
+        crate::emit::false_proof(),
         fennec_layout::results_in_place(),
         fennec_layout::types_in_place(),
         fennec_layout::dict_values_in_place(),

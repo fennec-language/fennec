@@ -329,6 +329,22 @@ pub(crate) fn facts_stripped() -> bool {
     FACTS_STRIPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether builds plant a false proof, as [`plant_false_proof`] last said.
+static FALSE_PROOF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes builds from here on claim every list index is inside its list, so each bounds check is
+/// left out, or not: a false proof planted for a test, or the nightly's proof checking, to show
+/// that a build checking proofs stops at it. `fennec` does when `FENNEC_PROOF_CANARY=bounds`. A
+/// release compiler never plants one.
+pub fn plant_false_proof(on: bool) {
+    FALSE_PROOF.store(cfg!(debug_assertions) && on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether builds claim every list index is inside its list (see [`plant_false_proof`]).
+pub(crate) fn false_proof() -> bool {
+    FALSE_PROOF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,

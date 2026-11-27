@@ -13077,6 +13077,39 @@ def main(stdout: Stdout):
     )
 }
 
+/// A string grown in a field, `kept.name += "!"`, of a struct held as a block, as one holding
+/// itself is, makes the struct alone first, so a copy taken before keeps the name it had (#273).
+#[test]
+fn growing_a_field_of_a_block_doesnt_show_through_a_copy() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_pinned(
+        "grown_field",
+        r#"struct Node:
+    name: str
+    items: list[int]
+    next: Node?
+
+def main(stdout: Stdout):
+    number = 7
+    mut kept = Node(
+        name=f"a name long enough to be held in a block of its own, {number}",
+        items=[1],
+        next=None,
+    )
+    copied = kept
+    kept.name += "!"
+    stdout.print(kept.name)
+    stdout.print(copied.name)
+    mut again = kept
+    seen = again
+    again.items.append(2)
+    stdout.print(again.items, seen.items)
+"#,
+    )
+}
+
 /// A string across lines in `"""`s, plain and as an f-string, prints its lines less the spaces
 /// before its closing `"""`, ending with the newline before that line (#294).
 #[test]

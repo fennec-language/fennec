@@ -632,6 +632,30 @@ pub(crate) fn writing(bytes: &[u8], write: impl Fn(&[u8]) -> std::io::Result<()>
     }
 }
 
+/// What the running task, `main`, kept printing to the end, which the program writes once it's
+/// over, with `write`, and gives back what's left for it to write after. In a replay, it goes
+/// through the bursts its recording logged that are still due first, as `writing` sends a burst.
+///
+/// **A replay waits less than its recording did,** so it can keep to its end bytes its recording
+/// wrote at a wait: a receive its recording says timed out gives up at once, without the wait that
+/// wrote what the task had printed first. Those bytes came out at the end, past the burst ordering,
+/// so the recording's burst was left over and the replay said it ended where its recording asked
+/// for a write (the nightly's random programs). Now the due bursts take them, in their order, and
+/// what's left is what the recording's end wrote too, which no burst holds.
+pub(crate) fn kept_at_end(
+    bytes: Vec<u8>,
+    write: impl Fn(&[u8]) -> std::io::Result<()>,
+) -> std::io::Result<Vec<u8>> {
+    let Mode::Replay(player) = mode() else { return Ok(bytes) };
+    let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+    if !player.orders_output {
+        return Ok(bytes);
+    }
+    let task = running();
+    player.takes_output(&task, &bytes, write)?;
+    Ok(player.held.remove(&*task).map(Vec::from).unwrap_or_default())
+}
+
 impl Player {
     /// Takes what `task` has written, and writes with `write` every recorded burst that's now
     /// due, in the order they were recorded: each as long as it was then, from its task's bytes,

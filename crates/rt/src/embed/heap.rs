@@ -2197,19 +2197,39 @@ pub(super) fn lent_block(
     i64::try_from(lent.address).ok()
 }
 
+/// A block's words, to read its value from: all of them, but for a block every thread can read,
+/// whose count is left out, as [`NEVER_FREED_COUNT`], which it is in all but its exact number.
+/// Nothing reading a value looks at a block's count, and the program's own thread may be changing
+/// this one's meanwhile.
+fn words_to_read(block: &[u64], shared: bool) -> Vec<u64> {
+    if !shared {
+        return block.to_vec();
+    }
+    let mut words = Vec::with_capacity(block.len());
+    words.push(NEVER_FREED_COUNT);
+    words.extend_from_slice(block.get(1..).unwrap_or_default());
+    words
+}
+
 pub(super) fn read_block(state: &State, address: u64) -> Value {
     if !room_to_read() {
         too_deep();
     }
     let at = usize::try_from(address).unwrap_or(0);
+    // A block every thread can read is never freed, and its count isn't read: the program's own
+    // thread may be changing it meanwhile, as code that runs only there counts a block that's never
+    // freed. A task reading its `Net`'s block read the count `main` was writing, which
+    // ThreadSanitizer found in the replay fuzz target.
+    let shared = shared_static(address);
     // A string only changes in place by growing, so a text of the same length is current.
     let found = state.heap.block(address);
     let length = found.and_then(|block| block.get(2)).copied();
-    let texts = if found.is_some_and(is_never_freed) { &state.heap.kept_texts } else { &state.heap.texts };
+    let kept = shared || found.is_some_and(is_never_freed);
+    let texts = if kept { &state.heap.kept_texts } else { &state.heap.texts };
     if let Some(text) = texts.borrow().get(&at).filter(|text| u64::try_from(text.len()).ok() == length) {
         return Value::Str(Rc::clone(text));
     }
-    let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else {
+    let Some(block) = state.heap.block(address).map(|block| words_to_read(block, shared)) else {
         not_native(address, "read");
         return Value::None;
     };

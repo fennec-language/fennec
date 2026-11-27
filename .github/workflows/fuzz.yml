@@ -15,6 +15,13 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# Every step runs in bash with `pipefail`, so a step that pipes what it runs through `tee` fails
+# when what it ran does, and its "Keep what was found" and "File an issue" steps run. Without it
+# the step took `tee`'s exit, and every failure found from 10-31 to 11-26 was dropped.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   fuzz:
     name: Fuzz (${{ matrix.name }})

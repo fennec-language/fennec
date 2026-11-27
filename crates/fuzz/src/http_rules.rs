@@ -832,10 +832,18 @@ fn answer(input: &[u8]) -> Result<Answer, Answer> {
     let all = |wanted: &str| -> Vec<String> {
         headers.iter().filter(|(name, _)| name == wanted).map(|(_, value)| value.clone()).collect()
     };
+    let (codings, lengths) = (all("transfer-encoding"), all("content-length"));
+    // Two lengths that differ fail whatever else the head says, a `transfer-encoding` that would
+    // override them too: RFC 9112 has a message whose framing two readers may take apart
+    // differently handled as an error, as it's how a response is split.
+    if let Some(first) = lengths.first()
+        && lengths.iter().any(|length| length != first)
+    {
+        return Err(Answer::Fails);
+    }
     if matches!(status, 204 | 304) || (100..200).contains(&status) {
         return Ok(Answer::Read(i64::from(status), Vec::new()));
     }
-    let (codings, lengths) = (all("transfer-encoding"), all("content-length"));
     if !codings.is_empty() {
         if codings != ["chunked"] {
             return Err(Answer::Unpromised);

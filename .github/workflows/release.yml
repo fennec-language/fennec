@@ -200,10 +200,12 @@ jobs:
           subject-path: |
             ${{ env.ARCHIVE }}
             ${{ env.LAUNCHER_ARCHIVE }}
+      # A tag run keeps its archives and manifest 14 days, since its `upload` job uploads them only
+      # once Chris approves it, which may be days later. Other runs keep them 1 day.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.copy }}-${{ matrix.platform.target }}
-          retention-days: 1
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/v') && 14 || 1 }}
           path: |
             ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.ARCHIVE }}
             ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.LAUNCHER_ARCHIVE }}
@@ -247,7 +249,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manifest
-          retention-days: 1
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/v') && 14 || 1 }}
           path: manifest
 
   # A dry run of a release, as a person gets one: the launcher's archive unpacked, and the

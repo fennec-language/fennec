@@ -85,6 +85,8 @@ It builds the tag again, and its `upload` job waits for Chris to approve the `re
 - the manifest is the one this run built, byte for byte;
 - the run's own `Built twice, the same` check and dry run passed.
 
+The archives it uploads are the ones that run built, kept 14 days for this, so approve it within 14 days. After that, the upload fails for want of them, uploading nothing, and a new run on the tag builds them again.
+
 It puts the archives, the manifest and its `.sig` under `launcher/v0.4.2/`, never replacing a file already there with other bytes. It moves `latest` last, and never to an older launcher. Then it reads both back from `https://dl.fennec-lang.dev`. Until there are release keys, nothing can verify, so it uploads nothing. The script is `.github/scripts/release-upload.sh`.
 
 ### What the rebuild checks

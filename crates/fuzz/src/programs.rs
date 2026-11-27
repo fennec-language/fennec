@@ -1568,6 +1568,7 @@ mod tests {
                 Crew {
                     id,
                     items: items.to_vec(),
+                    rows: vec![vec![1], vec![2]],
                     counts: counts.to_vec(),
                     locks,
                     tasks,
@@ -1613,6 +1614,16 @@ mod tests {
                 ],
                 vec![vec![1, 2, 3, 4]],
             )),
+            Stmt::Crewed(crew(
+                5,
+                &[1, 2],
+                &[(0, 1)],
+                vec![
+                    vec![Change::Turns(2, vec![Change::AppendRow(0, Arg::Times(2))])],
+                    vec![Change::Bump(3, Arg::Literal(1))],
+                ],
+                vec![vec![0, 5], vec![1, 7]],
+            )),
         ]
     }
 
@@ -1622,6 +1633,8 @@ mod tests {
     ///   task crashes on its second number;
     /// - a crash in a later lock after an earlier one's `ref self` call with a computed argument;
     /// - a place outside the list, an overflow, and a task with nothing to crash on;
+    /// - a loop appending to a row in one lock, then a crash in the next, which segfaulted as the
+    ///   first lock's end took the row out again and the crash wrote it over the bag as `None`;
     /// - 20 crews picked at random.
     ///
     /// Run with `FENNEC_CHECK_PROOFS=1` or `FENNEC_AUDIT=1`, a false proof or a block left fails it.
@@ -1634,7 +1647,7 @@ mod tests {
             state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             usize::try_from(state >> 33).unwrap_or(0) % n.max(1)
         };
-        body.extend((5..25).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
+        body.extend((6..26).map(|id| Stmt::Crewed(super::crews::picked(id, &mut choose))));
         let native = crate::llvm::can_build_threads().unwrap_or_else(|why| unreachable!("{why}"));
         let mut crashed = 0;
         for stmt in body {

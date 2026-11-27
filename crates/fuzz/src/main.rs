@@ -201,7 +201,7 @@ struct Options {
     seconds: Option<u64>,
     inputs: u64,
     /// How much CPU time one input may take before it counts as stuck, in place of each target's
-    /// own.
+    /// own, with no allowance for a sanitizer.
     stuck: Option<u64>,
     found: PathBuf,
     names: Vec<String>,
@@ -280,7 +280,7 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
         // still says which target it was in.
         println!("{}: starting", target.name);
         let _ = std::io::Write::flush(&mut std::io::stdout());
-        let stuck = options.stuck.map_or(target.stuck, Duration::from_secs);
+        let stuck = options.stuck.map_or(target.stuck * supervise::SANITIZER_ALLOWANCE, Duration::from_secs);
         let run = supervise::Run { fennec_fuzz: &fennec_fuzz, target, seed: options.seed, stuck };
         let outcome =
             run.until(options.seconds, options.inputs).map_err(|err| format!("{}: {err}", target.name))?;

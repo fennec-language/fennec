@@ -655,7 +655,10 @@ impl Lowering<'_> {
     ) -> Lowered<Option<Operand>> {
         let value = self.expr(value)?;
         let Some(Type::Result(ok, error)) = type_in(&self.locals, &value) else {
-            return Err("it uses `?` on something other than a result".to_owned());
+            // The checker takes `?` only on what can fail, so a plain value here is a copy of a
+            // generic function whose `E` is nothing, given a function that can't fail where one
+            // that `fails E` goes: there's nothing to leave with.
+            return Ok(Some(value));
         };
         let failed = self.temporary(Type::Bool);
         self.emit(InstKind::IsErr { dest: failed, value: value.clone() }, span);

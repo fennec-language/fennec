@@ -549,6 +549,11 @@ pub(crate) fn said_in(path: &Path, from: u64) -> Vec<u8> {
     said
 }
 
+/// How many runs this process has started, so each has a folder of its own: two runs in one
+/// process, as tests are, would otherwise share one, and the first to end would take the other's
+/// progress with it.
+static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A target being fuzzed.
 pub(crate) struct Run<'r> {
     pub(crate) fennec_fuzz: &'r Path,
@@ -563,9 +568,6 @@ impl Run<'_> {
     /// that ended the last.
     pub(crate) fn until(&self, seconds: Option<u64>, inputs: u64) -> Result<Outcome, String> {
         let deadline = seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds));
-        // A folder of each run's own: two runs in one process, as tests are, would otherwise share
-        // one, and the first to end would take the other's progress with it.
-        static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let folder = std::env::temp_dir().join(format!("fennec-fuzz-{}-{run}", std::process::id()));
         crate::owned::own(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;

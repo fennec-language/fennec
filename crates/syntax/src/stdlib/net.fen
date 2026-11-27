@@ -13,8 +13,8 @@
 ## test's server is done once no connection is waiting.
 
 from std import json
-from std.crypto import Secret
 from std.concurrent import Worded
+from std.crypto import Secret
 from std.intrinsics import report, stop, text_byte, text_part, text_same_at, text_size
 from std.log import Log
 from std.url import decode_query, unquote
@@ -314,9 +314,9 @@ export shared Server:
             _ = answer_all(connection, answer, timeout, log)
 
 ## The function `serve` answers each request with: the one it was given, or its router's.
-def answerer[E: Worded](
-    respond: Router | (Request) -> Response fails E,
-) -> (Request) -> Response fails E:
+def answerer[E: Worded](respond: Router | (Request) -> Response fails E) -> (
+    Request
+) -> Response fails E:
     if respond is Router:
         router = respond
         return (request) => router.respond(request)

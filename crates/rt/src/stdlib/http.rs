@@ -4,7 +4,7 @@
 
 use std::fmt::Write as _;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -328,10 +328,7 @@ fn opened_parked(url: &Url, deadline: Instant, timeout: Duration) -> Result<Stre
 }
 
 fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream, Failure> {
-    let addresses: Vec<_> = (url.host.as_str(), url.port)
-        .to_socket_addrs()
-        .map_err(|_| Failure::NotFound(url.host.clone()))?
-        .collect();
+    let addresses = super::net::looked_up_by(&url.host, url.port, deadline, timeout)?;
     let target = (url.host.as_str(), url.port);
     let stream = super::net::first_connected(target, &addresses, (timeout, Some(deadline)), connected_until)?;
     // A request is its head and then its body, two writes. Each goes out at once, rather than the

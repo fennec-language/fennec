@@ -44,6 +44,12 @@ fn a_long_one_line_if_body_moves_below() {
     );
 }
 
+/// The parser takes `for` as a field's name, so its `:` isn't a one-line loop's.
+#[test]
+fn a_field_named_for_is_not_a_loop() {
+    check("struct S:\n    for:r\n    c: r\n", "struct S:\n    for: r\n    c: r\n");
+}
+
 #[test]
 fn a_field_named_case_is_not_a_match_arm() {
     check(
@@ -148,6 +154,35 @@ fn a_long_assignment_wraps_its_value_in_parentheses() {
     );
 }
 
+/// When an assignment's target breaks too, its value goes after the `]` as it is, unwrapped, as
+/// parentheses there would go on one line when formatted again.
+#[test]
+fn a_long_target_leaves_its_value_unwrapped() {
+    let long_key = "a".repeat(90);
+    check(
+        &format!("def f():\n    totals[\"{long_key}\"] = 1 / x\n"),
+        &format!("def f():\n    totals[\n        \"{long_key}\"\n    ] = 1 / x\n"),
+    );
+}
+
+/// A long `assert` with `fails` breaks in its brackets, as `assert (a == b fails E)` doesn't parse.
+/// Without `fails`, its value is wrapped in parentheses, as an assignment's is.
+#[test]
+fn a_long_assert_with_fails_breaks_in_its_brackets() {
+    check(
+        "def f():\n    assert first_value_to_compare == owed_number_of_things(links, wait=5s) + other_number fails PoolError.Open\n",
+        "def f():\n    assert first_value_to_compare == owed_number_of_things(\n        links,\n        wait=5s,\n    ) + other_number fails PoolError.Open\n",
+    );
+    check(
+        "def f():\n    with pool:assert firer == owed_number(links, wait=5s) fails PoolError.Open(n=\"opening one crashed and more\")\n",
+        "def f():\n    with pool:\n        assert firer == owed_number(links, wait=5s) fails PoolError.Open(\n            n=\"opening one crashed and more\",\n        )\n",
+    );
+    check(
+        "def f():\n    assert first_value_to_compare == owed_number_of_things(links, wait=5s) + other_number + one_more_name\n",
+        "def f():\n    assert (\n        first_value_to_compare\n        == owed_number_of_things(links, wait=5s) + other_number + one_more_name\n    )\n",
+    );
+}
+
 #[test]
 fn long_operator_parameters_get_a_trailing_comma() {
     check(
@@ -175,6 +210,23 @@ fn true_false_and_none_are_values() {
 #[test]
 fn case_outside_a_match_is_a_name() {
     check("def f():\n    case(1)\n", "def f():\n    case(1)\n");
+}
+
+/// A match starts only where a whole expression does, so after an operator `match` is a name, and
+/// `match[i]` an index that never gets a comma, which would make it the tuple index `match[(i,)]`.
+#[test]
+fn match_after_an_operator_is_a_name() {
+    check(
+        "def f():\n    a = b == match[1]\n    c = not match[1]\n    d = x and match[2]\n    e = -match[3]\n",
+        "def f():\n    a = b == match[1]\n    c = not match[1]\n    d = x and match[2]\n    e = -match[3]\n",
+    );
+    let long_name = "a".repeat(80);
+    check(
+        &format!("def f():\n    assert {long_name} == match[Item(name=name, weight=weight)]\n"),
+        &format!(
+            "def f():\n    assert {long_name} == match[\n        Item(name=name, weight=weight)\n    ]\n"
+        ),
+    );
 }
 
 #[test]

@@ -2074,16 +2074,16 @@ pub(in crate::embed) use launch::launch_on;
 pub use launch::{TaskBody, launch, launch_end, task_failed};
 pub(in crate::embed) use launch::{take_failed_with, task_number};
 
-mod blocking;
+use super::blocking::{self, Slot, slot_of};
 
-/// Whether both pools of blocking threads are idle, for the deadlock check: a job running there can
+/// Whether every pool of blocking threads is idle, for the deadlock check: a job running there can
 /// end in a wake.
 pub(crate) fn blocking_idle() -> bool {
-    blocking::pool().idle() && blocking::heavy().idle()
+    blocking::pool().idle() && blocking::heavy().idle() && blocking::lookups().idle()
 }
 
 /// Runs `work`, which blocks its thread, so that this task parks rather than holding its worker:
-/// on one of the blocking threads (`serve/blocking.rs`), which hands its result back and wakes the
+/// on one of the blocking threads (`embed/blocking.rs`), which hands its result back and wakes the
 /// task through its worker's mail. Anywhere a wait can't park, it runs here.
 pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     off_thread_on(blocking::pool(), work)
@@ -2153,16 +2153,22 @@ fn off_thread_on<R: Send + 'static>(
         // Cancelled before it finished: the work runs to its end, and this waits for it.
         let _ = yield_task_always();
     };
-    // A round cancelled, or a task stopped, while its work ran fails as stopped now it's done, as at
-    // any other wait, and goes no further. It went on past the work before (#1950). A replay stops it
-    // where its recording says it was. A crash's cleanup goes on: its work is done, and failing now
-    // would only say its cleanup crashed.
+    back_from_blocking(failing);
+    done
+}
+
+/// What a task that handed work to a blocking thread does once it's back with the work's end. A
+/// round cancelled, or a task stopped, while its work ran fails as stopped now, as at any other
+/// wait, and goes no further. It went on past the work before (#1950). A replay stops it where its
+/// recording says it was. A crash's cleanup goes on: its work is done, and failing now would only
+/// say its cleanup crashed. `failing` is whether it was failing already as it handed the work over.
+fn back_from_blocking(failing: bool) {
     if super::threads::cleaning_up() {
-        return done;
+        return;
     }
     if crate::replay::replaying() {
         let _ = crate::replay::work_ended(false);
-        return done;
+        return;
     }
     let cut = if fennec_parked::is_cancelled() {
         if !super::failed() {
@@ -2173,13 +2179,136 @@ fn off_thread_on<R: Send + 'static>(
         cut_short() && !failing
     };
     let _ = crate::replay::work_ended(cut);
+}
+
+/// A name's lookup, which only the system can do and only by blocking, run on a thread of its own
+/// while this task parks, as `off_thread` runs work, for no longer than until `deadline`: `None`
+/// if it isn't done by then. The thread finishes it all the same, and its answer is dropped.
+///
+/// Lookups get a pool of their own, of at most `MOST_LOOKUPS` threads, so a name server that never
+/// answers holds those and no others: a lookup past them waits its turn parked, and one whose task
+/// gave up before its turn came isn't made at all. They once shared the pool every file's read and
+/// database call runs on, waiting for as long as the system's resolver took, past the connect's
+/// own timeout, so enough of them at once held every thread there (#1826).
+///
+/// A late answer wakes nothing. Its thread sees its task gave up, and the wake it sends to the
+/// task's worker looks again there, where the task marks that it gave up before it parks again,
+/// so it never wakes a later wait that parked on the same token, this task's or another's.
+///
+/// A thread that can't park waits for it on the same pool, with the same deadline
+/// (`blocking::waited_until`).
+pub(crate) fn off_thread_until<R: Send + 'static>(
+    deadline: Instant,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> Option<R> {
+    let Some((pool, at)) = super::parallel::here() else { return blocking::waited_until(deadline, work) };
+    if !can_park() {
+        if fennec_parked::stack_low().is_some() {
+            BLOCKED_WAITS.fetch_add(1, Ordering::Relaxed);
+        }
+        return blocking::waited_until(deadline, work);
+    }
+    // Counted until the job ends, however it does: one that finds its task gave up never runs
+    // the work.
+    #[cfg(test)]
+    let counted = {
+        let from = std::thread::current().id();
+        blocking_jobs_change(from, 1);
+        Counted(from)
+    };
+    let failing = super::failed();
+    let token = next_token();
+    #[cfg(test)]
+    LAST_LOOKUP_TOKEN.set(Some(token));
+    let slot: Arc<Mutex<Slot<R>>> = Arc::new(Mutex::new(Slot::Waiting));
+    let given = Arc::clone(&slot);
+    let job: blocking::Job = Box::new(move || {
+        #[cfg(test)]
+        let _counted = counted;
+        // A lookup that waited its turn past its task's deadline isn't made.
+        if matches!(*slot_of(&given), Slot::GaveUp) {
+            return;
+        }
+        let done = work();
+        {
+            let mut held = slot_of(&given);
+            if matches!(*held, Slot::GaveUp) {
+                return;
+            }
+            *held = Slot::Answered(done);
+        }
+        pool.run_on(
+            at,
+            Box::new(move |io: &mut Io| {
+                if !matches!(*slot_of(&given), Slot::GaveUp) {
+                    io.wake_token(token);
+                }
+            }),
+        );
+    });
+    match blocking::lookups().run(job) {
+        Ok(()) => {
+            super::write_kept_output();
+            parking(Interest::READABLE, Some(deadline), None);
+            let _ = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
+        }
+        Err(jobs) => {
+            for job in jobs {
+                job();
+            }
+        }
+    }
+    let done = loop {
+        let mut held = slot_of(&slot);
+        if let Some(done) = blocking::taken(&mut held) {
+            break Some(done);
+        }
+        // Past its deadline, or cancelled or stopped before its answer came, it gives up: the
+        // lookup owns everything it reads, so nothing lent is left for its thread to read.
+        if Instant::now() >= deadline || fennec_parked::is_cancelled() || super::threads::stopped() {
+            *held = Slot::GaveUp;
+            break None;
+        }
+        drop(held);
+        // Woken early, as a storm of readiness does: it parks again for what's left.
+        parking(Interest::READABLE, Some(deadline), None);
+        let _ = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
+    };
+    back_from_blocking(failing);
     done
+}
+
+#[cfg(test)]
+thread_local! {
+    /// For tests: the token the last lookup on this thread parked on, for a test to have the next
+    /// wait here park on it again.
+    static LAST_LOOKUP_TOKEN: Cell<Option<Token>> = const { Cell::new(None) };
+}
+
+/// For tests: has the next wait on this thread park on the token the last lookup here parked on, as
+/// it would once the tokens had come round again.
+#[cfg(test)]
+pub(crate) fn reuse_the_last_lookup_s_token() {
+    if let Some(token) = LAST_LOOKUP_TOKEN.get() {
+        NEXT_TOKEN.set(token.0);
+    }
 }
 
 /// For tests: how many pieces of work each thread's tasks have on the blocking threads, not yet
 /// done, and how many they've ever handed over.
 #[cfg(test)]
 static BLOCKING_JOBS: Mutex<Option<HashMap<std::thread::ThreadId, (i64, i64)>>> = Mutex::new(None);
+
+/// For tests: a piece of work counted for `blocking_jobs_of` until it's dropped.
+#[cfg(test)]
+struct Counted(std::thread::ThreadId);
+
+#[cfg(test)]
+impl Drop for Counted {
+    fn drop(&mut self) {
+        blocking_jobs_change(self.0, -1);
+    }
+}
 
 #[cfg(test)]
 fn blocking_jobs_change(from: std::thread::ThreadId, by: i64) {

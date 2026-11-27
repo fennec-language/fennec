@@ -4,7 +4,7 @@
 
 use std::fmt;
 use std::fs::File;
-use std::io::{Seek, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -485,16 +485,55 @@ pub(crate) struct Outcome {
 pub(crate) struct Failed {
     pub(crate) failure: Failure,
     pub(crate) inputs: Vec<u64>,
+    /// What the first `SAID_KEPT` of them wrote to standard error, as `said_in` keeps it, in the
+    /// same order: why each failed, where a run once found 48 and said nothing of why.
+    pub(crate) said: Vec<Vec<u8>>,
 }
 
+/// How many inputs of each kind of failure have what they wrote to standard error kept.
+pub(crate) const SAID_KEPT: usize = 8;
+
 impl Outcome {
-    /// Counts `input` as failing as `failure`.
-    pub(crate) fn note(&mut self, failure: Failure, input: u64) {
+    /// Counts `input` as failing as `failure`, having written `said` to standard error.
+    pub(crate) fn note(&mut self, failure: Failure, input: u64, said: Vec<u8>) {
         match self.failures.iter_mut().find(|failed| failed.failure == failure) {
-            Some(failed) => failed.inputs.push(input),
-            None => self.failures.push(Failed { failure, inputs: vec![input] }),
+            Some(failed) => {
+                failed.inputs.push(input);
+                if failed.said.len() < SAID_KEPT {
+                    failed.said.push(said);
+                }
+            }
+            None => self.failures.push(Failed { failure, inputs: vec![input], said: vec![said] }),
         }
     }
+}
+
+/// The most of what a failing input wrote to standard error that's kept.
+pub(crate) const MOST_SAID: u64 = 64 * 1024;
+
+/// What `path` holds from `from` on, at most `MOST_SAID` bytes of it: all of it if it fits, or its
+/// first and last halves, with a line between saying how much was left out, since why an input
+/// failed may come first, as a sanitizer's report does, or last, as a panic's message does. A
+/// file that can't be read gives nothing.
+pub(crate) fn said_in(path: &Path, from: u64) -> Vec<u8> {
+    let Ok(mut file) = File::open(path) else { return Vec::new() };
+    let end = file.metadata().map_or(0, |metadata| metadata.len());
+    let from = from.min(end);
+    let mut read = |at: u64, length: u64| {
+        let mut bytes = Vec::new();
+        if file.seek(SeekFrom::Start(at)).is_ok() {
+            let _ = std::io::Read::read_to_end(&mut std::io::Read::take(&mut file, length), &mut bytes);
+        }
+        bytes
+    };
+    if end - from <= MOST_SAID {
+        return read(from, end - from);
+    }
+    let half = MOST_SAID / 2;
+    let mut said = read(from, half);
+    said.extend_from_slice(format!("\n[... {} bytes left out ...]\n", end - from - 2 * half).as_bytes());
+    said.extend(read(end - half, half));
+    said
 }
 
 /// A target being fuzzed.
@@ -514,58 +553,203 @@ impl Run<'_> {
         let folder = std::env::temp_dir().join(format!("fennec-fuzz-{}", std::process::id()));
         crate::owned::own(&folder).map_err(|err| format!("{}: {err}", folder.display()))?;
         let progress = folder.join(self.target.name);
+        let said = folder.join(format!("{}.stderr", self.target.name));
         let mut outcome = Outcome { inputs: 0, failures: Vec::new() };
         let mut next = 0_u64;
         while next < inputs && deadline.is_none_or(|deadline| Instant::now() < deadline) {
             let _ = std::fs::remove_file(&progress);
-            let mut child = self.worker(next, inputs, &progress)?;
-            let mut last = None;
-            let failure = watch(&mut child, self.stuck, deadline, MOST_KILOBYTES, || {
-                let now = noted(&progress);
-                let moved = now != last;
-                last = now;
-                moved
-            });
+            let mut child = self.worker(next, inputs, &progress, &said)?;
+            let mut heard = Heard::default();
+            let failure =
+                watch(&mut child, self.stuck, deadline, MOST_KILOBYTES, || heard.check(&progress, &said));
             // A stopped worker can't remove its own.
             crate::llvm::forget(child.id());
             let reached = noted(&progress).unwrap_or(next);
             outcome.inputs = reached + 1;
             let Some(failure) = failure else { break };
-            outcome.note(failure, reached);
+            outcome.note(failure, reached, said_in(&said, heard.from(Some(reached))));
             next = reached + 1;
         }
         crate::owned::let_go(&folder);
         Ok(outcome)
     }
 
-    fn worker(&self, first: u64, end: u64, progress: &Path) -> Result<Child, String> {
+    /// Starts a worker on the inputs from `first` up to `end`, noting each in `progress` and
+    /// writing to standard error in `said`, which it starts empty.
+    fn worker(&self, first: u64, end: u64, progress: &Path, said: &Path) -> Result<Child, String> {
+        let said = File::create(said).map_err(|err| format!("{}: {err}", said.display()))?;
         Command::new(self.fennec_fuzz)
             .args(["worker", self.target.name, &self.seed.to_string(), &first.to_string(), &end.to_string()])
             .arg(progress)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(said)
             .spawn()
             .map_err(|err| format!("couldn't start a worker: {err}"))
     }
 }
 
+/// Where in what a worker writes to standard error each input's part starts, as far as it's seen
+/// while watching it: how long the file was before the input was noted, so the part starts no
+/// later than that. It may start with what inputs before it wrote, but never misses any of its own.
+#[derive(Default)]
+struct Heard {
+    /// The input last noted, and how long the file was just before that was read.
+    last: Option<(Option<u64>, u64)>,
+    /// How long the file was before the input last noted was, as far as was seen.
+    from: u64,
+}
+
+impl Heard {
+    /// Reads how long `said` is and then which input `progress` notes, and says whether that's
+    /// moved since the last check. Read in that order, the length is from before any input after
+    /// the one noted had started.
+    fn check(&mut self, progress: &Path, said: &Path) -> bool {
+        let length = std::fs::metadata(said).map_or(0, |metadata| metadata.len());
+        let now = noted(progress);
+        let moved = self.last.is_none_or(|(last, _)| last != now);
+        if moved {
+            self.from = self.last.map_or(0, |(_, before)| before);
+        }
+        self.last = Some((now, length));
+        moved
+    }
+
+    /// Where input `reached`'s part starts: what was seen before it was noted, or if it was never
+    /// seen noted, what was seen before the last check.
+    fn from(&self, reached: Option<u64>) -> u64 {
+        match self.last {
+            Some((last, _)) if last == reached => self.from,
+            Some((_, before)) => before,
+            None => 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Duration, Failure, Outcome, cpu_time_in, tree_use};
+    use super::{
+        Duration, Failure, Heard, MOST_SAID, Outcome, Progress, SAID_KEPT, cpu_time_in, said_in, tree_use,
+    };
 
     /// Every input that fails is counted under its kind, in order, the first kept first: a second
-    /// failure of a kind once went unseen, as only the first of each was kept.
+    /// failure of a kind once went unseen, as only the first of each was kept. What each wrote to
+    /// standard error is kept with it, for the first few of a kind.
     #[test]
     fn every_failing_input_is_counted_under_its_kind() {
         let mut outcome = Outcome { inputs: 0, failures: Vec::new() };
-        for (failure, input) in
-            [(Failure::Wrong, 2), (Failure::Crashed, 4), (Failure::Wrong, 5), (Failure::Wrong, 9)]
-        {
-            outcome.note(failure, input);
+        let mut failing =
+            vec![(Failure::Wrong, 2), (Failure::Crashed, 4), (Failure::Wrong, 5), (Failure::Wrong, 9)];
+        failing.extend((20..30).map(|input| (Failure::Wrong, input)));
+        for (failure, input) in failing {
+            outcome.note(failure, input, format!("why {input} failed").into_bytes());
         }
         let found: Vec<(Failure, Vec<u64>)> =
             outcome.failures.iter().map(|failed| (failed.failure, failed.inputs.clone())).collect();
-        assert_eq!(found, [(Failure::Wrong, vec![2, 5, 9]), (Failure::Crashed, vec![4])]);
+        let wrong: Vec<u64> = [2, 5, 9].into_iter().chain(20..30).collect();
+        assert_eq!(found, [(Failure::Wrong, wrong.clone()), (Failure::Crashed, vec![4])]);
+        let said: Vec<Vec<u8>> =
+            wrong.iter().take(SAID_KEPT).map(|input| format!("why {input} failed").into_bytes()).collect();
+        assert_eq!(outcome.failures[0].said, said);
+        assert_eq!(outcome.failures[1].said, [b"why 4 failed".to_vec()]);
+    }
+
+    /// What an input wrote to standard error is kept from where its part starts, all of it if it's
+    /// short, and its first and last halves if it's long, as a report can be first or last.
+    #[test]
+    fn what_was_said_is_kept_from_its_start_first_and_last() {
+        let dir = std::env::temp_dir().join(format!("fennec-fuzz-said-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("said");
+        std::fs::write(&file, b"before\nwhy it failed\n").unwrap();
+        assert_eq!(said_in(&file, 7), b"why it failed\n");
+        assert_eq!(said_in(&file, 0), b"before\nwhy it failed\n");
+        assert_eq!(said_in(&file, 1000), b"");
+        assert_eq!(said_in(&dir.join("none"), 0), b"");
+        let long = usize::try_from(MOST_SAID).unwrap() * 3;
+        let mut written = b"the first line\n".to_vec();
+        written.resize(long, b'.');
+        written.extend_from_slice(b"\nthe last line\n");
+        std::fs::write(&file, &written).unwrap();
+        let said = said_in(&file, 0);
+        let left_out = written.len() - usize::try_from(MOST_SAID).unwrap();
+        let shown = String::from_utf8_lossy(&said);
+        assert!(shown.starts_with("the first line\n"), "{:?}", shown.lines().next());
+        assert!(shown.ends_with("\nthe last line\n"));
+        assert!(shown.contains(&format!("[... {left_out} bytes left out ...]")));
+        assert!(said.len() < usize::try_from(MOST_SAID).unwrap() + 100);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An input's part of what a worker writes starts no later than how long it was before the
+    /// input was noted, as seen while watching: the part may hold what came before, never less.
+    #[test]
+    fn an_inputs_part_of_what_was_said_starts_before_it_was_noted() {
+        let dir = std::env::temp_dir().join(format!("fennec-fuzz-heard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (progress, said) = (dir.join("progress"), dir.join("said"));
+        let say = |what: &str| {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&said).unwrap();
+            file.write_all(what.as_bytes()).unwrap();
+        };
+        let mut heard = Heard::default();
+        assert!(heard.check(&progress, &said));
+        assert_eq!(heard.from(None), 0);
+        say("starting\n");
+        let mut noting = Progress::create(&progress).unwrap();
+        noting.note(0);
+        assert!(heard.check(&progress, &said));
+        say("0 runs\n");
+        assert!(!heard.check(&progress, &said));
+        say("0 is done\n");
+        noting.note(1);
+        say("1 fails\n");
+        assert!(heard.check(&progress, &said));
+        // Seen noted: its part starts where the file was before, which holds 0's last line.
+        assert_eq!(heard.from(Some(1)), u64::try_from("starting\n0 runs\n".len()).unwrap());
+        // Never seen noted, as when it fails at once: where the file was at the last check, which
+        // was before 2 was noted.
+        noting.note(2);
+        say("2 fails at once\n");
+        assert_eq!(
+            heard.from(Some(2)),
+            u64::try_from("starting\n0 runs\n0 is done\n1 fails\n".len()).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A worker's failing input comes back with what it wrote to standard error, which was once
+    /// thrown away, so a run found 48 failures and said nothing of why. The worker here is a script
+    /// standing in for `fennec-fuzz worker`, noting inputs as it does.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_input_says_why() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fennec-fuzz-why-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let worker = dir.join("worker");
+        let script = "#!/bin/sh\n\
+            echo 'input 0 is fine' >&2\n\
+            printf '\\000\\000\\000\\000\\000\\000\\000\\000' > \"$6\"\n\
+            sleep 0.3\n\
+            printf '\\001\\000\\000\\000\\000\\000\\000\\000' > \"$6\"\n\
+            echo 'why input 1 failed' >&2\n\
+            exit 3\n";
+        std::fs::write(&worker, script).unwrap();
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let run = super::Run {
+            fennec_fuzz: &worker,
+            target: &crate::targets::UTF8,
+            seed: 1,
+            stuck: Duration::from_secs(10),
+        };
+        let outcome = run.until(None, 2).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(outcome.failures.len(), 1);
+        let failed = &outcome.failures[0];
+        assert_eq!((failed.failure, failed.inputs.clone()), (Failure::Wrong, vec![1]));
+        let said = String::from_utf8_lossy(&failed.said[0]).into_owned();
+        assert!(said.ends_with("why input 1 failed\n"), "{said:?}");
     }
 
     #[test]

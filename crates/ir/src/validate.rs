@@ -38,6 +38,19 @@ impl<'p> Check<'p> {
         if function.blocks.is_empty() {
             self.problems.push("no blocks".to_owned());
         }
+        // The checker types what it couldn't work out as unknown, which fits anything, only beside
+        // an error it reports. One here, in a program that checked, is an error it left out, and
+        // nothing that reads or writes it was checked against a type.
+        if !function.returns.is_known() {
+            self.problems
+                .push(format!("it gives back a type the checker didn't work out: {:?}", function.returns));
+        }
+        for (at, local) in function.locals.iter().enumerate() {
+            if !local.ty.is_known() {
+                self.problems
+                    .push(format!("`_{at}` is of a type the checker didn't work out: {:?}", local.ty));
+            }
+        }
         for block in &function.blocks {
             for inst in &block.insts {
                 self.inst(&inst.kind);

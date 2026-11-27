@@ -1409,6 +1409,53 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// Checking proofs, a lock's end checks every place a call takes out of the lock's value, as
+    /// the append's row in a loop in the lock's body is. The loop's body is written after the
+    /// lock's end, so going by the places taken in what's written before it, the end checked
+    /// nothing (#2621's program).
+    #[test]
+    fn a_locks_end_checks_a_place_taken_in_a_loop_in_its_body() -> Result<(), String> {
+        let source = "\
+struct Row:
+    items: list[str]
+    seen = 0
+
+struct Shelf:
+    rows: list[Row]
+
+def appended(shelf: shared Shelf, count: int, limits: list[int]):
+    lock shelf as ref held:
+        for turn in range(count):
+            held.rows[0].items.append(f\"row {turn}, a text long enough for a block\")
+    held_seen = limits[count]
+    lock shelf as ref held:
+        held.rows[0].seen += held_seen
+
+def main(stdout: Stdout):
+    shared shelf = Shelf(rows=[Row(items=[])])
+    appended(shelf, count=2, limits=[1, 2, 3])
+    lock shelf as kept:
+        stdout.print(len(kept.rows[0].items))
+";
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let checking = crate::Shared { proofs: crate::Proofs::Checked, ..crate::Shared::default() };
+        let (units, shared, _) = crate::emit::emit_with(&program, crate::emit::Cpu::default(), checking)?;
+        let text: String = units.into_iter().map(|unit| unit.text).collect();
+        let appended =
+            text.split("define").find(|function| function.contains("@\"f_appended\"(")).unwrap_or_default();
+        let proof = "proof broken: nothing is out of its place when a lock's block ends";
+        let symbol = shared
+            .literals
+            .iter()
+            .find(|(_, said)| said.as_str() == proof)
+            .map(|(symbol, _)| format!("load ptr, ptr @\"{symbol}\""))
+            .ok_or_else(|| format!("no lock's end checks a place:\n{appended}"))?;
+        assert!(appended.contains(&symbol), "{appended}");
+        Ok(())
+    }
+
     /// A put after a lookup of the same key in the same dict, under a lock, uses the lookup's
     /// entry when the dict there now is the block it searched. A different key, a different dict,
     /// a key worked out again by a call, a put between that may grow the dict, and a key's local

@@ -16,6 +16,7 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Span, Trace};
 
 pub mod aot;
+pub(crate) mod blocking;
 pub mod bytes;
 pub mod capabilities;
 pub mod channels;
@@ -53,6 +54,7 @@ pub mod parallel;
 pub(crate) use parallel::{stress_asked, workers_wanted};
 mod plans;
 pub mod regex;
+pub mod report;
 #[cfg(any(test, feature = "threads"))]
 pub mod serve;
 

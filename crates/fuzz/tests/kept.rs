@@ -22,9 +22,11 @@ fn beside_others() -> RwLockReadGuard<'static, ()> {
     SHORT_RUN.read().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Whether a file beside the inputs is an output pinned for one.
+/// Whether a file beside the inputs is an output pinned for one, or what one wrote to standard
+/// error when it was found.
 fn pinned_output(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| extension == "out" || extension == "fails")
+    path.extension()
+        .is_some_and(|extension| extension == "out" || extension == "fails" || extension == "stderr")
 }
 
 fn fuzz() -> Command {

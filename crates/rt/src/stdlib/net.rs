@@ -1383,9 +1383,10 @@ fn secured(
 /// A connection to `host` on `port` made by a task that can park, on a socket that doesn't block
 /// from the start. Each address gets `timeout`, or all of them share what's left until `by`.
 ///
-/// Looking a name up can only be done by blocking, so that alone runs on a blocking thread; an
-/// address written out needs no looking up. Then the connect is started and the task parks until
-/// the socket says how it went.
+/// Looking a name up can only be done by blocking, so that alone runs on a thread of its own, and
+/// the task waits for it no longer than the connect's `timeout`, or until `by`: past that, it fails
+/// as timed out, as a connect does. An address written out needs no looking up. Then the connect is
+/// started and the task parks until the socket says how it went.
 #[cfg(any(test, feature = "threads"))]
 pub(crate) fn connected_parked(
     host: &str,
@@ -1397,12 +1398,46 @@ pub(crate) fn connected_parked(
         vec![std::net::SocketAddr::new(address, port)]
     } else {
         let name = host.to_owned();
-        off_thread(move || (name.as_str(), port).to_socket_addrs().map(Iterator::collect::<Vec<_>>))
+        let deadline = by.unwrap_or_else(|| Instant::now() + timeout);
+        crate::embed::serve::off_thread_until(deadline, move || looked_up(&name, port))
+            .ok_or(Failure::TimedOut(timeout))?
             .map_err(|_| Failure::NotFound(host.to_owned()))?
     };
     let stream = first_connected((host, port), &addresses, (timeout, by), connected_by)?;
     let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
     Ok((stream, peer))
+}
+
+/// `host`'s addresses for `port`, waited for until `deadline` by a thread that can't park, and
+/// failing as timed out after `timeout` past that. An address written out needs no looking up. A
+/// name's lookup can only be done by blocking, for as long as the system's resolver takes, so it's
+/// done on the lookups' pool, as a parked task's is, which finishes it if it's given up on, its
+/// answer dropped. It once ran here, and held the connect past its timeout for as long as that
+/// took (#1826).
+pub(crate) fn looked_up_by(
+    host: &str,
+    port: u16,
+    deadline: Instant,
+    timeout: Duration,
+) -> Result<Vec<std::net::SocketAddr>, Failure> {
+    if let Ok(address) = host.parse::<std::net::IpAddr>() {
+        return Ok(vec![std::net::SocketAddr::new(address, port)]);
+    }
+    let name = host.to_owned();
+    crate::embed::blocking::waited_until(deadline, move || looked_up(&name, port))
+        .ok_or(Failure::TimedOut(timeout))?
+        .map_err(|_| Failure::NotFound(host.to_owned()))
+}
+
+/// `name`'s addresses, as the system looks them up, for `port`. In tests, a name under
+/// `stalls.test` is one whose name server never answers, until the test lets it.
+fn looked_up(name: &str, port: u16) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    #[cfg(test)]
+    if name.ends_with(".stalls.test") {
+        tests::stalls::stalled(name);
+        return Err(ErrorKind::NotFound.into());
+    }
+    (name, port).to_socket_addrs().map(Iterator::collect)
 }
 
 /// How long one of a name's addresses is tried before the next, when it has more than one: RFC
@@ -1588,8 +1623,7 @@ fn upgrade(handle: i64, host: &str, timeout: Duration, shake: http::RawTls) -> R
 
 /// A connection to `host` on `port`, looked up and connected, blocking its thread.
 fn connected(host: &str, port: u16, timeout: Duration) -> Result<(TcpStream, String), Failure> {
-    let addresses: Vec<_> =
-        (host, port).to_socket_addrs().map_err(|_| Failure::NotFound(host.to_owned()))?.collect();
+    let addresses = looked_up_by(host, port, Instant::now() + timeout, timeout)?;
     let stream = first_connected((host, port), &addresses, (timeout, None), connected_until)?;
     let peer = stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
     Ok((stream, peer))
@@ -3248,6 +3282,44 @@ pub(crate) mod tests {
     /// How many connect at once to a server that takes none yet.
     const CONNECTING: usize = 200;
 
+    /// A connect that can't park, to a name whose name server never answers, fails as timed out
+    /// once its timeout has passed: the lookup, done on the lookups' pool, is given up on. It once
+    /// held the connect for as long as the system's resolver took (#1826).
+    #[test]
+    fn a_blocking_connect_to_a_name_that_never_answers_times_out() {
+        let _alone = stalls::one_at_a_time();
+        let timeout = std::time::Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let made = super::connected("blocking.stalls.test", 80, timeout);
+        let took = started.elapsed();
+        stalls::let_go("blocking.stalls.test");
+        assert!(matches!(made, Err(Failure::TimedOut(_))), "it didn't fail as timed out");
+        assert!(took >= timeout, "it gave up after {took:?}, before its timeout");
+        assert!(took < timeout * 25, "it gave up only after {took:?}");
+        assert!(stalls::answered_within("blocking.stalls.test", std::time::Duration::from_secs(10)));
+    }
+
+    /// More connects that can't park than the lookups' pool has threads, all at once, to a name
+    /// whose name server never answers, each fail as timed out, and hold no more threads than the
+    /// pool's most: those past it wait their turn, and their lookups, given up on before it came,
+    /// are never made. Each once started a thread of its own, so a burst against a name server
+    /// that never answers started as many as there were connects (#1826).
+    #[test]
+    fn a_burst_of_blocking_connects_to_a_name_that_never_answers_holds_the_pools_threads_at_most() {
+        let _alone = stalls::one_at_a_time();
+        let timeout = std::time::Duration::from_millis(200);
+        let connects: Vec<_> = (0..crate::embed::blocking::MOST_LOOKUPS + 8)
+            .map(|_| std::thread::spawn(move || super::connected("burst.stalls.test", 80, timeout)))
+            .collect();
+        let made: Vec<_> = connects.into_iter().map(|connect| connect.join().expect("it ran")).collect();
+        let held = crate::embed::blocking::lookup_threads();
+        stalls::let_go("burst.stalls.test");
+        assert!(made.iter().all(|made| matches!(made, Err(Failure::TimedOut(_)))), "{made:?}");
+        let most = crate::embed::blocking::MOST_LOOKUPS;
+        assert_eq!(held, most, "the stalled lookups held {held} threads, not the pool's {most}");
+        assert!(stalls::answered_within("burst.stalls.test", std::time::Duration::from_secs(10)));
+    }
+
     /// Request bodies take room from their pool as they're read, and give it back when let go
     /// of, taking another, or gone: past the most, one is refused, and the others keep theirs. A
     /// pool of the test's own, so other tests' bodies don't count.
@@ -4017,6 +4089,67 @@ pub(crate) mod tests {
         let limit = std::time::Duration::from_millis(5);
         assert!(matches!(receive(handle, Some(limit)), Err(Failure::TimedOut(after)) if after == limit));
         close(handle);
+    }
+
+    /// Names whose name server never answers, until a test lets their lookups go: any name under
+    /// `stalls.test`.
+    pub(crate) mod stalls {
+        use std::sync::{Condvar, Mutex, PoisonError};
+        use std::time::{Duration, Instant};
+
+        /// The names let go, and those whose lookups have answered since.
+        static LET_GO: Mutex<(Vec<String>, Vec<String>)> = Mutex::new((Vec::new(), Vec::new()));
+        static CHANGED: Condvar = Condvar::new();
+
+        /// How long a stalled lookup waits at most, so a test whose lookup isn't given up on fails
+        /// rather than waiting for ever.
+        const AT_MOST: Duration = Duration::from_secs(10);
+
+        /// A lookup of `name`: it waits until a test lets `name` go, or `AT_MOST`.
+        pub(crate) fn stalled(name: &str) {
+            let by = Instant::now() + AT_MOST;
+            let mut names = LET_GO.lock().unwrap_or_else(PoisonError::into_inner);
+            while !names.0.iter().any(|gone| gone == name) {
+                let left = by.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                names = CHANGED.wait_timeout(names, left).unwrap_or_else(PoisonError::into_inner).0;
+            }
+            names.1.push(name.to_owned());
+            CHANGED.notify_all();
+        }
+
+        static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+        /// Held by each test that stalls lookups, for as long as it runs. The lookups' pool is the
+        /// program's, so one test's stalls would hold the threads another's lookups wait for, and
+        /// that one's lookup, given up on before its turn came, would never be made.
+        pub(crate) fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+            ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        /// Lets lookups of `name` answer.
+        pub(crate) fn let_go(name: &str) {
+            LET_GO.lock().unwrap_or_else(PoisonError::into_inner).0.push(name.to_owned());
+            CHANGED.notify_all();
+        }
+
+        /// Whether a lookup of `name` answers within `within`.
+        pub(crate) fn answered_within(name: &str, within: Duration) -> bool {
+            let by = Instant::now() + within;
+            let mut names = LET_GO.lock().unwrap_or_else(PoisonError::into_inner);
+            loop {
+                if names.1.iter().any(|answered| answered == name) {
+                    return true;
+                }
+                let left = by.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                names = CHANGED.wait_timeout(names, left).unwrap_or_else(PoisonError::into_inner).0;
+            }
+        }
     }
 
     pub(crate) mod tls {

@@ -32,6 +32,13 @@ env:
   CARGO_TERM_COLOR: always
   FENNEC_CHECK_PROOFS: "1"
 
+# Every step runs in bash with `pipefail`, so a step that pipes what it runs through `tee` fails
+# when what it ran does, and its "Keep what was found" and "File an issue" steps run. Without it
+# the step took `tee`'s exit, and every failure found from 10-31 to 11-26 was dropped.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   proofs:
     name: Every proof checked
@@ -47,7 +54,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtime libraries and the fuzzer
         run: |
-          cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz
+          cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz -p fennec-oracle
           # With threads, and each way again with the heap audit in it, for the audit's step.
           for features in threads audit threads,audit; do
             dir="target/$(echo "$features" | tr , -)"
@@ -72,6 +79,15 @@ jobs:
         id: oracle_share
         if: always()
         run: ./target/release/fennec-fuzz oracle --seed "$GITHUB_RUN_ID" --inputs 200 | tee oracle-share.txt
+      # The oracle's tests hold every example to one of its lists, so the share can't drop without
+      # a line in a PR. The report gives the share each morning, and names the gaps still to build.
+      - name: Count the examples the oracle runs
+        id: oracle_examples
+        if: always()
+        run: |
+          ./target/release/fennec-oracle coverage examples | tail -n 2 \
+            | sed -e '1s/^/examples: the oracle /' -e '2s/^useful set: /examples: of those it should model, it runs /' \
+            | tee oracle-examples.txt
       # Built for a heap audit, each program's heap is checked as it ends: a block left with no
       # holder, or counted otherwise than its holders, fails the program that made it. No daemon,
       # since one started earlier wouldn't have the switch in its environment.
@@ -158,7 +174,12 @@ jobs:
             [ -f report.md ] && cat report.md
             echo
             echo "## Fuzzing"
-            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck|the oracle ran" fuzz.txt programs.txt oracle-share.txt audited.txt audited-replay.txt 2>/dev/null | sed 's/^/- /'
+            # A step skipped leaves no file, and a grep that finds nothing exits 1: neither stops
+            # the report, which `pipefail` would otherwise.
+            { grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck" fuzz.txt programs.txt audited.txt audited-replay.txt 2>/dev/null || true; } | sed 's/^/- /'
+            echo
+            echo "## What the oracle checks"
+            { cat oracle-share.txt oracle-examples.txt 2>/dev/null || true; } | sed 's/^/- /'
           } > nightly.md
           cat nightly.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the report
@@ -234,7 +255,8 @@ jobs:
             echo "ThreadSanitizer reported a data race, or a program under it printed something different, in the nightly run."
             echo
             echo '```'
-            grep -A40 "::error::" tsan.txt | head -200
+            # `head` stopping early ends grep by SIGPIPE, which mustn't stop the issue being filed.
+            grep -A40 "::error::" tsan.txt | head -200 || true
             echo '```'
             echo
             echo "What fuzzing found, and the whole output, are in the run's \`tsan-found\` artifact."
@@ -375,7 +397,8 @@ jobs:
             echo "Miri found undefined behavior or a deadlock in the runtime's tests, in shard $SHARD of the nightly run, with \`-Zmiri-seed=$MIRI_SEED\`."
             echo
             echo '```'
-            grep -A80 "::error::" miri.txt | head -200
+            # `head` stopping early ends grep by SIGPIPE, which mustn't stop the issue being filed.
+            grep -A80 "::error::" miri.txt | head -200 || true
             echo '```'
             echo
             echo "To run one again: \`MIRI_SEED=$MIRI_SEED MIRI_ONLY='<its name>' .github/scripts/miri.sh report.md\`."

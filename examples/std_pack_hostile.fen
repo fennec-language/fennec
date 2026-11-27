@@ -4,7 +4,7 @@
 # nesting past the limit, and bytes `std.pack` didn't write. And every kind of value it saves
 # reads back as it was.
 from std import math, pack
-from std.pack import Limits, Packer
+from std.pack import Limits, Packer, Unpacker
 from std.time import Duration
 
 enum Shape:
@@ -58,6 +58,13 @@ def why_not[T](run: () -> T fails ParseError) -> str:
     _ = run() except why:
         return why.message
     return "loaded"
+
+## Why reading the first value of a stream from `data` fails, or "read".
+def stream_failure(data: bytes) -> str:
+    mut values = Unpacker.of(data)
+    _ = values.next[Point]() except why:
+        return why.message
+    return "read"
 
 ## Where the value starts in what `dumps` wrote: after `FPK2`, the shape's number, and the
 ## layout, whose length is the byte after the number for every layout here.
@@ -195,6 +202,16 @@ test "bytes std.pack didn't write fail on their first byte"():
         why_not(() => pack.loads[Point]("{\"x\": 1}".encode())?)
         == "these aren't bytes `std.pack` wrote, at byte 0"
     )
+
+test "a stream's size past the largest int fails, never stopping the program"():
+    # A header, a layout's tag and shape, then its size: 2 ** 63, which an int can't hold, would
+    # come out negative and get past the check that it fits in what's left.
+    layout = [70, 80, 75, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    data = bytes(layout + [128, 128, 128, 128, 128, 128, 128, 128, 128, 1])
+    assert stream_failure(data) == "a number is too long, at byte 13"
+    # The largest int itself is only too long for what's left.
+    largest = bytes(layout + [255, 255, 255, 255, 255, 255, 255, 255, 127])
+    assert stream_failure(largest) == "the data ends too soon, at byte 22"
 
 test "every kind of value reads back as it was"():
     everything = Everything(

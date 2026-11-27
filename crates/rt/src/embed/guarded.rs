@@ -336,10 +336,18 @@ fn copy_of(
         bump(state, address);
         return Ok(address);
     }
+    // A block every thread can read was never freed when it was shared, and never is, so it's taken
+    // as it is, with its count not read: the program's own thread may be changing it meanwhile, as
+    // code that runs only there counts a block that's never freed (`heap::NEVER_FREED_COUNT`). A
+    // task's server copying what its rounds are given read the count of the `Stdout` they held while
+    // `main` counted it, which ThreadSanitizer found in the replay fuzz target.
+    if super::heap::shared_static(address) {
+        return Ok(address);
+    }
     let block = state.heap.block(address).ok_or_else(|| lost(address))?;
     let kept = match how {
         Copying::ForReaders => everyone_finds(state, address),
-        Copying::ForTask => super::heap::shared_static(address),
+        Copying::ForTask => false,
     };
     if block.first().is_some_and(|count| *count >= IMMORTAL) && kept {
         return Ok(address);

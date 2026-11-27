@@ -45,6 +45,7 @@ mod engines;
 mod fault_writes;
 mod generate;
 mod html_rules;
+mod http_audited;
 mod http_client_scripts;
 mod http_rules;
 mod http_sessions;
@@ -254,6 +255,7 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
             targets::KILLED_WRITES.name,
             targets::FAULT_WRITES.name,
             targets::EDITS.name,
+            targets::HTTP_AUDITED.name,
         ]
         .contains(&target.name)
             || targets::NATIVE.contains(&target.name)

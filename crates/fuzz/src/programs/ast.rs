@@ -2489,6 +2489,9 @@ pub(crate) enum Stmt {
     /// taking every number it's sent through two or three locks, which may crash partway, and read
     /// by `main` under its lock after each.
     Crewed(super::crews::Crew),
+    /// `pooled{id}(stdout)`: a `std.concurrent` pool of links, taken by `main` nested up to its
+    /// size, some blocks failing, a task crashing with one, and a short wait timing out.
+    Pooled(super::pools::Pooling),
     /// `messaged{id}(stdout)`: enums of one shape, flat or not, sent to a task that prints what each
     /// held, while the sender changes its own text.
     Messaged(super::messaging::Messaging),

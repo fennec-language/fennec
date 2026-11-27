@@ -31,6 +31,9 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         }
         // `bytes` or a `str`, which the call checks.
         ("Connection", "write") => reads(&[Type::Unknown], fails(Type::Unit)),
+        // A response's head and its body, in one write, with no block made for the two joined:
+        // what std.net's `write_response` sends.
+        ("Connection", "_write_parts") => reads(&[Type::Str, Type::Bytes], fails(Type::Unit)),
         ("Connection" | "Server" | "UdpSocket", "close") => reads(&[], Type::Unit),
         ("Server", "_accept") => reads(&[], fails(Type::named("Connection"))),
         // `_stop_on`, what `stop_on` is written with: drains when the program's asked to stop, its

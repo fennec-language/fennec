@@ -2094,6 +2094,11 @@ impl Machine {
                     let _ = writeln!(self.out, "{line}");
                 }
             }
+            Stmt::Pooled(pooling) => {
+                for line in super::pools::printed(pooling) {
+                    let _ = writeln!(self.out, "{line}");
+                }
+            }
             Stmt::Messaged(messaging) => {
                 for line in super::messaging::printed(messaging) {
                     let _ = writeln!(self.out, "{line}");

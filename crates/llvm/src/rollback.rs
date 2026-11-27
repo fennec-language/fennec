@@ -486,19 +486,33 @@ impl Emit<'_, '_, '_> {
         if !self.saves_changes(handle) {
             return Ok(());
         }
-        let Operand::Local(local) = handle else { return Ok(()) };
+        if !matches!(handle, Operand::Local(_)) {
+            return Ok(());
+        }
         self.proof_nothing_out(
             handle,
             "nothing is out of its place when a failure has a lock put back what it changed",
         );
-        self.undo_changes(handle)?;
-        self.rolled_back.insert(local.0);
-        Ok(())
+        self.undo_changes(handle)
     }
 
-    /// Whether `handle`'s block has just had its changes put back, so there's nothing to keep.
-    pub(crate) fn take_rolled_back(&mut self, handle: &Operand) -> bool {
-        matches!(handle, Operand::Local(local) if self.rolled_back.remove(&local.0))
+    /// Whether `handle`'s block has just had its changes put back, so there's nothing to keep: a
+    /// `lock.roll_back` of it is among those just before the unlock being written, as lowering puts
+    /// them. Read from the instructions, not noted as they're written, as the blocks aren't
+    /// written in the order they run.
+    pub(crate) fn rolled_back(&self, handle: &Operand) -> bool {
+        let (block, index) = self.at;
+        let Some(insts) = self.function.blocks.get(block).and_then(|block| block.insts.get(..index)) else {
+            return false;
+        };
+        insts
+            .iter()
+            .rev()
+            .map_while(|inst| match &inst.kind {
+                InstKind::Builtin { name, args, .. } if name == "lock.roll_back" => args.first(),
+                _ => None,
+            })
+            .any(|rolled| rolled == handle)
     }
 
     /// Puts back what `handle`'s block changed: in the runtime's tables, then its own cell.

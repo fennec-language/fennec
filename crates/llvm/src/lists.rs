@@ -1936,9 +1936,16 @@ impl Emit<'_, '_, '_> {
             } else {
                 self.position(&list, &index, span)
             };
-            let slot = self.place_for(&Kind::Int);
+            // One slot for the pair, wherever it's made, as the blocks aren't written in the order
+            // they run.
+            let slot = if let Some(slot) = self.pair_slots.get(&dest.0) {
+                slot.clone()
+            } else {
+                let slot = self.place_for(&Kind::Int);
+                self.pair_slots.insert(dest.0, slot.clone());
+                slot
+            };
             self.line(&format!("store i64 {position}, ptr {slot}"));
-            self.pair_slots.insert(dest.0, slot);
             // Holding nothing, letting go of it lets go of nothing.
             let kind = self.kind_of(dest)?.clone();
             let held = self.slot(dest);

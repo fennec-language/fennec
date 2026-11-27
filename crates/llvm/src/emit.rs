@@ -1093,7 +1093,6 @@ impl<'p> Module<'_, 'p> {
             saving: crate::rollback::saving_handles(function),
             on_crash: crate::rollback::given_back_on_crash(function),
             saving_slots: HashMap::new(),
-            rolled_back: HashSet::new(),
             lock_record: None,
             clean_blocks: HashMap::new(),
             locks_held: None,
@@ -1283,8 +1282,6 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// For each of those handles, a flag that's set while its lock is held, for a crash to know
     /// which to put back.
     pub(crate) saving_slots: HashMap<usize, String>,
-    /// The locks to write whose changes a failure has just put back, for their unlock to know.
-    pub(crate) rolled_back: HashSet<usize>,
     /// The slot holding the address of this thread's record of plain saves, once a lock that saves
     /// its changes is taken, for its saves to go in without a call (see `rollback::save_plain`).
     pub(crate) lock_record: Option<String>,
@@ -1630,6 +1627,9 @@ impl Emit<'_, '_, '_> {
             let Some(block) = function.blocks.get(at) else { continue };
             let copied = self.known.versioned.iter().position(|loop_| loop_.blocks.contains(&at));
             let written_from = (self.out.len(), self.cold.len());
+            if self.free_owed {
+                return Err(format!("a free's check is owed from the block written before bb{at}"));
+            }
             self.start_block(&format!("bb{at}"));
             self.alone_in_block = self.alone_by_block.get(&at).cloned().unwrap_or_default();
             self.holding_now = self.holding.coming_in(at);
@@ -1735,6 +1735,9 @@ impl Emit<'_, '_, '_> {
                 self.alone_for_loop(local)?;
             }
             self.check_item_ranges(at)?;
+            // What's owed is paid in the block that owes it: the block written next may not be the
+            // one run next.
+            self.pay_free_check();
             self.terminator(&block.end)?;
             if let Some(loop_) = copied {
                 let text = ((written_from.0, self.out.len()), (written_from.1, self.cold.len()));

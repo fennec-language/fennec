@@ -58,7 +58,7 @@ jobs:
             toolchain: ""
             flags: ""
             target: ""
-            only: json-rules toml-rules pack csv url http-server http-sessions http-splits http-client http-client-scripts http-client-splits postgres router html
+            only: json-rules toml-rules pack csv url http-server http-sessions http-splits http-audited http-client http-client-scripts http-client-splits postgres router html
           # Random, well-typed programs, each built as a dev build and with --release, which have to
           # print the same as each other and as a reference evaluator.
           - name: Programs
@@ -112,6 +112,15 @@ jobs:
               # The postgres reader reads std's private `PgReader`, which a program imports only
               # through `fennec-std-tests`, the test build's own command, built here beside `fennec`.
               cargo build --release --locked -p fennec --features std-private --bin fennec-std-tests
+            fi
+            if [[ " $ONLY " == *" http-audited "* ]]; then
+              # The runtimes with the heap's audit in them, beside `fennec`, which `http-audited`'s
+              # server is built with, under FENNEC_AUDIT=1, so its heap is audited as it ends.
+              for features in audit threads,audit; do
+                dir="target/$(echo "$features" | tr , -)"
+                cargo build --release --locked -p fennec-runtime --features "$features" --target-dir "$dir"
+                cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_$(echo "$features" | tr , _).a"
+              done
             fi
             if [[ " $ONLY " == *" fault-writes "* ]]; then
               # A runtime that fails std.fs's work where FENNEC_FAULTS says, in a folder of its own

@@ -1,0 +1,9 @@
+GET /ok HTTP/1.1
+Host: h
+
+HEAD / HTTP/1.1
+Content-Length: 2
+
+abGET /ok HTTP/1.1
+Host: h
+

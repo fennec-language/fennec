@@ -131,6 +131,10 @@ impl Stream {
         let from = at * self.chunk;
         let to = (from + self.chunk).min(self.length);
         let since = threads::made_scope_starts();
+        // What was running printed goes out first, under its own name, as a range's does.
+        if crate::replay::active() {
+            super::super::write_kept_output();
+        }
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();

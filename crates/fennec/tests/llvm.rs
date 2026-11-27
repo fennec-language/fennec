@@ -48,13 +48,25 @@ fn same_as_pinned(name: &str, source: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A known difference: the IR gives an index being written, and a value being formatted, the span
-/// of what they're in, where the pinned outcome underlines the part that failed. Same message and
-/// outcome.
+/// Known differences after the message, each flagged where it's used: a help line one side gives,
+/// where a failure is said to be, or a pinned source since changed. Same message and outcome.
 fn same_message_as_pinned(name: &str, source: &str) -> std::io::Result<()> {
     let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) = both(name, source)?;
     assert_eq!((ours_out, ours_code), (jit_out, jit_code));
     assert_eq!(ours_err.lines().next(), jit_err.lines().next());
+    Ok(())
+}
+
+/// The same message, at the same place, with the same part underlined as pinned: all of standard
+/// error down to its notes, which native code gives for a failure in a function, naming it and its
+/// caller, where the pinned outcome of a failing write doesn't.
+fn same_place_as_pinned(name: &str, source: &str) -> std::io::Result<()> {
+    let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) = both(name, source)?;
+    assert_eq!((ours_out, ours_code), (jit_out, jit_code));
+    let place = |err: &str| -> Vec<String> {
+        err.lines().take_while(|line| !line.trim_start().starts_with("= ")).map(str::to_owned).collect()
+    };
+    assert_eq!(place(&ours_err), place(&jit_err));
     Ok(())
 }
 
@@ -293,7 +305,7 @@ fn bytes_fail_as_pinned() -> std::io::Result<()> {
         ("bytes_too_big", "bytes([1, 256])"),
         ("bytes_negative", "bytes([-1])"),
     ] {
-        same_message_as_pinned(
+        same_as_pinned(
             name,
             &format!(
                 "def main(stdout: Stdout):
@@ -5578,7 +5590,7 @@ fn appending_to_a_field_of_a_local_lists_item_copies_only_what_is_shared() -> st
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "local_item_field_appends",
         r"struct Unit:
     tags: list[int]
@@ -5807,7 +5819,7 @@ fn reading_a_string_that_isnt_ascii_finds_the_right_character() -> std::io::Resu
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned("character_places", CHARACTER_PLACES)
+    same_as_pinned("character_places", CHARACTER_PLACES)
 }
 
 /// Reading and slicing a long string in order, one accented letter in it. How long this takes
@@ -14476,7 +14488,7 @@ fn a_missing_key_in_a_dict_of_lists_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "missing_list",
         "def main(stdout: Stdout):
     held = {\"a\": [1]}
@@ -14552,7 +14564,7 @@ def main(stdout: Stdout):
         stdout.print(other + 1)
 "#,
     )?;
-    same_message_as_pinned(
+    same_as_pinned(
         "missing",
         "def main(stdout: Stdout):\n    d = {1: 2}\n    stdout.print(d[1])\n    stdout.print(d[3])\n",
     )
@@ -17231,7 +17243,7 @@ def main(stdout: Stdout):
         "twice",
         "def count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef total(numbers: Iterator[int]) -> int:\n    mut subtotal = 0\n    for n in numbers:\n        subtotal += n\n    return subtotal\n\ndef main(stdout: Stdout):\n    numbers = count_up(3)\n    for _ in range(2):\n        stdout.print(total(numbers))\n",
     )?;
-    same_message_as_pinned(
+    same_as_pinned(
         "expect",
         "error Fault:\n    reason: str\n\ndef half(n: int) -> int fails Fault:\n    if n % 2 == 1: fail Fault(\"odd\")\n    return n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
     )
@@ -28472,11 +28484,11 @@ fn an_empty_buffer_fails_to_pop_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "empty_buffer",
         "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.push(\"fox\")\n    stdout.print(kept.pop())\n    stdout.print(kept.pop())\n",
     )?;
-    same_message_as_pinned(
+    same_as_pinned(
         "buffer_insert",
         "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n    stdout.print(kept[0])\n",
     )
@@ -28747,7 +28759,7 @@ fn a_list_insert_matches_what_was_pinned() -> std::io::Result<()> {
         "list_insert",
         "def main(stdout: Stdout):\n    mut ns = [2, 4]\n    ns.insert(0, 1)\n    ns.insert(2, 3)\n    ns.insert(4, 5)\n    mut words = [\"b\"]\n    words.insert(0, \"a\")\n    words.insert(2, \"c\")\n    stdout.print(ns, words)\n",
     )?;
-    same_message_as_pinned(
+    same_as_pinned(
         "list_insert_past",
         "def main(stdout: Stdout):\n    mut ns = [1]\n    ns.insert(3, 2)\n    stdout.print(ns)\n",
     )
@@ -31979,7 +31991,7 @@ def main(stdout: Stdout):
         stdout.print(gone.name)
 "#,
     )?;
-    same_message_as_pinned(
+    same_as_pinned(
         "stale",
         "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut names = Table[str]()\n    fox = names.add(\"fox\")\n    _ = names.remove(fox)\n    stdout.print(names[fox])\n",
     )
@@ -32011,16 +32023,18 @@ def main(stdout: Stdout):
         stdout.print(name, id in theirs, id in ours, held[0] in ours)
 "#,
     )?;
-    same_message_as_pinned(
+    same_as_pinned(
         "other_table_stop",
         "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    stdout.print(ours[kit])\n",
     )?;
+    // Native code underlines the place written, `ours[kit]`, as for every write; the pinned
+    // outcome underlines all of the line.
     same_message_as_pinned(
         "other_table_store",
         "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(len(ours))\n",
     )?;
     // Saved, an `Id` has to be from the `Table` saved with it.
-    same_message_as_pinned(
+    same_as_pinned(
         "other_table_saved",
         r#"from std import json
 from std.collections import Id, Table
@@ -32591,7 +32605,7 @@ def main(stdout: Stdout):
 "#,
     )?;
     // std's `Random`, drawn as pinned, ending in its failure.
-    same_message_as_pinned(
+    same_as_pinned(
         "random",
         r#"from std.random import Random
 
@@ -32897,7 +32911,7 @@ fn failures_match_what_was_pinned() -> std::io::Result<()> {
         "outside",
         &format!("def f(n: int) -> int:\n    return [1, 2][n]{print_after}    stdout.print(f(2))\n"),
     )?;
-    same_message_as_pinned(
+    same_place_as_pinned(
         "before",
         &format!(
             "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    return a[0]{print_after}    stdout.print(f(-3))\n"
@@ -33841,7 +33855,7 @@ fn a_missing_string_key_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "missing_string_key",
         r#"def main(stdout: Stdout):
     counts: dict[str, int] = {"fox": 1}
@@ -35369,6 +35383,7 @@ fn copy_with_fields_runs_their_rules() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    // Native code leaves out the pinned help line on checking every write.
     same_message_as_pinned(
         "copy_with_fields",
         r#"struct Player:
@@ -36454,7 +36469,7 @@ fn a_bad_shift_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "bad_shift",
         "def main(stdout: Stdout):
     for count in [1, 64]:
@@ -36469,7 +36484,7 @@ fn a_float_too_big_for_an_int_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "float_too_big",
         "def main(stdout: Stdout):
     huge = 1e300
@@ -37113,6 +37128,7 @@ fn an_unhandled_error_of_a_set_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    // Native code says where the failure was made and who called; the pinned outcome says `main`.
     same_message_as_pinned(
         "error_set_unhandled",
         "error NotFound:
@@ -37140,6 +37156,7 @@ fn a_main_giving_back_an_error_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    // The pinned outcome's line is of the source as it was then, `int(text)?`.
     same_message_as_pinned(
         "main_gives_back_an_error",
         r#"def number(text: str) -> int fails InvalidValue:
@@ -37169,7 +37186,7 @@ fn failing_calls_alone_in_a_function_fail_as_pinned() -> std::io::Result<()> {
         ("alone_min", "min(empty)"),
         ("alone_shift", "1 << 64"),
     ] {
-        same_message_as_pinned(
+        same_as_pinned(
             name,
             &format!(
                 "from std.math import ceil, floor
@@ -37564,7 +37581,7 @@ fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "max_of_nothing",
         "def main(stdout: Stdout):
     mut none = [1]
@@ -37572,7 +37589,7 @@ fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     stdout.print(max(none))
 ",
     )?;
-    same_message_as_pinned(
+    same_as_pinned(
         "pop_missing",
         "def main(stdout: Stdout):
     mut some = [1]

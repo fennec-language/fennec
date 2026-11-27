@@ -358,6 +358,9 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<()> {
         let (calls, passes_ref) = calls_in(value);
+        // What fails reaching the place, or writing it, is the place's: `hp["vex"]` in
+        // `hp["vex"] += 5`, as a read of it would be.
+        let at = target.span;
         // The target comes first, left to right: an index the value changes by `ref` isn't the
         // place that's written.
         let place = if passes_ref { self.held_place(target, span)? } else { self.place_of(target)? };
@@ -367,7 +370,7 @@ impl Lowering<'_> {
         // where it is rather than being copied every time.
         let read_first = match op {
             Some(_) if calls && self.calls_could_change(target, &place, value, passes_ref)? => {
-                Some(self.read_steps(place.local, &place.steps, span)?)
+                Some(self.read_steps(place.local, &place.steps, at)?)
             }
             _ => None,
         };
@@ -375,19 +378,19 @@ impl Lowering<'_> {
         if let Some(op) = op {
             let read = match read_first {
                 Some(read) => read,
-                None => self.read_steps(place.local, &place.steps, span)?,
+                None => self.read_steps(place.local, &place.steps, at)?,
             };
             // A text growing in a field is one local read, added to and put back, as a local's
             // `+=` is, so a backend can grow it where it is.
             if let (BinOp::Add, Type::Str, Operand::Local(dest)) = (op, &held, &read) {
                 let dest = *dest;
                 self.emit(InstKind::Binary { dest, op, lhs: read, rhs: value }, span);
-                return self.store(place.local, &place.steps, Operand::Local(dest), span);
+                return self.store(place.local, &place.steps, Operand::Local(dest), at);
             }
             value = self.operate(op, (read, value), &held, span)?;
         }
         let value = self.coerce(value, &held, span)?;
-        self.store(place.local, &place.steps, value, span)
+        self.store(place.local, &place.steps, value, at)
     }
 
     /// Whether the calls in `value` could change what `place` holds. Only a call given something

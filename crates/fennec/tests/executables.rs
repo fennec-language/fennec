@@ -818,14 +818,11 @@ fn work_dir(test: &str) -> std::io::Result<fennec_temp::Temp> {
 /// make yet: it runs on, where the `.err` stops.
 const FAILS_DIFFERENTLY: &[(&str, &str)] = &[
     ("expect_without_reason.fen", "native code doesn't check `expect`'s reason isn't blank, and runs on"),
-    (
-        "change_missing_key.fen",
-        "native code underlines all of `+=`, as `llvm.rs` notes, and adds a help line",
-    ),
+    ("change_missing_key.fen", "native code adds a help line"),
     ("where_on_copy.fen", "native code leaves out the help line"),
-    ("where_on_write.fen", "native code underlines all of the write and leaves out the help line"),
+    ("where_on_write.fen", "native code leaves out the help line"),
     ("where_rule.fen", "native code leaves out the help line"),
-    ("where_through_an_item.fen", "native code underlines all of the write and leaves out the help line"),
+    ("where_through_an_item.fen", "native code leaves out the help line"),
 ];
 
 #[test]

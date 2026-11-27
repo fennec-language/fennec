@@ -158,9 +158,9 @@ jobs:
             echo "The daily fuzzing run ($HOW) found something: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
             echo '```'
-            grep -E 'failures|kept in' fuzz.txt
+            grep -E 'failures|kept in|^  ' fuzz.txt
             echo '```'
             echo
-            echo "The cut-down inputs are in the run's artifact. Each one runs with \`fennec-fuzz one <target> <file>\`. Once it's fixed, add it to \`crates/fuzz/found/<target>/\`."
+            echo "The cut-down inputs are in the run's artifact, each with what it wrote to standard error beside it as \`<input>.stderr\`. Each one runs with \`fennec-fuzz one <target> <file>\`. Once it's fixed, add it to \`crates/fuzz/found/<target>/\`."
           } > issue.md
           gh issue create --title "Fuzzing found a failure ($HOW)" --body-file issue.md --label "area: tooling" --repo "$GITHUB_REPOSITORY"

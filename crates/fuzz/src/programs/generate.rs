@@ -1926,7 +1926,7 @@ impl Writer<'_> {
         }
         let held = match self.choice(5) {
             0 => FloatHeld::Gauge,
-            1 => FloatHeld::Gauge32,
+            1 => FloatHeld::F32Gauge,
             2 => FloatHeld::Level,
             3 => FloatHeld::Level32,
             _ => FloatHeld::Marked,

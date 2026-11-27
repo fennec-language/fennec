@@ -2606,8 +2606,7 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                                 && *put == dest
                                 && homes.iter().any(|(at, along)| at == object && along == path) =>
                         {
-                            known.taken.insert(dest.0);
-                            known.items_taken.insert(dest.0, (*object, path.clone()));
+                            known.take_item(dest, (*object, path.clone()));
                             break;
                         }
                         InstKind::SetField { object, value, .. }
@@ -2719,8 +2718,9 @@ fn find_place_takes(function: &Function, changes: Changes<'_>, known: &mut Analy
         if !place_stays_apart(function, place, changes, known) {
             continue;
         }
-        known.places_taken.insert(place.value.0, number);
-        known.taken.insert(place.value.0);
+        if !known.take_place(place.value, number) {
+            continue;
+        }
         for part in place.read.iter().chain(&place.back).filter(|part| **part != place.value) {
             known.place_parts.insert(part.0, place.value);
             known.taken.insert(part.0);
@@ -3098,9 +3098,8 @@ fn find_loop_takes(function: &Function, known: &mut Analysis) {
             let Some((root, path)) = written_back_to(function, *dest, index) else { continue };
             if comes_from(function, known, *from, (root, &path))
                 && stays_apart(function, known, (start, at + 1), (*dest, *from, index), (root, &path))
+                && known.take_item(*dest, (root, path))
             {
-                known.taken.insert(dest.0);
-                known.items_taken.insert(dest.0, (root, path));
                 known.loop_taken.insert(dest.0);
             }
         }
@@ -3241,11 +3240,10 @@ fn find_put_back_takes(function: &Function, known: &mut Analysis) {
                 && stays_apart(function, known, (start, at + 2), (*item, *from, index), (root, &path))
                 && read_before_put_back_again(function, (start, at), *item)
             {
-                for local in [*read, *item] {
-                    known.taken.insert(local.0);
-                    known.items_taken.insert(local.0, (root, path.clone()));
+                let read_taken = known.take_item(*read, (root, path.clone()));
+                if known.take_item(*item, (root, path)) && read_taken {
+                    known.put_back_reads.insert(item.0, *read);
                 }
-                known.put_back_reads.insert(item.0, *read);
             }
         }
     }
@@ -4526,6 +4524,33 @@ impl Analysis {
     /// Whether anything writes a local.
     pub(crate) fn written(&self, local: LocalId) -> bool {
         self.writes.get(local.0).is_some_and(|writes| *writes > 0)
+    }
+
+    /// Notes an item taken out of a list to change, held in `local` until it's put back to `home`,
+    /// the list's root and the path to it, if `local` has one write. The emitter names what's known
+    /// of the item by where it came from (`taken_items`), noting it as it writes that one write, so
+    /// every read of the local sees the note: its one write comes before each of them, in the
+    /// blocks as they run and as they're written. A local written twice would have reads that only
+    /// the other write reaches, so it isn't noted, whatever a caller has checked.
+    fn take_item(&mut self, local: LocalId, home: (LocalId, Vec<String>)) -> bool {
+        if self.writes.get(local.0) != Some(&1) {
+            return false;
+        }
+        self.taken.insert(local.0);
+        self.items_taken.insert(local.0, home);
+        true
+    }
+
+    /// Notes the place numbered `number` taken out for a call, held in `value`, if `value` has one
+    /// write: for the same reason as [`Self::take_item`], since the emitter notes a place reached
+    /// through a list's item as it writes it (`walk_place`).
+    fn take_place(&mut self, value: LocalId, number: usize) -> bool {
+        if self.writes.get(value.0) != Some(&1) {
+            return false;
+        }
+        self.places_taken.insert(value.0, number);
+        self.taken.insert(value.0);
+        true
     }
 }
 
@@ -5815,6 +5840,25 @@ mod tests {
             "held by a task"
         );
         Ok(())
+    }
+
+    /// An item or a place is noted as taken out only for a local with one write, whatever the
+    /// finding that took it checked: what the emitter knows of it is noted as it writes that
+    /// write, so a second write's reads, written before it or after, would be named wrongly.
+    #[test]
+    fn only_a_local_written_once_is_taken_out() {
+        let mut known = Analysis::empty(3);
+        known.writes = vec![0, 1, 2];
+        for at in 0..3 {
+            let local = LocalId(at);
+            let item = known.take_item(local, (LocalId(0), vec!["units".to_owned()]));
+            let place = known.take_place(local, 0);
+            let once = at == 1;
+            assert_eq!((item, place), (once, once), "a local written {at} times");
+            assert_eq!(known.item_home(local).is_some(), once, "a local written {at} times");
+            assert_eq!(known.places_taken.contains_key(&at), once, "a local written {at} times");
+            assert_eq!(known.is_taken(local), once, "a local written {at} times");
+        }
     }
 
     #[test]

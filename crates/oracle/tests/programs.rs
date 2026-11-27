@@ -603,6 +603,22 @@ fn a_ref_argument_that_holds_less_is_refused_before_it_runs() {
     );
 }
 
+/// A function that can't fail, given where one that `fails E` goes, runs as itself, as compiled
+/// code runs it (`llvm::a_function_that_cant_fail_runs_where_one_that_fails_goes`).
+#[test]
+fn a_function_that_cant_fail_runs_where_one_that_fails_goes() {
+    let outcome = run_source_in(
+        include_str!("../../fennec/tests/fixtures/no_fail_fits_fails.fen"),
+        "test.fen",
+        Workdir::current(),
+    );
+    assert_eq!(outcome.ended, Ended::Exited(0), "{}", String::from_utf8_lossy(&outcome.stdout));
+    assert_eq!(
+        String::from_utf8_lossy(&outcome.stdout),
+        include_str!("../../fennec/tests/fixtures/no_fail_fits_fails.out")
+    );
+}
+
 /// A generator held in a name fails through its loop as what it fails with, in a function that fails
 /// with a union of errors, as compiled code does since #2086.
 #[test]

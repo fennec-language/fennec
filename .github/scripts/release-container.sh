@@ -21,7 +21,7 @@ case "${1:?say which: ubuntu or alma}" in
     # scripts run.
     apt-get install -y -qq --no-install-recommends ca-certificates curl git \
       musl-tools=1.2.4-2 gcc=4:13.2.0-7ubuntu1 gcc-13=13.3.0-6ubuntu2~24.04.1 cpp-13=13.3.0-6ubuntu2~24.04.1 \
-      binutils=2.42-4ubuntu2.10 libc6-dev=2.39-0ubuntu8.12
+      binutils=2.42-4ubuntu2.11 libc6-dev=2.39-0ubuntu8.12
     ;;
   alma)
     # A C compiler for mimalloc and ring, GNU's assembler, and what packing takes.

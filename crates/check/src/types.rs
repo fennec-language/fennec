@@ -243,6 +243,18 @@ impl Type {
         Type::Result(Box::new(value), Box::new(error))
     }
 
+    /// What a function that can't fail fails with, where one that `fails E` was wanted: no error.
+    #[must_use]
+    pub fn nothing_failed() -> Type {
+        Type::Errors(Vec::new())
+    }
+
+    /// Whether this is [`Type::nothing_failed`].
+    #[must_use]
+    pub fn fails_with_nothing(&self) -> bool {
+        matches!(self, Type::Errors(names) if names.is_empty())
+    }
+
     pub(crate) fn named(name: &str) -> Type {
         Type::Named(name.to_owned())
     }
@@ -649,10 +661,18 @@ impl fmt::Display for Type {
             Type::Optional(inner) if matches!(**inner, Type::Union(_)) => write!(f, "({inner})?"),
             Type::Optional(inner) => write!(f, "{inner}?"),
             Type::Result(value, _) => write!(f, "result of {value}"),
+            // What a function that can't fail fails with, where one that `fails E` was wanted.
+            Type::Errors(names) if names.is_empty() => f.write_str("nothing"),
             Type::Errors(names) => f.write_str(&names.join(" | ")),
             Type::Arrow(params, ret) => {
                 let params: Vec<String> = params.iter().map(ToString::to_string).collect();
-                write!(f, "({}) -> {ret}", params.join(", "))
+                match ret.as_ref() {
+                    // A function type that can fail reads as it's written, `() -> int fails Broken`.
+                    Type::Result(value, error) => {
+                        write!(f, "({}) -> {value} fails {error}", params.join(", "))
+                    }
+                    _ => write!(f, "({}) -> {ret}", params.join(", ")),
+                }
             }
             Type::Id(item) => write!(f, "Id[{item}]"),
             Type::Generic(name, items) if name == crate::lend::WITH && items.len() == 1 => {

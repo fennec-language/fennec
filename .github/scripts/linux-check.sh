@@ -83,15 +83,19 @@ image="rust:${toolchain%.*}-slim-bookworm"
 if ! docker --context "$context" run --rm "$image" getent hosts index.crates.io > /dev/null 2>&1; then
   echo "warning: the Linux VM can't resolve index.crates.io: its /etc/resolv.conf should name 192.168.5.2, the gateway of Lima's user-v2 network, as \`dns: [192.168.5.2]\` in ~/.colima/fennec/colima.yaml has it (docs/landing.md); the check goes on with the crates it has" >&2
 fi
-# Past 75% of the VM's disk, the volumes this makes go, while the lock says nothing uses them.
+# Past 75% of the VM's disk, the fennec- volumes no container uses go: this check's own, which
+# the lock keeps for it, and other lanes' left behind. A volume a container uses, as a run of
+# Miri hours long does, stays, and one that won't go is said and left: cleaning up never fails
+# the check.
 full=$(docker --context "$context" run --rm --volume fennec-linux-check-target:/target "$image" \
   df -P /target | awk 'NR == 2 { sub("%", "", $5); print $5 }')
 if [ "${full:-0}" -gt 75 ]; then
-  echo "linux-check: the VM's disk is ${full}% full, so its fennec- volumes are removed and built again" >&2
-  volumes=$(docker --context "$context" volume ls --quiet | grep '^fennec-' || true)
-  # One name a word, as Docker names them.
-  # shellcheck disable=SC2086
-  [ -z "$volumes" ] || docker --context "$context" volume rm $volumes > /dev/null
+  echo "linux-check: the VM's disk is ${full}% full, so the fennec- volumes no container uses are removed" >&2
+  unused=$(docker --context "$context" volume ls --quiet --filter dangling=true | grep '^fennec-' || true)
+  for volume in $unused; do
+    docker --context "$context" volume rm "$volume" > /dev/null 2>&1 \
+      || echo "linux-check: couldn't remove the volume $volume, so it's left" >&2
+  done
 fi
 # What the VM holds, less an eighth for itself, in MiB.
 memory=$(docker --context "$context" info --format '{{.MemTotal}}')

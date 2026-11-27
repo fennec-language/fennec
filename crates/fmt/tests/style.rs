@@ -251,6 +251,20 @@ fn lists_that_fit_join_even_with_a_trailing_comma() {
     check("def f():\n    t = (\n        1,\n    )\n", "def f():\n    t = (1,)\n");
 }
 
+/// `xs[t,]` indexes with the tuple `(t,)`, so its comma stays, as a one-item tuple's does.
+#[test]
+fn an_index_by_a_one_item_tuple_keeps_its_comma() {
+    check("def f():\n    xs[t,]\n", "def f():\n    xs[t,]\n");
+    check("def f():\n    xs[t ,]\n", "def f():\n    xs[t,]\n");
+    check("def f():\n    xs[\n        t,\n    ]\n", "def f():\n    xs[t,]\n");
+    check("def f():\n    xs[t, u,]\n", "def f():\n    xs[t, u]\n");
+    let long_name = "a".repeat(90);
+    check(
+        &format!("def f():\n    xs[{long_name}.count,]\n"),
+        &format!("def f():\n    xs[\n        {long_name}.count,\n    ]\n"),
+    );
+}
+
 #[test]
 fn no_comma_is_added_where_the_parser_wouldnt_take_one() {
     let long_name = "a".repeat(90);
@@ -355,5 +369,19 @@ fn lists_of_plain_literals_fill_their_lines() {
     check(
         "def f() -> list[float]:\n    m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.5, -3.0, 4.25, 100.0]\n    names = [\"ash\", \"kit\", \"vex\", \"bramble\", \"fennec\", \"orc\", \"goblin\", \"troll\", \"dragon\", \"wyvern\", \"imp\"]\n    return m\n",
         "def f() -> list[float]:\n    m = [\n        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.5, -3.0,\n        4.25, 100.0,\n    ]\n    names = [\n        \"ash\", \"kit\", \"vex\", \"bramble\", \"fennec\", \"orc\", \"goblin\", \"troll\", \"dragon\", \"wyvern\",\n        \"imp\",\n    ]\n    return m\n",
+    );
+}
+
+/// A list of literals with a comment of its own, after its last item or its `[`, goes one item a
+/// line, keeping the comment, as filling its lines would leave it out.
+#[test]
+fn lists_of_plain_literals_with_a_comment_of_their_own_go_one_a_line() {
+    check(
+        "def f():\n    return [1, 2,\n    # x\n    ]\n",
+        "def f():\n    return [\n        1,\n        2,\n        # x\n    ]\n",
+    );
+    check(
+        "def f():\n    return [  # numbers\n        1, 2]\n",
+        "def f():\n    return [  # numbers\n        1,\n        2,\n    ]\n",
     );
 }

@@ -25808,6 +25808,53 @@ def main(stdout: Stdout):
     )
 }
 
+/// A union passed on where a union is wanted, its function member the wanted one's once `E` is
+/// worked out: one that can't fail, `E` nothing, and one that `fails Oops`, each called or
+/// matched as the union it's passed as.
+#[test]
+fn a_union_passed_on_to_a_generic_one_calls_its_function_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_passed_on",
+        r#"error Oops:
+    why: str
+
+    def message(self) -> str:
+        return self.why
+
+struct Tag:
+    count: int
+
+def run[E: Worded](step: Tag | (int) -> int fails E) -> int:
+    if step is Tag:
+        return step.count
+    got = step(2) except why:
+        return len(why.message())
+    return got
+
+def passing(step: Tag | (int) -> int fails Oops) -> int:
+    return run(step)
+
+def plain(step: Tag | (int) -> int) -> int:
+    return run(step)
+
+def double(by: int) -> int:
+    return by * 2
+
+def picky(by: int) -> int fails Oops:
+    if by > 1:
+        fail Oops(why="big")
+    return by
+
+def main(stdout: Stdout):
+    stdout.print(plain(double), plain(Tag(count=7)), passing(picky), passing(Tag(count=3)))
+"#,
+        "4 7 3 3\n",
+    )
+}
+
 /// Routes added with `router.get` and the other methods, written in as calls to `handle`, answer
 /// natively: a handler taking its parameters in another order than the path's, a sized int that
 /// doesn't hold what's in the path answering 404, as text that isn't a number does, an arrow

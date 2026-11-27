@@ -131,7 +131,15 @@ impl Checker {
                 p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.gives_back_fits(r1, r2)
             }
             // A member goes where its union is wanted, and so does a union of some of its members.
-            (Type::Union(members), Type::Union(others)) => others.iter().all(|other| members.contains(other)),
+            // Each of its members is one of the union's own, or its function member is the union's
+            // once what's still to be worked out is: `Router | (Request) -> Response` goes where
+            // `Router | (Request) -> Response fails E` is wanted, `E` nothing.
+            (Type::Union(members), Type::Union(others)) => {
+                let wanted = Type::Union(members.clone());
+                others.iter().all(|other| {
+                    members.contains(other) || self.fits(&wanted, other) && self.same_function(&wanted, other)
+                })
+            }
             // A function goes where a union's one function member is wanted, if it fits that, as a
             // named one does where `Router | (Request) -> Response` goes. With two, which one an
             // arrow is can't be told.
@@ -217,6 +225,14 @@ impl Checker {
                 .zip(params)
                 .all(|(param, ty)| !param.is_mut && self.fits(&param.ty, ty))
             && self.gives_back_fits(returns, &signature.returns)
+    }
+
+    /// Whether `function`, a union's member, is `union`'s function member, once `fits` has worked
+    /// out what it could. A union's function is passed on in it as it is, never made into a wider
+    /// one: one that can't fail is the same as a `fails E` with `E` nothing, as `settled` gives
+    /// it, but isn't one that `fails Oops`.
+    fn same_function(&self, union: &Type, function: &Type) -> bool {
+        union.arrow_member().is_some_and(|arrow| self.settled(&arrow) == self.settled(function))
     }
 
     /// Whether a function giving back `actual` goes where one giving back `expected` is wanted:

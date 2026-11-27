@@ -41,7 +41,16 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # Isolation off, for the tests that read files and the clock. Leaks aren't undefined behavior, and
 # a test may leave a thread waiting forever, or leak on purpose, so Miri isn't told to stop on them.
-flags="-Zmiri-disable-isolation -Zmiri-ignore-leaks"
+#
+# Borrows are checked by Tree Borrows, not Stacked Borrows, Miri's default. crossbeam-epoch, under
+# crossbeam-deque, which the pool's workers steal work through, finds each participant from the
+# entry it holds in a list by the entry's address (`Local::element_of`), a reference to the field
+# taken as one to the struct around it. Stacked Borrows refuses that, as a tag made for the field's
+# 8 bytes used for all of it; Tree Borrows allows it, and the crossbeam maintainers hold that epoch
+# is sound under Tree Borrows and check it that way. Once idle workers looked for work longer before
+# they slept (#2401), epoch collected often enough under Miri that the pool's tests stopped there
+# every night, in a crate that isn't ours, with nothing of ours to fix.
+flags="-Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-tree-borrows"
 [ -n "${MIRI_SEED:-}" ] && flags="$flags -Zmiri-seed=$MIRI_SEED"
 export MIRIFLAGS="$flags"
 miri() { cargo "+$toolchain" miri "$@"; }

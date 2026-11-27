@@ -17,6 +17,10 @@
 //! - What the parameters take of another kit's function used as a value, which whoever holds it
 //!   can call with that, and of an arrow function a kit makes, which is called with that: the
 //!   standard library's code calls functions it's handed with values it was handed.
+//! - Whatever can be put in what another kit's code gives back and still reaches: what its source
+//!   lends, which it has again once the block ends, and a `shared` value, a channel's end, a pool
+//!   or what a pool lends, however deep in what a call, a function it makes or a generator gives
+//!   back. A plain value given back is a copy it never sees again.
 //!
 //! The kits a dependency depends on are counted too, as the compiler sees the whole program. Code
 //! handed back to the program's own kit, and the standard library, aren't counted: the program's
@@ -414,6 +418,9 @@ enum How {
     AsValue { function: String },
     /// Through an arrow function it makes, which is called with what it takes.
     Made,
+    /// Through what its code gives back and still reaches, as a `shared` value or what its source
+    /// lends, which whatever's put in it comes back to: `what` is that, and `lends` says it's lent.
+    PutBack { what: String, lends: bool, by: Option<String> },
     /// Anything, as the walk went past the most copies it follows, here.
     PastTheBound,
 }
@@ -495,6 +502,17 @@ fn unaccepted((kit, moved): (&str, bool), receipt: &Receipt, capabilities: &[&'s
             ),
             false,
         ),
+        How::PutBack { what, lends, by } => {
+            let gives = if *lends { "lends" } else { "gives back" };
+            let from = by.as_ref().map(|by| format!(", to `{by}`'s code")).unwrap_or_default();
+            (
+                format!(
+                    "`{kit}` {gives} {} here{from}, which its own code still reaches, so it would now receive {listed} put in it, {unlisted}",
+                    with_article(what)
+                ),
+                false,
+            )
+        }
         How::PastTheBound => (
             format!(
                 "`{kit}` would now receive anything the program holds, {listed}, {unlisted}: past the copies of generic functions a program of its size can ask for, here, what's handed where can't be followed"
@@ -676,6 +694,7 @@ impl<'c> Walk<'c> {
                     for value in &handed.values {
                         self.hand_over((key, given), (&from, to), value);
                     }
+                    self.given_back((key, given), (&from, to), span);
                 }
                 if let Some(callee) = callee {
                     let given = if self.is_generic(&callee) {
@@ -903,6 +922,91 @@ impl<'c> Walk<'c> {
         };
         let capabilities = held.capabilities.clone();
         self.receive(to, &capabilities, value.span, &How::Handed { by, held });
+    }
+
+    /// What a call into another kit's code gives back that the kit's own code still reaches
+    /// afterwards: a `shared` value, a channel's end it can receive from, a pool, or what its
+    /// source lends, which it has again once the block ends. Whatever the caller puts in one, the
+    /// kit receives, so it receives everything one can hold, as a place lent with `ref` gives
+    /// what its type can hold.
+    fn given_back(&mut self, (key, given): (&str, &Given), (from, to): (&Kit, &str), span: Span) {
+        let Some(returned) = self.type_at(key, given, span) else { return };
+        let Some((what, capabilities)) = self.put_back(&returned, &mut Vec::new()) else { return };
+        if capabilities.is_empty() {
+            return;
+        }
+        let lends = crate::lend::lent(&what).is_some();
+        let what = crate::lend::lent(&what).cloned().unwrap_or(what).to_string();
+        let by = match from {
+            Kit::Named(by) => Some(by.clone()),
+            _ => None,
+        };
+        self.receive(to, &capabilities, span, &How::PutBack { what, lends, by });
+    }
+
+    /// The first value in a type that whoever gave it still reaches, with every capability any
+    /// such value in it can hold: what a source lends, a `shared` value, a channel's end that
+    /// can be sent on, and a pool or what it lends. A function's is what it gives back, as
+    /// calling it later can give one; what it's handed is counted where it's made.
+    fn put_back(&mut self, ty: &Type, open: &mut Vec<String>) -> Option<(Type, BTreeSet<&'static str>)> {
+        let ty = self.checker.settled(ty);
+        let reached = match &ty {
+            Type::Generic(name, args) if reached_again(name, self.checker.program.type_info(name)) => {
+                args.first().cloned()
+            }
+            Type::Named(name) | Type::Generic(name, _)
+                if self.checker.program.type_info(name).is_some_and(|info| info.def.shared) =>
+            {
+                Some(ty.clone())
+            }
+            _ => None,
+        };
+        if let Some(reached) = reached {
+            let capabilities = self.capabilities_in(&reached, &mut Vec::new());
+            return Some((ty, capabilities));
+        }
+        let mut parts: Vec<Type> = match &ty {
+            Type::Arrow(_, returns) => vec![returns.as_ref().clone()],
+            other => other.children().into_iter().cloned().collect(),
+        };
+        let mut opened = false;
+        if let Type::Named(name) | Type::Generic(name, _) = &ty
+            && !open.contains(name)
+            && let Some(info) = self.checker.program.type_info(name)
+        {
+            let def = info.def.clone();
+            let args = match &ty {
+                Type::Generic(_, args) => args.clone(),
+                _ => Vec::new(),
+            };
+            let given: Given = def.generics.iter().map(|generic| generic.name.clone()).zip(args).collect();
+            let fields: Vec<(Option<String>, String)> = def
+                .fields
+                .iter()
+                .map(|field| (None, field.name.clone()))
+                .chain(def.cases.iter().flat_map(|case| {
+                    case.fields.iter().map(|field| (Some(case.name.clone()), field.name.clone()))
+                }))
+                .collect();
+            for (case, field) in fields {
+                parts.push(self.checker.field_type(name, case.as_deref(), &field).substitute(&given));
+            }
+            open.push(name.clone());
+            opened = true;
+        }
+        let mut found: Option<(Type, BTreeSet<&'static str>)> = None;
+        for part in parts {
+            if let Some((what, capabilities)) = self.put_back(&part, open) {
+                match &mut found {
+                    Some((_, had)) => had.extend(capabilities),
+                    None => found = Some((what, capabilities)),
+                }
+            }
+        }
+        if opened {
+            open.pop();
+        }
+        found
     }
 
     /// A value's type, as this copy of the function it's in has it.
@@ -1207,6 +1311,17 @@ impl<'c> Walk<'c> {
 
 /// The kit a name in the merged program belongs to: the part before its kit's mark, or the
 /// program's own when it has none.
+/// Whether a value of a type of this name is still reached by whoever gave it: what a source
+/// lends and a `shared` value, and the standard library's channel ends that can be sent on, a
+/// pool, and what a pool lends. Values of other types are copies.
+fn reached_again(name: &str, info: Option<&crate::program::TypeInfo>) -> bool {
+    match name {
+        crate::lend::WITH | crate::lock::SHARED => true,
+        "Channel" | "Sender" | "Pool" | "Borrowed" => info.is_some_and(|info| info.prelude),
+        _ => false,
+    }
+}
+
 fn kit_by_name(name: &str) -> Kit {
     match name.split_once(KIT_MARK) {
         Some((kit, _)) if !kit.is_empty() && kit.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {

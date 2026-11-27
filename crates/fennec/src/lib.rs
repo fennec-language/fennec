@@ -208,7 +208,11 @@ fn command() -> ExitCode {
         ["new", path] => new(path),
         [which @ ("update" | "fetch"), rest @ ..] => dependencies::named(which, rest),
         ["init"] => init(),
-        ["fmt", rest @ ..] => fmt::fmt(rest),
+        // On the big stack, as the formatter recurses for each bracket and block, as checking does.
+        ["fmt", rest @ ..] => {
+            let rest: Vec<String> = rest.iter().map(|arg| (*arg).to_owned()).collect();
+            big_stack(move || fmt::fmt(&rest.iter().map(String::as_str).collect::<Vec<_>>()))
+        }
         ["lint"] => on_big_stack(lint::lint, "."),
         ["lint", "--json"] => on_big_stack(lint::lint_json, "."),
         ["lint", "--json", path] => on_big_stack(lint::lint_json, path),

@@ -37,7 +37,7 @@ fn mixed_else(inner: &Expr) -> Diagnostic {
 
 impl Parser {
     pub(super) fn expr(&mut self) -> Result<Expr, Diagnostic> {
-        self.expr_made().map(|(made, _)| made)
+        self.nested(Self::expr_made).map(|(made, _)| made)
     }
 
     /// An expression, and whether this call made a one-line `if` or a fallback `else` of its own,
@@ -57,7 +57,7 @@ impl Parser {
                 return Err(Diagnostic::new("a conditional expression needs `else`", self.span())
                     .with_help("write `a if condition else b`"));
             }
-            let (otherwise, made) = self.expr_made()?;
+            let (otherwise, made) = self.nested(Self::expr_made)?;
             if made == Formed::Fallback {
                 return Err(mixed_else(&otherwise));
             }
@@ -287,26 +287,34 @@ impl Parser {
 
     pub(super) fn or_expr(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.and_expr()?;
+        let mut links = 0;
         while self.eat_kw(Kw::Or) {
+            self.deeper()?;
+            links += 1;
             let rhs = self.and_expr()?;
             lhs = binary(BinOp::Or, lhs, rhs);
         }
+        self.depth -= links;
         Ok(lhs)
     }
 
     fn and_expr(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.not_expr()?;
+        let mut links = 0;
         while self.eat_kw(Kw::And) {
+            self.deeper()?;
+            links += 1;
             let rhs = self.not_expr()?;
             lhs = binary(BinOp::And, lhs, rhs);
         }
+        self.depth -= links;
         Ok(lhs)
     }
 
     fn not_expr(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.span();
         if self.eat_kw(Kw::Not) {
-            let expr = self.not_expr()?;
+            let expr = self.nested(Self::not_expr)?;
             let span = start.to(expr.span);
             return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(expr) }, span });
         }
@@ -317,7 +325,10 @@ impl Parser {
     fn comparison(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.bit_or()?;
         let mut chain: Option<Expr> = None;
+        let mut links = 0;
         while let Some(op) = self.comparison_op() {
+            self.deeper()?;
+            links += 1;
             let rhs = self.bit_or()?;
             let pair = binary(op, lhs, rhs.clone());
             chain = Some(match chain {
@@ -326,6 +337,7 @@ impl Parser {
             });
             lhs = rhs;
         }
+        self.depth -= links;
         Ok(chain.unwrap_or(lhs))
     }
 
@@ -349,40 +361,58 @@ impl Parser {
 
     fn bit_or(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.bit_xor()?;
+        let mut links = 0;
         while self.eat_p(Punct::Pipe) {
+            self.deeper()?;
+            links += 1;
             let rhs = self.bit_xor()?;
             lhs = binary(BinOp::BitOr, lhs, rhs);
         }
+        self.depth -= links;
         Ok(lhs)
     }
 
     fn bit_xor(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.bit_and()?;
+        let mut links = 0;
         while self.eat_p(Punct::Caret) {
+            self.deeper()?;
+            links += 1;
             let rhs = self.bit_and()?;
             lhs = binary(BinOp::BitXor, lhs, rhs);
         }
+        self.depth -= links;
         Ok(lhs)
     }
 
     fn bit_and(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.shift()?;
+        let mut links = 0;
         while self.eat_p(Punct::Amp) {
+            self.deeper()?;
+            links += 1;
             let rhs = self.shift()?;
             lhs = binary(BinOp::BitAnd, lhs, rhs);
         }
+        self.depth -= links;
         Ok(lhs)
     }
 
     fn shift(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.sum()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 Tok::P(Punct::ShiftLeft) => BinOp::ShiftLeft,
                 Tok::P(Punct::ShiftRight) => BinOp::ShiftRight,
-                _ => return Ok(lhs),
+                _ => {
+                    self.depth -= links;
+                    return Ok(lhs);
+                }
             };
             self.advance();
+            self.deeper()?;
+            links += 1;
             let rhs = self.sum()?;
             lhs = binary(op, lhs, rhs);
         }
@@ -390,13 +420,19 @@ impl Parser {
 
     fn sum(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.term()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 Tok::P(Punct::Plus) => BinOp::Add,
                 Tok::P(Punct::Minus) => BinOp::Sub,
-                _ => return Ok(lhs),
+                _ => {
+                    self.depth -= links;
+                    return Ok(lhs);
+                }
             };
             self.advance();
+            self.deeper()?;
+            links += 1;
             let rhs = self.term()?;
             lhs = binary(op, lhs, rhs);
         }
@@ -404,15 +440,21 @@ impl Parser {
 
     fn term(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.unary()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 Tok::P(Punct::Star) => BinOp::Mul,
                 Tok::P(Punct::Slash) => BinOp::Div,
                 Tok::P(Punct::SlashSlash) => BinOp::FloorDiv,
                 Tok::P(Punct::Percent) => BinOp::Mod,
-                _ => return Ok(lhs),
+                _ => {
+                    self.depth -= links;
+                    return Ok(lhs);
+                }
             };
             self.advance();
+            self.deeper()?;
+            links += 1;
             let rhs = self.unary()?;
             lhs = binary(op, lhs, rhs);
         }
@@ -421,18 +463,18 @@ impl Parser {
     fn unary(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.span();
         if self.eat_p(Punct::Minus) {
-            let expr = self.unary()?;
+            let expr = self.nested(Self::unary)?;
             let span = start.to(expr.span);
             return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(expr) }, span });
         }
         if self.eat_p(Punct::Tilde) {
-            let expr = self.unary()?;
+            let expr = self.nested(Self::unary)?;
             let span = start.to(expr.span);
             return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::BitNot, expr: Box::new(expr) }, span });
         }
         let base = self.postfix()?;
         if self.eat_p(Punct::StarStar) {
-            let exponent = self.unary()?;
+            let exponent = self.nested(Self::unary)?;
             return Ok(binary(BinOp::Pow, base, exponent));
         }
         Ok(base)
@@ -440,7 +482,12 @@ impl Parser {
 
     fn postfix(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.atom()?;
+        let mut links = 0;
         loop {
+            if matches!(self.peek(), Tok::P(Punct::LParen | Punct::Dot | Punct::LBracket | Punct::Question)) {
+                self.deeper()?;
+                links += 1;
+            }
             expr = if self.eat_p(Punct::LParen) {
                 let args = self.call_args()?;
                 let span = expr.span.to(self.expect_p(Punct::RParen)?);
@@ -452,10 +499,12 @@ impl Parser {
             } else if self.eat_p(Punct::LBracket) {
                 self.index(expr)?
             } else if self.eat_p(Punct::Question) {
-                let context = if self.eat_kw(Kw::From) { Some(Box::new(self.postfix()?)) } else { None };
+                let context =
+                    if self.eat_kw(Kw::From) { Some(Box::new(self.nested(Self::postfix)?)) } else { None };
                 let span = expr.span.to(self.prev_span());
                 Expr { kind: ExprKind::Try { value: Box::new(expr), context }, span }
             } else {
+                self.depth -= links;
                 return Ok(expr);
             };
         }
@@ -545,8 +594,8 @@ impl Parser {
             Tok::Float(value) => ExprKind::Float(value),
             Tok::Duration(nanos) => ExprKind::Duration(nanos),
             Tok::Str(text) => ExprKind::Str(text),
-            Tok::FStr(parts) => ExprKind::FStr(fstring_parts(parts)?),
-            Tok::TStr(parts) => return super::template::template(parts, span),
+            Tok::FStr(parts) => ExprKind::FStr(fstring_parts(parts, self.depth)?),
+            Tok::TStr(parts) => return super::template::template(parts, span, self.depth),
             Tok::Kw(Kw::True) => ExprKind::Bool(true),
             Tok::Kw(Kw::False) => ExprKind::Bool(false),
             Tok::Kw(Kw::None) => ExprKind::None,
@@ -698,20 +747,21 @@ fn unreachable_tuple(span: Span) -> Expr {
     Expr { kind: ExprKind::Tuple(Vec::new()), span }
 }
 
-fn fstring_parts(parts: Vec<FPart>) -> Result<Vec<FStrPart>, Diagnostic> {
+fn fstring_parts(parts: Vec<FPart>, depth: usize) -> Result<Vec<FStrPart>, Diagnostic> {
     parts
         .into_iter()
         .map(|part| match part {
             FPart::Text(text) => Ok(FStrPart::Text(text)),
             FPart::Expr { source, offset, spec } => {
-                Ok(FStrPart::Expr { expr: interpolated(&source, offset, "f-string")?, spec })
+                Ok(FStrPart::Expr { expr: interpolated(&source, offset, "f-string", depth)?, spec })
             }
         })
         .collect()
 }
 
-/// The expression written in an f-string's or template's `{}`, from the source the lexer kept.
-pub(super) fn interpolated(source: &str, offset: u32, what: &str) -> Result<Expr, Diagnostic> {
+/// The expression written in an f-string's or template's `{}`, from the source the lexer kept,
+/// read as nested `depth` deep, as the string holding it is.
+pub(super) fn interpolated(source: &str, offset: u32, what: &str, depth: usize) -> Result<Expr, Diagnostic> {
     if source.trim().is_empty() {
         return Err(Diagnostic::new(
             format!("this {what} has an empty `{{}}`"),
@@ -720,6 +770,7 @@ pub(super) fn interpolated(source: &str, offset: u32, what: &str) -> Result<Expr
         .with_help("put an expression inside, or write `{{` for a literal brace"));
     }
     let mut parser = Parser::new(super::interpolated_tokens(source, offset)?);
+    parser.depth = depth;
     let expr = parser.expr()?;
     parser.eat(&Tok::Newline);
     if !parser.at(&Tok::Eof) {

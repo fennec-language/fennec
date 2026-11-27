@@ -4129,6 +4129,36 @@ fn a_fennec_folder_in_the_temp_folder_starts_no_daemon() {
     assert!(stops(&kit, &home), "the daemon didn't stop");
 }
 
+/// The build daemon serves every later build, so a program nested a million deep, which ran the
+/// parser out of stack, gets the error and leaves it serving: the next build runs in it.
+#[cfg(unix)]
+#[test]
+fn a_program_nested_too_deep_leaves_the_build_daemon_serving() {
+    let (_folder, kit, home) = small_kit("nested-daemon").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let main = kit.join("src/main.fen");
+    let deep = format!(
+        "def main(stdout: Stdout):\n    stdout.print({}1{})\n",
+        "(".repeat(1_000_000),
+        ")".repeat(1_000_000)
+    );
+    std::fs::write(&main, deep).unwrap();
+    let refused = with_daemon(&kit, &home, DAEMON_IDLE, &["run"]).unwrap();
+    assert!(refused.status.code().is_some_and(|code| code != 0), "{}", text(&refused.stderr));
+    assert!(text(&refused.stderr).contains("this nests more than 1000 deep"), "{}", text(&refused.stderr));
+    std::fs::write(&main, "def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
+    let ran = with_daemon(&kit, &home, DAEMON_IDLE, &["run"]).unwrap();
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "1\n");
+    let status = text(&with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "status"]).unwrap().stdout);
+    assert!(status.contains("2 requests served"), "both builds didn't run in one daemon: {status}");
+    with_daemon(&kit, &home, DAEMON_IDLE, &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+}
+
 /// A user runs at most four build daemons: starting a fifth stops the one used longest ago, and
 /// what's noted of each goes with it.
 #[cfg(unix)]

@@ -26,8 +26,12 @@ fn framed(message: &str) -> String {
 /// Runs a whole session: opens `main.fen`, shuts down and exits. Gives back what the server
 /// wrote, and whether it exited cleanly.
 fn session(kit: &Path, home: &Path, daemon: bool) -> std::io::Result<(String, bool)> {
+    session_with(kit, home, daemon, "def main(stdout: Stdout):\\n    stdout.print(nope)\\n")
+}
+
+/// A whole session that opens `main.fen` holding `source`, written as it goes in JSON.
+fn session_with(kit: &Path, home: &Path, daemon: bool, source: &str) -> std::io::Result<(String, bool)> {
     let uri = fennec_lsp::uri_of(&kit.join("src/main.fen"));
-    let source = "def main(stdout: Stdout):\\n    stdout.print(nope)\\n";
     let messages = [
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_owned(),
         r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#.to_owned(),
@@ -93,5 +97,61 @@ fn the_language_server_runs_in_the_daemon() {
         noted() == 0
     });
     assert!(gone, "the daemon didn't stop");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// A program a million brackets deep, which ran a parser out of stack, as JSON text.
+fn too_deep() -> String {
+    format!("def main(stdout: Stdout):\\n    x = {}1{}\\n", "(".repeat(1_000_000), ")".repeat(1_000_000))
+}
+
+/// The start of what a server wrote, which is a million brackets long when it echoes the program.
+fn start(output: &str) -> String {
+    output.chars().take(2000).collect()
+}
+
+/// An editor's session lives as long as the editor: a program nested too deep gets the error, and
+/// the server goes on to answer what comes after it.
+fn refused(output: &str) {
+    assert!(
+        output.contains("textDocument/publishDiagnostics")
+            && output.contains("this nests more than 1000 deep"),
+        "{}",
+        start(output)
+    );
+    assert!(output.contains(r#""id":2,"result":null"#), "{}", start(output));
+}
+
+#[test]
+fn a_program_nested_too_deep_is_refused_in_process() {
+    let (_folder, kit, home) = broken_kit("deep-in-process").unwrap();
+    let (output, clean) = session_with(&kit, &home, false, &too_deep()).unwrap();
+    refused(&output);
+    assert!(clean);
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+/// The build daemon serves every later build and editor, so it gives the error and goes on: the
+/// next session it serves answers as ever.
+#[cfg(unix)]
+#[test]
+fn a_program_nested_too_deep_leaves_the_daemon_serving() {
+    let (_folder, kit, home) = broken_kit("deep-daemon").unwrap();
+    let _stopped = crate::executables::DaemonsStopped { home: &home };
+    let (output, clean) = session_with(&kit, &home, true, &too_deep()).unwrap();
+    refused(&output);
+    assert!(clean);
+    let (output, clean) = session(&kit, &home, true).unwrap();
+    check(&output);
+    assert!(clean);
+    let status = crate::executables::fennec_command()
+        .args(["daemon", "status"])
+        .env("FENNEC_HOME", &home)
+        .env_remove("FENNEC_NO_DAEMON")
+        .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&status.stdout).into_owned();
+    assert!(status.contains("2 requests served"), "both sessions didn't run in one daemon: {status}");
+    let _ = crate::executables::fennec_command().args(["daemon", "stop"]).env("FENNEC_HOME", &home).output();
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }

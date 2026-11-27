@@ -17,7 +17,6 @@ pub(crate) fn lex_with_comments(source: &str, base: u32) -> Result<(Vec<Token>, 
     }
     let lexer = Lexer {
         source,
-        chars: source.char_indices().collect(),
         pos: 0,
         tokens: Vec::new(),
         indents: vec![0],
@@ -64,7 +63,8 @@ enum Quoted {
 
 struct Lexer<'a> {
     source: &'a str,
-    chars: Vec<(usize, char)>,
+    /// The byte where the lexer is, always at a character's start or the end. It's read by
+    /// byte, with no copy of the source by character, which cost 16 bytes for each of its bytes.
     pos: usize,
     tokens: Vec<Token>,
     indents: Vec<usize>,
@@ -84,10 +84,10 @@ impl Lexer<'_> {
             let Some(c) = self.peek(0) else { break };
             let start = self.offset();
             match c {
-                ' ' | '\r' => self.pos += 1,
+                ' ' | '\r' => self.bump(),
                 '\t' => return Err(self.tab_error(start)),
                 '\n' => {
-                    self.pos += 1;
+                    self.bump();
                     if self.depth == 0 {
                         self.newline(start);
                         self.at_line_start = true;
@@ -110,12 +110,18 @@ impl Lexer<'_> {
         Ok(self.finish())
     }
 
+    /// The character `ahead` characters on from where the lexer is.
     fn peek(&self, ahead: usize) -> Option<char> {
-        self.chars.get(self.pos + ahead).map(|&(_, c)| c)
+        self.source.get(self.pos..)?.chars().nth(ahead)
     }
 
     fn offset(&self) -> usize {
-        self.chars.get(self.pos).map_or(self.source.len(), |&(at, _)| at)
+        self.pos.min(self.source.len())
+    }
+
+    /// Steps past the character where the lexer is.
+    fn bump(&mut self) {
+        self.pos += self.peek(0).map_or(1, char::len_utf8);
     }
 
     fn span(&self, start: usize) -> Span {
@@ -141,7 +147,7 @@ impl Lexer<'_> {
     fn skip_comment(&mut self) {
         let start = self.offset();
         while self.peek(0).is_some_and(|c| c != '\n') {
-            self.pos += 1;
+            self.bump();
         }
         let span = self.span(start);
         self.comments.push(span);
@@ -159,11 +165,11 @@ impl Lexer<'_> {
                     '\t' => return Err(self.tab_error(self.offset())),
                     _ => break,
                 }
-                self.pos += 1;
+                self.bump();
             }
             match self.peek(0) {
                 None => return Ok(false),
-                Some('\n' | '\r') => self.pos += 1,
+                Some('\n' | '\r') => self.bump(),
                 Some('#') => self.skip_comment(),
                 Some(_) => {
                     self.at_line_start = false;
@@ -209,7 +215,7 @@ impl Lexer<'_> {
 
     fn word(&mut self, start: usize) {
         while self.peek(0).is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
-            self.pos += 1;
+            self.bump();
         }
         let word = self.source.get(start..self.offset()).unwrap_or("");
         let tok = Kw::from_word(word).map_or_else(|| Tok::Name(word.to_owned()), Tok::Kw);
@@ -221,14 +227,14 @@ impl Lexer<'_> {
         let mut is_float = false;
         if self.peek(0) == Some('.') && self.peek(1).is_some_and(|c| c.is_ascii_digit()) {
             is_float = true;
-            self.pos += 1;
+            self.bump();
             self.digits();
         }
         if matches!(self.peek(0), Some('e' | 'E')) {
             is_float = true;
-            self.pos += 1;
+            self.bump();
             if matches!(self.peek(0), Some('+' | '-')) {
-                self.pos += 1;
+                self.bump();
             }
             self.digits();
         }
@@ -241,7 +247,7 @@ impl Lexer<'_> {
                 let part_start = self.offset();
                 self.digits();
                 if self.peek(0) == Some('.') && self.peek(1).is_some_and(|c| c.is_ascii_digit()) {
-                    self.pos += 1;
+                    self.bump();
                     self.digits();
                 }
                 let number = self.source.get(part_start..self.offset()).unwrap_or("").replace('_', "");
@@ -271,14 +277,14 @@ impl Lexer<'_> {
     fn unit(&mut self) -> String {
         let start = self.offset();
         while self.peek(0).is_some_and(|c| c.is_ascii_alphabetic()) {
-            self.pos += 1;
+            self.bump();
         }
         self.source.get(start..self.offset()).unwrap_or("").to_owned()
     }
 
     fn digits(&mut self) {
         while self.peek(0).is_some_and(|c| c.is_ascii_digit() || c == '_') {
-            self.pos += 1;
+            self.bump();
         }
     }
 
@@ -302,7 +308,7 @@ impl Lexer<'_> {
             Punct::RParen | Punct::RBracket | Punct::RBrace => self.depth = self.depth.saturating_sub(1),
             _ => {}
         }
-        self.pos += 1;
+        self.bump();
         self.push(Tok::P(punct), start);
         Ok(())
     }
@@ -358,7 +364,7 @@ impl Lexer<'_> {
     }
 
     fn string(&mut self, start: usize) -> Result<(), Diagnostic> {
-        self.pos += 1;
+        self.bump();
         let mut text = String::new();
         loop {
             match self.peek(0) {
@@ -367,11 +373,11 @@ impl Lexer<'_> {
                 Some('\\') => text.push(self.escape(start)?),
                 Some(c) => {
                     text.push(c);
-                    self.pos += 1;
+                    self.bump();
                 }
             }
         }
-        self.pos += 1;
+        self.bump();
         self.push(Tok::Str(text), start);
         Ok(())
     }
@@ -386,11 +392,11 @@ impl Lexer<'_> {
                 Some('"') => break,
                 Some(c) => {
                     text.push(c);
-                    self.pos += 1;
+                    self.bump();
                 }
             }
         }
-        self.pos += 1;
+        self.bump();
         self.push(Tok::Str(text), start);
         Ok(())
     }
@@ -403,7 +409,7 @@ impl Lexer<'_> {
     /// Reads a backslash escape and returns the character it stands for.
     fn escape(&mut self, start: usize) -> Result<char, Diagnostic> {
         let at = self.offset();
-        self.pos += 1;
+        self.bump();
         let c = match self.peek(0) {
             Some('n') => '\n',
             Some('t') => '\t',
@@ -424,7 +430,7 @@ impl Lexer<'_> {
                 ));
             }
         };
-        self.pos += 1;
+        self.bump();
         Ok(c)
     }
 
@@ -432,7 +438,7 @@ impl Lexer<'_> {
     /// exactly `digits` digits. `at` is where the backslash is.
     fn code_escape(&mut self, digits: u32, at: usize) -> Result<char, Diagnostic> {
         let letter = self.peek(0).unwrap_or('x');
-        self.pos += 1;
+        self.bump();
         let mut code: u32 = 0;
         for _ in 0..digits {
             let Some(digit) = self.peek(0).and_then(|c| c.to_digit(16)) else {
@@ -447,7 +453,7 @@ impl Lexer<'_> {
                 ));
             };
             code = code * 16 + digit;
-            self.pos += 1;
+            self.bump();
         }
         char::from_u32(code).ok_or_else(|| {
             let written = self.source.get(at..self.offset()).unwrap_or_default();
@@ -469,11 +475,11 @@ impl Lexer<'_> {
                 Some('{' | '}') => self.fstring_brace(start, &mut text, &mut parts)?,
                 Some(c) => {
                     text.push(c);
-                    self.pos += 1;
+                    self.bump();
                 }
             }
         }
-        self.pos += 1;
+        self.bump();
         if !text.is_empty() {
             parts.push(FPart::Text(text));
         }
@@ -521,12 +527,18 @@ impl Lexer<'_> {
         (ahead..ahead + 3).all(|at| self.peek(at) == Some('"'))
     }
 
+    /// The character that starts at byte `at`, or none where none starts there.
     fn char_at(&self, at: usize) -> Option<char> {
-        self.chars.get(at).map(|&(_, c)| c)
+        self.source.get(at..)?.chars().next()
     }
 
     fn offset_at(&self, at: usize) -> usize {
-        self.chars.get(at).map_or(self.source.len(), |&(offset, _)| offset)
+        at.min(self.source.len())
+    }
+
+    /// The byte after the character at byte `at`.
+    fn after(&self, at: usize) -> usize {
+        at + self.char_at(at).map_or(1, char::len_utf8)
     }
 
     /// A string between `"""`s, which may span lines, after `prefix` letters, as the `f` of
@@ -542,11 +554,11 @@ impl Lexer<'_> {
         loop {
             match self.char_at(end) {
                 None => return Err(self.unclosed_triple(start, prefix)),
-                Some('\\') if kind != Quoted::Raw => end += 2,
+                Some('\\') if kind != Quoted::Raw => end = self.after(end + 1),
                 Some('"') if self.char_at(end + 1) == Some('"') && self.char_at(end + 2) == Some('"') => {
                     break;
                 }
-                Some(_) => end += 1,
+                Some(_) => end = self.after(end),
             }
         }
         let first = if self.char_at(content) == Some('\n') { content + 1 } else { content };
@@ -580,7 +592,7 @@ impl Lexer<'_> {
             match self.peek(0) {
                 Some('\n') => {
                     text.push('\n');
-                    self.pos += 1;
+                    self.bump();
                     line_start = true;
                 }
                 Some('\\') if kind != Quoted::Raw && self.peek(1) == Some('\n') => {
@@ -599,7 +611,7 @@ impl Lexer<'_> {
                 }
                 Some(c) => {
                     text.push(c);
-                    self.pos += 1;
+                    self.bump();
                 }
                 None => break,
             }
@@ -643,7 +655,7 @@ impl Lexer<'_> {
                 Some('}') => nesting -= 1,
                 Some(_) => {}
             }
-            at += 1;
+            at = self.after(at);
         }
     }
 
@@ -674,7 +686,7 @@ impl Lexer<'_> {
 
     /// Reads `{expression}` or `{expression:spec}` inside an f-string.
     fn fstring_expr(&mut self, start: usize) -> Result<FPart, Diagnostic> {
-        self.pos += 1;
+        self.bump();
         let expr_start = self.offset();
         let mut nesting = 0_usize;
         let mut spec_start = None;
@@ -688,10 +700,10 @@ impl Lexer<'_> {
                 Some(':') if nesting == 0 && spec_start.is_none() => spec_start = Some(self.offset()),
                 Some(_) => {}
             }
-            self.pos += 1;
+            self.bump();
         }
         let end = self.offset();
-        self.pos += 1;
+        self.bump();
         let expr_end = spec_start.unwrap_or(end);
         let source = self.source.get(expr_start..expr_end).unwrap_or("").to_owned();
         let spec = spec_start.and_then(|at| self.source.get(at + 1..end)).map(str::to_owned);

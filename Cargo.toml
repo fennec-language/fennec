@@ -98,7 +98,7 @@ libm = { version = "=0.2.16", default-features = false }
 # one again isn't the point; rusqlite is the safe API over it, and every `unsafe` stays inside it
 # and libsqlite3-sys. Without default features, there's no statement cache to pull in a second
 # hashbrown. Not on WebAssembly, where there's no disk. Under MIT, with SQLite in the public domain.
-rusqlite = { version = "=0.42.0", default-features = false, features = ["bundled", "hooks", "limits"] }
+rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled", "hooks", "limits"] }
 # Stopping a program `process.run` started, with whatever it started in turn: on Unix it runs in a
 # process group of its own, and the group is killed at its timeout, which the standard library
 # can't do without `unsafe`. rustix is already here under cap-std; this is its safe call for it.

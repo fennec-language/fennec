@@ -132,7 +132,7 @@ fn the_gaps_are_examples_it_doesnt_run_yet() {
         match judge(example) {
             Verdict::Skipped(_) => {}
             Verdict::Matches => {
-                wrong.push(format!("{name} runs now: take it off gaps.txt and add it to runs.txt"))
+                wrong.push(format!("{name} runs now: take it off gaps.txt and add it to runs.txt"));
             }
             Verdict::Differs(how) => wrong.push(format!("{name} runs now and prints something else:\n{how}")),
         }

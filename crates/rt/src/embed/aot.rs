@@ -339,6 +339,13 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     heap::reads_may_reach(limit.saturating_sub(NATIVE_STACK_BYTES / 4 * 3));
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
+    // In a replay, what's kept goes through the bursts still due first, so none is left over.
+    let output = crate::replay::kept_at_end(output, |bytes| {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(bytes)?;
+        stdout.flush()
+    })
+    .unwrap_or_default();
     crate::replay::ended();
     // A replay that couldn't follow its recording says where it first couldn't, whatever crashed
     // after it, as a cleanup that didn't follow either: it said the last of those. One that ended

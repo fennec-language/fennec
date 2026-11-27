@@ -134,6 +134,14 @@ jobs:
               echo "FENNEC_FAULTED=$PWD/faulted/fennec" >> "$GITHUB_ENV"
             fi
           elif [ -n "$BUILD_FOR" ]; then
+            # The C in it (SQLite, mimalloc) is built by clang, so it's instrumented the way
+            # rustc's LLVM instruments the Rust, for the LLVM sanitizer runtime it links. GCC
+            # folds SQLite's two identical `aiOff` tables (FTS3's and FTS5's) into one, yet still
+            # registers both with AddressSanitizer at that one address. The runtime took that for
+            # an odr-violation and stopped the fuzzer before its first input, every night from
+            # 11-08. Clang keeps the two apart.
+            target=${BUILD_FOR//-/_}
+            export "CC_$target=clang" "CXX_$target=clang++"
             cargo build --release --locked -p fennec-fuzz -Zbuild-std --target "$BUILD_FOR"
             cp "target/$BUILD_FOR/release/fennec-fuzz" fennec-fuzz
           else

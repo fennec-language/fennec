@@ -342,6 +342,13 @@ jobs:
           known=$(.github/scripts/known-failures.sh names)
           leaked=0
           live() {
+            # Every program that ends says what's left: with no line, its counts weren't read and
+            # nothing was checked.
+            if ! grep -qE ' live [0-9]+$' "$said"; then
+              echo "::error::$1 said nothing of what it left live: FENNEC_COUNTS wasn't reported"
+              leaked=1
+              return 0
+            fi
             grep -qE ' live [1-9][0-9]*$' "$said" || return 0
             local counts
             counts=$(grep -E ' live [0-9]+$' "$said" | tail -n 1)
@@ -867,6 +874,8 @@ jobs:
                 echo "::error::$program built in $how didn't finish"; cat said.txt; failed=1
               elif grep -q AddressSanitizer said.txt; then
                 echo "::error::$program built in $how touched memory it doesn't own"; cat said.txt; failed=1
+              elif [ "$ran" -ne 0 ]; then
+                echo "::error::$program built in $how ended with $ran"; cat said.txt; failed=1
               elif ! cmp -s printed.txt "${program%.fen}.out"; then
                 echo "::error::$program built in $how printed something different"; cat said.txt; failed=1
               fi
@@ -964,8 +973,13 @@ jobs:
             fi
             built=$((built + 1))
             if [ -f "${program%.fen}.out" ]; then
-              timeout 120 ./checked < /dev/null > printed.txt 2> said.txt || true
-              if ! cmp -s printed.txt "${program%.fen}.out"; then
+              # Every example ends with 0, as the LLVM tests hold them to: a crash, an abort or the
+              # time limit after the right output fails it.
+              ran=0
+              timeout 120 ./checked < /dev/null > printed.txt 2> said.txt || ran=$?
+              if [ "$ran" -ne 0 ]; then
+                echo "::error::$name ended with $ran"; cat said.txt; failed=1
+              elif ! cmp -s printed.txt "${program%.fen}.out"; then
                 echo "::error::$name printed something different"; cat said.txt; failed=1
               fi
             fi
@@ -999,6 +1013,8 @@ jobs:
               FENNEC_THREADS=$threads timeout 120 ./checked > printed.txt 2> said.txt || status=$?
               if [ "$status" -ge 124 ]; then
                 echo "::error::$program at $threads threads ended with $status, past the time limit or by a signal"; cat said.txt; failed=1
+              elif [ "$status" -ne 0 ]; then
+                echo "::error::$program at $threads threads ended with $status"; cat said.txt; failed=1
               elif [ "$(sha256sum < <(LC_ALL=C sort printed.txt))" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
               fi
@@ -1174,6 +1190,8 @@ jobs:
                 echo "::error::$program at $threads threads: $REPORT reported"; cat said.txt; failed=1
               elif [ "$status" -ge 124 ]; then
                 echo "::error::$program at $threads threads ended with $status, past the time limit or by a signal"; cat said.txt; failed=1
+              elif [ "$status" -ne 0 ]; then
+                echo "::error::$program at $threads threads ended with $status"; cat said.txt; failed=1
               elif [ "$got" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
               fi

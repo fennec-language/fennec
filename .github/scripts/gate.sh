@@ -179,7 +179,7 @@ runtime() {
     dir="target/$(echo "$features" | tr , -)"
     cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir" || return 1
     whole_runtime "$dir/debug/libfennec_runtime.a" "$dir" -p fennec-runtime --features "$features" || return 1
-    cp "$dir/debug/libfennec_runtime.a" "target/debug/libfennec_runtime_$(echo "$features" | tr , _).a"
+    cp "$dir/debug/libfennec_runtime.a" "target/debug/libfennec_runtime_$(echo "$features" | tr , _).a" || return 1
   done
 }
 

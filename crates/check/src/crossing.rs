@@ -371,7 +371,9 @@ struct Walk<'c> {
 impl<'c> Walk<'c> {
     fn new(checker: &'c mut Checker, reached: BTreeSet<String>) -> Self {
         let mut calls: BTreeMap<String, Vec<crate::generic_copies::Call>> = BTreeMap::new();
-        for call in checker.generic_calls.values() {
+        // A generic method's calls, as `server.serve(respond)`'s, are kept apart from a generic
+        // function's, and its copies hand on what they hand on too.
+        for call in checker.generic_calls.values().chain(checker.generic_method_calls.values()) {
             calls.entry(call.caller.clone()).or_default().push(call.clone());
         }
         let mut methods: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -589,8 +591,16 @@ impl<'c> Walk<'c> {
                 Type::Param(_) => self.unplaced = true,
                 // A function crossing takes what it captures with it, and runs where it's sent,
                 // given what it's called with there, and giving back what it gives, or fails with.
-                Type::Arrow(..) => {
+                Type::Arrow(params, returns) => {
                     queue.extend(self.arrows.get(&ty).into_iter().flatten().cloned());
+                    // One that fails with nothing, as a `fails E` copied with `E` nothing, is any
+                    // function of its type that can't fail.
+                    if let Type::Result(ok, error) = &**returns
+                        && error.fails_with_nothing()
+                    {
+                        let plain = Type::Arrow(params.clone(), ok.clone());
+                        queue.extend(self.arrows.get(&plain).into_iter().flatten().cloned());
+                    }
                     queue.extend(ty.children().into_iter().cloned());
                 }
                 Type::Function(key) => {

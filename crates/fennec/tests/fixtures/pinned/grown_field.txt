@@ -1,0 +1,7 @@
+source 204964344d35664a4d7f7228628e3a2386c1ee37a209852a645c18a397b793dc
+code 0
+stdout 122
+a name long enough to be held in a block of its own, 7!
+a name long enough to be held in a block of its own, 7
+[1, 2] [1]
+stderr 0

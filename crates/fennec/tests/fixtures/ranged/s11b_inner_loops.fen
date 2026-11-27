@@ -1,0 +1,22 @@
+# As s11 with no walk of the read list, which stops the check being made. Loops inside the loop written twice, left by `break`, `continue` and `return`.
+def scan(starts: list[int], order: list[int], limit: int) -> int:
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        mut value = order[at]
+        while value > 0:
+            value -= 3
+            if value == 4: continue
+            if value == 1: break
+            total += value
+        for step in range(value + 5):
+            if total > limit: return total * 2
+            total += step
+        for more in range(value + 9):
+            if more > value + 6: break
+            total += more
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 4], order=[5, 6, 7, 8], limit=1000))
+    stdout.print(scan([0, 4], order=[5, 6, 7, 8], limit=20))
+    stdout.print(scan([2, 4], order=[5, 6, 7, 10], limit=1000))

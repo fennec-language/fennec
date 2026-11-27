@@ -34,18 +34,30 @@ pub(crate) fn last_state((cache, name): (&Cache, &str)) -> Option<KitState> {
 }
 
 /// One of a kit's files as it is now. Its text is only read if its size and when it changed don't
-/// already say what it is.
+/// already say what it is. A folder `embed_folder` read is always read, as its names.
 fn kit_file(module: String, path: &Path, state: Option<&KitState>) -> Option<KitFile> {
     let metadata = std::fs::metadata(path).ok()?;
     let changed_at =
         metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_nanos());
     let size = metadata.len();
+    if metadata.is_dir() {
+        return Some(KitFile { module, text: folder_text(path)?, size, changed_at });
+    }
     let known = state.and_then(|state| state.same_text(&module, size, changed_at));
     let text = match known {
         Some(text) => text,
         None => fennec_blake3::hash(std::fs::read(path).ok()?.as_slice()),
     };
     Some(KitFile { module, text, size, changed_at })
+}
+
+/// A folder's text as `embed_folder` notes it, each name in it and what it is
+/// (`fennec_kit::folder_listing`). So a folder's note is always what's in it, however close to its
+/// change it's looked at, a link in it pointed elsewhere is seen, and a hidden file coming or going
+/// changes nothing.
+fn folder_text(path: &Path) -> Option<fennec_blake3::Hash> {
+    let (_, noted) = fennec_kit::folder_listing(path).ok()?;
+    Some(fennec_blake3::hash(&noted))
 }
 
 /// The files a single file's program read when it was last kept, each as it is now: the file,

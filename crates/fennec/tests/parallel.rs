@@ -26,8 +26,15 @@ fn ran_in(dir: &Path, ran: &Output) -> crate::llvm::Outcome {
 /// missing fails the test, the threads runtime included, so a break in it fails every test here
 /// rather than letting each pass by returning early.
 fn ready() -> bool {
-    // Coverage builds `fennec` in a folder of its own, where no runtime library is built.
-    if !crate::executables::runtime_beside_fennec() || !crate::llvm::ready() {
+    // Coverage builds `fennec` in a folder of its own, where no runtime library is built. It
+    // doesn't set `FENNEC_EXPECT_LLVM`, and where that's set, a runtime missing there fails, as
+    // `llvm::ready` would never get to say so (fennec#2557).
+    let beside = crate::executables::runtime_beside_fennec();
+    assert!(
+        beside || !crate::llvm::llvm_expected(),
+        "FENNEC_EXPECT_LLVM is set, but there's no runtime library beside `fennec`"
+    );
+    if !beside || !crate::llvm::ready() {
         return false;
     }
     if crate::llvm::llvm_expected() {

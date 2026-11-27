@@ -1,0 +1,6 @@
+106
+15
+103
+exit 1
+error: index 5 is out of range for length 5
+--> n2_while_outside.fen:8:16

@@ -131,6 +131,10 @@ impl Stream {
         let from = at * self.chunk;
         let to = (from + self.chunk).min(self.length);
         let since = threads::made_scope_starts();
+        // What was running printed goes out first, under its own name, as a range's does.
+        if crate::replay::active() {
+            super::super::write_kept_output();
+        }
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
@@ -338,23 +342,14 @@ pub extern "C" fn stream_end(stream: i64) {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicI64, Ordering};
 
-    use super::super::super::{Tables, finish, heap, lists, start, with};
-    use crate::packed::Element;
+    use super::super::super::{finish, heap, lists, start, with};
 
     fn begin() {
-        let tables = || Tables {
-            shapes: vec![Rc::new(Element::Str)],
-            elements: vec![Rc::new(Element::Int)],
-            ..Tables::default()
-        };
-        super::super::set_worker_setup(Box::new(move || {
-            start(tables(), crate::Inputs::default());
-        }));
-        start(tables(), crate::Inputs::default());
+        super::super::set_test_worker_setup();
+        start(super::super::test_worker_tables(), crate::Inputs::default());
     }
 
     /// Enough items to run on the pool.

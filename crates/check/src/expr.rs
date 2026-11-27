@@ -214,7 +214,7 @@ impl FnCx<'_> {
         let help = if kinds.iter().all(|kind| kind == "an int" || kind == "a float") {
             "ints and floats don't mix: write whole floats with a decimal point, like `10.0`, or convert with float(...)"
         } else {
-            "a value has one type: convert one side, as `str(count)` or `int(text)`, or make an enum with a case for each"
+            "a value has one type: convert one side, as `str(count)` or `int.parse(text)?`, or make an enum with a case for each"
         };
         self.error(Diagnostic::new(format!("{what} {}", kinds.join(" and ")), span).with_help(help));
         Type::Unknown
@@ -542,7 +542,7 @@ impl FnCx<'_> {
     }
 
     /// The side of a one-line `if` that can fail where the other gives what it would on
-    /// success, as in `int(text) if given else 8080`: the two don't join, and the failure is why.
+    /// success, as in `int.parse(text) if given else 8080`: the two don't join, and the failure is why.
     fn failing_side<'e>(
         &mut self,
         (then, otherwise): (&'e Expr, &'e Expr),
@@ -888,7 +888,7 @@ impl FnCx<'_> {
                 let help = if ty == Type::Bool {
                     "a bool is turned around with `not`, as `not done`"
                 } else {
-                    "only a number is negated, as `-count`: convert it first, as `-int(text)`"
+                    "only a number is negated, as `-count`: convert it first, as `-int.parse(text)?`"
                 };
                 self.error(
                     Diagnostic::new(format!("can't negate {}", article(&ty.kind())), span).with_help(help),
@@ -1258,6 +1258,14 @@ impl FnCx<'_> {
         (elem, value)
     }
 
+    /// The sized number a name was declared to hold, as an optional or not: `f32` for `found: f32?`.
+    fn declared_sized(&mut self, value: &Expr) -> Option<Type> {
+        let ExprKind::Name(name) = &value.kind else { return None };
+        let declared = self.declared_type(name)?;
+        let sized = self.checker.settled(&declared).without_none();
+        matches!(sized, Type::Sized(_)).then_some(sized)
+    }
+
     /// `value else default`: what's inside the value, or the default, or nothing more if the default
     /// leaves.
     fn else_value(&mut self, value: &Expr, default: &Expr, except: bool, span: Span) -> Type {
@@ -1290,7 +1298,7 @@ impl FnCx<'_> {
             );
         }
         if except && !matches!(self.checker.settled(&value), Type::Result(..) | Type::Unknown) {
-            self.nothing_to_except(&value, written);
+            self.nothing_to_except(&value, value_expr);
         }
         if except
             && let Type::Result(made, _) = self.checker.settled(&value)
@@ -1311,7 +1319,25 @@ impl FnCx<'_> {
                 }
                 given
             }
-            None => self.expr(default),
+            // `speed else 0.5` on an `f32?`: a number written out takes the size it stands in for.
+            None => match self.checker.settled(&value) {
+                Type::Optional(inner) | Type::Result(inner, _)
+                    if crate::expect::number_literal(default)
+                        && matches!(self.checker.settled(&inner), Type::Sized(_)) =>
+                {
+                    self.expr_as(default, &inner)
+                }
+                // A name known to be `None` here, as `found: f32? = None` is, still stands for what
+                // it was declared to hold, so the number takes that size, as it would with nothing
+                // known.
+                Type::None if crate::expect::number_literal(default) => {
+                    match self.declared_sized(value_expr) {
+                        Some(sized) => self.expr_as(default, &sized),
+                        None => self.expr(default),
+                    }
+                }
+                _ => self.expr(default),
+            },
         };
         match value {
             Type::Optional(inner) if matches!(*inner, Type::Result(..)) => {
@@ -1605,7 +1631,7 @@ fn operator_help(op: BinOp, left: &Type, right: &Type) -> &'static str {
         (Type::List(_), Type::List(_)) => {
             "work on a list's items, as `[item * 2 for item in items]`, or join lists with `+`"
         }
-        _ => "convert one side so both are numbers, as `int(text)` or `float(count)`",
+        _ => "convert one side so both are numbers, as `int.parse(text)?` or `float(count)`",
     }
 }
 

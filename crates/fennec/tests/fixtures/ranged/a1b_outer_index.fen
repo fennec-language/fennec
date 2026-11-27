@@ -1,0 +1,14 @@
+# The inner loop is the one written twice here, since the outer loop's own reads lean on two
+# checks. Inside it, a read by the outer loop's count leans on a check the inner loop's way in
+# never asks: `starts` against `other`, which fails.
+def both(starts: list[int], other: list[int], third: list[int], marks: list[int], order: list[int]) -> int:
+    mut added = 0
+    for cell in range(starts[0], starts[1]):
+        added += third[cell]
+        for at in range(marks[0], marks[1]):
+            added += order[at] + other[cell]
+    return added
+
+def main(stdout: Stdout):
+    stdout.print("in range:", both([0, 2], other=[5, 5], third=[1, 1], marks=[0, 2], order=[1, 2]))
+    stdout.print("past the end:", both([0, 2], other=[5], third=[1, 1], marks=[0, 2], order=[1, 2]))

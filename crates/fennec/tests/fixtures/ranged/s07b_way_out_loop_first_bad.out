@@ -1,0 +1,4 @@
+17
+exit 1
+error: index 3 is out of range for length 3
+--> s07b_way_out_loop_first_bad.fen:5:18

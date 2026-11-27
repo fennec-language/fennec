@@ -9,7 +9,7 @@
 //!
 //! These need the `fennec` command beside this one (or where `FENNEC` says), the runtime library
 //! beside that, and LLVM's tools. `fennec-fuzz run llvm` stops if one is missing, and the others,
-//! like replaying a kept input, pass without them.
+//! like replaying a kept input, pass without them, unless building is asked for (`can_build`).
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -17,12 +17,23 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::generate::printing_plainly;
-use crate::supervise::{BUILD_STUCK, MOST_KILOBYTES, STUCK, output_watched, watch};
+use crate::supervise::{MOST_KILOBYTES, STUCK, build_stuck, output_watched, watch};
 
-/// `fennec`: where `FENNEC` says, or beside this program.
+/// `fennec`: where `FENNEC` says, or beside this program. A test binary, which Cargo puts in a
+/// `deps` folder below the one it builds `fennec` in, finds it in that one. Looking only beside
+/// itself, every unit test here that builds a program found none, on CI and in the gate, and
+/// passed having built nothing (fennec#2557).
 pub(crate) fn fennec() -> PathBuf {
-    std::env::var_os("FENNEC")
-        .map_or_else(|| std::env::current_exe().unwrap_or_default().with_file_name("fennec"), PathBuf::from)
+    if let Some(fennec) = std::env::var_os("FENNEC") {
+        return PathBuf::from(fennec);
+    }
+    let here = std::env::current_exe().unwrap_or_default();
+    match here.parent() {
+        Some(folder) if folder.file_name().is_some_and(|name| name == "deps") => {
+            folder.with_file_name("fennec")
+        }
+        _ => here.with_file_name("fennec"),
+    }
 }
 
 /// This process's own folder to build in, held as its own while it runs (see `owned`). Where it
@@ -73,6 +84,50 @@ fn fuzzing_process(name: &str) -> Option<u32> {
     pid.parse().ok()
 }
 
+/// Whether programs are to be built natively here, which a target or test that can't build one
+/// otherwise passes over: false where nothing can be. Where building is asked for, by
+/// `FENNEC_EXPECT_LLVM`, as CI's test jobs and the gate set it, or by the heap audit's
+/// `FENNEC_AUDIT=1`, not being able to is a failure that says why, never a pass with nothing built
+/// (fennec#2557).
+pub(crate) fn can_build() -> Result<bool, String> {
+    match (ready(), asked_to_build()) {
+        (Ok(()), _) => Ok(true),
+        (Err(_), None) => Ok(false),
+        (Err(why), Some(asked)) => Err(format!("{asked}, but nothing can be built natively here: {why}")),
+    }
+}
+
+/// `can_build`, for a program that launches tasks, which needs the runtime with threads beside
+/// `fennec` as well.
+pub(crate) fn can_build_threads() -> Result<bool, String> {
+    if !can_build()? {
+        return Ok(false);
+    }
+    if threads_runtime_here() {
+        return Ok(true);
+    }
+    match asked_to_build() {
+        None => Ok(false),
+        Some(asked) => Err(format!(
+            "{asked}, but there's no runtime with threads, `libfennec_runtime_threads.a`, beside `{}`: build \
+             it with `cargo build -p fennec-runtime --features threads --target-dir target/threads` and copy it \
+             there",
+            fennec().display()
+        )),
+    }
+}
+
+/// What asks for programs to be built natively here, where something does.
+fn asked_to_build() -> Option<&'static str> {
+    if audited() {
+        Some("the heap audit is asked for (`FENNEC_AUDIT=1`)")
+    } else if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
+        Some("`FENNEC_EXPECT_LLVM` is set")
+    } else {
+        None
+    }
+}
+
 /// Whether a program can be built and run here, or why not.
 pub(crate) fn ready() -> Result<(), String> {
     static READY: OnceLock<Result<(), String>> = OnceLock::new();
@@ -95,11 +150,11 @@ pub(crate) const BROKEN: [&str; 6] =
     ["linking failed", "failed on", "couldn't run", "once trimmed", "panicked", "the runtime library `"];
 
 /// What `fennec build` gave, run with the tools it starts in a group of their own: one whose
-/// tools together take more than `BUILD_STUCK` CPU time or `MOST_KILOBYTES` of memory is
-/// stopped, every tool with it, and that's a failure of its own, since building a program
-/// should never take that.
-pub(crate) fn built_within(command: &mut Command) -> Result<std::process::Output, String> {
-    let (built, failure) = output_watched(command, BUILD_STUCK, MOST_KILOBYTES)?;
+/// tools together take more CPU time than `build_stuck` gives a program of `lines` lines, or more
+/// than `MOST_KILOBYTES` of memory, is stopped, every tool with it, and that's a failure of its
+/// own, since building a program should never take that.
+pub(crate) fn built_within(command: &mut Command, lines: usize) -> Result<std::process::Output, String> {
+    let (built, failure) = output_watched(command, build_stuck(lines), MOST_KILOBYTES)?;
     match failure {
         Some(failure) => Err(format!(
             "building it {failure}, `fennec build` and the tools it started together, and all were stopped:\n{}",
@@ -137,7 +192,7 @@ pub(crate) fn build_with(
         .env("FENNEC_HOME", work)
         .env("FENNEC_NO_CACHE", "1")
         .env("FENNEC_NO_DAEMON", "1");
-    let built = built_within(&mut command)?;
+    let built = built_within(&mut command, source.lines().count())?;
     if built.status.success() {
         return Ok(Some(executable));
     }
@@ -188,7 +243,7 @@ pub(crate) fn built_and_run_laid_out(
     } else {
         command.env_remove("FENNEC_BOXED_TYPES");
     }
-    let built = built_within(&mut command)?;
+    let built = built_within(&mut command, source.lines().count())?;
     if !built.status.success() {
         let how = match (release, boxed) {
             (true, _) => "with --release",
@@ -353,9 +408,11 @@ fn outcome(source: &str, work: &Path, release: bool) -> Result<Option<Outcome>, 
 /// were pinned before the engines were removed.
 const PINNED: [&str; 2] = ["seeds/llvm", "found/llvm"];
 
-/// Whether a file is a pinned output rather than an input.
+/// Whether a file is a pinned output rather than an input, or what a kept input wrote to standard
+/// error when it was found, as `<input>.stderr`.
 pub(crate) fn is_pinned_output(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| extension == "out" || extension == "fails")
+    path.extension()
+        .is_some_and(|extension| extension == "out" || extension == "fails" || extension == "stderr")
 }
 
 /// The outcome pinned for an input, if it's one of those with an output pinned.
@@ -377,7 +434,7 @@ fn shown((printed, said, _): &Outcome) -> String {
 }
 
 pub(crate) fn llvm(input: &[u8]) -> Result<(), String> {
-    if ready().is_err() {
+    if !can_build()? {
         return Ok(());
     }
     let source = printing_plainly(input);
@@ -747,7 +804,7 @@ fn built_from(source: &str, compiler: &Path) -> String {
 
 /// The program built for `name`, or None where nothing can be built here.
 pub(crate) fn built_reader(name: &str) -> Result<Option<PathBuf>, String> {
-    if ready().is_err() {
+    if !can_build()? {
         return Ok(None);
     }
     reader(name).map(Some)
@@ -765,7 +822,7 @@ pub(crate) fn run_reader(name: &str, args: &[&std::ffi::OsStr]) -> Result<Option
 /// Runs `input` through the reader for `name`, giving what it printed, or None where nothing can
 /// be built here. It may fail, but must not crash or get stuck.
 pub(crate) fn read_natively(name: &str, input: &[u8]) -> Result<Option<Vec<u8>>, String> {
-    if ready().is_err() {
+    if !can_build()? {
         return Ok(None);
     }
     let executable = reader(name)?;

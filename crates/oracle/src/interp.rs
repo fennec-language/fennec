@@ -37,8 +37,8 @@ use fennec_syntax::{BinOp, Expr, ExprKind, Span, Stmt, StmtKind};
 use crate::load::Program;
 use crate::value::{Cap, Held, Reach, Text, Value};
 
-/// How many expressions and statements a run may take, across every thread, before it's stopped
-/// as one the oracle can't finish.
+/// How many expressions and statements a program's runs may take, across every thread and every
+/// order of its tasks' messages, before it's stopped as one the oracle can't finish.
 pub(crate) const MOST_STEPS: u64 = 40_000_000;
 
 /// How deep calls may nest.
@@ -175,6 +175,11 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// The steps this run has taken, across every thread.
+    pub(crate) fn steps_taken(&self) -> u64 {
+        self.steps.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn new(program: &'static Program, most_steps: u64, workdir: &disk::Workdir) -> Shared {
         Shared {
             program,
@@ -1371,7 +1376,7 @@ fn step_into<'v>(value: &'v Value, step: &Step, span: Span) -> Run<Reached<'v>> 
         (Value::Table(table), Step::At(Value::Id(id))) => {
             match table.find(*id).and_then(|at| table.slots.get(at)).and_then(|slot| slot.item.as_ref()) {
                 Some(item) => Ok(Reached::Inside(item)),
-                None => crash(table.missing(*id), span),
+                None => crash(crate::value::MISSING, span),
             }
         }
         (other, _) => unsupported(format!("reaching into a {}", other.kind())),
@@ -1402,7 +1407,7 @@ fn step_into_mut<'v>(value: &'v mut Value, step: &Step, span: Span, adding: bool
             pairs.get_mut(at).map(|(_, value)| value).map_or_else(|| unsupported("a key"), Ok)
         }
         (Value::Table(table), Step::At(Value::Id(id))) => {
-            let missing = table.missing(*id);
+            let missing = crate::value::MISSING;
             match table.find(*id).and_then(|at| table.slots.get_mut(at)).and_then(|slot| slot.item.as_mut()) {
                 Some(item) => Ok(item),
                 None => crash(missing, span),

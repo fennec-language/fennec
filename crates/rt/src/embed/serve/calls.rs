@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::Write as _;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -117,20 +117,80 @@ pub(super) fn next_handle() -> i64 {
 /// The servers running, so they can be stopped.
 static STOPPERS: Mutex<Vec<Stopper>> = Mutex::new(Vec::new());
 
-/// The servers being served, by the handle the program holds, so `server.close()` can end one: its
-/// listener is taken out of the open sockets while it's served, where closing would look for it.
-static SERVED: Mutex<Option<HashMap<i64, Stopper>>> = Mutex::new(None);
+/// The servers being served, or about to be, by the handle the program holds, so `server.close()`
+/// can end one: its listener is taken out of the open sockets while it's served, where closing
+/// would look for it.
+static SERVED: Mutex<Option<HashMap<i64, Serving>>> = Mutex::new(None);
 
-fn served<T>(use_them: impl FnOnce(&mut HashMap<i64, Stopper>) -> T) -> T {
+/// A server listed as served from the moment its listener left the open sockets.
+struct Serving {
+    /// What its serving drains by, set by a close.
+    draining: Arc<AtomicBool>,
+    /// What stops it, once its serving has started.
+    stopper: Option<Stopper>,
+}
+
+fn served<T>(use_them: impl FnOnce(&mut HashMap<i64, Serving>) -> T) -> T {
     use_them(SERVED.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
+}
+
+/// Lists the server `handle` as served, as its listener leaves the open sockets, and gives the
+/// flag its serving drains by. Called with the open sockets held, so a close finds the server in
+/// one place or the other. Listed only once its serving had started, a close that came between was
+/// lost, and the loop over the server never ended (#2549).
+pub(crate) fn serving_soon(server: i64) -> Arc<AtomicBool> {
+    let draining = Arc::new(AtomicBool::new(false));
+    served(|served| served.insert(server, Serving { draining: Arc::clone(&draining), stopper: None }));
+    draining
 }
 
 /// Closes the server with this handle if it's being served, and says whether it was: it takes no
 /// more connections, the rounds running finish, and the loop over it ends, as its docs say a
 /// closed server's does. Without this, closing a server while a task served it did nothing, and
-/// nothing inside the program could end the loop.
+/// nothing inside the program could end the loop. Before its serving has started, the close is
+/// noted, and the serving drains as it starts.
 pub(crate) fn close_served(server: i64) -> bool {
-    served(|served| served.get(&server).map(Stopper::close)).is_some()
+    served(|served| {
+        let Some(serving) = served.get(&server) else { return false };
+        match &serving.stopper {
+            Some(stopper) => stopper.close(),
+            None => serving.draining.store(true, Ordering::SeqCst),
+        }
+        true
+    })
+}
+
+/// Notes what stops the server `handle`, now its serving has started. Closed before then, it drains
+/// now, on every worker, as the close would have had it.
+fn started_serving(server: i64, stopper: &Stopper) {
+    served(|served| {
+        let serving = served
+            .entry(server)
+            .or_insert_with(|| Serving { draining: Arc::clone(stopper.draining()), stopper: None });
+        if serving.draining.load(Ordering::SeqCst) {
+            stopper.drain_waking();
+        }
+        serving.stopper = Some(stopper.again());
+    });
+}
+
+/// Takes the server `handle` off the list of those served when it's dropped, however serving it
+/// ended or never began.
+struct Listed(i64);
+
+impl Listed {
+    /// The server, listed as served as its listener was taken.
+    fn now(server: i64) -> Listed {
+        #[cfg(test)]
+        super::at_gap(super::Gap::Taken);
+        Listed(server)
+    }
+}
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        served(|served| served.remove(&self.0));
+    }
 }
 
 /// Stops every server running: each cancels its connections' tasks and returns.
@@ -169,6 +229,8 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let Some((listener, came_with)) = crate::stdlib::net::take_listener(server) else {
         return fail("this server isn't open to serve".to_owned());
     };
+    // Listed as served as its listener was taken, it's taken off the list however this ends.
+    let listed = Listed::now(server);
     if let Err(error) = listener.set_nonblocking(true) {
         return fail(format!("couldn't serve: {error}"));
     }
@@ -213,7 +275,7 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let id = Cell::new(None);
     let started = |stopper: Stopper| {
         id.set(Some(stopper.id()));
-        served(|served| served.insert(server, stopper.again()));
+        started_serving(server, &stopper);
         STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
     };
     super::super::write_kept_output();
@@ -224,7 +286,7 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let finished = super::serve(listener, pool, Some(&lent), &handler, (started, call.as_ref(), came_with));
     // Ended, it's nothing left to stop, or to close.
     STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).retain(|stopper| Some(stopper.id()) != id.get());
-    served(|served| served.remove(&server));
+    drop(listed);
     if let Some((copy, table)) = given {
         // What the copy holds is this task's now, with what its rounds did to its owners.
         drop(lent);
@@ -427,6 +489,10 @@ pub(in crate::embed) fn served_call(
         }
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             on(&conn, |conn| conn.write_within(data_of(data), timeout)).map(|()| Value::Unit)
+        }
+        ("_write_parts", [head @ Value::Str(_), body @ Value::Bytes(_)]) => {
+            let parts = crate::stdlib::net::parts_of(head, body);
+            on(&conn, |conn| conn.write_within(&parts, timeout)).map(|()| Value::Unit)
         }
         ("_reads_within", [after]) => {
             let after = match crate::stdlib::net::duration_of(after, at) {

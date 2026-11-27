@@ -68,7 +68,7 @@ Until then, install it from a checkout of this repository. It needs three things
 
 On Windows, work in WSL, or build in the checkout with Rust's gnullvm toolchain and llvm-mingw as [CONTRIBUTING.md](CONTRIBUTING.md) says: `install.sh` is for macOS and Linux.
 
-This builds `fennec` for release with every runtime library it links programs with, from the same source, and LLVM's tools, into `~/.fennec/bin`. Run it again after pulling:
+This builds `fennec` for release with every runtime library it links programs with, from the same source, and LLVM's tools, as the toolchain `dev` in `~/.fennec/toolchains`. It installs the launcher as the `fennec` in `~/.fennec/bin`, which runs `dev` outside a kit and in the kits `fennec new` makes. Run it again after pulling:
 
 ```bash
 git clone https://github.com/fennec-language/fennec && cd fennec

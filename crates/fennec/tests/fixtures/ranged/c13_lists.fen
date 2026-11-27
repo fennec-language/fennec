@@ -1,0 +1,20 @@
+# Lists appended to, popped, sliced and copied inside the loop written twice.
+def scan(starts: list[int], order: list[int]) -> int:
+    mut out = list[int]()
+    mut rows = list[list[int]]()
+    mut total = 0
+    for at in range(starts[0], starts[1]):
+        value = order[at]
+        out.append(value)
+        rows.append(order[at:at + 2])
+        snapshot = out
+        if value % 2 == 0:
+            _ = out.pop()
+            out.extend([value, value])
+        total += sum(snapshot) + len(rows[at - starts[0]]) + out[-1] + max(order[0:at + 1])
+        out[0] += 1
+    return total + sum(out) + len(rows)
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 4], order=[5, 6, 7, 8]))
+    stdout.print(scan([2, 4], order=[5, 6, 7, 8]))

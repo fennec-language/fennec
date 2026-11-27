@@ -84,6 +84,24 @@ fn groups_and_alternation() {
     assert_eq!(search("|a", "a"), Some(String::new()));
 }
 
+/// A thread's searches share scratch: one with three hundred groups and as many threads alive
+/// needs more than the thread keeps, and the searches before and after it, with smaller
+/// patterns, find what they would alone.
+#[test]
+fn searches_of_every_size_in_turn_find_what_each_would_alone() {
+    let many = "(a?)".repeat(300);
+    let mut expected = vec![Some("aaa".to_owned())];
+    expected.extend((0..300).map(|group| Some(if group < 3 { "a" } else { "" }.to_owned())));
+    for _ in 0..2 {
+        assert_eq!(
+            groups(r"(\w+)@(\w+)", "ash@den"),
+            [Some("ash@den".into()), Some("ash".into()), Some("den".into())]
+        );
+        assert_eq!(groups(&many, "aaa"), expected);
+        assert_eq!(find_all("a|b", "abc"), ["a", "b"]);
+    }
+}
+
 #[test]
 fn empty_matches_move_on_one_character() {
     assert_eq!(find_all("a*", "baaa"), ["", "aaa", ""]);

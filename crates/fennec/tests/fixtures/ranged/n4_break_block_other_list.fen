@@ -1,0 +1,16 @@
+# The block the `break` is in reads another list by the same count: a second check, so the loop
+# isn't written twice, and each read fails where it always did.
+def scan(starts: list[int], order: list[int], weights: list[int], wanted: int) -> int:
+    mut total = 0
+    for cell in range(len(starts) - 1):
+        for at in range(starts[cell], starts[cell + 1]):
+            if order[at] == wanted:
+                total += weights[at]
+                break
+            total += order[at]
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(scan([0, 2, 5], order=[1, 2, 3, 4, 5], weights=[10, 20, 30, 40, 50], wanted=4))
+    stdout.print(scan([0, 2, 5], order=[1, 2, 3, 4, 5], weights=[10, 20, 30], wanted=9))
+    stdout.print(scan([0, 2, 5], order=[1, 2, 3, 4, 5], weights=[10, 20, 30], wanted=4))

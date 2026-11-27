@@ -40,10 +40,18 @@ pub(crate) fn write(dir: &Path, name: &str) -> Result<(), String> {
 }
 
 fn manifest(name: &str) -> String {
-    format!(
-        "name = \"{name}\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n\n[dependencies]\n",
+    format!("name = \"{name}\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n\n[dependencies]\n", made_by())
+}
+
+/// The version of Fennec a new kit asks for: this one's, or `dev` for a build the launcher runs as
+/// `dev`, of which there's no release to run (see `fennec toolchain link`).
+fn made_by() -> &'static str {
+    let linked = std::env::var_os("FENNEC_LINKED_AS");
+    if linked.as_deref() == Some(std::ffi::OsStr::new(fennec_deps::manifest::DEV)) {
+        fennec_deps::manifest::DEV
+    } else {
         env!("CARGO_PKG_VERSION")
-    )
+    }
 }
 
 const MAIN: &str = "from greeting import greet

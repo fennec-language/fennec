@@ -4,4 +4,4 @@ error: a slice position must be an int, not a str
 3 |     stdout.print(names["1":])
   |                        ^^^
   |
-  = help: read the text as a number, as `items[int(text)?]`
+  = help: read the text as a number, as `items[int.parse(text)?]`

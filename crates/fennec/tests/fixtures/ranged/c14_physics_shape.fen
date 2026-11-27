@@ -1,0 +1,18 @@
+# The shape the change is for: buckets of a counting sort read for each ball's neighbours.
+def touching(xs: list[float], cells: list[int], starts: list[int], order: list[int]) -> int:
+    mut touched = 0
+    for ball in range(len(xs)):
+        cell = cells[ball]
+        for near in range(max(cell - 1, 0), min(cell + 2, len(starts) - 1)):
+            for at in range(starts[near], starts[near + 1]):
+                other = order[at]
+                if other != ball and abs(xs[other] - xs[ball]) < 1.5:
+                    touched += 1
+    return touched
+
+def main(stdout: Stdout):
+    xs = [0.5, 1.2, 2.9, 3.1, 0.1, 2.2]
+    cells = [0, 1, 2, 3, 0, 2]
+    starts = [0, 2, 3, 5, 6]
+    order = [0, 4, 1, 2, 5, 3]
+    stdout.print(touching(xs, cells=cells, starts=starts, order=order))

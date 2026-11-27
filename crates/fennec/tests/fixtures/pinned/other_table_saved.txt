@@ -1,9 +1,11 @@
 source 4c4e6bf76d6ce50f5017c0edd071e983aeafee12e7b8176d5cf80bf4104f2d9c
 code 1
 stdout 0
-stderr 195
-error: `selected[0]` is an Id from another `Table[str]` than `units`
+stderr 312
+error: `selected[0]` is an Id that finds nothing in `units`: its item was taken out, or it's from another `Table[str]`
   --> <dir>/other_table_saved.fen:13:18
    |
 13 |     stdout.print(json.dumps(world))
    |                  ^^^^^^^^^^^^^^^^^
+  = in `main`
+  = called from the standard library, more than once

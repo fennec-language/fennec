@@ -1,0 +1,8 @@
+v5v15v6v16v8v18v9v19
+v5v15v6v16v8v9
+failed at 7
+failed at 7
+failed at 7
+exit 1
+error: index 4 is out of range for length 4
+--> s05_let_go.fen:13:17

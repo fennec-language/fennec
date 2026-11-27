@@ -1,0 +1,9 @@
+GET /ok HTTP/1.1
+Host: h
+
+GET /c HTTP/1.1
+Connection: close
+
+GET /ok HTTP/1.1
+Host: h
+

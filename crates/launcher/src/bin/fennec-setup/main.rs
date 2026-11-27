@@ -35,7 +35,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fennec_launcher::{Asked, Helper, LAUNCHER_RELEASES, Launcher, Pick, RELEASES, TARGET, hand_off};
+use fennec_launcher::{
+    Asked, Helper, LAUNCHER_RELEASES, Launcher, Pick, RELEASES, TARGET, hand_off, hand_off_new,
+};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -66,6 +68,19 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
         web: Box::new(Helper::beside_this()?),
     };
     let here = || std::env::current_dir().map_err(|err| format!("couldn't tell which folder this is: {err}"));
+    // A new kit is made outside any kit, so by the version for scripts unless one is named, and
+    // the new `kit.toml` then asks for it.
+    if args.first().is_some_and(|first| first == "new") {
+        let (command, version) = match asked.pick {
+            Some(Pick::JustThisOnce(version)) => (launcher.exactly(&version)?, version),
+            Some(Pick::OutsideAKit(version)) => (launcher.outside_a_kit(&here()?, &version)?, version),
+            None => {
+                let version = launcher.for_scripts().ok_or(fennec_launcher::NO_TOOLCHAIN)?;
+                (launcher.exactly(&version)?, version)
+            }
+        };
+        return hand_off_new(&command, args, offline, &version);
+    }
     match asked.pick {
         Some(Pick::JustThisOnce(version)) => return hand_off(&launcher.exactly(&version)?, args, offline),
         Some(Pick::OutsideAKit(version)) => {
@@ -92,12 +107,6 @@ fn launched(asked: Asked) -> Result<ExitCode, String> {
         ["default"] => {
             println!("{}", launcher.default_version().ok_or(fennec_launcher::NO_DEFAULT)?);
             Ok(ExitCode::SUCCESS)
-        }
-        // A new kit is made outside any kit, so by the version for scripts, which the new
-        // `kit.toml` then asks for.
-        ["new", ..] => {
-            let version = launcher.for_scripts().ok_or(fennec_launcher::NO_TOOLCHAIN)?;
-            hand_off(&launcher.exactly(&version)?, args, offline)
         }
         ["--latest"] => {
             println!("{}", launcher.latest()?);

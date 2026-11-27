@@ -1,0 +1,20 @@
+# The same through a method: `ref self`, and the method's own fields given as plain arguments.
+struct World:
+    starts: list[int]
+    order: list[int]
+
+    def scan(ref self, starts: list[int], order: list[int]) -> int:
+        mut added = 0
+        for cell in range(len(starts) - 1):
+            self.starts[cell + 1] = 50000000
+            _ = self.order.pop()
+            for at in range(starts[cell], starts[cell + 1]):
+                added += order[at]
+        return added
+
+def main(stdout: Stdout):
+    mut world = World(starts=[0, 2, 4], order=[1, 2, 3, 4])
+    held_starts = world.starts
+    held_order = world.order
+    stdout.print(world.scan(held_starts, order=held_order))
+    stdout.print(world.starts, world.order)

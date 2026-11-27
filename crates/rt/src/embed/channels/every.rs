@@ -14,7 +14,7 @@
 //! place of the channel's. A listener of a work-queue channel is the channel itself.
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use fennec_syntax::{Diagnostic, Span};
@@ -42,8 +42,18 @@ struct Listener {
 /// Each listener's channel, by the listener's number.
 static LISTENING: Mutex<Option<HashMap<i64, i64>>> = Mutex::new(None);
 
+/// Whether `LISTENING` has any listener, set with it held whenever it changes, so a receive in a
+/// program with none, which is most, never takes it. Every receive asks whether its number is a
+/// listener's, and with every worker asking for each message it was the most waited-for lock in
+/// `chat_server`: 1,400 waits in the system a run on macOS, where a wait for a lock sleeps.
+static ANY_LISTENING: AtomicBool = AtomicBool::new(false);
+
 fn listening_to<T>(use_it: impl FnOnce(&mut HashMap<i64, i64>) -> T) -> T {
-    use_it(LISTENING.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
+    let mut listening = LISTENING.lock().unwrap_or_else(PoisonError::into_inner);
+    let listening = listening.get_or_insert_with(HashMap::new);
+    let used = use_it(listening);
+    ANY_LISTENING.store(!listening.is_empty(), Ordering::Release);
+    used
 }
 
 /// `fennec_channel_new_every(size)`: an open channel to `.Every`, keeping the last `size` messages.
@@ -58,7 +68,7 @@ pub extern "C" fn channel_new_every(size: i64) -> i64 {
         replay: crate::replay::place("c"),
         queue: Mutex::new(queue),
         changed: Condvar::new(),
-        freed: std::sync::atomic::AtomicBool::new(false),
+        freed: AtomicBool::new(false),
         #[cfg(test)]
         told: std::sync::atomic::AtomicI64::new(0),
         to_every: true,
@@ -90,7 +100,21 @@ pub extern "C" fn channel_listen(channel: i64, drop_oldest: i64) -> i64 {
 }
 
 /// The channel a listener listens to, and the listener's number, if `number` is a listener's.
+///
+/// A listener's number is given out once it's in `LISTENING`, and reaches a receive through the
+/// program, which got it after: so a receive given one finds `ANY_LISTENING` set. Asked in line,
+/// so a receive with no listener anywhere, most of them, makes no call to find that out.
+#[inline]
 pub(super) fn listening(number: i64) -> Option<(Arc<Channel>, i64)> {
+    if !ANY_LISTENING.load(Ordering::Acquire) {
+        return None;
+    }
+    listener(number)
+}
+
+/// [`listening`], once some channel to `.Every` has a listener.
+#[inline(never)]
+fn listener(number: i64) -> Option<(Arc<Channel>, i64)> {
     let channel = listening_to(|listening| listening.get(&number).copied())?;
     Some((find(channel)?, number))
 }
@@ -125,6 +149,12 @@ pub(super) fn push(
 
 /// The next message for `listener`, its own to take, or what a receive gives back instead, as
 /// `channels::next` says.
+///
+/// **Every way it ends is met,** which a recording logs and a replay ends the turn at. A listener
+/// that fell behind wasn't, so a recording had no receive where its task crashed, and every replay
+/// stopped there, asking for one (the nightly's random programs, since 2026-11-21). It's met as
+/// what native code gets back, done: a replay's turn then goes through, and comes to the same fall
+/// behind, as the listens and sends before it are in the recording's order.
 pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Result<Message, i64> {
     let timeout_ns = match super::replayed(channel, "receive", timeout_ns < 0) {
         super::Turn::Live => timeout_ns,
@@ -135,12 +165,19 @@ pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Re
     loop {
         let mut queue = channel.queue();
         let kept = u64::try_from(queue.messages.len()).unwrap_or(0);
-        let Some(every) = &mut queue.every else { return Err(CLOSED) };
+        let Some(every) = &mut queue.every else {
+            super::met(channel, "receive", CLOSED);
+            return Err(CLOSED);
+        };
         let first = every.first;
-        let Some(this) = every.by_number.get_mut(&listener) else { return Err(CLOSED) };
+        let Some(this) = every.by_number.get_mut(&listener) else {
+            super::met(channel, "receive", CLOSED);
+            return Err(CLOSED);
+        };
         if this.next < first {
             let missed = first - this.next;
             if !this.drop_oldest {
+                super::met(channel, "receive", DONE);
                 drop(queue);
                 super::super::fail_with(Diagnostic::new(
                     format!(
@@ -161,7 +198,10 @@ pub(super) fn next(channel: &Arc<Channel>, listener: i64, timeout_ns: i64) -> Re
                 Some(Message::Word(word)) => Message::Word(*word),
                 Some(Message::Shared(address, table)) => Message::Shared(*address, Arc::clone(table)),
                 Some(Message::SharedWords(words)) => Message::SharedWords(Arc::clone(words)),
-                Some(Message::Block(..) | Message::Words(_)) | None => return Err(CLOSED),
+                Some(Message::Block(..) | Message::Words(_)) | None => {
+                    super::met(channel, "receive", CLOSED);
+                    return Err(CLOSED);
+                }
             };
             super::met(channel, "receive", DONE);
             drop(queue);

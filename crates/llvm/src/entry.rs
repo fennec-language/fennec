@@ -134,9 +134,14 @@ fn start_of(
     // A program running `parallel` keeps a stack limit and a failure flag for each thread.
     let local = if crate::parallel::uses_parallel(program) { "thread_local(initialexec) " } else { "" };
     let _ = writeln!(out, "@fennec_stack_limit = dso_local {local}global i64 0");
+    // How many calls of a task's functions that can call themselves again are left until the
+    // next tick, on this thread: a frame's own count starts again at each call.
+    let _ = writeln!(out, "@fennec_call_ticks = dso_local {local}global i64 {}", crate::ticks::TICKS);
     let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
     // Where this thread's buffer is for a message's words or a dict's value held in place.
     let _ = writeln!(out, "@fennec_words = dso_local {local}global ptr null");
+    // Where this thread's run of tags is for a `Table`'s `add`.
+    let _ = writeln!(out, "@fennec_tags = dso_local {local}global ptr null");
     if crate::parallel::uses_parallel(program) {
         out += "@fennec_thread = dso_local thread_local(initialexec) global i64 0\n";
         // A parked task's stack limit is put back through this each time it's resumed.
@@ -175,7 +180,7 @@ fn start_of(
     let _ = write!(out, "@fennec_image = private constant [{} x i8] c\"", count * 8);
     image_text(&mut out, bytes, count * 8);
     out += "\", align 8\n\n";
-    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\ndeclare i64 @fennec_counting()\ndeclare ptr @fennec_dict_value_words() nounwind\n\n";
+    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\ndeclare i64 @fennec_counting()\ndeclare ptr @fennec_dict_value_words() nounwind\ndeclare i64 @fennec_tag_run() nounwind\n\n";
     Ok((out, count))
 }
 
@@ -185,7 +190,7 @@ fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) ->
     let main_thread = crate::parallel::uses_parallel(program).then_some(
         "  store i64 %limit, ptr @fennec_stack_limit_main\n  %main_flag = call i64 @fennec_aot_failed_flag()\n  %main_flag_at = inttoptr i64 %main_flag to ptr\n  store ptr %main_flag_at, ptr @fennec_failed_main\n",
     );
-    *out += "define void @fennec_entry(i64 %limit) {\n  %hash_seed = call i64 @fennec_dict_hash_seed()\n  store i64 %hash_seed, ptr @fennec_hash_seed\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %words_at = call ptr @fennec_dict_value_words()\n  store ptr %words_at, ptr @fennec_words\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
+    *out += "define void @fennec_entry(i64 %limit) {\n  %hash_seed = call i64 @fennec_dict_hash_seed()\n  store i64 %hash_seed, ptr @fennec_hash_seed\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %words_at = call ptr @fennec_dict_value_words()\n  store ptr %words_at, ptr @fennec_words\n  %tags = call i64 @fennec_tag_run()\n  %tags_at = inttoptr i64 %tags to ptr\n  store ptr %tags_at, ptr @fennec_tags\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
     if let Some(main_thread) = main_thread {
         // Filled in as soon as it's all set, before anything reads them.
         *out += main_thread;

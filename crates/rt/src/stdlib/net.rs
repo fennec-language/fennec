@@ -468,6 +468,9 @@ impl Fake {
             ("Connection", "write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
                 self.write(handle, data_of(data)).map(|()| Value::Unit)
             }
+            ("Connection", "_write_parts", [head @ Value::Str(_), body @ Value::Bytes(_)]) => {
+                self.write(handle, &parts_of(head, body)).map(|()| Value::Unit)
+            }
             ("UdpSocket", "receive", []) => self.receive(handle, timeout).map(packet_value),
             ("UdpSocket", "send_to", [data @ (Value::Str(_) | Value::Bytes(_)), Value::Str(address)]) => {
                 self.send_to(handle, data_of(data), address).map(|()| Value::Unit)
@@ -929,6 +932,9 @@ pub(crate) fn real_connection(
         ("write", [data @ (Value::Str(_) | Value::Bytes(_))]) => {
             write_within(handle, data_of(data), timeout).map(|()| Value::Unit)
         }
+        ("_write_parts", [head @ Value::Str(_), body @ Value::Bytes(_)]) => {
+            write_within(handle, &parts_of(head, body), timeout).map(|()| Value::Unit)
+        }
         ("close", []) => {
             close(handle);
             return Ok(Value::Unit);
@@ -1203,6 +1209,17 @@ pub(crate) fn data_of(data: &Value) -> &[u8] {
         Value::Bytes(data) => data,
         _ => &[],
     }
+}
+
+/// What `conn._write_parts(head, body)` writes: a response's head as text, then its body, sent
+/// in one write as `conn.write(head.encode() + body)` was, with neither made into a block of
+/// its own to be joined.
+pub(crate) fn parts_of(head: &Value, body: &Value) -> Vec<u8> {
+    let (head, body) = (data_of(head), data_of(body));
+    let mut parts = Vec::with_capacity(head.len() + body.len());
+    parts.extend_from_slice(head);
+    parts.extend_from_slice(body);
+    parts
 }
 
 /// The most bytes a line read from a connection may hold, its ending included. A line longer
@@ -3001,6 +3018,12 @@ fn send_to(handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
 
 /// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends,
 /// and a server being served stops taking connections, so the loop over it ends.
+/// For a test: `server.close()`, from a thread of its own.
+#[cfg(test)]
+pub(crate) fn close_for_a_test(handle: i64) {
+    close(handle);
+}
+
 fn close(handle: i64) {
     let closed = open(|open| open.remove(&handle));
     if let Some(Socket::Stream(stream)) = &closed {
@@ -3119,7 +3142,10 @@ pub(crate) fn take_listener(handle: i64) -> Option<(TcpListener, crate::embed::s
         Some(Socket::Listener(listening)) => {
             let tls = listening.tls.clone();
             let stop = *listening.stop.lock().unwrap_or_else(PoisonError::into_inner);
-            Some((listening.listener.try_clone().ok()?, crate::embed::serve::Listened { tls, stop }))
+            let listener = listening.listener.try_clone().ok()?;
+            // Listed as served while the open sockets are held, so a close finds it in one or the other.
+            let draining = crate::embed::serve::serving_soon(handle);
+            Some((listener, crate::embed::serve::Listened { tls, stop, draining }))
         }
         Some(other) => {
             open.insert(handle, other);

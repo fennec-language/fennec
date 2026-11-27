@@ -86,7 +86,7 @@ pub fn run_source_in(source: &str, shown: &str, workdir: Workdir) -> Outcome {
 }
 
 /// Runs a program's source in `workdir`, stopping it as unsupported past `most_steps`
-/// expressions and statements, which every run has a limit of.
+/// expressions and statements, which its runs share: one for each order of its tasks' messages.
 pub fn run_source_within(source: &str, shown: &str, most_steps: u64, workdir: Workdir) -> Outcome {
     let source = source.to_owned();
     let shown = shown.to_owned();
@@ -113,15 +113,25 @@ const MOST_ORDERS: usize = 256;
 
 /// Runs a loaded program on this thread: once, or, where which of several tasks' messages comes
 /// next hangs on time, once for each order, depth first, each of which has to print the same and
-/// end the same.
+/// end the same. The orders share `most_steps`, each run taking what the runs before it left, so
+/// a program whose every order is a long run is refused within the one budget, not 256 of them.
 fn run_here(program: &'static Program, most_steps: u64, workdir: &Workdir) -> Outcome {
     let mut script = Vec::new();
     let mut first: Option<Outcome> = None;
+    let mut left = most_steps;
     for tried in 0..MOST_ORDERS {
-        let (outcome, mut made) = run_once(program, most_steps, workdir, script, tried > 0);
+        let (outcome, mut made, used) = run_once(program, left, workdir, script, tried > 0);
         if matches!(outcome.ended, Ended::Unsupported(_)) {
+            // Out of steps on a later order is the orders' cost together, not a run that's stuck.
+            if tried > 0 && used > left {
+                return Outcome::unsupported(format!(
+                    "ran out of steps across {} orders of its tasks' messages",
+                    tried + 1
+                ));
+            }
             return outcome;
         }
+        left = left.saturating_sub(used);
         match &first {
             None => first = Some(outcome),
             Some(seen) if seen.stdout != outcome.stdout || seen.ended != outcome.ended => {
@@ -164,14 +174,15 @@ fn first_difference(one: &Outcome, other: &Outcome) -> String {
 }
 
 /// One run, making the choices of `script` where messages could come in more than one order,
-/// and giving back the choices it made. `quiet` keeps standard error to the first run.
+/// and giving back the choices it made and the steps it took. `quiet` keeps standard error to the
+/// first run.
 fn run_once(
     program: &'static Program,
     most_steps: u64,
     workdir: &Workdir,
     script: Vec<usize>,
     quiet: bool,
-) -> (Outcome, Vec<(usize, usize)>) {
+) -> (Outcome, Vec<(usize, usize)>, u64) {
     let shared = Arc::new(interp::Shared::new(program, most_steps, workdir));
     shared.quiet.store(quiet, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut orders) = shared.sched.orders.lock() {
@@ -208,7 +219,7 @@ fn run_once(
         (_, Ended::Unsupported(why)) | (Some(why), _) => Outcome::unsupported(why),
         (None, ended) => Outcome { stdout, ended },
     };
-    (outcome, made)
+    (outcome, made, shared.steps_taken())
 }
 
 /// What the program says on standard error as it stops: the message, pointing at where.

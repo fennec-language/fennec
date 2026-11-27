@@ -114,10 +114,10 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
             define_named(item, layouts, out);
             let fields = vec![
                 field("items", &Type::List(item.clone())),
-                field("generations", &Type::List(Box::new(Type::Int))),
+                // The tag of the `Id` each slot last handed out, or 0 where its item was taken out.
+                field("slots", &Type::List(Box::new(Type::Int))),
                 field("live", &Type::Int),
                 field("free_from", &Type::Int),
-                field("tag", &Type::Int),
             ];
             out.insert(format!("Table[{item}]"), Written::Struct(fields));
         }

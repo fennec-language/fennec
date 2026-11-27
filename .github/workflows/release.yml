@@ -5,7 +5,8 @@ name: Release
 # what goes in an archive builds them too, and tries each one with no toolchain around, but only
 # a tag publishes. Each night, and when it's started by hand, it also installs each archive
 # through the launcher and uses it for everything a person would, so a release can't quietly
-# stop working between tags.
+# stop working between tags. Started by hand on a tag that's been signed, it puts the launcher up
+# at https://dl.fennec-lang.dev, once Chris approves: see the `upload` job.
 on:
   push:
     tags: ["v*"]
@@ -208,10 +209,12 @@ jobs:
           subject-path: |
             ${{ env.ARCHIVE }}
             ${{ env.LAUNCHER_ARCHIVE }}
+      # A tag run keeps its archives and manifest 14 days, since its `upload` job uploads them only
+      # once Chris approves it, which may be days later. Other runs keep them 1 day.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.copy }}-${{ matrix.platform.target }}
-          retention-days: 1
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/v') && 14 || 1 }}
           path: |
             ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.ARCHIVE }}
             ${{ matrix.copy == 'rebuild' && 'second-copy/' || '' }}${{ env.LAUNCHER_ARCHIVE }}
@@ -255,7 +258,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manifest
-          retention-days: 1
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/v') && 14 || 1 }}
           path: manifest
 
   # A dry run of a release, as a person gets one: the launcher's archive unpacked, and the
@@ -342,9 +345,10 @@ jobs:
           done
           exit "$differ"
 
+  # Pushing a tag publishes it. A run started by hand on a tag that's published already doesn't.
   publish:
     name: Publish the release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build, manifest, reproducible, dry-run]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -365,3 +369,59 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --generate-notes --prerelease
+
+  # The launcher goes up to the bucket `fennec self update` reads, https://dl.fennec-lang.dev,
+  # only from a run started by hand on a tag, after the person signing has rebuilt it and put the
+  # launcher manifest's `.sig` on the release (docs/releases.md). The `release` environment asks
+  # Chris first, and holds the bucket's token. The token is tried before anything else, writing
+  # nothing. Nothing goes up unless the release keys built into `fennec-dist` signed the manifest,
+  # and it's the manifest this run built from the tag, byte for byte, after the run's own
+  # built-twice check and dry run passed: see `.github/scripts/release-upload.sh`. Uploading is last.
+  upload:
+    name: Upload the launcher to dl.fennec-lang.dev
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
+    needs: [manifest, reproducible, dry-run]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install rclone, pinned by version and hash
+        run: .github/scripts/release-upload.sh install
+      - name: The bucket's token lists the bucket, writing nothing
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: .github/scripts/release-upload.sh check
+      - name: Install the toolchain `rust-toolchain.toml` names
+        run: rustup toolchain install
+      # It checks the signatures against the release keys built in, as the launcher does.
+      - run: cargo build --release --locked -q -p fennec-dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: built
+          pattern: release-*
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: manifest
+          path: built
+      - name: Fetch what the signer put on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir signed
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir signed \
+            --pattern "fennec-launcher-$GITHUB_REF_NAME.manifest" --pattern "fennec-launcher-$GITHUB_REF_NAME.manifest.sig" || true
+          ls -l signed
+      - name: Upload the launcher, if it's signed
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: .github/scripts/release-upload.sh upload "${GITHUB_REF_NAME#v}" built signed

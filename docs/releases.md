@@ -71,6 +71,24 @@ Print the private key, then destroy the file. Each `.pub` file's line goes in `R
 
 A launcher release is signed the same way in the `fennec-launcher` namespace, by two of the keys. The two signatures go one after the other in one `.sig` file.
 
+### Putting the launcher up
+
+Toolchains are fetched from the GitHub release. The launcher is fetched from the bucket `fennec-dl`, served at `https://dl.fennec-lang.dev`. Once `fennec-launcher-v0.4.2.manifest.sig` is on the release, start the release workflow by hand on the tag:
+
+```bash
+gh workflow run release.yml --ref v0.4.2
+```
+
+It builds the tag again, and its `upload` job waits for Chris to approve the `release` environment, which holds the bucket's token. Before anything else, it lists the bucket, writing nothing, so a wrong token fails there. Then it uploads only when all of these hold, and otherwise fails saying which one didn't:
+- the release has the `.sig`;
+- the release keys built into `fennec-dist` signed the manifest as the launcher needs;
+- the manifest is the one this run built, byte for byte;
+- the run's own `Built twice, the same` check and dry run passed.
+
+The archives it uploads are the ones that run built, kept 14 days for this, so approve it within 14 days. After that, the upload fails for want of them, uploading nothing, and a new run on the tag builds them again.
+
+It puts the archives, the manifest and its `.sig` under `launcher/v0.4.2/`, never replacing a file already there with other bytes. It moves `latest` last, and never to an older launcher. Then it reads both back from `https://dl.fennec-lang.dev`. Until there are release keys, nothing can verify, so it uploads nothing. The script is `.github/scripts/release-upload.sh`.
+
 ### What the rebuild checks
 
 The rebuild is what shows a release is its tag's source and nothing else, since it doesn't run on GitHub's machines. It builds what the signing machine runs without emulation:

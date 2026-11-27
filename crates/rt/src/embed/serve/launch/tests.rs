@@ -509,6 +509,34 @@ fn a_stop_ends_a_wait_for_a_packet_by_a_task_that_cant_park() {
     finish();
 }
 
+static STACKLESS_LOOKUP: AtomicI64 = AtomicI64::new(0);
+
+/// Waits a minute for a name's lookup whose name server never answers, where it can't park.
+extern "C" fn looks_up_without_a_stack(_env: i64, _thread: i64) -> i64 {
+    let minute = Duration::from_secs(60);
+    let looked = crate::stdlib::net::looked_up_by("stopped.stalls.test", 80, Instant::now() + minute, minute);
+    STACKLESS_LOOKUP.store(stackless_wait(looked.is_err()), Ordering::SeqCst);
+    ENDED
+}
+
+/// A stop ends a wait for a name's lookup by a task that can't park, which waits for the lookups'
+/// pool to answer holding its thread. Nothing woke that wait, so the task waited out its
+/// connect's timeout (#1803).
+#[test]
+fn a_stop_ends_a_wait_for_a_lookup_by_a_task_that_cant_park() {
+    use crate::stdlib::net::tests::stalls;
+    let _alone = stalls::one_at_a_time();
+    begin();
+    let task = launch_on(stackless(), looks_up_without_a_stack, 0);
+    assert_ne!(task, 0);
+    let took = stopped_or_released(task, || stalls::let_go("stopped.stalls.test"));
+    // The lookup, if the lookups' pool began it before the task gave up, ends unread.
+    stalls::let_go("stopped.stalls.test");
+    assert_eq!(STACKLESS_LOOKUP.load(Ordering::SeqCst), 1, "the stop didn't end the lookup");
+    assert!(took < Duration::from_secs(5), "the stop took {took:?}");
+    finish();
+}
+
 static READ_THROUGH_A_COPY: AtomicI64 = AtomicI64::new(0);
 static SILENT_TO_A_COPY: AtomicI64 = AtomicI64::new(0);
 

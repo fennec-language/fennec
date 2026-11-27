@@ -2408,8 +2408,9 @@ impl Drop for BlockedRead {
 }
 
 /// Ends the read the launched task with this stop is blocked in, if it's in one, by shutting its
-/// socket: the read then finds the task stopped. Then wakes every wait it's in in a poll of its
-/// thread's own, for a connection, a listener or a UDP socket, which then finds it stopped too.
+/// socket: the read then finds the task stopped. A wait in a poll of its thread's own, for a
+/// listener or a UDP socket, is noted as a held wait, which the stop wakes too
+/// (`threads::wake_held_waits`).
 #[cfg(any(test, feature = "threads"))]
 pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
     let stop = Arc::as_ptr(stop).addr();
@@ -2419,49 +2420,6 @@ pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
         // A read waiting in a poll of its thread's own is told, as a poll isn't told of a
         // shutdown from this side on every system.
         wake_waits(stream);
-    }
-    drop(blocked);
-    let waits = OWN_POLL_WAITS.lock().unwrap_or_else(PoisonError::into_inner);
-    for (_, _, waker) in waits.iter().filter(|(task, ..)| *task == stop) {
-        // A waker that can't wake leaves the wait to its deadline, as before there was one.
-        let _ = waker.wake();
-    }
-}
-
-/// The waits launched tasks are in in a poll of their threads' own, each by its task's stop and
-/// its wait's number, with the poll's waker. A task that can't park waits this way on a listener
-/// or a UDP socket, holding its thread, so nothing run there can end the wait: its stop wakes it.
-#[cfg(any(test, feature = "threads"))]
-static OWN_POLL_WAITS: Mutex<Vec<(usize, u64, Arc<mio::Waker>)>> = Mutex::new(Vec::new());
-
-/// A launched task's wait in a poll of its thread's own, noted under its stop while it lasts.
-#[cfg(any(test, feature = "threads"))]
-struct StoppableWait {
-    noted: Option<(usize, u64)>,
-}
-
-#[cfg(any(test, feature = "threads"))]
-impl StoppableWait {
-    /// Notes wait `number`, woken by `waker`, under this task's stop, if this is a task's.
-    fn noted(number: u64, waker: &Arc<mio::Waker>) -> StoppableWait {
-        let stop = crate::embed::threads::task_stop().map(|stop| Arc::as_ptr(&stop).addr());
-        if let Some(stop) = stop {
-            let note = (stop, number, Arc::clone(waker));
-            OWN_POLL_WAITS.lock().unwrap_or_else(PoisonError::into_inner).push(note);
-        }
-        StoppableWait { noted: stop.map(|stop| (stop, number)) }
-    }
-}
-
-#[cfg(any(test, feature = "threads"))]
-impl Drop for StoppableWait {
-    fn drop(&mut self) {
-        if let Some((stop, number)) = self.noted {
-            let mut waits = OWN_POLL_WAITS.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(at) = waits.iter().position(|(task, wait, _)| *task == stop && *wait == number) {
-                waits.swap_remove(at);
-            }
-        }
     }
 }
 
@@ -2564,7 +2522,9 @@ fn own_poll_wait(
         }
         // Noted under its stop first, and then a look at whether it's stopped already, as a stop
         // that came before the note woke nobody: a stop either finds the note or is seen here.
-        let stoppable = StoppableWait::noted(wait, &own.waker);
+        let waker = Arc::clone(&own.waker);
+        // A waker that can't wake leaves the wait to its deadline, as before a stop woke it.
+        let stoppable = crate::embed::threads::HeldWait::noted(Arc::new(move || drop(waker.wake())));
         let closed = noted.is_some_and(|(closed, _)| closed.load(Ordering::SeqCst));
         if !closed && !crate::embed::threads::stopped() {
             let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));

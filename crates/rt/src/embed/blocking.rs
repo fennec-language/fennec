@@ -256,6 +256,9 @@ pub(super) fn taken<R>(held: &mut Slot<R>) -> Option<R> {
 /// finishes it all the same, and its answer is dropped, and one that waited its turn past the
 /// deadline isn't made at all. If no thread can be started, it's run here, as it was.
 ///
+/// A launched task waiting here gives up when it's stopped, failing as stopped, as its stop wakes
+/// it. It once waited out its deadline (#1803).
+///
 /// It once ran on a thread of its own, started for each lookup, so a burst of them against a name
 /// server that never answers started as many threads as there were lookups (#1826). Before that,
 /// it ran here, past the connect's own timeout.
@@ -282,11 +285,29 @@ pub(crate) fn waited_until<R: Send + 'static>(
             job();
         }
     }
+    // A launched task's stop wakes it, as nothing run on its thread can while it waits here.
+    #[cfg(any(test, feature = "threads"))]
+    let _stoppable = {
+        let waking = Arc::clone(&waited);
+        super::threads::HeldWait::noted(Arc::new(move || {
+            let (slot, answered) = &*waking;
+            // Taken, so the wake can't come between its waiter's look at the stop and its wait.
+            let _held = slot_of(slot);
+            answered.notify_all();
+        }))
+    };
     let (slot, answered) = &*waited;
     let mut held = slot_of(slot);
     loop {
         if let Some(done) = taken(&mut held) {
             return Some(done);
+        }
+        #[cfg(any(test, feature = "threads"))]
+        if super::threads::stopped() {
+            *held = Slot::GaveUp;
+            drop(held);
+            super::serve::fail_as_stopped();
+            return None;
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {

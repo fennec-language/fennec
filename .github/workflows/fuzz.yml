@@ -117,9 +117,9 @@ jobs:
               # The runtimes with the heap's audit in them, beside `fennec`, which `http-audited`'s
               # server is built with, under FENNEC_AUDIT=1, so its heap is audited as it ends.
               for features in audit threads,audit; do
-                dir="target/$(echo "$features" | tr , -)"
+                dir="target/${features//,/-}"
                 cargo build --release --locked -p fennec-runtime --features "$features" --target-dir "$dir"
-                cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_$(echo "$features" | tr , _).a"
+                cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_${features//,/_}.a"
               done
             fi
             if [[ " $ONLY " == *" fault-writes "* ]]; then

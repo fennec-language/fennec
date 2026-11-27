@@ -12199,6 +12199,21 @@ def main(stdout: Stdout):
     stdout.print(run(Back(width=1)))
 "#;
 
+/// A function that can't fail, given where one that `fails E` goes, runs as itself: through a
+/// generic whose `E` is then nothing, whose `?` and `except` have nothing to leave with or take,
+/// through a named error's parameter and a field, and with `E` bound by `Worded`. One that does
+/// fail, given beside it, still fails as it says. What it prints is what the reference evaluator
+/// prints (`a_function_that_cant_fail_runs_where_one_that_fails_goes`).
+#[test]
+fn a_function_that_cant_fail_runs_where_one_that_fails_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by("no_fail_fits_fails", include_str!("fixtures/no_fail_fits_fails.fen"))?;
+    assert_eq!(printed, include_str!("fixtures/no_fail_fits_fails.out"));
+    Ok(())
+}
+
 /// A type parameter named only in a parameter's type, as `E` is in `make: () -> T fails E`: a
 /// generic source written in where it's used doesn't know it, and a call to a generic function
 /// learns it from the function it's given.

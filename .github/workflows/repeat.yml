@@ -137,10 +137,12 @@ jobs:
           # build` of the runtime needs it: cargo compiles a crate from the registry in that crate's
           # folder, where there's no rust-toolchain.toml, so rustup would take its default instead,
           # another Rust, and rebuild everything with it, and fail.
+          # Read first, so a rustup that fails fails the step, rather than naming no toolchain.
+          toolchain=$(rustup show active-toolchain | cut -d ' ' -f 1)
           {
             echo "TEST_BINARY=$PWD/$binary"
             echo "PACKAGE_FOLDER=$(dirname "$folder")"
-            echo "RUSTUP_TOOLCHAIN=$(rustup show active-toolchain | cut -d ' ' -f 1)"
+            echo "RUSTUP_TOOLCHAIN=$toolchain"
           } >> "$GITHUB_ENV"
       # On Windows, a program that crashes as it runs is caught where it crashed: the debugger, `cdb`,
       # set as the one Windows starts on a crash, writes each thread's stack and a full dump into

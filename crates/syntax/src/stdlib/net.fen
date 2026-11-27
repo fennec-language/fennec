@@ -661,12 +661,10 @@ def read_request(
     for at in range(1, len(lines)):
         line = lines[at]
         split = header_colon(line)
-        colon = split.colon
-        if colon < 0: return .Bad(status=400, reason=header_fault(line))
-        # The name and the value are read where they are in the line, each cut out once, and the
-        # name made lower only when it has a capital.
-        name = text_part(line, 0, colon).lower() if split.capital else text_part(line, 0, colon)
-        value = value_after(line, colon)
+        if split.colon < 0: return .Bad(status=400, reason=header_fault(line))
+        # The name and the value are read where they are in the line, each cut out once.
+        name = header_name(line, split)
+        value = value_after(line, split.colon)
         # Two of these would let two servers read two different requests from the same bytes. Only
         # they're looked for before they're set, so any other header is looked up once.
         match name:
@@ -885,6 +883,13 @@ def is_token_byte(byte: int) -> bool:
         or byte == 124
         or byte == 126
     )
+
+## The name of `line`, a header line `header_colon` split, in lower case: cut out once, and made
+## lower only when it has a capital, as a name already lower, like one HTTP/2 sends, needs nothing
+## more.
+def header_name(line: str, split: HeaderSplit) -> str:
+    name = text_part(line, 0, split.colon)
+    return name.lower() if split.capital else name
 
 ## What follows `colon` in `line`, a header's value, with the spaces and tabs around it left out,
 ## as HTTP has them: cut out once, where `strip` cut it out and then again.

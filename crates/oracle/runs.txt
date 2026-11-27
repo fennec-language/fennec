@@ -1,6 +1,6 @@
 # The examples the oracle runs, each held to its .out file by tests/examples.rs, so coverage
-# can't go down without a word. `fennec-oracle coverage` lists every example it runs: add the
-# new ones here.
+# can't go down without a word. Every example is in this list, never.txt, excluded.txt or
+# gaps.txt, so a new one the oracle runs goes here: `fennec-oracle coverage` lists them.
 args_and_stdin.fen
 arithmetic.fen
 arrays.fen
@@ -13,7 +13,9 @@ builtins.fen
 bytes.fen
 calculator.fen
 case_guards.fen
+channel_drop_oldest.fen
 channel_to_every.fen
+channel_waits.fen
 collections.fen
 collections_equality.fen
 collections_more.fen
@@ -60,6 +62,7 @@ functions_more.fen
 functions_passed.fen
 game.fen
 game_math.fen
+game_math_f32.fen
 generators.fen
 generators_fused.fen
 generic_methods.fen
@@ -93,8 +96,11 @@ loops.fen
 match_all_leave.fen
 matching.fen
 method_chains.fen
+multiline_strings.fen
 narrowed_net_and_fs.fen
+narrowing_fields.fen
 nested_functions_native.fen
+notes_added.fen
 numbers.fen
 object_receivers.fen
 operators.fen
@@ -116,6 +122,7 @@ path_inside_windows.fen
 postgres_auth.fen
 postgres_messages.fen
 postgres_query.fen
+postgres_strict.fen
 projects/aliases
 projects/arena
 projects/cases
@@ -134,6 +141,7 @@ sets_native.fen
 shared_accounts.fen
 shared_bank.fen
 signals.fen
+sized_numbers.fen
 sorted_native.fen
 sources.fen
 std_base64.fen
@@ -203,5 +211,6 @@ unions.fen
 values.fen
 vectors.fen
 where_rules.fen
+with_several.fen
 word_counts.fen
 write_it_there.fen

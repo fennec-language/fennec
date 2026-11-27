@@ -824,8 +824,16 @@ impl Emit<'_, '_, '_> {
         let parts = self.parts(&kind)?;
         let (block, _) = self.operand(&Operand::Local(map))?;
         let (_, tags) = self.part(&block, parts.slots, false);
-        let (next_place, slot_place, word_place) =
-            (self.place_for(&Kind::Int), self.place_for(&Kind::Int), self.place_for(&Kind::Int));
+        let next_place = self.place_for(&Kind::Int);
+        // Where the walk is, for its pair's parts: one pair of slots for the item's local,
+        // wherever it's walked to, as the blocks aren't written in the order they run.
+        let (slot_place, word_place) = if let Some(places) = self.walks.get(&dest.0) {
+            places.clone()
+        } else {
+            let places = (self.place_for(&Kind::Int), self.place_for(&Kind::Int));
+            self.walks.insert(dest.0, places.clone());
+            places
+        };
         let (count, _) = self.operand(index)?;
         let (saved, first, start) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{saved} = load i64, ptr {next_place}"));
@@ -850,7 +858,6 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {step}, ptr {next_place}"));
         self.line(&format!("store i64 {at}, ptr {slot_place}"));
         self.line(&format!("store i64 {word}, ptr {word_place}"));
-        self.walks.insert(dest.0, (slot_place, word_place));
         if self.known.walk_items.get(&dest.0).is_some_and(|(_, pair)| *pair) {
             // Holding nothing, letting go of it lets go of nothing.
             let (held, text) = (self.slot(dest), self.text_of(&self.kind_of(dest)?.clone()));
@@ -1040,10 +1047,15 @@ impl Emit<'_, '_, '_> {
         // Kept in a slot, so the put-back can read it wherever it is: a register only where
         // LLVM sees the read come first.
         if alone {
-            let slot = self.label("%taken");
-            let _ = writeln!(self.allocas, "  {slot} = alloca ptr");
+            let slot = if let Some(slot) = self.taken_places.get(&dest) {
+                slot.clone()
+            } else {
+                let slot = self.label("%taken");
+                let _ = writeln!(self.allocas, "  {slot} = alloca ptr");
+                self.taken_places.insert(dest, slot.clone());
+                slot
+            };
             self.line(&format!("store ptr {at}, ptr {slot}"));
-            self.taken_places.insert(dest, slot);
         }
         self.read_into(dest, &held, &at, ITEM_ACCESS)
     }

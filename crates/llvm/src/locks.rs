@@ -233,7 +233,7 @@ impl Emit<'_, '_, '_> {
         self.proof_nothing_out(handle, "nothing is out of its place when a lock's block ends");
         let (word, cell, plain) = self.lock_word(handle)?;
         // A `lock ... as ref` block ending normally keeps what it changed.
-        if self.saves_changes(handle) && !self.take_rolled_back(handle) {
+        if self.saves_changes(handle) && !self.rolled_back(handle) {
             self.rollback_kept(handle);
         } else if self.read_lock_given_back(handle) {
             self.note_read_lock(handle, false);
@@ -365,7 +365,7 @@ impl Emit<'_, '_, '_> {
         }
         // Each `lock ... as ref` among them ending normally keeps what it changed.
         for handle in handles.iter().rev() {
-            if self.saves_changes(handle) && !self.take_rolled_back(handle) {
+            if self.saves_changes(handle) && !self.rolled_back(handle) {
                 self.rollback_kept(handle);
             } else if self.read_lock_given_back(handle) {
                 self.note_read_lock(handle, false);

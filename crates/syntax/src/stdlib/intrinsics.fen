@@ -224,6 +224,13 @@ export def id_of_key[T](key: int, tag: int) -> Id[T]
 @intrinsic
 export def stop(message: str)
 
+## Writes `text` as one line on standard error, as the runtime writes a crash's report, from any
+## thread and never run into another's line: its line breaks, control characters and
+## backslashes escaped, and at most 1,024 bytes of it, then `…`. For std's own traces, as a
+## server's handler that failed when no `Log` was given.
+@intrinsic
+export def report(text: str)
+
 ## A new channel holding up to `size` messages, by its number.
 @intrinsic
 export def channel_new(size: int) -> int

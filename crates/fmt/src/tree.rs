@@ -42,11 +42,13 @@ pub(crate) struct Group<'a> {
 /// When a list's last item gets a comma after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Comma {
-    /// Never, because the parser wouldn't take one there: after a comprehension, or in an index.
+    /// Never: after a comprehension, where the parser wouldn't take one, or in an index written
+    /// without one, where one would make `xs[t]` the tuple index `xs[(t,)]`.
     Never,
     /// When the list is broken across lines.
     WhenBroken,
-    /// Always, even on one line: a one-item tuple, where the comma makes it a tuple.
+    /// Always, even on one line: a one-item tuple, where the comma makes it a tuple, as in `(t,)`
+    /// and the index `xs[t,]`, which is `xs[(t,)]`.
     Always,
 }
 
@@ -140,7 +142,12 @@ impl<'t, 'a> Line<'t, 'a> {
         if item.flat.is_none_or(|width| width <= room) {
             return item;
         }
-        self.wrap_range().map_or(item, |(from, to)| self.wrapped(from, to))
+        // Only when what comes before the expression fits on its line with `(`: when that breaks too,
+        // as a long target `xs["…"] = 1 / x` does, the expression may fit after it, and the
+        // parentheses would go on one line when formatted again.
+        self.wrap_range()
+            .filter(|&(from, _)| self.item(0, from, false).0.flat.is_some_and(|width| width + 2 <= room))
+            .map_or(item, |(from, to)| self.wrapped(from, to))
     }
 
     /// The expression a too-long statement can wrap in parentheses: an assignment's value,
@@ -165,7 +172,15 @@ impl<'t, 'a> Line<'t, 'a> {
         let first = self.toks.first()?;
         let len = self.toks.len();
         let (from, to) = match first.text {
-            "return" | "assert" | "fail" | "yield" if first.kind == TokenKind::Keyword => (1, len),
+            "return" | "fail" | "yield" if first.kind == TokenKind::Keyword => (1, len),
+            // Not with `fails`: `assert (a == b fails E)` doesn't parse, and `assert (a == b) fails E`
+            // with a long `E` would break again differently. Its brackets break as anywhere else.
+            "assert" if first.kind == TokenKind::Keyword => {
+                if (2..len).any(|at| top(at) && self.text(at) == "fails") {
+                    return None;
+                }
+                (1, len)
+            }
             "if" | "elif" | "while" if first.kind == TokenKind::Keyword => {
                 (1, len.checked_sub(1).filter(|&last| self.text(last) == ":")?)
             }
@@ -321,7 +336,12 @@ impl<'t, 'a> Line<'t, 'a> {
         let bracket = self.brackets.get(open).copied().flatten().unwrap_or(Bracket::Paren);
         group.comma = comma(bracket, group.items.len(), ends_with_comma, has_for);
         group.flat = group_flat(&group);
-        group.literals = group.items.len() > 1 && group.items.iter().all(is_literal);
+        // A list with a comment of its own, after the `[` or the last item, goes one item a line, as
+        // filling its lines would leave the comment out.
+        group.literals = group.items.len() > 1
+            && group.items.iter().all(is_literal)
+            && group.open_comment.is_none()
+            && group.dangling.is_empty();
         (group, at)
     }
 }
@@ -359,7 +379,7 @@ fn comma(bracket: Bracket, items: usize, ends_with_comma: bool, has_for: bool) -
         Bracket::Paren => items > 1 || ends_with_comma,
         Bracket::LambdaParams | Bracket::Index | Bracket::Generics => ends_with_comma,
     };
-    if bracket == Bracket::Paren && items == 1 && ends_with_comma {
+    if matches!(bracket, Bracket::Paren | Bracket::Index) && items == 1 && ends_with_comma {
         Comma::Always
     } else if allowed {
         Comma::WhenBroken

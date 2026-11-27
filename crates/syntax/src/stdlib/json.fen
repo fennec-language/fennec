@@ -1259,8 +1259,11 @@ struct JsonReader:
 
     def map[K: Deserializable, V: Deserializable](ref self) -> list[(K, V)] fails ParseError:
         b = self._space()
-        if b == 91: return self._pairs[K, V]()?
-        if b != 123: fail self._misfit(f"dict[{type_name[K]()}, {type_name[V]()}]")
+        key_type = type_name[K]()
+        # Only a dict whose keys can't be an object's is written as `[key, value]` pairs, as
+        # `JsonKey` has it: one with text or int keys is always an object, so pairs aren't one.
+        if b == 91 and key_type != "str" and key_type != "int": return self._pairs[K, V]()?
+        if b != 123: fail self._misfit(f"dict[{key_type}, {type_name[V]()}]")
         self._at += 1
         self._depth += 1
         if self._depth > JSON_MOST_DEEP: fail no_reason()

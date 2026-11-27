@@ -1126,16 +1126,25 @@ pub extern "C" fn clear(list: i64) {
 
 /// Moves the items after `at`, a place in words past the header, one place down, and gives up
 /// the list's owner of the item that was there, if it has one. The list has one owner.
+///
+/// Nothing changes unless `at` is where one of the list's items starts. A place in the header, as
+/// an item's address before the list's gives, would move the header's own words and zero its
+/// length; one partway into an item would let go of a word of one item and a word of the next as
+/// if they were one.
 fn close_up(state: &mut State, address: u64, at: usize) -> Option<()> {
     let block = state.heap.block(address)?;
     let element = element_of(state, block)?;
     let stride = element.words();
     let end = LIST_HEADER_WORDS + items(block, stride).len();
+    if at.checked_sub(LIST_HEADER_WORDS)?.checked_rem(stride)? != 0 || at.checked_add(stride)? > end {
+        return None;
+    }
     let removed = block.get(at..at + stride)?.to_vec();
     let block = state.heap.block_mut(address)?;
     block.get_mut(at..end)?.copy_within(stride.., 0);
     block.get_mut(end - stride..end)?.fill(0);
-    *block.get_mut(2)? -= 1;
+    let length = block.get_mut(2)?;
+    *length = length.checked_sub(1)?;
     release_items(state, &element, &removed);
     Some(())
 }

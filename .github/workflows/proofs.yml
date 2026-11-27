@@ -32,6 +32,13 @@ env:
   CARGO_TERM_COLOR: always
   FENNEC_CHECK_PROOFS: "1"
 
+# Every step runs in bash with `pipefail`, so a step that pipes what it runs through `tee` fails
+# when what it ran does, and its "Keep what was found" and "File an issue" steps run. Without it
+# the step took `tee`'s exit, and every failure found from 10-31 to 11-26 was dropped.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   proofs:
     name: Every proof checked
@@ -158,7 +165,9 @@ jobs:
             [ -f report.md ] && cat report.md
             echo
             echo "## Fuzzing"
-            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck|the oracle ran" fuzz.txt programs.txt oracle-share.txt audited.txt audited-replay.txt 2>/dev/null | sed 's/^/- /'
+            # A step skipped leaves no file, and a grep that finds nothing exits 1: neither stops
+            # the report, which `pipefail` would otherwise.
+            { grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck|the oracle ran" fuzz.txt programs.txt oracle-share.txt audited.txt audited-replay.txt 2>/dev/null || true; } | sed 's/^/- /'
           } > nightly.md
           cat nightly.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the report
@@ -234,7 +243,8 @@ jobs:
             echo "ThreadSanitizer reported a data race, or a program under it printed something different, in the nightly run."
             echo
             echo '```'
-            grep -A40 "::error::" tsan.txt | head -200
+            # `head` stopping early ends grep by SIGPIPE, which mustn't stop the issue being filed.
+            grep -A40 "::error::" tsan.txt | head -200 || true
             echo '```'
             echo
             echo "What fuzzing found, and the whole output, are in the run's \`tsan-found\` artifact."
@@ -375,7 +385,8 @@ jobs:
             echo "Miri found undefined behavior or a deadlock in the runtime's tests, in shard $SHARD of the nightly run, with \`-Zmiri-seed=$MIRI_SEED\`."
             echo
             echo '```'
-            grep -A80 "::error::" miri.txt | head -200
+            # `head` stopping early ends grep by SIGPIPE, which mustn't stop the issue being filed.
+            grep -A80 "::error::" miri.txt | head -200 || true
             echo '```'
             echo
             echo "To run one again: \`MIRI_SEED=$MIRI_SEED MIRI_ONLY='<its name>' .github/scripts/miri.sh report.md\`."

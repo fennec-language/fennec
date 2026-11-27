@@ -113,7 +113,10 @@ jobs:
           # Ubuntu, `fennec` needed glibc 2.39, and the runtime 2.38 to link a program.
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, container: "almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b" }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, container: "almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b" }
-          - { os: macos-latest, target: aarch64-apple-darwin }
+          # Each Mac is built with the Xcode `release-env.sh` pins, and fails if its image hasn't
+          # it. The Arm Mac's is the signing Mac's, 27.2, so a rebuild before signing checks it
+          # too (`rebuild-release.sh`); GitHub's `xcode-27` image has it.
+          - { os: xcode-27, target: aarch64-apple-darwin }
           # On an Intel Mac, so its archive is tried on the machine it's for.
           - { os: macos-15-intel, target: x86_64-apple-darwin }
           # Programs link with LLD and MinGW-w64's libraries there: see `.github/scripts/windows.sh`.

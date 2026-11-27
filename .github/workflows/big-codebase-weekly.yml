@@ -49,5 +49,6 @@ jobs:
         if: always()
         with:
           name: big-codebase-weekly
+          retention-days: 14
           path: big-codebase-weekly.md
           if-no-files-found: ignore

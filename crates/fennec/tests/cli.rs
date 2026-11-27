@@ -865,11 +865,18 @@ fn run_takes_a_kits_folder() {
 
 /// Whether `fennec run` builds through LLVM here: LLVM's tools are found, and
 /// the runtime library is beside the `fennec` these tests run, which is where `fennec run`
-/// looks. Under coverage, `fennec` is built somewhere else, without one.
+/// looks. Under coverage, `fennec` is built somewhere else, without one. Where
+/// `FENNEC_EXPECT_LLVM` is set, what's missing fails the test (fennec#2557).
 fn llvm_ready_for_run() -> bool {
-    fennec_llvm::Tools::find().is_ok()
-        && crate::executables::runtime_built()
-        && crate::executables::runtime_beside_fennec()
+    if !crate::llvm::ready() {
+        return false;
+    }
+    let beside = crate::executables::runtime_beside_fennec();
+    assert!(
+        beside || !crate::llvm::llvm_expected(),
+        "FENNEC_EXPECT_LLVM is set, but there's no runtime library beside `fennec`"
+    );
+    beside
 }
 
 /// A conversion to the type a value has already gives it back. The linter takes these out of the examples, since they change nothing.
@@ -5745,18 +5752,7 @@ test \"the word isn't broken\":\n    assert word() != \"broken\"\n"
     let app = dir.join("app");
     let manifest = "[dependencies]\nfirst = { path = \"../first\" }\n";
     write_kit(&app, "app", manifest, &[("main.fen", &main(""))]).unwrap();
-    let ran = || {
-        crate::executables::fennec_command()
-            .arg("run")
-            .current_dir(&app)
-            .env("FENNEC_HOME", &home)
-            .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
-            .env_remove("FENNEC_NO_DAEMON")
-            .env_remove("FENNEC_NO_CACHE")
-            .env("FENNEC_DAEMONS", crate::executables::daemons_of(&home))
-            .output()
-            .unwrap()
-    };
+    let ran = || run_held(&app, &home, &[]).unwrap();
     let first = ran();
     let lint = text(&first.stderr);
     assert!(lint.contains("short-name"), "{lint}");
@@ -5836,6 +5832,8 @@ fn run_held(dir: &Path, home: &Path, args: &[&str]) -> std::io::Result<Output> {
         .env("FENNEC_DAEMON_IDLE", DAEMON_IDLE)
         .env_remove("FENNEC_NO_DAEMON")
         .env_remove("FENNEC_NO_CACHE")
+        // Under CI, a command does its work itself, with no daemon (`daemon::served`).
+        .env_remove("CI")
         .env("FENNEC_DAEMONS", crate::executables::daemons_of(home))
         .output()
 }
@@ -6590,13 +6588,27 @@ fn a_daemon_build_knows_its_objects_till_a_cleanup_takes_any() {
 /// `count`, with a test of it. The rule for using a kept analysis again is told to leave the
 /// parameters' ranges out, and the in-build check is off, so `picked`'s analysis kept for a positive
 /// count is used for a negative one, as a release compiler would use a wrong one the rule let
-/// through. Gives back the exit code, what it printed and what it said.
+/// through. Gives back the exit code, what it printed and what it said. It never checks proofs, even
+/// in the nightly run that checks them everywhere: a build checking them stops at the wrong range
+/// it plants, before the check after the build these tests are about can find it.
 #[cfg(unix)]
 fn with_picked(
     kit: &Path,
     home: &Path,
     args: &[&str],
     count: i32,
+) -> std::io::Result<(Option<i32>, String, String)> {
+    with_picked_checking(kit, home, args, count, false)
+}
+
+/// [`with_picked`], and where `checking`, checking every proof.
+#[cfg(unix)]
+fn with_picked_checking(
+    kit: &Path,
+    home: &Path,
+    args: &[&str],
+    count: i32,
+    checking: bool,
 ) -> std::io::Result<(Option<i32>, String, String)> {
     let source = format!(
         "def picked(count: int) -> int:\n    return [5, 6, 7, 8, 9][count]\n\n\
@@ -6609,6 +6621,11 @@ fn with_picked(
     command.env("FENNEC_DAEMON_IDLE", "30").env("FENNEC_CHECK_WHOLE", "0");
     command.env("FENNEC_KEPT_ANALYSIS_RULE_OFF", "ranges").env_remove("CI").env_remove("FENNEC_NO_DAEMON");
     command.env("FENNEC_DAEMONS", crate::executables::daemons_of(home));
+    if checking {
+        command.env("FENNEC_CHECK_PROOFS", "1");
+    } else {
+        command.env_remove("FENNEC_CHECK_PROOFS");
+    }
     let done = command.output()?;
     Ok((done.status.code(), text(&done.stdout), text(&done.stderr)))
 }
@@ -6688,6 +6705,25 @@ fn tests_built_with_a_kept_analysis_found_wrong_run_again() {
     assert_eq!(code, Some(0), "{printed}{said}");
     assert!(said.contains(KEPT_ANALYSIS_NOTE), "{said}");
     assert!(printed.contains("1 passed") && !printed.contains("1 unchanged"), "{printed}");
+}
+
+/// A kept analysis found wrong breaks a proof in a build that checks them: `picked`'s range, kept
+/// for 2 and planted for -2, stops its test at "a parameter is in the range every call gives it"
+/// rather than reading outside the list.
+#[cfg(unix)]
+#[test]
+fn a_kept_analysis_found_wrong_breaks_a_proof_in_a_build_checking_them() {
+    let (_folder, kit, home) = small_kit("kept-analysis-wrong-proofs").unwrap();
+    let _stopped = DaemonsStopped { home: &home };
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let (code, printed, said) = with_picked_checking(&kit, &home, &["test", "."], 2, true).unwrap();
+    assert_eq!(code, Some(0), "{printed}{said}");
+    let (code, printed, said) = with_picked_checking(&kit, &home, &["test", "."], -2, true).unwrap();
+    assert_eq!(code, Some(1), "{printed}{said}");
+    let broken = "proof broken: a parameter is in the range every call gives it";
+    assert!(printed.contains(broken) || said.contains(broken), "{printed}{said}");
 }
 
 /// Two builds of one kit at once through the daemon queue, so neither's output takes in the
@@ -7192,10 +7228,12 @@ fn aged(path: &Path, seconds: u64) -> std::io::Result<()> {
     std::fs::File::options().write(true).open(path)?.set_modified(used)
 }
 
-/// An empty home reads the standard library's parse and the runtime library's stamp from the
-/// toolchain's store, which depend only on this build of Fennec and the library, and keeps
-/// neither itself: the first home to work them out keeps them there for every home after. With the
-/// store turned off, a home works both out again, as every empty home once did.
+/// An empty home reads the standard library's parse and what each runtime library is, its stamp
+/// and the hash of its bytes, from the toolchain's store, which depend only on this build of Fennec
+/// and the libraries, and keeps neither itself: the first home to work them out keeps them there
+/// for every home after. With the store turned off, a home works both out again, as every empty
+/// home once did. Each runtime library beside `fennec` is noted, as a build's key holds each
+/// (#2593).
 #[test]
 fn an_empty_home_reads_std_and_the_runtimes_stamp_from_the_toolchains_store() -> std::io::Result<()> {
     use crate::executables::Within as _;
@@ -7234,18 +7272,23 @@ fn an_empty_home_reads_std_and_the_runtimes_stamp_from_the_toolchains_store() ->
             })
             .sum()
     };
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let runtimes = ["libfennec_runtime.a", "libfennec_runtime_threads.a"]
+        .into_iter()
+        .filter(|name| fennec.with_file_name(name).is_file())
+        .count();
     let first = run("first", &store)?;
     assert_eq!(text(&first.stdout), "hello\n", "{}", text(&first.stderr));
     assert_eq!(
-        (entries(&store, "prelude"), entries(&store, "runtime-stamps")),
-        (1, 1),
+        (entries(&store, "prelude"), entries(&store, "runtime-identities")),
+        (1, runtimes),
         "the first home fills the store"
     );
     let second = run("second", &store)?;
     assert_eq!(text(&second.stdout), "hello\n", "{}", text(&second.stderr));
     let second_home = dir.join("second");
     assert_eq!(
-        (entries(&second_home, "prelude"), entries(&second_home, "runtime-stamps")),
+        (entries(&second_home, "prelude"), entries(&second_home, "runtime-identities")),
         (0, 0),
         "an empty home reads both from the store"
     );
@@ -7253,7 +7296,7 @@ fn an_empty_home_reads_std_and_the_runtimes_stamp_from_the_toolchains_store() ->
     let off = run("off", Path::new(""))?;
     assert_eq!(text(&off.stdout), "hello\n", "{}", text(&off.stderr));
     let off_home = dir.join("off");
-    assert_eq!((entries(&off_home, "prelude"), entries(&off_home, "runtime-stamps")), (1, 1));
+    assert_eq!((entries(&off_home, "prelude"), entries(&off_home, "runtime-identities")), (1, runtimes));
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

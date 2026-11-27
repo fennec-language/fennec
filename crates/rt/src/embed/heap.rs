@@ -91,8 +91,14 @@ pub(crate) struct Heap {
     pub(super) said_left: std::collections::HashSet<u64, BuildHasherDefault<AddressHasher>>,
     /// Whether this thread's string literals were moved where every thread can read them.
     shared_statics: bool,
-    /// Strings' text as a `Value` holds it, made once per block.
+    /// Strings' text as a `Value` holds it, made once per block, for a string that can be freed:
+    /// its free forgets it, since its address can come back as another string.
     pub(super) texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
+    /// The same, for a string that's never freed, as a literal is: kept apart, so a free has
+    /// nothing to forget while only these are held, and doesn't look. Three `where` rules' messages,
+    /// read once each, kept `texts` from ever being empty, and each of the 395,000 strings
+    /// `api_handler` freed looked its address up there.
+    kept_texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
     /// Where a string that isn't ASCII was last read.
     cursor: Cursor,
     /// Generators let go partway, waiting for what closes what they hold.
@@ -527,7 +533,6 @@ pub(super) fn number_to_mark(task: u64, taken: impl Fn(u64) -> bool) -> u64 {
 pub const NEVER_FREED_OWNER: u64 = 0xFFFD;
 
 /// Whether a block is never freed: by its owner, or by a count no thread's owners can reach.
-#[cfg(any(test, feature = "threads", feature = "audit"))]
 pub(super) fn is_never_freed(block: &[u64]) -> bool {
     block.first().is_some_and(|count| *count >= IMMORTAL)
         || block.get(1).is_some_and(|shape| *shape >> OWNER_SHIFT == NEVER_FREED_OWNER)
@@ -794,12 +799,13 @@ fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
     <&mut [u64; N]>::try_from(block).map(|words| *words = [0; N]).is_ok()
 }
 
-/// What [`Heap::take_plain_list`] took: a block that holds nothing, or a list of strings' headers
-/// whose strings may hold blocks, for the caller to let go of.
+/// What [`Heap::take_to_free`] took: a block that holds nothing, a list of strings' headers whose
+/// strings may hold blocks, for the caller to let go of, or any other block, for the walk.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Taken {
     Plain,
     Texts,
+    Walked,
 }
 
 /// Whether every item of a list of strings' headers is inline, holding its text in itself: then
@@ -1520,28 +1526,36 @@ impl Heap {
         usize::try_from(address).is_ok_and(|at| self.lent.as_ref().is_some_and(|lent| lent.get(at).is_some()))
     }
 
-    /// Takes a list out of this thread's own table, not one behind it, if its items hold nothing and
-    /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
-    /// `None`, having taken nothing, for any other block.
+    /// Takes a block whose last owner let it go out of this thread's own table, not one behind it,
+    /// looking it up once, and says what it is: a block that holds nothing (`Taken::Plain`), a
+    /// list of strings' headers for the caller to let go of (`Taken::Texts`), or any other, for the
+    /// walk that frees what it holds (`Taken::Walked`). Lists' shapes start at `first_list`. `None`,
+    /// having taken nothing, when it isn't in this table. A block that wasn't plain was looked up
+    /// again by the walk: 107,000 of `api_handler`'s 464,000 frees.
     ///
-    /// A list of strings' headers is taken too when `texts_here`, which says this thread counts
-    /// every block it can reach, whatever its strings hold: what they hold are strings, which
-    /// hold nothing, and the caller lets go of them (`Taken::Texts`).
-    pub(super) fn take_plain_list(
+    /// A list of strings' headers some of which hold blocks is `Taken::Texts` when this thread
+    /// counts every block it can reach: what they hold are strings, which hold nothing. That's
+    /// asked only of such a list, as every block freed comes here: asked of each, it cost the HTTP
+    /// bench 1% more instructions a request.
+    pub(super) fn take_to_free(
         &mut self,
         at: usize,
         (first_list, str_shape): (u64, u64),
-        texts_here: bool,
     ) -> Option<(Box<[u64]>, Taken)> {
         let (empty_items, text_items) = (&self.empty_items, &self.text_items);
-        let mut taken = Taken::Plain;
+        // `holds_all`, asked of the fields it reads, as the table is borrowed meanwhile.
+        let (lent, reading, behind) = (&self.lent, &self.reading, &self.behind);
+        let texts_here = || {
+            !super::threads::counted_elsewhere() && lent.is_none() && reading.is_empty() && behind.is_empty()
+        };
+        let mut taken = Taken::Walked;
         let block = self.blocks.take_if(at, |block| {
             // A string, which holds no other block, or a list of a kind whose items hold nothing,
             // or one with no items at all, as a list made empty and never added to is, or one of
             // strings' headers all inline, as a `split` into short parts makes. Only a kind of
             // list's shape is looked at: past them are other blocks, like cells, whose third word
-            // means something else.
-            !is_handle_block(block)
+            // means something else. A `shared` value's handle goes to the walk, which puts it back.
+            let plain = !is_handle_block(block)
                 && shape_word(block).is_some_and(|shape| {
                     shape == str_shape
                         || shape
@@ -1556,13 +1570,20 @@ impl Heap {
                                 if !text_items.get(number).is_some_and(|text| *text) {
                                     return false;
                                 }
-                                if texts_here {
+                                if all_inline(block) {
+                                    return true;
+                                }
+                                if texts_here() {
                                     taken = Taken::Texts;
                                     return true;
                                 }
-                                all_inline(block)
+                                false
                             })
-                })
+                });
+            if plain && taken == Taken::Walked {
+                taken = Taken::Plain;
+            }
+            true
         })?;
         Some((block, taken))
     }
@@ -2176,19 +2197,39 @@ pub(super) fn lent_block(
     i64::try_from(lent.address).ok()
 }
 
+/// A block's words, to read its value from: all of them, but for a block every thread can read,
+/// whose count is left out, as [`NEVER_FREED_COUNT`], which it is in all but its exact number.
+/// Nothing reading a value looks at a block's count, and the program's own thread may be changing
+/// this one's meanwhile.
+fn words_to_read(block: &[u64], shared: bool) -> Vec<u64> {
+    if !shared {
+        return block.to_vec();
+    }
+    let mut words = Vec::with_capacity(block.len());
+    words.push(NEVER_FREED_COUNT);
+    words.extend_from_slice(block.get(1..).unwrap_or_default());
+    words
+}
+
 pub(super) fn read_block(state: &State, address: u64) -> Value {
     if !room_to_read() {
         too_deep();
     }
     let at = usize::try_from(address).unwrap_or(0);
+    // A block every thread can read is never freed, and its count isn't read: the program's own
+    // thread may be changing it meanwhile, as code that runs only there counts a block that's never
+    // freed. A task reading its `Net`'s block read the count `main` was writing, which
+    // ThreadSanitizer found in the replay fuzz target.
+    let shared = shared_static(address);
     // A string only changes in place by growing, so a text of the same length is current.
-    let length = state.heap.block(address).and_then(|block| block.get(2)).copied();
-    if let Some(text) =
-        state.heap.texts.borrow().get(&at).filter(|text| u64::try_from(text.len()).ok() == length)
-    {
+    let found = state.heap.block(address);
+    let length = found.and_then(|block| block.get(2)).copied();
+    let kept = shared || found.is_some_and(is_never_freed);
+    let texts = if kept { &state.heap.kept_texts } else { &state.heap.texts };
+    if let Some(text) = texts.borrow().get(&at).filter(|text| u64::try_from(text.len()).ok() == length) {
         return Value::Str(Rc::clone(text));
     }
-    let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else {
+    let Some(block) = state.heap.block(address).map(|block| words_to_read(block, shared)) else {
         not_native(address, "read");
         return Value::None;
     };
@@ -2203,7 +2244,7 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     }
     if is_text(state, &block) {
         let text: Rc<str> = Rc::from(block_text(&block));
-        state.heap.texts.borrow_mut().insert(at, Rc::clone(&text));
+        texts.borrow_mut().insert(at, Rc::clone(&text));
         return Value::Str(text);
     }
     if super::dicts::is_dict(state, &block) {

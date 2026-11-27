@@ -13,7 +13,10 @@
 //! take the fuzzer down. The worker says which input it's on, and every input comes from the
 //! seed and its number, so whatever it was doing can be made again. What's found is cut down to
 //! the smallest input that still fails the same way, and kept in `found/<target>/`. The tests
-//! run everything kept there, so a failure stays fixed.
+//! run everything kept there, so a failure stays fixed. What a worker writes to standard error is
+//! kept too: the first lines each failing input wrote are printed under its failure, and what the
+//! kept input wrote is beside it, as `<input>.stderr`, so why it failed is there without running it
+//! again.
 //!
 //! `llvm` and the targets in `targets::NATIVE` build what they run natively, so they need `fennec`
 //! beside this program and LLVM's tools. Those that read outside input, `json-rules`, `toml-rules`,
@@ -42,6 +45,7 @@ mod engines;
 mod fault_writes;
 mod generate;
 mod html_rules;
+mod http_audited;
 mod http_client_scripts;
 mod http_rules;
 mod http_sessions;
@@ -64,6 +68,7 @@ mod time_rules;
 mod toml_rules;
 mod url_rules;
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -234,7 +239,7 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     let options = options(args)?;
     let everything = targets::TARGETS.iter().chain(std::iter::once(&targets::UTF8));
     let chosen: Vec<&Target> = if options.names.is_empty() {
-        let built = llvm::ready().is_ok();
+        let built = llvm::can_build()?;
         if !built {
             println!("{}: left out, since nothing can be built natively here", targets::NATIVE.join(", "));
         }
@@ -250,6 +255,7 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
             targets::KILLED_WRITES.name,
             targets::FAULT_WRITES.name,
             targets::EDITS.name,
+            targets::HTTP_AUDITED.name,
         ]
         .contains(&target.name)
             || targets::NATIVE.contains(&target.name)
@@ -282,8 +288,12 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
         for failed in outcome.failures {
             found_any = true;
             println!("{} {}: {}", target.name, failed.failure, how_many(&failed.inputs, outcome.inputs));
+            for (&input, said) in failed.inputs.iter().zip(&failed.said) {
+                print!("{}", opening(input, said));
+            }
             if let Some(&first) = failed.inputs.first() {
-                keep(&fennec_fuzz, target, &options, failed.failure, first)
+                let said = failed.said.first().map(Vec::as_slice).unwrap_or_default();
+                keep(&fennec_fuzz, target, &options, (failed.failure, first), said)
                     .map_err(|err| format!("{}: keeping what failed: {err}", target.name))?;
             }
         }
@@ -301,17 +311,44 @@ fn how_many(failing: &[u64], run: u64) -> String {
     format!("{} of {run} inputs ({})", failing.len(), first.join(", "))
 }
 
-/// Cuts a failure's input down and keeps it, named by its contents.
+/// How many of the lines a failing input wrote to standard error are printed under its failure.
+const OPENING_LINES: usize = 6;
+/// How much of each of those lines is printed.
+const OPENING_CHARS: usize = 200;
+
+/// The first lines input `number` wrote to standard error, to print under its failure, each
+/// indented: why it failed, which a run once found 48 times without saying.
+fn opening(number: u64, said: &[u8]) -> String {
+    let text = String::from_utf8_lossy(said);
+    let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return format!("  input {number} said nothing on standard error\n");
+    }
+    let mut shown = format!("  input {number} said:\n");
+    for line in lines.iter().take(OPENING_LINES) {
+        let cut: String = line.chars().take(OPENING_CHARS).collect();
+        let more = if line.chars().nth(OPENING_CHARS).is_some() { " ..." } else { "" };
+        let _ = writeln!(shown, "    {cut}{more}");
+    }
+    if let Some(left) = lines.len().checked_sub(OPENING_LINES).filter(|&left| left > 0) {
+        let _ = writeln!(shown, "    and {left} more lines");
+    }
+    shown
+}
+
+/// Cuts a failure's input down and keeps it, named by its contents, with what it wrote to
+/// standard error beside it, if anything: the cut-down input's own, or where that didn't fail
+/// alone, `said`, what the worker wrote around the input that failed.
 fn keep(
     fennec_fuzz: &Path,
     target: &Target,
     options: &Options,
-    failure: Failure,
-    number: u64,
+    (failure, number): (Failure, u64),
+    said: &[u8],
 ) -> Result<(), String> {
     let corpus = target.corpus(&repository());
     let input = mutate::input(&corpus, target.tokens, options.seed, number);
-    let small = minimize::minimize(fennec_fuzz, target.name, input, failure);
+    let (small, said_alone) = minimize::minimize(fennec_fuzz, target.name, input, failure);
     let folder = options.found.join(target.name);
     std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
     let name = fennec_blake3::hash(&small).to_hex();
@@ -319,12 +356,36 @@ fn keep(
     let path = folder.join(name);
     std::fs::write(&path, &small).map_err(|err| err.to_string())?;
     println!("{} {failure}: seed {}, input {number}, kept in {}", target.name, options.seed, path.display());
+    let said = said_alone.as_deref().unwrap_or(said);
+    if said.is_empty() {
+        println!("  it said nothing on standard error");
+    } else {
+        let beside = path.with_extension("stderr");
+        std::fs::write(&beside, said).map_err(|err| err.to_string())?;
+        println!("  what it said on standard error is in {}", beside.display());
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::how_many;
+    use super::{how_many, opening};
+
+    /// A failing input's first lines on standard error are printed under it, blank ones left out,
+    /// cut short where long, and one that said nothing says so.
+    #[test]
+    fn a_failing_input_prints_its_first_lines() {
+        assert_eq!(opening(3, b""), "  input 3 said nothing on standard error\n");
+        assert_eq!(
+            opening(3, b"\nwrong: a data race\n\n  at main\n"),
+            "  input 3 said:\n    wrong: a data race\n      at main\n"
+        );
+        let many = (1..=9).map(|line| format!("line {line}")).collect::<Vec<_>>().join("\n");
+        let shown = opening(5, many.as_bytes());
+        assert!(shown.ends_with("    line 6\n    and 3 more lines\n"), "{shown}");
+        let long = "x".repeat(300);
+        assert_eq!(opening(5, long.as_bytes()), format!("  input 5 said:\n    {} ...\n", "x".repeat(200)));
+    }
 
     /// A kind of failure says how many inputs failed that way, of how many run, and the first few.
     #[test]

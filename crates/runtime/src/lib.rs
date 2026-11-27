@@ -14,7 +14,7 @@
 use fennec_rt::embed::guarded::rollback;
 use fennec_rt::embed::{
     aot, bytes, capabilities, channels, checks, cleanup, conn_calls, dicts, eval, guarded, heap, io, lists,
-    notes, numbers, parallel, regex, serve, strings, temps, text, threads,
+    notes, numbers, parallel, regex, report, serve, strings, temps, text, threads,
 };
 
 // The build of Fennec this library is from, in a static named for it: see `build.rs`.
@@ -47,11 +47,16 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_f32_header",
     "fennec_float_header",
     "fennec_code_header",
+    // A block of bytes for native code to fill, as `bytes()` is, given by the heap: it can't fail.
+    "fennec_bytes_new",
     // A block freed whose type can't hold a generator that closes something when it's let go
     // partway, as the compiler works out: it runs no program code. Any generator it finds others
     // let go of waits for `fennec_free`, which can fail. A string's block holds nothing at all.
     "fennec_free_plain",
     "fennec_free_text",
+    // `intrinsics.report(text)`: a line on standard error, written or let go, under `with`, which
+    // sets no flag.
+    "fennec_report",
     // Temporaries pushed, copied and read. Dropping back to a mark lets go of blocks, which only
     // queues the generators among them to be closed: `fennec_free` runs those, so it can fail.
     "fennec_mark",
@@ -509,6 +514,7 @@ export! {
     fennec_free(a0: i64) => heap::free(a0);
     fennec_free_plain(a0: i64) => heap::free_plain(a0);
     fennec_close_waiting() => heap::close_waiting();
+    fennec_report(a0: i64) => report::report(a0);
     fennec_retain_shared(a0: i64, a1: i64) => threads::retain_shared(a0, a1);
     fennec_release_shared(a0: i64, a1: i64) => threads::release_shared(a0, a1);
     fennec_parallel_for(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for(a0, a1, a2);
@@ -594,6 +600,7 @@ export! {
     fennec_file_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::file_call(a0, a1, a2, a3, a4);
     fennec_socket_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::socket_call(a0, a1, a2, a3, a4);
     fennec_conn_write(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => conn_calls::conn_write(a0, a1, a2, a3, a4);
+    fennec_conn_write_parts(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64 => conn_calls::conn_write_parts(a0, a1, a2, a3, a4, a5);
     fennec_conn_reads_within(a0: i64, a1: i64) -> i64 => conn_calls::conn_reads_within(a0, a1);
     fennec_conn_draining(a0: i64) -> i64 => conn_calls::conn_draining(a0);
     fennec_conn_room_for_body(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => conn_calls::conn_room_for_body(a0, a1, a2, a3);

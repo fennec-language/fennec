@@ -321,6 +321,9 @@ pub(crate) struct Whole<'p> {
     pub(crate) cells: bool,
     /// The functions that can run as a parked task, which count their loops' turns.
     pub(crate) tasks: HashSet<&'p str>,
+    /// The tasks that can call themselves again, through others or not, which count their calls
+    /// too (see `ticks::recurring`).
+    pub(crate) recurring: HashSet<&'p str>,
     /// Whether its closures are blocks in the runtime's table, since it keeps one where the
     /// runtime reads (see `closures`).
     pub(crate) runtime_closures: bool,
@@ -1306,6 +1309,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         }
     }
     // Each counted loop's blocks, its start among them, and the one block going into it.
+    let back = crate::emit::back_edges(function);
     let mut ways_in: HashMap<usize, Vec<usize>> = HashMap::new();
     for (from, block) in function.blocks.iter().enumerate() {
         for to in block.end.targets() {
@@ -1327,7 +1331,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         else {
             continue;
         };
-        let blocks = natural_loop(function, header, then.0, &ways_in);
+        let blocks = natural_loop(function, (header, then.0), &ways_in, &back);
         let outside: Vec<usize> = ways_in
             .get(&header)
             .map_or(&[][..], Vec::as_slice)
@@ -1373,7 +1377,7 @@ fn find_ranged_reads(function: &Function, known: &mut Analysis) {
         });
         reads.insert((at, index), id);
     }
-    known.versioned = find_versioned_loops(function, &reads, &counted_by, &ways_in);
+    known.versioned = find_versioned_loops(function, &reads, &counted_by, &ways_in, &back);
     known.ranged_reads = reads;
     known.range_scans = scans;
 }
@@ -1397,6 +1401,7 @@ fn find_versioned_loops(
     reads: &HashMap<(usize, usize), usize>,
     counted_by: &HashMap<(usize, usize), fennec_ir::Count>,
     ways_in: &HashMap<usize, Vec<usize>>,
+    back: &HashSet<(usize, usize)>,
 ) -> Vec<Versioned> {
     let mut by_count: BTreeMap<usize, (fennec_ir::Count, BTreeSet<usize>)> = BTreeMap::new();
     let mut places: Vec<(&(usize, usize), &usize)> = reads.iter().collect();
@@ -1422,7 +1427,7 @@ fn find_versioned_loops(
         else {
             continue;
         };
-        let natural = natural_loop(function, header, then.0, ways_in);
+        let natural = natural_loop(function, (header, then.0), ways_in, back);
         let into = ways_in.get(&header).map_or(&[][..], Vec::as_slice);
         let outside: Vec<usize> = into.iter().copied().filter(|from| !natural.contains(from)).collect();
         let [before] = outside[..] else { continue };
@@ -1464,21 +1469,38 @@ fn find_versioned_loops(
             found.push(Versioned { header, before, blocks, scan });
         }
     }
-    found
+    // A loop whose way in is a block of another written twice, as one in a way out of it is,
+    // isn't written twice itself: each copy of the other would go into its copies, and its reads
+    // go by their flag instead. Only the other's copies are then made from text holding it.
+    let inside: Vec<bool> = found
+        .iter()
+        .map(|loop_| {
+            found.iter().any(|other| other.header != loop_.header && other.blocks.contains(&loop_.before))
+        })
+        .collect();
+    found.into_iter().zip(inside).filter_map(|(loop_, inside)| (!inside).then_some(loop_)).collect()
 }
 
 /// A loop's blocks: its start, and every block reached from its body that goes back to the start
-/// without passing through it. A block that ends in a `break` or a `return` isn't one.
+/// without passing through it. A block that ends in a `break` or a `return` isn't one. It's found
+/// back from the loop's own jumps back to its start (`back`, from [`crate::emit::back_edges`]),
+/// not from every way into the start the body reaches: a `break` inside another loop reaches the
+/// block going into this one by way of the other's, which would count it as one of this loop's
+/// and leave it no way in.
 fn natural_loop(
     function: &Function,
-    header: usize,
-    body: usize,
+    (header, body): (usize, usize),
     ways_in: &HashMap<usize, Vec<usize>>,
+    back: &HashSet<(usize, usize)>,
 ) -> BTreeSet<usize> {
     let reached = loop_blocks(function, header, body);
     let into = ways_in.get(&header).map_or(&[][..], Vec::as_slice);
     let mut blocks: BTreeSet<usize> = BTreeSet::from([header]);
-    let mut waiting: Vec<usize> = into.iter().copied().filter(|from| reached.contains(from)).collect();
+    let mut waiting: Vec<usize> = into
+        .iter()
+        .copied()
+        .filter(|from| reached.contains(from) && back.contains(&(*from, header)))
+        .collect();
     while let Some(at) = waiting.pop() {
         if blocks.insert(at) {
             waiting.extend(
@@ -4902,6 +4924,9 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
             && args.first().and_then(|list| function.type_of(list)).is_some_and(|ty| {
                 !matches!(&ty, Type::List(item) if matches!(**item, Type::Int | Type::Float | Type::Str | Type::Bool))
             }))
+        // `bytes(list)` fails on an item that isn't a byte, which `bytes()` and `bytes([])` can't
+        // have.
+        || (name == "bytes" && !makes_no_bytes(function, args))
         || name.starts_with("crypto.")
         || name.starts_with("compress.")
         || name.starts_with("unicode.")
@@ -4942,7 +4967,6 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
                     | "max.key"
                     | "min.key"
                     | "main.result"
-                    | "bytes"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"
@@ -4958,6 +4982,49 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
                     | "parallel.stream_next"
                     | "parallel.sum"
         )
+}
+
+/// Whether `bytes(...)` given `args` makes empty bytes, so can't fail: given nothing, or a list
+/// written once as `[]` and read only by the `bytes(...)`, as `bytes([])` is, in a constant kept
+/// for the whole run too. A list from anywhere else may hold a number that isn't a byte. One
+/// written out of bytes can't either, but the runtime's call for a list says so by failing, so
+/// it's left to that.
+pub(crate) fn makes_no_bytes(function: &Function, args: &[Operand]) -> bool {
+    let list = match args {
+        [] => return true,
+        [Operand::Local(list)] => *list,
+        _ => return false,
+    };
+    let mut writes = function.blocks.iter().flat_map(|block| &block.insts).filter(|inst| {
+        let mut writes = false;
+        visit(&inst.kind, |_| {}, |local| writes |= local == list);
+        writes
+    });
+    let (Some(write), None) = (writes.next(), writes.next()) else { return false };
+    // Read by nothing but the `bytes(...)` itself, so nothing filled it after it was made: a
+    // comprehension's list is made empty and then appended to, which is a read, not a write.
+    let reads: usize = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .map(|inst| {
+            let mut reads = 0;
+            visit(&inst.kind, |operand| reads += usize::from(*operand == Operand::Local(list)), |_| {});
+            reads
+        })
+        .sum();
+    let ends_with_it = function.blocks.iter().any(|block| match &block.end {
+        Terminator::Return(Some(value)) | Terminator::Branch { cond: value, .. } => {
+            *value == Operand::Local(list)
+        }
+        _ => false,
+    });
+    match &write.kind {
+        InstKind::MakeList { items, .. } | InstKind::ConstantList { items, .. } => {
+            items.is_empty() && reads == 1 && !ends_with_it
+        }
+        _ => false,
+    }
 }
 
 /// Whether `function` can fail of itself, rather than by what it calls failing, in a program that
@@ -5372,7 +5439,11 @@ pub(crate) fn whole_keeping<'p>(
     let whole = std::thread::scope(|scope| {
         let signs = scope.spawn(|| crate::signs::non_negative(program));
         let builders = scope.spawn(|| crate::builders::builders(program, &functions));
-        let tasks = scope.spawn(|| crate::ticks::tasks(program, &functions));
+        let tasks = scope.spawn(|| {
+            let tasks = crate::ticks::tasks(program, &functions);
+            let recurring = crate::ticks::recurring(program, &functions, &tasks);
+            (tasks, recurring)
+        });
         let layouts = scope.spawn(|| crate::layouts_of(program).ok());
         let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
         let kept = parameters_kept(&functions);
@@ -5381,6 +5452,7 @@ pub(crate) fn whole_keeping<'p>(
         };
         let params = param_ranges(program, &changes, &keeps);
         let layouts = joined(layouts);
+        let (tasks, recurring) = joined(tasks);
         let held = in_entries_of(program, layouts.as_ref());
         let abandons = program.generators.iter().any(|def| def.abandon.is_some());
         let loud = if abandons { lets_go_loudly(program, layouts.as_ref()) } else { HashSet::new() };
@@ -5454,7 +5526,8 @@ pub(crate) fn whole_keeping<'p>(
             constants,
             on_workers,
             cells: crate::parallel::has_cells(program),
-            tasks: joined(tasks),
+            tasks,
+            recurring,
             runtime_closures: crate::closures::runtime_holds_closures(program),
             tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
             abandons,

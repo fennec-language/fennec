@@ -1079,7 +1079,6 @@ impl<'p> Module<'_, 'p> {
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
             places_out: HashMap::new(),
-            places_back: HashSet::new(),
             out_of_dicts: BTreeSet::new(),
             at: (usize::MAX, usize::MAX),
             check_kind: None,
@@ -1271,11 +1270,6 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// For each place taken out to change, the stack slot saying where it goes back while it's out.
     pub(crate) places_out: HashMap<usize, String>,
-    /// The places that have been put back. One that waited for the call that changes it is taken
-    /// out there; what names it after it's back, as letting go of the local at a lock's end does,
-    /// doesn't take it out again, which would leave its slot saying it's out with nothing to put it
-    /// back (#2516).
-    pub(crate) places_back: HashSet<usize>,
     /// Those of them that are values out of a dict or a list, which go back after the others: a
     /// field out of such a value goes back into it first.
     pub(crate) out_of_dicts: BTreeSet<usize>,
@@ -1610,6 +1604,9 @@ impl Emit<'_, '_, '_> {
         }
         if self.ticks() {
             self.start_ticks();
+            if self.module.reads.recurs(function.name.as_str()) {
+                self.tick_call();
+            }
         }
         self.line("br label %bb0");
         // Which blocks lead to each, so a lookup can carry on into a block every way in has
@@ -1727,9 +1724,11 @@ impl Emit<'_, '_, '_> {
             for reserved in self.reserved_at(at) {
                 self.reserve(LocalId(reserved.list), &reserved.limit)?;
             }
-            // Every loop goes back to a block written no later than where it goes from, so that's
-            // where a task counts a turn.
-            if self.ticks() && block.end.targets().iter().any(|next| next.0 <= at) {
+            // Every loop has a jump back to its start ([`back_edges`]), which is where a task
+            // counts a turn: once a turn. A block numbered before the one going to it is often
+            // only further on in the same turn, as a `for` loop's step is after its body.
+            if self.ticks() && block.end.targets().iter().any(|next| self.back_edges.contains(&(at, next.0)))
+            {
                 self.tick();
             }
             for local in self.alone_before_loops.get(&at).cloned().unwrap_or_default() {
@@ -3702,6 +3701,19 @@ impl Emit<'_, '_, '_> {
                 let cast = self.temp();
                 self.line(&format!("{cast} = bitcast {from} {value} to {to}"));
                 self.assign(dest.ok_or("no result")?, &cast)
+            }
+            // A line on standard error, which can't fail: the string's block is made for the call
+            // when its text is held in its header, and let go of after.
+            "intrinsics.report" => {
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let made = kind == Kind::Str && self.headers();
+                let block = if made { self.owned_text_block(&value) } else { value };
+                self.declare("declare void @fennec_report(ptr) nounwind");
+                self.line(&format!("call void @fennec_report(ptr {block})"));
+                if made {
+                    self.release_quietly(&block);
+                }
+                Ok(())
             }
             "intrinsics.stop" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;

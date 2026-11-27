@@ -5010,6 +5010,140 @@ fn a_capability_smuggled_through_a_generic_is_found_in_every_kit_it_reaches() {
     );
 }
 
+/// What a kit's code gives back and still reaches comes back to it: what its source lends, which
+/// it has again once the block ends, a `shared` value, or a channel's end. Whatever the program
+/// puts in one, the kit receives, however deep in the lent value it goes. The first program here
+/// is the one that got through: `helper` lent an empty `Fs?`, the program filled it, and once the
+/// block ended `helper` wrote a file with it, though nothing ever said it held an `Fs`.
+#[test]
+fn what_a_kit_gives_back_and_still_reaches_is_handed_to_it() {
+    let lends = "export def collect() -> with Fs? fails IoError:\n    mut held: Fs? = None\n    lend held\n\
+                 \x20   if held is not None:\n        held.write_text(\"leaked.txt\", \"x\")?\n";
+    let main = "import helper\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n\
+                \x20   with helper.collect()? as ref held:\n        held = fs\n    stdout.print(\"done\")\n";
+    let kits = Kits::new(
+        "holds-given-back",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", main),
+        &[("helper", "", lends)],
+    )
+    .unwrap();
+    let said = kits.refused().unwrap();
+    assert!(
+        said.contains(
+            "error: `helper` lends an `Fs?` here, which its own code still reaches, so it would now receive an `Fs` put in it, which kit.lock doesn't list for it"
+        ),
+        "{said}"
+    );
+    assert!(said.contains("src/main.fen:4:10"), "{said}");
+    let said = kits.accepted().unwrap();
+    assert!(
+        said.contains("kit.lock: `helper` now holds `Fs`, first handed over at src/main.fen:4:10"),
+        "{said}"
+    );
+    assert!(kits.lock().unwrap().contains("holds helper path:../helper Fs\n"));
+}
+
+/// Whatever a kit's source lends comes back to it once the block ends, so the kit receives what
+/// the lent value can hold, however deep: in a list, a dict, a tuple, a std type's field or a
+/// `shared` value.
+#[test]
+fn what_a_kits_source_lends_comes_back_to_it_holding_what_was_put_in() {
+    let kits = Kits::new(
+        "holds-lent-back",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", "def main():\n    pass\n"),
+        &[("helper", "", "")],
+    )
+    .unwrap();
+    // Each way of putting a capability in what's lent, by what the source lends, what the
+    // program does with it, and what the kit is said to receive.
+    let ways = [
+        (
+            "with list[Fs] fails IoError:\n    mut held = list[Fs]()\n    lend held\n    for each in held:\n        each.write_text(\"a\", \"x\")?",
+            "with helper.collect()? as held:\n        held.append(fs)",
+            "lends a `list[Fs]` here",
+            "an `Fs`",
+        ),
+        (
+            "with dict[str, Fs] fails IoError:\n    mut held = dict[str, Fs]()\n    lend held\n    for each in held.values():\n        each.write_text(\"a\", \"x\")?",
+            "with helper.collect()? as ref held:\n        held[\"disk\"] = fs",
+            "lends a `dict[str, Fs]` here",
+            "an `Fs`",
+        ),
+        (
+            "with (Fs?, int) fails IoError:\n    mut held: (Fs?, int) = (None, 0)\n    lend held\n    disk = held[0]\n    if disk is not None:\n        disk.write_text(\"a\", \"x\")?",
+            "with helper.collect()? as ref held:\n        held = (fs, 1)",
+            "lends a `(Fs?, int)` here",
+            "an `Fs`",
+        ),
+        (
+            "with Log? fails IoError:\n    mut held: Log? = None\n    lend held\n    if held is not None:\n        held.info(\"x\")",
+            "with helper.collect()? as ref held:\n        held = Log(out=stdout)",
+            "lends a `Log?` here",
+            "a `Clock` and a `Stdout`",
+        ),
+        (
+            "with shared list[Fs] fails IoError:\n    shared held = list[Fs]()\n    lend held\n    lock held as items:\n        for each in items:\n            each.write_text(\"a\", \"x\")?",
+            "with helper.collect()? as held:\n        lock held as ref items:\n            items.append(fs)",
+            "lends a `shared list[Fs]` here",
+            "an `Fs`",
+        ),
+    ];
+    for (source, block, lent, received) in ways {
+        let lib = format!("from std.log import Log\n\nexport def collect() -> {source}\n");
+        kits.write("helper", "src/lib.fen", &lib).unwrap();
+        let main = format!(
+            "import helper\nfrom std.log import Log\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    {block}\n    stdout.print(\"done\")\n"
+        );
+        kits.write("app", "src/main.fen", &main).unwrap();
+        let said = kits.refused().unwrap();
+        let says = format!(
+            "`helper` {lent}, which its own code still reaches, so it would now receive {received} put in it"
+        );
+        assert!(said.contains(&says), "{source}: {said}");
+    }
+}
+
+/// A `shared` value a kit gives back is one value its own code still reaches: given back with a
+/// function that reads it later, or yielded by a generator that reads it once the loop's body
+/// has run. A plain value given back is a copy, and holds nothing for the kit.
+#[test]
+fn a_shared_value_a_kit_gives_back_comes_back_to_it() {
+    let kits = Kits::new(
+        "holds-shared-back",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", "def main():\n    pass\n"),
+        &[("helper", "", "")],
+    )
+    .unwrap();
+    let given = "export def make() -> (shared list[Fs], () -> int):\n    shared held = list[Fs]()\n    return (held, () => count(held))\n\n\
+                 def count(held: shared list[Fs]) -> int:\n    got = lock held as items:\n        len(items)\n    return got\n";
+    kits.write("helper", "src/lib.fen", given).unwrap();
+    let main = "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    made = helper.make()\n\
+                \x20   lock made[0] as ref items:\n        items.append(fs)\n    later = made[1]\n    stdout.print(later())\n";
+    kits.write("app", "src/main.fen", main).unwrap();
+    let said = kits.refused().unwrap();
+    assert!(
+        said.contains("`helper` gives back a `shared list[Fs]` here, which its own code still reaches, so it would now receive an `Fs` put in it"),
+        "{said}"
+    );
+    let yields = "export def each() -> Iterator[shared list[Fs]] fails IoError:\n    shared held = list[Fs]()\n    yield held\n\
+                  \x20   got = lock held as items:\n        list(items)\n    for one in got:\n        one.write_text(\"a\", \"x\")?\n";
+    kits.write("helper", "src/lib.fen", yields).unwrap();
+    let main = "import helper\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    for held in helper.each()?:\n\
+                \x20       lock held as ref items:\n            items.append(fs)\n    stdout.print(\"done\")\n";
+    kits.write("app", "src/main.fen", main).unwrap();
+    let said = kits.refused().unwrap();
+    assert!(said.contains("`helper` gives back a `shared list[Fs]` here"), "{said}");
+    // A plain value given back is a copy the kit never sees again, and a kit lending what holds no
+    // capability is handed nothing.
+    let copies = "export def empty() -> list[Fs]:\n    return list[Fs]()\n\n\
+                  export def counting() -> with int:\n    mut count = 0\n    lend count\n";
+    kits.write("helper", "src/lib.fen", copies).unwrap();
+    let main = "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    mut disks = helper.empty()\n    disks.append(fs)\n\
+                \x20   with helper.counting() as ref count:\n        count = len(disks)\n    stdout.print(\"done\")\n";
+    kits.write("app", "src/main.fen", main).unwrap();
+    kits.checks().unwrap();
+}
+
 /// `fennec update` never widens what a kit holds: a new version of a dependency that starts
 /// handing on a capability fails it, naming each kit and what it would get, and leaves kit.lock as
 /// it was. Only `fennec update --accept` widens, saying the same.

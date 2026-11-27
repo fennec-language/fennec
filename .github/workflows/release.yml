@@ -19,6 +19,7 @@ on:
       - .github/scripts/release-build.sh
       - .github/scripts/release-env.sh
       - .github/scripts/release-container.sh
+      - .github/release-debs.lock
       - .github/scripts/pack.sh
       - crates/fennec/src/aot.rs
       - crates/llvm/src/build.rs
@@ -69,16 +70,16 @@ jobs:
     needs: needed
     if: needs.needed.outputs.build == 'true'
     runs-on: ${{ matrix.os }}
-    # Ubuntu's, pinned, with its compilers pinned, so a rebuild before signing has the same ones
-    # (`rebuild-release.sh`). A pin Ubuntu no longer has fails here, and is moved on.
+    # Ubuntu's, pinned, with every package it installs pinned by its hash, so a rebuild before
+    # signing has the same ones (`rebuild-release.sh`, `.github/release-debs.lock`). Nothing comes
+    # from Ubuntu's archive, which drops a version once a newer one is out.
     container: "ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b"
     timeout-minutes: 60
     permissions:
       contents: read
     steps:
-      # Git first, so the checkout is one; what's built with comes after, from the checkout.
-      - name: Install git
-        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates git
+      # The image has no git, so this checkout is the files alone, to install from: git, with
+      # everything else, is one of the pinned packages. The checkout after it is a repository.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -87,6 +88,9 @@ jobs:
         run: |
           .github/scripts/release-container.sh ubuntu
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build it
         shell: bash
         run: |

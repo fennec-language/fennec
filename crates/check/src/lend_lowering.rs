@@ -693,6 +693,12 @@ const CONTINUED: i64 = 3;
 
 impl Lowering<'_> {
     fn function(&mut self, def: &mut FnDef) {
+        // A source runs only where it's written in, from its body as it was checked, and what's
+        // in that body is written in there, around the caller's block. Written in here too, a
+        // `with` around its `lend` would put the `lend` in the loop a failing block runs in.
+        if def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH) {
+            return;
+        }
         self.returns.push(def.ret.clone());
         self.failing.push(def.fails.is_some());
         self.fails.push(def.fails.clone());

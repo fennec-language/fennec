@@ -12747,6 +12747,67 @@ def main(stdout: Stdout):
     )
 }
 
+/// A source can fail and lend inside a `with` of its own, as one lending a channel's end it reads
+/// once the caller's block ends. Lowering wrote the inner `with` in inside the source itself too,
+/// where the loop a failing block runs in put the `lend` inside it, and the build stopped with an
+/// internal error. Now the source's body is written in only where it's used: the source reads
+/// what the block sent, its `except:` runs when the block fails, and a `break` in the caller's
+/// loop still lets it finish.
+#[test]
+fn a_failing_source_lends_inside_a_with_of_its_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "failing_source_lends_inside_with",
+        FAILING_SOURCE_LENDS_INSIDE_WITH,
+        "source got 1\nblock done\nsource cleaned up after a failed block\nrun 3: stopped early\nsource got 7\nrun 7: stopped early\nsource got 1\nafter 1\nsource got 2\nloop done\n",
+    )
+}
+
+const FAILING_SOURCE_LENDS_INSIDE_WITH: &str = r#"from std.concurrent import Sender, channel
+
+error Stopped:
+    Early
+
+    def message(self) -> str:
+        return "stopped early"
+
+def feed(stdout: Stdout) -> with Sender[int] fails Stopped:
+    with channel[int](4) as numbers:
+        lend numbers.sender() except:
+            stdout.print("source cleaned up after a failed block")
+        got = numbers.receive()
+        if got is not None:
+            stdout.print(f"source got {got}")
+        if got == 7:
+            fail .Early
+
+def run(stdout: Stdout, number: int) fails Stopped:
+    with feed(stdout)? as sender:
+        sender.send(number) except why:
+            stdout.print(f"{why}")
+        if number == 3:
+            fail .Early
+    stdout.print("block done")
+
+def looped(stdout: Stdout) fails Stopped:
+    for number in [1, 2, 3]:
+        with feed(stdout)? as sender:
+            sender.send(number) except why:
+                stdout.print(f"{why}")
+            if number == 2:
+                break
+        stdout.print(f"after {number}")
+    stdout.print("loop done")
+
+def main(stdout: Stdout) fails Stopped:
+    for number in [1, 3, 7]:
+        run(stdout, number) except why:
+            stdout.print(f"run {number}: {why.message()}")
+    looped(stdout)?
+"#;
+
 /// `with` sources, written in where they're used: a method one and a function one, one inside
 /// the other, with `ref` parameters, the caller's block leaving by `return` from inside a loop,
 /// by `break`, and by failing, which runs the `lend`'s `else:` and skips the cleanup below it.

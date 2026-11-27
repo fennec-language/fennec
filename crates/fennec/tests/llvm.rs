@@ -953,6 +953,60 @@ Option(value=1, label="a label long enough for a block 1") Match(text="a matched
 4
 "#;
 
+/// A program's own types named like std's, holding only fields kept in place, print under their
+/// own names: alone, inside another struct, in a list, a dict and an f-string. Inside, each is
+/// marked apart from std's type of the same name, and printing one in place once showed the mark,
+/// `Match'(found=True)`. Types holding a block, as in the test above, print another way, which
+/// left this one unseen. It prints the same boxed.
+#[test]
+fn own_types_named_like_std_s_print_under_their_own_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed("own_std_names", OWN_STD_NAMES, OWN_STD_NAMES_PRINT)
+}
+
+const OWN_STD_NAMES: &str = r#"# Types named like std's, each holding only numbers and bools.
+
+struct Match:
+    found: bool
+
+struct Counter:
+    count: int
+
+struct Option:
+    value: int
+
+struct Id:
+    number: int
+
+struct Duration:
+    seconds: float
+
+struct Both:
+    hit: Match
+    tally: Counter
+
+def main(stdout: Stdout):
+    stdout.print(
+        Match(found=True),
+        Counter(count=1),
+        Option(value=2),
+        Id(number=3),
+        Duration(seconds=1.5),
+    )
+    both =Both(hit=Match(found=False), tally=Counter(count=4))
+    stdout.print(both)
+    stdout.print([Match(found=True), Match(found=False)], {"one": Counter(count=5)})
+    stdout.print(f"{Id(number=6)} and {Option(value=7)}")
+"#;
+
+const OWN_STD_NAMES_PRINT: &str = r#"Match(found=True) Counter(count=1) Option(value=2) Id(number=3) Duration(seconds=1.5)
+Both(hit=Match(found=False), tally=Counter(count=4))
+[Match(found=True), Match(found=False)] {"one": Counter(count=5)}
+Id(number=6) and Option(value=7)
+"#;
+
 /// Fable's ten shapes of types that hold themselves, each made, copied, compared and printed: the
 /// blocks only those that contain themselves by value. It prints the same with every type boxed.
 #[test]

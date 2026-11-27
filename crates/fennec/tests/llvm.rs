@@ -32042,9 +32042,7 @@ def main(stdout: Stdout):
         "other_table_stop",
         "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    stdout.print(ours[kit])\n",
     )?;
-    // Native code underlines the place written, `ours[kit]`, as for every write; the pinned
-    // outcome underlines all of the line.
-    same_message_as_pinned(
+    same_as_pinned(
         "other_table_store",
         "from std.collections import Table\n\ndef main(stdout: Stdout):\n    mut ours = Table[str]()\n    mut theirs = Table[str]()\n    _ = ours.add(\"fox\")\n    kit = theirs.add(\"kit\")\n    ours[kit] = \"den\"\n    stdout.print(len(ours))\n",
     )?;
@@ -35398,7 +35396,7 @@ fn copy_with_fields_runs_their_rules() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    // Native code leaves out the pinned help line on checking every write.
+    // Native code leaves out the pinned help line on checking every write (#2669).
     same_message_as_pinned(
         "copy_with_fields",
         r#"struct Player:
@@ -37143,7 +37141,8 @@ fn an_unhandled_error_of_a_set_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    // Native code says where the failure was made and who called; the pinned outcome says `main`.
+    // Native code says where the failure was made and who called; the pinned outcome says `main`
+    // (#2670).
     same_message_as_pinned(
         "error_set_unhandled",
         "error NotFound:
@@ -37171,7 +37170,7 @@ fn a_main_giving_back_an_error_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    // The pinned outcome's line is of the source as it was then, `int(text)?`.
+    // The pinned outcome's line is of the source as it was then, `int(text)?` (#2671).
     same_message_as_pinned(
         "main_gives_back_an_error",
         r#"def number(text: str) -> int fails InvalidValue:

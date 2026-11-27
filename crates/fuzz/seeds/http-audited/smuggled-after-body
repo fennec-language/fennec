@@ -1,0 +1,11 @@
+GET /ok HTTP/1.1
+Host: h
+
+POST / HTTP/1.1
+Content-Length: 4
+
+abcdGET /hidden HTTP/1.1
+
+GET /ok HTTP/1.1
+Host: h
+

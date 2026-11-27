@@ -72,9 +72,9 @@ impl Checker {
             .types
             .values()
             .filter(|info| self.reports(info.prelude))
-            .map(|info| info.def.clone())
+            .map(|info| (info.def.clone(), info.prelude))
             .collect();
-        for def in defs {
+        for (def, prelude) in defs {
             for field in &def.fields {
                 if let (Some(written), Some(default)) = (&field.ty, &field.default) {
                     let resolved = self.field_type(&def.name, None, &field.name);
@@ -96,7 +96,7 @@ impl Checker {
                         continue;
                     }
                     seen.push(&annotation.name);
-                    if let Some(problem) = problem(field, annotation) {
+                    if let Some(problem) = problem(field, annotation, prelude) {
                         self.diagnostics.push(problem);
                     }
                 }
@@ -135,9 +135,13 @@ fn function_problem(def: &FnDef, annotation: &Annotation, prelude: bool) -> Opti
 }
 
 /// What's wrong with one annotation on a field, if anything.
-fn problem(field: &Field, annotation: &Annotation) -> Option<Diagnostic> {
+fn problem(field: &Field, annotation: &Annotation, prelude: bool) -> Option<Diagnostic> {
     let span = annotation.span;
     match annotation.name.as_str() {
+        // Std's own mark for a field holding what the runtime keeps open, which no program writes:
+        // in a program's code it's an annotation that doesn't exist, below.
+        "handle" if prelude => (!annotation.args.is_empty())
+            .then(|| Diagnostic::new("`@handle` takes nothing", span).with_help("write it as `@handle`")),
         "skip" if !annotation.args.is_empty() => {
             Some(Diagnostic::new("`@skip` takes nothing", span).with_help("write it as `@skip`"))
         }

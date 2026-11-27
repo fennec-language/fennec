@@ -91,6 +91,7 @@ export enum Behind:
 ## A channel for messages of type `T`, which every task inside its `with` block can send on and
 ## receive from. Hand one end to a task with `sender()` or `inbox()`.
 export struct Channel[T]:
+    @handle
     _channel: int
     ## Whether it's to `.Every` listener: its messages are listened to, never taken one at a time.
     _every = False
@@ -146,6 +147,7 @@ export struct Channel[T]:
 
 ## The receiving end of a channel: a task's inbox, as `with launch` makes it.
 export struct Inbox[T]:
+    @handle
     _channel: int
 
     ## The next message, waiting as long as there's none, or `None` once the channel is closed
@@ -166,6 +168,7 @@ export struct Inbox[T]:
 
 ## The sending end of a channel, as `with launch(...) as sender:` gives it.
 export struct Sender[T]:
+    @handle
     _channel: int
 
     ## Sends `message`, waiting as long as the channel is full.
@@ -311,6 +314,7 @@ export struct Borrowed[T]:
     value: T
     _back: Sender[Given[T]]
     _notes: Sender[PoolNote[T]]
+    @handle
     _keeper: int
 
     ## Hands the value back to its keeper, saying whether the block that had it succeeded: one

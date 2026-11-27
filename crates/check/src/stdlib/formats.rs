@@ -170,6 +170,24 @@ impl FnCx<'_> {
     /// in, if any, as `Type.field`, which a message names. `loading` says it's being read, where
     /// a `Secret` may go though it's never written. `seen` are the structs being looked at, so a
     /// struct that holds itself is looked at once.
+    /// Why no format holds a value of this type, whatever it holds: what the runtime keeps open for
+    /// this run, a `File` or a `Connection`, or a `shared` value, reached only inside its lock.
+    fn never_held(&self, format: &str, ty: &Type, (span, field): (Span, Option<&str>)) -> Option<Diagnostic> {
+        if let Some(name) = ty.type_name()
+            && crate::saving::holds_handle(&self.checker.program, name)
+        {
+            return Some(
+                Diagnostic::new(cant_hold(format, field, &crate::saving::handle_named(name)), span)
+                    .with_help(crate::saving::HANDLE_INSTEAD),
+            );
+        }
+        self.checker.program.is_shared(ty).then(|| {
+            let what = format!("a `{}`", ty.source().unwrap_or_else(|| ty.kind()));
+            Diagnostic::new(cant_hold(format, field, &what), span)
+                .with_help("a `shared` value is reached inside a `lock`: save what it holds, read there")
+        })
+    }
+
     fn holds(
         &mut self,
         format: &str,
@@ -178,10 +196,8 @@ impl FnCx<'_> {
         seen: &mut Vec<String>,
     ) -> Result<(), Diagnostic> {
         let cannot = |what: &Type| Diagnostic::new(cant_hold(format, field, &article(&what.kind())), span);
-        if self.checker.program.is_shared(ty) {
-            let what = format!("a `{}`", ty.source().unwrap_or_else(|| ty.kind()));
-            return Err(Diagnostic::new(cant_hold(format, field, &what), span)
-                .with_help("a `shared` value is reached inside a `lock`: save what it holds, read there"));
+        if let Some(refused) = self.never_held(format, ty, (span, field)) {
+            return Err(refused);
         }
         match ty {
             // `bytes` are written as base64 text, and an `Id` as its slot and generation, whatever

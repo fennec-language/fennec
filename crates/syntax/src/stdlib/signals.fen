@@ -15,4 +15,5 @@
 ##     stdout.print(f"stopped after {frames} frames")
 ## ```
 export struct Signals:
+    @handle
     _given: int

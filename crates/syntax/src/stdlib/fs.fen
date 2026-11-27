@@ -25,6 +25,7 @@ export struct Metadata:
 ## assert fs.exists("saves")?
 ## ```
 export struct Fs:
+    @handle
     _given: int
 
     ## A new file at `path` to write, in place of any file there, lent for a `with` block:
@@ -105,6 +106,7 @@ export struct Fs:
 ##     assert file.read_line()? == "started"
 ## ```
 export struct File:
+    @handle
     _handle: int
 
     ## Writes `text` as UTF-8.

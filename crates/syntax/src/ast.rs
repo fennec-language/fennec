@@ -186,6 +186,12 @@ impl Field {
         self.annotations.iter().any(|annotation| annotation.name == "skip")
     }
 
+    /// Whether `@handle` marks the field as holding what the runtime keeps for this run, as a
+    /// file's or a channel's, which nothing saves or loads.
+    pub fn is_handle(&self) -> bool {
+        self.annotations.iter().any(|annotation| annotation.name == "handle")
+    }
+
     /// The name `@serialize(name=...)` gives the field when a value is saved, if it has one.
     pub fn saved_name(&self) -> Option<&str> {
         let args = self.annotations.iter().filter(|annotation| annotation.name == "serialize");

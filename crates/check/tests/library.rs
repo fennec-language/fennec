@@ -286,6 +286,60 @@ fn a_capability_is_never_saved_or_loaded() {
     );
 }
 
+/// What the runtime keeps open for this run, a file, a channel's end, a database, is never saved or
+/// loaded, nor anything holding one, through a field, a collection or a generic struct: std marks
+/// each such field `@handle`, and the checker carries it to whatever holds it. Before, loading a
+/// `File` from `{"_handle": 1}` checked, and only native code refused it, as not built yet.
+#[test]
+fn what_holds_a_handle_is_never_saved_or_loaded() {
+    let program = "
+        a = json.loads[File]('{}')
+        b = json.loads[Feed[int]]('{}')
+        c = toml.loads[Kept]('')
+        d = pack.loads[Pooled](bytes([]))
+    ";
+    let declarations = "from std import json, pack, toml\nfrom std.concurrent import Borrowed, Sender\n\
+                        from std.fs import File\nfrom std.sqlite import Database\n\n\
+                        struct Feed[T]:\n    out: Sender[T]\n\n\
+                        struct Kept:\n    open: list[Database]\n\n\
+                        struct Pooled:\n    lent: Borrowed[int]?\n\n\
+                        def shown(files: list[File]) -> str:\n    return json.dumps(files)\n";
+    let held = "kept open by the runtime for this run";
+    assert_eq!(
+        with_imports(declarations, program),
+        [
+            format!("JSON can't hold a `File`, {held} @ json.dumps(files)"),
+            format!("JSON can't hold a `File`, {held} @ File"),
+            format!("JSON can't hold `Feed.out`, which is a `Sender`, {held} @ Feed[int]"),
+            format!("TOML can't hold `Kept.open`, which is a `Database`, {held} @ Kept"),
+            format!(
+                "`Pooled` isn't a `Deserializable`: `Pooled.lent` is a `Borrowed`, {held}, which can't be saved @ \
+                 pack.loads[Pooled](bytes([]))"
+            ),
+        ]
+    );
+    // Std's own types that hold one, unmarked themselves, are refused through what they hold: a
+    // pool through its channel's end, Postgres's database through its connection.
+    let nested = "
+        a = json.loads[Pool[int]]('{}')
+        b = json.loads[PgDatabase]('{}')
+    ";
+    let imports =
+        "from std import json\nfrom std.concurrent import Pool\nfrom std.postgres import PgDatabase\n";
+    assert_eq!(
+        with_imports(imports, nested),
+        [
+            format!("JSON can't hold `Pool._notes`, which is a `Sender`, {held} @ Pool[int]"),
+            format!("JSON can't hold `PgDatabase._conn`, which is a `Connection`, {held} @ PgDatabase"),
+        ]
+    );
+    // A program's own field can't be marked: it's an annotation that doesn't exist there.
+    let marked = "struct Ticket:\n    @handle\n    _number: int\n";
+    let said = problems(marked);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("there's no annotation called `@handle`"), "{said:?}");
+}
+
 /// A database URL written in the source can't hold its password, which would be in a plain `str`
 /// and in the source too. Without one, or as a `Secret`, it's fine.
 #[test]

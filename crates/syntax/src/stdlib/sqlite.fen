@@ -46,6 +46,7 @@ def opened(fs: Fs, path: str) -> Database fails SqlError:
 ## A SQLite database, lent by `sqlite.open`. Its methods written in Rust, each private to it, run
 ## what the methods below give them.
 export struct Database:
+    @handle
     _handle: int
 
     ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.
@@ -71,6 +72,7 @@ export struct Database:
 ## A transaction, lent by `db.transaction()`. Its queries see what it's changed so far, and the
 ## rest of the program sees none of it until it's kept.
 export struct Transaction:
+    @handle
     _handle: int
 
     ## Runs a query that changes something, like an `insert`, and gives how many rows it changed.

@@ -953,33 +953,47 @@ impl Io {
 
     /// What has no stack waits for one while other tasks here can end and free theirs. With none,
     /// nothing would, so it runs here and now, as it always could.
+    ///
+    /// A range waits only while another range here can: a range ends with its call, but a launched
+    /// task may live as long as the program, and a range that waited for one held its call, and
+    /// whatever waited for that, as long (#1817). Run here, it can't park, as a range couldn't
+    /// before a body that may wait ran as a task.
     fn defer_or_run(&mut self, deferred: Deferred, launched: bool) {
-        if !self.ranges.is_empty() {
-            if launched {
-                self.deferred_tasks.push_back(deferred);
-            } else {
-                self.deferred_ranges.push_back(deferred);
-            }
-            return;
+        if launched && !self.ranges.is_empty() {
+            self.deferred_tasks.push_back(deferred);
+        } else if !launched && self.live_ranges > 0 {
+            self.deferred_ranges.push_back(deferred);
+        } else {
+            Self::run_here(deferred);
         }
+    }
+
+    /// Runs what got no stack here and now, on the worker's own.
+    fn run_here(deferred: Deferred) {
         let Deferred { run, mut accounts, .. } = deferred;
         super::threads::swap_accounts(&mut accounts);
         run();
         super::threads::swap_accounts(&mut accounts);
     }
 
-    /// Starts what's waiting for a stack, now that a task here has ended: launched tasks first.
+    /// Starts what's waiting for a stack, now that a task here has ended: launched tasks first. A
+    /// range that still gets none runs here once no range is left to free one, as `defer_or_run`
+    /// would run it, so a stack a launched task took doesn't leave it waiting for good.
     fn start_deferred(&mut self) {
         while let Some(deferred) = self.deferred_tasks.pop_front() {
             if let Err(deferred) = self.try_start(deferred) {
                 self.deferred_tasks.push_front(deferred);
-                return;
+                break;
             }
         }
         while self.live_ranges < MOST_RANGES
             && let Some(deferred) = self.deferred_ranges.pop_front()
         {
             if let Err(deferred) = self.try_start(deferred) {
+                if self.live_ranges == 0 {
+                    Self::run_here(deferred);
+                    continue;
+                }
                 self.deferred_ranges.push_front(deferred);
                 return;
             }

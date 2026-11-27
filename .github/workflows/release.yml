@@ -177,14 +177,20 @@ jobs:
             env PATH="$reach" RUSTUP_HOME="$RUNNER_TEMP/no-rustup" CARGO_HOME="$RUNNER_TEMP/no-cargo" \
               FENNEC_HOME="$RUNNER_TEMP/fennec-home" "$@"
           }
+          # What each program printed is read by an assignment, which fails the step when the
+          # program does: inside `[ "$( )" = … ]`, or piped to `sort`, its exit was lost.
           try "$fennec" build "$source/hello.fen" -o hello
-          [ "$(try ./hello)" = "$(cat "$source/hello.out")" ]
+          printed=$(try ./hello)
+          [ "$printed" = "$(cat "$source/hello.out")" ]
           try "$fennec" build --release "$source/hello.fen" -o hello_release
-          [ "$(try ./hello_release)" = "$(cat "$source/hello.out")" ]
+          printed=$(try ./hello_release)
+          [ "$printed" = "$(cat "$source/hello.out")" ]
           try "$fennec" build "$source/parallel_loops.fen" -o threads
-          [ "$(try ./threads | sort)" = "$(sort "$source/parallel_loops.out")" ]
+          printed=$(try ./threads)
+          [ "$(sort <<< "$printed")" = "$(sort "$source/parallel_loops.out")" ]
           try "$fennec" build --release "$source/parallel_loops.fen" -o threads_release
-          [ "$(try ./threads_release | sort)" = "$(sort "$source/parallel_loops.out")" ]
+          printed=$(try ./threads_release)
+          [ "$(sort <<< "$printed")" = "$(sort "$source/parallel_loops.out")" ]
           # On Linux, a release build asks for no loader, so it runs with nothing from the machine.
           if [ "$RUNNER_OS" = Linux ]; then
             for program in hello_release threads_release; do
@@ -314,7 +320,8 @@ jobs:
           for again in second/*; do
             archive="${again#second/}"
             if cmp -s "first/$archive" "$again"; then
-              echo "the same: $archive $(sha256sum < "$again" | cut -c1-16)"
+              sum=$(sha256sum < "$again")
+              echo "the same: $archive ${sum:0:16}"
               continue
             fi
             differ=1

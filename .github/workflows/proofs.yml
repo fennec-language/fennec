@@ -57,9 +57,9 @@ jobs:
           cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz
           # With threads, and each way again with the heap audit in it, for the audit's step.
           for features in threads audit threads,audit; do
-            dir="target/$(echo "$features" | tr , -)"
+            dir="target/${features//,/-}"
             cargo build --release --locked -p fennec-runtime --features "$features" --target-dir "$dir"
-            cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_$(echo "$features" | tr , _).a"
+            cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_${features//,/_}.a"
           done
       - name: Build and run every example, kit and kernel, both ways
         id: builds
@@ -159,7 +159,8 @@ jobs:
             # The tests that failed by name, on a line of their own that `nightly-report.sh` reads.
             if [ -s failed-tests.txt ]; then
               echo
-              echo "Failed tests: $(sed 's/: .*//' failed-tests.txt | paste -sd ' ' - | sed 's/ /, /g')"
+              failed=$(sed 's/: .*//' failed-tests.txt | paste -sd ' ' - | sed 's/ /, /g')
+              echo "Failed tests: $failed"
             fi
             echo
             [ -f report.md ] && cat report.md

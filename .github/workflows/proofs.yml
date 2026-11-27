@@ -54,12 +54,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtime libraries and the fuzzer
         run: |
-          cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz
+          cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz -p fennec-oracle
           # With threads, and each way again with the heap audit in it, for the audit's step.
           for features in threads audit threads,audit; do
-            dir="target/$(echo "$features" | tr , -)"
+            dir="target/${features//,/-}"
             cargo build --release --locked -p fennec-runtime --features "$features" --target-dir "$dir"
-            cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_$(echo "$features" | tr , _).a"
+            cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_${features//,/_}.a"
           done
       - name: Build and run every example, kit and kernel, both ways
         id: builds
@@ -79,6 +79,15 @@ jobs:
         id: oracle_share
         if: always()
         run: ./target/release/fennec-fuzz oracle --seed "$GITHUB_RUN_ID" --inputs 200 | tee oracle-share.txt
+      # The oracle's tests hold every example to one of its lists, so the share can't drop without
+      # a line in a PR. The report gives the share each morning, and names the gaps still to build.
+      - name: Count the examples the oracle runs
+        id: oracle_examples
+        if: always()
+        run: |
+          ./target/release/fennec-oracle coverage examples | tail -n 2 \
+            | sed -e '1s/^/examples: the oracle /' -e '2s/^useful set: /examples: of those it should model, it runs /' \
+            | tee oracle-examples.txt
       # Built for a heap audit, each program's heap is checked as it ends: a block left with no
       # holder, or counted otherwise than its holders, fails the program that made it. No daemon,
       # since one started earlier wouldn't have the switch in its environment.
@@ -159,7 +168,8 @@ jobs:
             # The tests that failed by name, on a line of their own that `nightly-report.sh` reads.
             if [ -s failed-tests.txt ]; then
               echo
-              echo "Failed tests: $(sed 's/: .*//' failed-tests.txt | paste -sd ' ' - | sed 's/ /, /g')"
+              failed=$(sed 's/: .*//' failed-tests.txt | paste -sd ' ' - | sed 's/ /, /g')
+              echo "Failed tests: $failed"
             fi
             echo
             [ -f report.md ] && cat report.md
@@ -167,7 +177,10 @@ jobs:
             echo "## Fuzzing"
             # A step skipped leaves no file, and a grep that finds nothing exits 1: neither stops
             # the report, which `pipefail` would otherwise.
-            { grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck|the oracle ran" fuzz.txt programs.txt oracle-share.txt audited.txt audited-replay.txt 2>/dev/null || true; } | sed 's/^/- /'
+            { grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck" fuzz.txt programs.txt audited.txt audited-replay.txt 2>/dev/null || true; } | sed 's/^/- /'
+            echo
+            echo "## What the oracle checks"
+            { cat oracle-share.txt oracle-examples.txt 2>/dev/null || true; } | sed 's/^/- /'
           } > nightly.md
           cat nightly.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the report

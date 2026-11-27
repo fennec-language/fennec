@@ -1,0 +1,29 @@
+# For the test that `serve` answers a request its handler failed on with a 500: the failure goes
+# to the server's log as one line, its control characters escaped, and the server carries on.
+from std.concurrent import Crashed
+from std.log import Log
+from std.net import NetError, Request, Response, Server
+
+error Refused:
+    Said(words: str)
+
+def respond(request: Request) -> Response fails Refused:
+    if request.path.startswith("/fail"):
+        words = request.query.get("why") else "no reason"
+        fail .Said(words=words)
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, stdout: Stdout):
+    server.serve(respond, log=Log(out=stdout))
+    stdout.print("serve returned")
+
+# Serves HTTP in a task while `main` asks for a path that fails, then one that doesn't, then
+# closes the server, which ends `serve`.
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        with launch(() => serving(server, stdout))?:
+            for path in ["fail%0d%0aINFO%20forged?why=den", "den"]:
+                got = net.get(f"http://127.0.0.1:{server.port}/{path}")?
+                stdout.print(got.status, got.text())
+            server.close()
+    stdout.print("stopped")

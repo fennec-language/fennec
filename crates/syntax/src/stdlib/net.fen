@@ -14,7 +14,9 @@
 
 from std import json
 from std.crypto import Secret
-from std.intrinsics import stop, text_byte, text_part, text_same_at, text_size
+from std.concurrent import Worded
+from std.intrinsics import report, stop, text_byte, text_part, text_same_at, text_size
+from std.log import Log
 from std.url import decode_query, unquote
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
@@ -293,26 +295,63 @@ export shared Server:
     ## `timeout`. A request that's too big, or isn't HTTP, is answered with the 4xx status that
     ## says so, without calling `respond`. Given `until=signals`, it stops when the program's asked
     ## to, as `stop_on` says: requests being answered are finished, within `grace`, and then it
-    ## returns.
-    def serve(
+    ## returns. A function `respond` may fail: the request it failed on is answered 500, saying
+    ## only that the server couldn't answer it, and the connection and the server carry on. The
+    ## failure goes to `log` as an error, or, with no `log`, to standard error as the runtime
+    ## writes a crash's report: its method, its path and the failure's message, on one line.
+    def serve[E: Worded](
         self,
-        respond: Router | (Request) -> Response,
+        respond: Router | (Request) -> Response fails E,
         timeout = 30s,
         until: Signals? = None,
         grace = 20s,
+        log: Log? = None,
     ):
         if until is not None:
             self.stop_on(until, grace=grace)
-        answer = answerer(respond)
+        answer = answerer[E](respond)
         for connection in parallel(self):
-            _ = answer_all(connection, answer, timeout)
+            _ = answer_all(connection, answer, timeout, log)
 
 ## The function `serve` answers each request with: the one it was given, or its router's.
-def answerer(respond: Router | (Request) -> Response) -> (Request) -> Response:
+def answerer[E: Worded](
+    respond: Router | (Request) -> Response fails E,
+) -> (Request) -> Response fails E:
     if respond is Router:
         router = respond
         return (request) => router.respond(request)
     return respond
+
+## What a server answers a request its function failed on with, saying nothing of why: the
+## failure's words are for the program's log, not for the client.
+COULDNT_ANSWER = "the server couldn't answer this request"
+
+## The most characters of a server's line about a failed request, then `…`: the path and the
+## failure's words can come from what a client sent, as long as it liked.
+MOST_FAILURE_LINE = 1_000
+
+## What `respond` answers `request` with, or, when it fails, a 500 with `COULDNT_ANSWER`, the
+## failure told as `tell_failure` says.
+def answered[E: Worded](
+    respond: (Request) -> Response fails E,
+    request: Request,
+    log: Log?,
+) -> Response:
+    response = respond(request) except why:
+        tell_failure(log, request, why.message())
+        return Response(status=500, body=COULDNT_ANSWER.encode())
+    return response
+
+## Says that a request failed, `why`, in one line: to `log` as an error, which writes its control
+## characters as escapes, or with none to standard error as `report` writes it. The line is cut
+## to `MOST_FAILURE_LINE` characters.
+def tell_failure(log: Log?, request: Request, why: str):
+    whole = f"{request.method} {request.path} failed: {why}"
+    line = whole if len(whole) <= MOST_FAILURE_LINE else whole[0:MOST_FAILURE_LINE] + "…"
+    if log is not None:
+        log.error(line)
+    else:
+        report(line)
 
 ## An HTTP request a server was sent: its method, like `"GET"`, its path without the query, the
 ## query's parameters, its headers by their names in lower case, and its body. `raw_path` is the
@@ -535,17 +574,23 @@ enum RequestRead:
     Done
 
 ## Answers each request on a connection until it's closed or asks to be.
-def answer_all(
+def answer_all[E: Worded](
     connection: Connection,
-    respond: (Request) -> Response,
+    respond: (Request) -> Response fails E,
     timeout: Duration,
+    log: Log?,
 ) fails NetError:
     while True:
         match next_request(connection, timeout)?:
             case .Got(request, keep):
                 # A server draining answers this request, then closes.
                 still = keep and not connection.draining()
-                write_response(connection, respond(request), still, request.method == "HEAD")?
+                write_response(
+                    connection,
+                    answered(respond, request, log),
+                    still,
+                    request.method == "HEAD",
+                )?
                 if not still:
                     connection.close()
                     return

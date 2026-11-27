@@ -2563,7 +2563,7 @@ fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
         let given = fennec_syntax::Arg { name: None, is_mut: false, value: name(&held, at) };
         stmt_value(Expr { kind: ExprKind::Call { callee, args: vec![given] }, span: here(at) })
     };
-    Some((stmt(StmtKind::Def(def), at), call("crash_cleanup"), call("crash_cleanup_done")))
+    Some((stmt(StmtKind::Def(Box::new(def)), at), call("crash_cleanup"), call("crash_cleanup_done")))
 }
 
 /// A cleanup as a crash runs it, giving back how it failed, as text, for the runtime to note on
@@ -2600,7 +2600,7 @@ fn as_written(cleanup: &[Stmt], held: &str, at: Span) -> Vec<Stmt> {
         call
     };
     let nothing = Expr { kind: ExprKind::Str(String::new()), span: here(at) };
-    vec![stmt(StmtKind::Def(def), at), stmt_value(ran), stmt(StmtKind::Return(Some(nothing)), at)]
+    vec![stmt(StmtKind::Def(Box::new(def)), at), stmt_value(ran), stmt(StmtKind::Return(Some(nothing)), at)]
 }
 
 /// Whether `body` can fail: it has a `?` or a `fail` of its own, not one in a function or lambda

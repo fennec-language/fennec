@@ -19,6 +19,19 @@ pub(crate) const PANICKED: u8 = 4;
 /// How much CPU time one input may take before it counts as stuck, unless its target says
 /// otherwise. It's CPU time, not time on the clock, so a busy machine doesn't make an input stuck.
 pub(crate) const STUCK: Duration = Duration::from_secs(10);
+/// How many times its own limit an input may take when the fuzzer is built with `AddressSanitizer`:
+/// an allowance for the sanitizer's slowdown, not a raised limit. Built without one, it's 1.
+///
+/// Measured in Fennec's Linux VM, 400 ordinary inputs of each target took 4 to 27 times the CPU
+/// time under `AddressSanitizer` that they took in a build with the checked job's flags. The three
+/// inputs an hour of it called stuck, a formatter input nesting 20,000 deep among them, finished
+/// alone in 4.1 to 12.3 s, where a plain build takes 0.1 to 0.6 s. Ten times leaves those 8 times
+/// room, and still stops a real hang at 100 s, inside a target's 240-second run.
+#[cfg(address_sanitizer)]
+pub(crate) const SANITIZER_ALLOWANCE: u32 = 10;
+/// See the `AddressSanitizer` build's.
+#[cfg(not(address_sanitizer))]
+pub(crate) const SANITIZER_ALLOWANCE: u32 = 1;
 /// How many times its CPU time a process may go on the clock before it counts as stuck anyway:
 /// one waiting on something forever uses no CPU time at all.
 const WAITING_TIMES: u32 = 30;

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::supervise::{Failure, STUCK, said_in, watch};
+use crate::supervise::{Failure, SANITIZER_ALLOWANCE, STUCK, said_in, watch};
 
 /// How long to spend cutting one input down.
 const MOST_TIME: Duration = Duration::from_secs(60);
@@ -22,7 +22,7 @@ fn fails(fennec_fuzz: &Path, target: &str, input: &[u8], wanted: Failure, file: 
         .stderr(File::create(&said).ok()?)
         .spawn();
     let mut child = child.ok()?;
-    let stuck = crate::targets::find(target).map_or(STUCK, |target| target.stuck);
+    let stuck = crate::targets::find(target).map_or(STUCK, |target| target.stuck) * SANITIZER_ALLOWANCE;
     let failure = watch(&mut child, stuck, None, crate::supervise::MOST_KILOBYTES, || false);
     crate::llvm::forget(child.id());
     (failure == Some(wanted)).then(|| said_in(&said, 0))

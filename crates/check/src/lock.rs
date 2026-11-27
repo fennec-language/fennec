@@ -31,6 +31,15 @@ pub(crate) fn shared(held: Type) -> Type {
     Type::Generic(SHARED.to_owned(), vec![held])
 }
 
+/// Why a `shared` value can't hold a type with a type parameter in it, as `shared list[T]` in a
+/// generic struct or function: each `shared` type is made into a declaration of its own when the
+/// program's lowered, one for each type it's written with, and a generic's `T` stands for several.
+pub(crate) fn shared_of_a_type_parameter(span: Span) -> Diagnostic {
+    Diagnostic::new("a `shared` value of a type parameter, as `shared list[T]`, isn't built yet", span).with_help(
+        "write out the type it holds, as `shared list[int]`, outside generic code, and pass the shared value to what needs it",
+    )
+}
+
 impl FnCx<'_> {
     /// `shared scores = Scores()`: `scores` is a new `shared` value holding what's given.
     pub(crate) fn shared_declaration(&mut self, name: &str, value: &Expr, at: Span) {
@@ -43,6 +52,9 @@ impl FnCx<'_> {
             );
         }
         let held = self.checker.settled(&ty);
+        if held.has_params() {
+            self.error(shared_of_a_type_parameter(value.span));
+        }
         // What a `shared` value holds is kept where every task can reach it, and a generator
         // can't be kept there yet.
         if self.holds_generator(&held, &mut Vec::new()) {

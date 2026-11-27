@@ -194,9 +194,17 @@ impl<'a> Analyzer<'_, 'a> {
         match word {
             "case" => at == 0 && block == BlockKind::MatchBody,
             "where" => after_operand && self.stack.is_empty() && block == BlockKind::TypeBody,
+            // As the parser has it: a match starts only where a whole expression does, so after an
+            // operator, as in `a == match[i]`, it's a name.
             "match" => {
                 let next = self.tok(at + 1).map_or("", |next| next.text);
-                !after_operand && !matches!(next, "" | "=" | "(" | "." | "," | ")" | ":")
+                let before = at.checked_sub(1).and_then(|before| self.tok(before));
+                let after_operator = before.is_some_and(|before| match before.kind {
+                    TokenKind::Punct => OPERATORS.contains(&before.text),
+                    TokenKind::Keyword => matches!(before.text, "and" | "or" | "not" | "in" | "is"),
+                    _ => false,
+                });
+                !after_operand && !after_operator && !matches!(next, "" | "=" | "(" | "." | "," | ")" | ":")
             }
             _ => false,
         }
@@ -278,6 +286,10 @@ fn space_between(prev: Role, next: Role) -> bool {
 }
 
 /// Whether a token can end a value, so that `(` after it is a call and `-` is subtraction.
+/// The operators an operand follows, binary or unary, after which `match` is a name.
+const OPERATORS: [&str; 19] =
+    ["==", "!=", "<", "<=", ">", ">=", "|", "^", "&", "<<", ">>", "+", "-", "*", "/", "//", "%", "**", "~"];
+
 fn ends_operand(role: Role) -> bool {
     matches!(role, Role::Operand | Role::Close | Role::Postfix)
 }

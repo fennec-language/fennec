@@ -445,6 +445,14 @@ impl Run {
             pool::range_starts(self.lent.read().unwrap_or_else(PoisonError::into_inner).clone());
             pool::range_off_its_caller_starts(&self.calling)
         });
+        // In a recording or a replay, what was running printed goes out first, under its own name,
+        // as the range's goes out under the range's as it ends: a range run on its caller's thread
+        // wrote what its caller had kept as its own, so where that was cut depended on whether the
+        // caller had waited, which a replay doesn't. A replay then held the caller's bytes for a
+        // burst its range wrote, and wrote nothing more (the nightly's random programs).
+        if crate::replay::active() {
+            super::write_kept_output();
+        }
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();

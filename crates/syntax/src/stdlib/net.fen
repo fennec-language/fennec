@@ -105,6 +105,7 @@ export struct Certificate:
 ## cut into each other. To send many tasks' messages down one connection, as a chat hub fans out
 ## to its members, give the connection one writer task and have the others send it what to write.
 export shared Connection:
+    @handle
     _handle: int
     ## Which of the program's connections it is, counted from 1 as they're made: what it prints as.
     _label: int
@@ -187,6 +188,7 @@ export struct Packet:
 ## `send_to(data, address)` sends `bytes` or a `str` to an address like `"127.0.0.1:9001"`; and
 ## `close()`.
 export shared UdpSocket:
+    @handle
     _handle: int
     ## Which of the program's UDP sockets it is, counted from 1: what it prints as.
     _label: int
@@ -209,6 +211,7 @@ export shared UdpSocket:
 ## `post` and `request`, and a test's `script` and `requests`. Only `main` and tests are given
 ## one: it can't be made.
 export struct Net:
+    @handle
     _given: int
 
     ## A connection to `host` on `port`, lent for a `with` block and closed when it ends:
@@ -250,6 +253,7 @@ export struct Net:
 ## A TCP port being listened on. Looping over it gives each connection as it arrives, and
 ## `accept()` waits for the next one.
 export shared Server:
+    @handle
     _handle: int
     ## Which of the program's servers it is, counted from 1: what it prints as.
     _label: int

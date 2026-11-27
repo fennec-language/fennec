@@ -37,6 +37,7 @@ from std.intrinsics import bytes_builder, bytes_push_bytes, bytes_push_text
 ## no new line
 ## ```
 export struct Stdout:
+    @handle
     _given: int
 
     ## Standard output as a `Writer`, for code written for any stream: `stdout.writer()`.
@@ -61,6 +62,7 @@ export struct Stdout:
 ##         stdout.print(line.upper())
 ## ```
 export struct Stdin:
+    @handle
     _given: int
 
     ## Standard input as a `Reader`, for code written for any stream: `stdin.reader()`.
@@ -131,6 +133,7 @@ export struct StdinReader:
 ## stderr.write_line("disk almost full")?
 ## ```
 export struct Stderr:
+    @handle
     _given: int
 
 ## Standard output as a `Writer`, from `stdout.writer()`. What's written goes out as `print` and

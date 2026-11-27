@@ -63,6 +63,30 @@ const CAPABILITIES: [(&str, &str); 11] = [
     ("Signals", "a `Signals`"),
 ];
 
+/// What to do instead of saving what holds a handle.
+pub(crate) const HANDLE_INSTEAD: &str = "what the runtime keeps open for this run, as a file, a channel's end or a database, means nothing \
+     saved and can't be made from text: save what it's made from, like a path, and open it again";
+
+/// Whether a type holds a handle: what the runtime keeps for this run, as a file's or a channel's,
+/// which std marks `@handle`. Nothing that holds one, in a field or a collection, through a
+/// generic or another type, is saved or loaded, so a handle is never made from text.
+/// A capability holds one too, and is refused in its own words, to pass it down from `main`.
+pub(crate) fn holds_handle(program: &crate::program::Program, name: &str) -> bool {
+    never_saved(name).is_none()
+        && program.type_info(name).is_some_and(|info| {
+            info.def
+                .fields
+                .iter()
+                .chain(info.def.cases.iter().flat_map(|case| &case.fields))
+                .any(Field::is_handle)
+        })
+}
+
+/// How a message names a type that holds a handle.
+pub(crate) fn handle_named(name: &str) -> String {
+    format!("a `{}`, kept open by the runtime for this run", fennec_syntax::without_kits(name))
+}
+
 /// What to do instead of saving a capability.
 const CAPABILITY_INSTEAD: &str =
     "a capability is handed down from `main`, never saved or loaded: pass it to the code that needs it";
@@ -1033,6 +1057,10 @@ fn stops_in(
     if open.iter().any(|seen| seen == name) || has_both(checker, name) {
         return None;
     }
+    // Asked of the type itself, as `pack.loads[File]` asks: one that holds a handle is what stops.
+    if holds_handle(&checker.program, name) {
+        return Some((path.to_owned(), handle_named(name), name.to_owned(), name.to_owned()));
+    }
     let def = checker.program.type_info(name)?.def.clone();
     open.push(name.to_owned());
     let fields = def.fields.iter().map(|field| (None, field));
@@ -1086,6 +1114,9 @@ fn field_stops(
         Type::Union(members) if members.iter().all(tested_by_name) => {
             members.iter().find_map(|member| field_stops(checker, member, place, (field, owner), open))
         }
+        Type::Named(name) | Type::Generic(name, _) if holds_handle(&checker.program, name) => {
+            stop(handle_named(name))
+        }
         Type::Named(_) | Type::Generic(..) if checker.program.is_shared(ty) => stop("`shared`".to_owned()),
         Type::Named(name) | Type::Generic(name, _) if let Some((what, _)) = never_saved(name) => {
             stop(what.to_owned())
@@ -1133,5 +1164,43 @@ mod tests {
         let missing: Vec<&&str> = taking.iter().filter(|file| !saving.contains(**file)).collect();
         assert!(taking.contains("postgres"), "the modules found were {taking:?}");
         assert_eq!(missing, Vec::<&&str>::new(), "these take a type to save or load, so they turn saving on");
+    }
+
+    /// Std's private `int` fields with no default that aren't handles: plain numbers std's own code
+    /// sets, which a value made from text may hold.
+    const PLAIN_PRIVATE_INTS: [&str; 2] = ["_label", "_width"];
+
+    /// A handle is an `int` the runtime gave, kept in a private field with no default, so every
+    /// such field in std is marked `@handle` or named here as a plain number. A new type holding
+    /// one, as a socket or a timer would, fails this until it's said which it is, so nothing can
+    /// make one from text by loading it.
+    #[test]
+    fn every_private_int_std_keeps_is_a_handle_or_said_to_be_plain() {
+        let mut unsaid = Vec::new();
+        let mut handles = 0;
+        for (file, source) in fennec_syntax::prelude_files() {
+            let module = fennec_syntax::parse_prelude(source).unwrap();
+            for item in &module.items {
+                let (fennec_syntax::Item::Struct(def) | fennec_syntax::Item::Enum(def)) = item else {
+                    continue;
+                };
+                for field in def.fields.iter().chain(def.cases.iter().flat_map(|case| &case.fields)) {
+                    let int = field
+                        .ty
+                        .as_ref()
+                        .is_some_and(|ty| ty.name == "int" && ty.args.is_empty() && !ty.optional);
+                    if !(field.name.starts_with('_') && int && field.default.is_none()) {
+                        continue;
+                    }
+                    if field.is_handle() {
+                        handles += 1;
+                    } else if !PLAIN_PRIVATE_INTS.contains(&field.name.as_str()) {
+                        unsaid.push(format!("{file}: {}.{}", def.name, field.name));
+                    }
+                }
+            }
+        }
+        assert!(handles >= 15, "only {handles} fields are marked `@handle`");
+        assert_eq!(unsaid, Vec::<String>::new(), "mark each `@handle`, or name it in PLAIN_PRIVATE_INTS");
     }
 }

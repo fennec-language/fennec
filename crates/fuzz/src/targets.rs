@@ -433,6 +433,17 @@ pub(crate) const NATIVE: [&str; 20] = [
     "utf8",
 ];
 
+/// `std.net`'s HTTP server built for the heap audit, met on one worker and on four, each stopped
+/// and audited, which runs only when named: it needs the runtimes built with `audit` beside
+/// `fennec`, which only a job that names it builds, and Windows has no `SIGTERM` to stop it with.
+pub(crate) const HTTP_AUDITED: Target = Target {
+    name: "http-audited",
+    corpus: &["crates/fuzz/seeds/http-audited", "crates/fuzz/seeds/http"],
+    tokens: &HTTP,
+    run: crate::http_audited::http_audited,
+    stuck: STUCK,
+};
+
 /// The UTF-8 reader is fuzzed with the bytes it's given, so it has its own way to be run.
 pub(crate) const UTF8: Target =
     Target { name: "utf8", corpus: &["crates/fuzz/seeds/utf8"], tokens: &BYTES, run: utf8, stuck: STUCK };
@@ -493,7 +504,16 @@ pub(crate) const EDITS: Target = Target {
 pub(crate) fn find(name: &str) -> Option<&'static Target> {
     TARGETS
         .iter()
-        .chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY, &KILLED_WRITES, &FAULT_WRITES, &EDITS])
+        .chain([
+            &UTF8,
+            &LLVM,
+            &RANDOM_PROGRAMS,
+            &REPLAY,
+            &KILLED_WRITES,
+            &FAULT_WRITES,
+            &EDITS,
+            &HTTP_AUDITED,
+        ])
         .find(|target| target.name == name)
 }
 
@@ -696,11 +716,11 @@ fn utf8(input: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LLVM, TARGETS, UTF8, find};
+    use super::{HTTP_AUDITED, LLVM, TARGETS, UTF8, find};
 
     #[test]
     fn every_target_can_be_found_by_name() {
-        for target in TARGETS.iter().chain([&UTF8, &LLVM]) {
+        for target in TARGETS.iter().chain([&UTF8, &LLVM, &HTTP_AUDITED]) {
             assert_eq!(find(target.name).map(|found| found.name), Some(target.name));
         }
         assert!(find("no such target").is_none());

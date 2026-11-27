@@ -118,7 +118,6 @@ net.fen: [missing-doc] the exported method `write` has no doc comment
 net.fen: [short-name] `b` is too short to say what it is: write a word
 net.fen: [short-name] `b` is too short to say what it is: write a word
 net.fen: [short-name] `b` is too short to say what it is: write a word
-net.fen: [short-name] `b` is too short to say what it is: write a word
 pack.fen: [missing-doc] the exported struct `Packer` has no doc comment
 pack.fen: [short-name] `ID` is too short to say what it is: write a word
 pack.fen: [short-name] `b` is too short to say what it is: write a word

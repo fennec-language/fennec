@@ -2,6 +2,7 @@
 # shows them apart, and gives its share of the rest as well as of every example. One that comes to
 # run anyway is reported as running, and a test then says to take it off this list.
 std_net.fen | it talks over real sockets
+net_read_head.fen | it reads a head from a connection over real sockets
 capability_only.fen | it runs another program
 std_process.fen | it runs other programs
 std_process_hostile.fen | it runs other programs

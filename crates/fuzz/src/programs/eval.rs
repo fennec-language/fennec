@@ -314,6 +314,9 @@ enum Resolved {
 enum Stop {
     /// A failure the language says stops the program.
     Failed,
+    /// A deadlock, which stops the program where it waits, after what it printed: nothing on the
+    /// way out runs, as a `with` source's `except:` would for a crash (language.md, deadlocks).
+    Deadlocked,
     /// Something the language doesn't promise an outcome for.
     Unsure,
     Break,
@@ -336,7 +339,7 @@ pub(crate) fn run_saying(program: &Program) -> Option<(String, bool, Option<Stri
             machine.out.push_str("done\n");
             Some((machine.out, true, None))
         }
-        Err(Stop::Failed) => Some((machine.out, false, machine.said)),
+        Err(Stop::Failed | Stop::Deadlocked) => Some((machine.out, false, machine.said)),
         // A `break` or `continue` outside a loop never gets written.
         Err(Stop::Unsure | Stop::Break | Stop::Continue) => None,
     }
@@ -2251,9 +2254,10 @@ impl Machine {
                 self.scopes.push(vec![(name.clone(), Value::Tally(start))]);
                 let ran = self.block(body);
                 self.scopes.pop();
-                // The block's end, however it comes, is the source's: a crash runs its `else:`.
+                // The block's end, however it comes, is the source's: a crash runs its `else:`. A
+                // deadlock stops the program where it waits, so the block never ends.
                 let ending = if ran == Err(Stop::Failed) { "undone" } else { "closed" };
-                if ran != Err(Stop::Unsure) {
+                if ran != Err(Stop::Unsure) && ran != Err(Stop::Deadlocked) {
                     let _ = writeln!(self.out, "{ending} {start}");
                 }
                 ran?;
@@ -3269,7 +3273,7 @@ impl Machine {
         }
         self.said =
             Some("a deadlock: every task is waiting for another, and nothing can wake them".to_owned());
-        Err(Stop::Failed)
+        Err(Stop::Deadlocked)
     }
 
     /// What `interfaced{id}` prints: each generic call runs the method of the type it's given,

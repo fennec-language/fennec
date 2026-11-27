@@ -1,0 +1,7 @@
+# The examples the oracle could model but doesn't yet, each with what stops it: `name | why`.
+# tests/examples.rs holds every example to one of runs.txt, never.txt, excluded.txt and this
+# list, so an example it can't run comes in only with a line here, and one that comes to run is
+# taken off for runs.txt. `fennec-oracle coverage` names them as gaps to build.
+fields_of_types.fen | calling `fields`
+operator_overloads.fen | the field `value`, in `Meters`'s two `def /`, one for each right-hand type
+ref_places.fen | `for ref` over a Table

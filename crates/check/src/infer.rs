@@ -48,12 +48,14 @@ impl Checker {
         Type::Var(id)
     }
 
-    /// A type with every settled variable replaced by what it was settled to.
+    /// A type with every settled variable replaced by what it was settled to. What fails with
+    /// nothing, as a `T fails E` whose `E` was settled by a function that can't fail, is the `T`.
     pub(crate) fn settled(&self, ty: &Type) -> Type {
         ty.map(&mut |part| match part {
             Type::Var(id) => {
                 self.slot(*id).and_then(|slot| slot.value.as_ref()).map(|value| self.settled(value))
             }
+            Type::Result(value, error) if error.fails_with_nothing() => Some((**value).clone()),
             _ => None,
         })
     }
@@ -129,7 +131,7 @@ impl Checker {
             // type that takes and gives back what its signature does.
             (Type::Arrow(params, returns), Type::Function(key)) => self.function_fits(params, returns, key),
             (Type::Arrow(p1, r1), Type::Arrow(p2, r2)) if p1.len() == p2.len() => {
-                p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.fits(r1, r2)
+                p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.gives_back_fits(r1, r2)
             }
             // A member goes where its union is wanted, and so does a union of some of its members.
             (Type::Union(members), Type::Union(others)) => others.iter().all(|other| members.contains(other)),
@@ -183,6 +185,30 @@ impl Checker {
         }
     }
 
+    /// Whether `expected` holds, somewhere `actual` holds a function that can't fail, a function
+    /// that can: what's changed with `ref` could then be given one that fails.
+    pub(crate) fn takes_a_failing_function(&mut self, expected: &Type, actual: &Type) -> bool {
+        let (expected, actual) = (self.settled(expected), self.settled(actual));
+        match (&expected, &actual) {
+            (Type::Arrow(_, wanted), Type::Arrow(_, given)) => {
+                let (wanted, given) = (self.settled(wanted), self.settled(given));
+                matches!(wanted, Type::Result(..)) && !matches!(given, Type::Result(..))
+            }
+            (Type::List(a), Type::List(b))
+            | (Type::Buffer(a), Type::Buffer(b))
+            | (Type::Set(a), Type::Set(b))
+            | (Type::Optional(a), Type::Optional(b))
+            | (Type::Array(a, _), Type::Array(b, _)) => self.takes_a_failing_function(a, b),
+            (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
+                self.takes_a_failing_function(k1, k2) || self.takes_a_failing_function(v1, v2)
+            }
+            (Type::Tuple(a), Type::Tuple(b)) | (Type::Generic(_, a), Type::Generic(_, b)) => {
+                a.iter().zip(b).any(|(a, b)| self.takes_a_failing_function(a, b))
+            }
+            _ => false,
+        }
+    }
+
     /// Whether the function `key` can go where a `(params) -> returns` is wanted. A generic
     /// one, or one with a `mut` parameter, can't: a call through the type can't say which types
     /// it stands for or pass anything `mut`.
@@ -195,7 +221,25 @@ impl Checker {
                 .iter()
                 .zip(params)
                 .all(|(param, ty)| !param.is_mut && self.fits(&param.ty, ty))
-            && self.fits(returns, &signature.returns)
+            && self.gives_back_fits(returns, &signature.returns)
+    }
+
+    /// Whether a function giving back `actual` goes where one giving back `expected` is wanted:
+    /// what it gives fits, or it can't fail where one that `fails E` goes, giving what fits the
+    /// `T`. An `E` still to be worked out is then nothing, so a call through it can't fail.
+    fn gives_back_fits(&mut self, expected: &Type, actual: &Type) -> bool {
+        let (expected, actual) = (self.settled(expected), self.settled(actual));
+        match (&expected, &actual) {
+            (Type::Result(value, error), plain)
+                if !matches!(plain, Type::Result(..) | Type::Var(_) | Type::Unknown) =>
+            {
+                if let Type::Var(id) = self.settled(error) {
+                    self.bind(id, &Type::nothing_failed());
+                }
+                self.fits(value, plain)
+            }
+            _ => self.fits(&expected, &actual),
+        }
     }
 
     /// The type of a value that comes from either `a` or `b`, or `None` when they don't fit

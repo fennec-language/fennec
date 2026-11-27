@@ -2217,6 +2217,273 @@ mod tests {
         if from == 0 { 0 } else { connects_and_talks(env, from, to, thread) }
     }
 
+    /// How long the two tests below give a name's lookup, as a connect's timeout.
+    const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
+    /// What the task connecting to a name that never answers found, in each of the two tests below:
+    /// whether it failed as timed out, and how long it took, in milliseconds, or -1 until it ended.
+    static TIMED_OUT: [std::sync::atomic::AtomicBool; 2] =
+        [std::sync::atomic::AtomicBool::new(false), std::sync::atomic::AtomicBool::new(false)];
+    static TOOK_MS: [std::sync::atomic::AtomicI64; 2] =
+        [std::sync::atomic::AtomicI64::new(-1), std::sync::atomic::AtomicI64::new(-1)];
+
+    /// Connects to `name`, whose name server never answers, as `net.connect` does in a task, and
+    /// notes what it found, for the test `test`.
+    fn connects_to_a_name_that_never_answers(name: &str, test: usize) {
+        let started = std::time::Instant::now();
+        let made = crate::stdlib::net::connected_parked(name, 80, LOOKUP_TIMEOUT, None);
+        let took = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        TIMED_OUT[test]
+            .store(matches!(made, Err(crate::stdlib::net::Failure::TimedOut(_))), Ordering::SeqCst);
+        TOOK_MS[test].store(took, Ordering::SeqCst);
+    }
+
+    extern "C" fn connects_to_a_stalled_name(_env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        connects_to_a_name_that_never_answers("never.stalls.test", 0);
+        0
+    }
+
+    /// A task connecting to a name whose name server never answers fails as timed out once the
+    /// connect's timeout has passed, as a connect does: it waited for the lookup as long as the
+    /// system's resolver took, holding a thread every other file's read and database call might
+    /// need, however short its timeout (#1826). The lookup's thread is let go at the end, and its
+    /// answer, which comes after the task gave up, is dropped.
+    #[test]
+    fn a_name_whose_lookup_never_answers_times_out_with_the_connect() {
+        let _alone = crate::stdlib::net::tests::stalls::one_at_a_time();
+        begin();
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, 1, super::Leaf::For(connects_to_a_stalled_name, 0));
+        assert_eq!(run.finish(), 0);
+        crate::stdlib::net::tests::stalls::let_go("never.stalls.test");
+        assert!(TIMED_OUT[0].load(Ordering::SeqCst), "the connect didn't fail as timed out");
+        let took = TOOK_MS[0].load(Ordering::SeqCst);
+        let timeout = i64::try_from(LOOKUP_TIMEOUT.as_millis()).unwrap_or(i64::MAX);
+        assert!(took >= timeout, "it gave up after {took} ms, before its timeout");
+        // Well past its timeout is still well short of the lookup's, which never ends by itself.
+        assert!(took < timeout * 25, "it gave up only after {took} ms");
+        finish();
+    }
+
+    /// Whether the wait after a lookup that was given up on, parked on the lookup's token, was woken
+    /// by anything before its own deadline.
+    static WOKEN_EARLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    static ANSWERED_LATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Gives up on a lookup, then has the lookup answer while this task waits on the token the
+    /// lookup parked on, as a wait would once the tokens had come round again.
+    extern "C" fn gives_up_then_waits_on_the_same_token(
+        _env: i64,
+        _from: i64,
+        _to: i64,
+        _thread: i64,
+    ) -> i64 {
+        let name = "late.stalls.test";
+        connects_to_a_name_that_never_answers(name, 1);
+        crate::embed::serve::reuse_the_last_lookup_s_token();
+        crate::stdlib::net::tests::stalls::let_go(name);
+        // The lookup's answer is in by the time this parks, and a wake for its token with it, if
+        // one was sent: the worker reads its mail only once this has parked.
+        let answered =
+            crate::stdlib::net::tests::stalls::answered_within(name, std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        ANSWERED_LATE.store(answered, Ordering::SeqCst);
+        let token = crate::embed::serve::next_token();
+        let parked = crate::embed::serve::park_on(token, Some(std::time::Instant::now() + LOOKUP_TIMEOUT));
+        WOKEN_EARLY.store(!matches!(parked, crate::embed::serve::Parked::TimedOut), Ordering::SeqCst);
+        0
+    }
+
+    /// A lookup's answer that comes after its task gave up wakes nothing, even a wait that parked on
+    /// the same token since, as one would once the tokens had come round again: it'd be woken as
+    /// if what it waited for had come.
+    #[test]
+    fn a_late_lookup_wakes_no_later_wait_on_its_token() {
+        let _alone = crate::stdlib::net::tests::stalls::one_at_a_time();
+        begin();
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let leaf = super::Leaf::For(gives_up_then_waits_on_the_same_token, 0);
+        let run = super::each_on_pool(run, pool, 1, leaf);
+        assert_eq!(run.finish(), 0);
+        assert!(TIMED_OUT[1].load(Ordering::SeqCst), "the connect didn't fail as timed out");
+        assert!(ANSWERED_LATE.load(Ordering::SeqCst), "the lookup never answered");
+        assert!(!WOKEN_EARLY.load(Ordering::SeqCst), "the late lookup woke the wait on its token");
+        finish();
+    }
+
+    /// How many of the tasks connecting at once to a name that never answers failed as timed out,
+    /// and the thread they ran on.
+    static CROWD_TIMED_OUT: AtomicUsize = AtomicUsize::new(0);
+    static CROWD_THREAD: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
+
+    extern "C" fn connects_with_a_crowd(_env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        let made = crate::stdlib::net::connected_parked("crowd.stalls.test", 80, LOOKUP_TIMEOUT, None);
+        if matches!(made, Err(crate::stdlib::net::Failure::TimedOut(_))) {
+            CROWD_TIMED_OUT.fetch_add(1, Ordering::SeqCst);
+        }
+        *CROWD_THREAD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(std::thread::current().id());
+        0
+    }
+
+    /// More tasks than the lookups' pool has threads, connecting at once to a name that never
+    /// answers, each fail as timed out, holding no more than the pool's threads: those past it
+    /// wait their turn parked. Once the stalled lookups end, a lookup whose task gave up before
+    /// its turn came is dropped unmade, and every lookup the tasks handed over is counted done.
+    #[test]
+    fn more_lookups_than_the_pool_has_threads_wait_their_turn_and_give_up_on_time() {
+        let _alone = crate::stdlib::net::tests::stalls::one_at_a_time();
+        begin();
+        let most = super::super::blocking::MOST_LOOKUPS;
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, most + 4, super::Leaf::For(connects_with_a_crowd, 0));
+        assert_eq!(run.finish(), 0);
+        let held = super::super::blocking::lookup_threads();
+        crate::stdlib::net::tests::stalls::let_go("crowd.stalls.test");
+        assert_eq!(CROWD_TIMED_OUT.load(Ordering::SeqCst), most + 4, "every task timed out");
+        assert_eq!(held, most, "the stalled lookups held {held} threads, not the pool's {most}");
+        let thread =
+            CROWD_THREAD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).expect("a task ran");
+        let by = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while crate::embed::serve::blocking_jobs_of(thread).0 != 0 && std::time::Instant::now() < by {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let (left, handed) = crate::embed::serve::blocking_jobs_of(thread);
+        assert_eq!(left, 0, "{left} of the {handed} lookups handed over are still counted");
+        finish();
+    }
+
+    /// What a run of [`a_stalled_lookup_recorded_or_replayed`] is: `record` or `replay`, the log,
+    /// and the file it says what it saw in.
+    const LOOKUP_ROLE: &str = "FENNEC_TEST_LOOKUP_ROLE";
+    const LOOKUP_LOG: &str = "FENNEC_TEST_LOOKUP_LOG";
+    const LOOKUP_SAW: &str = "FENNEC_TEST_LOOKUP_SAW";
+
+    /// What the task connecting through `Net`, recorded or replayed, was given, and its thread.
+    static REPLAYED_CONNECT: Mutex<Option<(String, std::thread::ThreadId)>> = Mutex::new(None);
+
+    /// `net.connect` to a name that never answers, as a program's task calls it through `Net`,
+    /// recorded or replayed as the capability's call is.
+    extern "C" fn connects_through_net(_env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        let at = Span::default();
+        let args = [Value::str("replayed.stalls.test"), Value::Int(80)];
+        let made = crate::replay::value(format_args!("Net._connect"), at, || {
+            crate::stdlib::net::real_net("_connect", &args, Some(LOOKUP_TIMEOUT), at)
+        });
+        *REPLAYED_CONNECT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((format!("{made:?}"), std::thread::current().id()));
+        0
+    }
+
+    /// A recording or a replay of a task connecting to a name that never answers, as the
+    /// environment says, saying what it saw into a file: what the connect gave, how many lookups
+    /// its thread handed over, and any divergence. Run by
+    /// [`a_lookup_that_timed_out_replays_as_timed_out_with_no_lookup`], each in a process of its
+    /// own; on its own, it does nothing.
+    #[test]
+    #[ignore = "a recording or a replay needs a process of its own"]
+    fn a_stalled_lookup_recorded_or_replayed() {
+        let (Some(role), Some(log), Some(saw_into)) = (
+            std::env::var_os(LOOKUP_ROLE),
+            std::env::var_os(LOOKUP_LOG).map(std::path::PathBuf::from),
+            std::env::var_os(LOOKUP_SAW),
+        ) else {
+            return;
+        };
+        let recording = role == "record";
+        if recording {
+            crate::replay::start_log(&log, b"lookup").expect("a log to record into");
+            crate::replay::record_to(&log).expect("a recording");
+        } else {
+            crate::replay::replay_from(&log).expect("a replay");
+        }
+        let _alone = crate::stdlib::net::tests::stalls::one_at_a_time();
+        begin();
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, 1, super::Leaf::For(connects_through_net, 0));
+        assert_eq!(run.finish(), 0);
+        crate::stdlib::net::tests::stalls::let_go("replayed.stalls.test");
+        if recording {
+            crate::replay::ended();
+        }
+        let (made, thread) = REPLAYED_CONNECT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("the task connected");
+        let mut said = vec![made, format!("handed {}", crate::embed::serve::blocking_jobs_of(thread).1)];
+        if let Some(why) = crate::replay::divergence() {
+            said.push(format!("diverged: {why}"));
+        }
+        if let Some(why) = crate::replay::unfinished().filter(|_| !recording) {
+            said.push(format!("unfinished: {why}"));
+        }
+        finish();
+        std::fs::write(saw_into, said.join("\n")).expect("somewhere to say what it saw");
+    }
+
+    /// Runs [`a_stalled_lookup_recorded_or_replayed`] in a process of its own, on one worker, as
+    /// `role`: what it saw. It's given 60 seconds.
+    fn lookup_ran(role: &str, log: &std::path::Path) -> String {
+        let saw = log.with_extension(format!("{role}-saw"));
+        let _ = std::fs::remove_file(&saw);
+        let mut child = std::process::Command::new(std::env::current_exe().expect("this test's binary"))
+            .args([
+                "--exact",
+                "embed::parallel::tests::a_stalled_lookup_recorded_or_replayed",
+                "--ignored",
+                "--quiet",
+            ])
+            .env(LOOKUP_ROLE, role)
+            .env(LOOKUP_LOG, log)
+            .env(LOOKUP_SAW, &saw)
+            .env("FENNEC_THREADS", "1")
+            .spawn()
+            .expect("this test's binary runs");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("the run can be waited for") {
+                break status;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the {role} was still running after 60 s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(status.success(), "the {role} failed: {status}");
+        let said = std::fs::read_to_string(&saw).unwrap_or_default();
+        let _ = std::fs::remove_file(&saw);
+        said
+    }
+
+    /// Whether a name's lookup was given up on depends on time, so it's an outside input: a
+    /// recording logs the connect it was in as `Net`'s call, timed out, and a replay gives that
+    /// back without connecting, so it never hands a lookup over, nor waits for one.
+    #[test]
+    fn a_lookup_that_timed_out_replays_as_timed_out_with_no_lookup() {
+        let folder = std::env::temp_dir().join(format!("fennec-lookup-replay-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder for the log");
+        let log = folder.join("lookup.log");
+        let recorded = lookup_ran("record", &log);
+        let replayed = lookup_ran("replay", &log);
+        let _ = std::fs::remove_dir_all(&folder);
+        let (Some((recorded_made, recorded_rest)), Some((replayed_made, replayed_rest))) =
+            (recorded.split_once('\n'), replayed.split_once('\n'))
+        else {
+            panic!("the runs said too little:\n{recorded}\n--\n{replayed}");
+        };
+        assert!(recorded_made.contains("TimedOut"), "the recorded connect gave {recorded_made}");
+        assert_eq!(replayed_made, recorded_made, "what the replayed connect gave");
+        assert_eq!(recorded_rest, "handed 1", "the recording's lookup, and nothing wrong");
+        assert_eq!(replayed_rest, "handed 0", "the replay's lookups, and nothing wrong");
+    }
+
     /// A server that takes two connections and answers neither until both have sent a line.
     fn answers_once_both_have_spoken() -> u16 {
         use std::io::{BufRead as _, Write as _};

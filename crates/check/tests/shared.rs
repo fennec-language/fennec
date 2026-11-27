@@ -115,6 +115,32 @@ fn a_lock_body_takes_no_other_lock() {
     assert_eq!(problems(&text), ["this `lock` waits for another lock while `held` is locked @ bank"]);
 }
 
+/// A `shared` value of a type with a type parameter in it, as `shared list[T]` in a generic struct's
+/// field, a generic function's parameter or a `shared` value it makes, is refused as not built
+/// yet (#2650). Before, each checked and stopped once rewritten for running: "internal error: ...
+/// `T` isn't a type". One written out, inside generic code or not, is fine.
+#[test]
+fn a_shared_value_of_a_type_parameter_isnt_built_yet() {
+    let not_built = "a `shared` value of a type parameter, as `shared list[T]`, isn't built yet";
+    for (program, at) in [
+        ("struct Pool[T]:\n    items: shared list[T]\n", "shared list[T]"),
+        ("struct Rooms[T]:\n    by_name: dict[str, shared T]\n", "shared T"),
+        (
+            "def add_first[T](items: shared list[T], first: T):\n    lock items as ref held:\n        held.append(first)\n    return\n",
+            "shared list[T]",
+        ),
+        (
+            "def held_one[T](item: T) -> int:\n    shared kept = [item]\n    lock kept as held:\n        return len(held)\n",
+            "[item]",
+        ),
+    ] {
+        assert_eq!(problems(program), [format!("{not_built} @ {at}")], "{program}");
+    }
+    let written_out = "struct Pool[T]:\n    first: T\n    counts: shared list[int]\n\n\
+                       def counted[T](pool: Pool[T]) -> int:\n    lock pool.counts as held:\n        return len(held)\n";
+    assert_eq!(problems(written_out), Vec::<String>::new());
+}
+
 #[test]
 fn a_shared_value_cant_be_a_constant() {
     let text = format!(

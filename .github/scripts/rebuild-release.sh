@@ -11,7 +11,9 @@
 # when every archive it built is the same, and says which aren't.
 #
 # It builds what this machine runs without emulation: Arm Linux on an Arm machine, x86-64 Linux on
-# an x86-64 one. The rest rest on CI's `Built twice, the same` check. It needs git and Docker; set
+# an x86-64 one, and on an Arm Mac the Arm Mac's too, natively, with the Xcode the tag pins in
+# `release-env.sh`; without that Xcode it says so, and leaves the Mac's out. What it didn't build
+# it names, as resting on CI's `Built twice, the same` check. It needs git and Docker; set
 # `REBUILD_DOCKER` to run Docker another way, like `docker --context colima-fennec`. The clone goes
 # in `REBUILD_DIR`, by default `~/.fennec-rebuild`, which Docker on a Mac can see.
 set -euo pipefail
@@ -65,6 +67,28 @@ target/dist/release/fennec-dist manifest launcher $version fennec-launcher-v$ver
 # The containers build as root: what they made is handed back, so it can be read and removed.
 chown -R $(id -u):$(id -g) $work"
 
+# On an Arm Mac, the Arm Mac's archives, from a clone of their own, so its build shares no folder
+# with Linux's, with the Xcode the tag pins. A tag that pins none, or a Mac without that Xcode, is
+# said plainly, and the archives are left to CI's check.
+if [ "$(uname -s)-$(uname -m)" = Darwin-arm64 ]; then
+  mac="$work/fennec-mac"
+  git clone --quiet "$src" "$mac"
+  if ! grep -q release_xcode_build "$mac/.github/scripts/release-env.sh"; then
+    echo "rebuild: the Arm Mac's archives aren't rebuilt here: $tag pins no Xcode to build them with" >&2
+  elif ! why=$(cd "$mac" && bash -c 'source .github/scripts/release-env.sh aarch64-apple-darwin' 2>&1); then
+    echo "rebuild: the Arm Mac's archives aren't rebuilt here: $why" >&2
+  else
+    echo "rebuild: building aarch64-apple-darwin here" >&2
+    (
+      cd "$mac" &&
+        .github/scripts/release-build.sh aarch64-apple-darwin &&
+        cargo build --quiet --release --locked -p fennec-dist --target-dir target/dist &&
+        target/dist/release/fennec-dist manifest toolchain "$version" "fennec-v$version-aarch64-apple-darwin.tar.gz" | tail -n +2 >> "$src/rebuilt-toolchain.manifest" &&
+        target/dist/release/fennec-dist manifest launcher "$version" "fennec-launcher-v$version-aarch64-apple-darwin.tar.gz" | tail -n +2 >> "$src/rebuilt-launcher.manifest"
+    ) || { echo "rebuild: the Arm Mac's build failed; it's kept in $mac" >&2; exit 1; }
+  fi
+fi
+
 # Each archive's line, rebuilt, has to be a line of the manifest that's to be signed.
 differ=0
 for pair in "$src/rebuilt-toolchain.manifest $toolchain_manifest" "$src/rebuilt-launcher.manifest $launcher_manifest"; do
@@ -82,9 +106,13 @@ for pair in "$src/rebuilt-toolchain.manifest $toolchain_manifest" "$src/rebuilt-
       echo "  manifest: $(grep -F " $name " "$manifest" || echo "(no line for it)")"
     fi
   done < <(tail -n +2 "$rebuilt")
+  # What the manifest has that wasn't built here.
+  while read -r _ name _; do
+    grep -qF " $name " "$rebuilt" || echo "not rebuilt here, so resting on CI's built-twice check: $name"
+  done < <(tail -n +2 "$manifest")
 done
 if [ "$differ" = 0 ]; then
-  echo "rebuild: every archive built here from $tag ($commit) is the manifest's; the rest rest on CI's built-twice check"
+  echo "rebuild: every archive built here from $tag ($commit) is the manifest's"
   rm -rf "$work"
 else
   echo "rebuild: don't sign: what $tag builds here isn't what the manifest names. The build is kept in $work" >&2

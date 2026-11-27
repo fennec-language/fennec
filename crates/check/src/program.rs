@@ -205,6 +205,14 @@ impl Program {
         for item in &module.items {
             match item {
                 Item::Function(def) => {
+                    let first = self
+                        .functions
+                        .get(&def.name)
+                        .filter(|first| !first.prelude)
+                        .map(|first| first.def.span);
+                    if self.defined_again(prelude, "function", &def.name, def.span, first) {
+                        continue;
+                    }
                     let entry = FnEntry {
                         def: hold.function(def),
                         owner: None,
@@ -215,9 +223,19 @@ impl Program {
                     };
                     self.functions.insert(def.name.clone(), entry);
                 }
-                Item::Struct(def) => self.add_type(def, TypeKind::Struct, prelude, hold),
-                Item::Enum(def) => self.add_type(def, TypeKind::Enum, prelude, hold),
-                Item::Error(def) => self.add_type(def, TypeKind::Error, prelude, hold),
+                Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                    let first =
+                        self.types.get(&def.name).filter(|first| !first.prelude).map(|first| first.def.span);
+                    if self.defined_again(prelude, "type", &def.name, def.span, first) {
+                        continue;
+                    }
+                    let kind = match item {
+                        Item::Struct(_) => TypeKind::Struct,
+                        Item::Enum(_) => TypeKind::Enum,
+                        _ => TypeKind::Error,
+                    };
+                    self.add_type(def, kind, prelude, hold);
+                }
                 Item::TypeAlias { name, ty, .. } => {
                     self.aliases.insert(name.clone(), ty.clone());
                 }
@@ -231,6 +249,11 @@ impl Program {
                 }
                 Item::Import(import) => self.add_import(import),
                 Item::Const { name, ty, value, span } => {
+                    let first =
+                        self.constants.get(name).filter(|first| !first.prelude).map(|first| first.span);
+                    if self.defined_again(prelude, "constant", name, *span, first) {
+                        continue;
+                    }
                     let entry = ConstEntry { ty: ty.clone(), value: value.clone(), span: *span, prelude };
                     self.constants.insert(name.clone(), entry);
                 }
@@ -359,6 +382,26 @@ impl Program {
         found: impl Fn(&'a Imports) -> Option<T>,
     ) -> Option<T> {
         self.imports_at(span).into_iter().flatten().find_map(found)
+    }
+
+    /// Whether a program's own `what` called `name`, at `span`, is a second one: the first,
+    /// at `first`, is kept, and this one is refused, since only one of them could be what the
+    /// name means.
+    fn defined_again(
+        &mut self,
+        prelude: bool,
+        what: &str,
+        name: &str,
+        span: Span,
+        first: Option<Span>,
+    ) -> bool {
+        let Some(first) = first.filter(|_| !prelude) else { return false };
+        self.problems.push(
+            Diagnostic::new(format!("there's already a {what} called `{name}`"), span)
+                .with_help("rename one of them, or remove one")
+                .also_at(first),
+        );
+        true
     }
 
     fn add_type<'m>(&mut self, def: &'m TypeDef, kind: TypeKind, prelude: bool, hold: &impl Holds<'m>) {

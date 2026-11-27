@@ -1,0 +1,6 @@
+def twice(n: int)
+def twice(n: int) -> int:
+    return n * 2
+
+def main(stdout: Stdout):
+    stdout.print(twice(4))

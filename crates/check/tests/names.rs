@@ -305,6 +305,43 @@ fn extensions_add_methods_to_the_programs_own_types() {
     );
 }
 
+/// A program's function, type or constant written twice under one name is refused at the second.
+/// Before, the checker kept the second and never looked at the first, a `def` with no body
+/// included, and the IR was given both: "main: defined twice" (the `checker` fuzz target,
+/// 2026-11-20, -22 and -26).
+#[test]
+fn a_name_defined_twice_is_refused_at_the_second() {
+    let program = "
+        def twice(n: int)
+        def twice(n: int) -> int:
+            return n * 2
+
+        struct Point:
+            x: int
+
+        enum Point:
+            Here
+
+        LIMIT = 3
+        LIMIT = 4
+
+        def main(stdout: Stdout):
+            stdout.print(twice(4), Point(x=1).x, LIMIT)
+        def main(stdout: Stdout):
+            stdout.print(1)
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`twice` has no body @ def twice(n: int)",
+            "there's already a function called `twice` @ def twice(n: int) -> int",
+            "there's already a type called `Point` @ enum Point",
+            "there's already a constant called `LIMIT` @ LIMIT = 4",
+            "there's already a function called `main` @ def main(stdout: Stdout)",
+        ]
+    );
+}
+
 #[test]
 fn a_generic_types_extension_names_its_parameters_and_bounds_make_it_conditional() {
     let program = "

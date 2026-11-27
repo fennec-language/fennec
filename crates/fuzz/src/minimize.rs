@@ -1,31 +1,31 @@
 //! Cutting a failing input down to something a person can read: lines first, then bytes, as
 //! long as what's left still fails the same way.
 
+use std::fs::File;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::supervise::{Failure, STUCK, watch};
+use crate::supervise::{Failure, STUCK, said_in, watch};
 
 /// How long to spend cutting one input down.
 const MOST_TIME: Duration = Duration::from_secs(60);
 
-/// Whether an input fails the way the original did.
-fn fails(fennec_fuzz: &Path, target: &str, input: &[u8], wanted: Failure, file: &Path) -> bool {
-    if std::fs::write(file, input).is_err() {
-        return false;
-    }
+/// What an input wrote to standard error, if it fails the way the original did.
+fn fails(fennec_fuzz: &Path, target: &str, input: &[u8], wanted: Failure, file: &Path) -> Option<Vec<u8>> {
+    std::fs::write(file, input).ok()?;
+    let said = file.with_extension("stderr");
     let child = Command::new(fennec_fuzz)
         .args(["one", target])
         .arg(file)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(File::create(&said).ok()?)
         .spawn();
-    let Ok(mut child) = child else { return false };
+    let mut child = child.ok()?;
     let stuck = crate::targets::find(target).map_or(STUCK, |target| target.stuck);
     let failure = watch(&mut child, stuck, None, crate::supervise::MOST_KILOBYTES, || false);
     crate::llvm::forget(child.id());
-    failure == Some(wanted)
+    (failure == Some(wanted)).then(|| said_in(&said, 0))
 }
 
 /// `input` with the chunks `size` long at each offset removed, wherever that still fails.
@@ -49,19 +49,33 @@ fn without_chunks(
     input
 }
 
-/// The smallest version of `input` it finds in the time it has.
-pub(crate) fn minimize(fennec_fuzz: &Path, target: &str, input: Vec<u8>, wanted: Failure) -> Vec<u8> {
+/// The smallest version of `input` it finds in the time it has, and what that wrote to standard
+/// error when run alone, if it failed alone.
+pub(crate) fn minimize(
+    fennec_fuzz: &Path,
+    target: &str,
+    input: Vec<u8>,
+    wanted: Failure,
+) -> (Vec<u8>, Option<Vec<u8>>) {
     let folder = std::env::temp_dir().join(format!("fennec-fuzz-small-{}", std::process::id()));
     if crate::owned::own(&folder).is_err() {
-        return input;
+        return (input, None);
     }
     let file = folder.join("input");
     let deadline = Instant::now() + MOST_TIME;
-    let mut still_fails = |candidate: &[u8]| fails(fennec_fuzz, target, candidate, wanted, &file);
+    // What the last input that still failed said, which is the smallest one's.
+    let mut said = None;
+    let mut still_fails = |candidate: &[u8]| match fails(fennec_fuzz, target, candidate, wanted, &file) {
+        Some(heard) => {
+            said = Some(heard);
+            true
+        }
+        None => false,
+    };
     // An input that only fails after the ones before it can't be cut down on its own.
     if !still_fails(&input) {
         crate::owned::let_go(&folder);
-        return input;
+        return (input, None);
     }
     let mut small = input;
     let mut size = small.len().div_ceil(2).max(1);
@@ -73,7 +87,7 @@ pub(crate) fn minimize(fennec_fuzz: &Path, target: &str, input: Vec<u8>, wanted:
         size = size.div_ceil(2);
     }
     crate::owned::let_go(&folder);
-    small
+    (small, said)
 }
 
 #[cfg(test)]

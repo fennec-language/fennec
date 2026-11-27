@@ -76,6 +76,16 @@ test "a key given twice fails, at the top and inside"():
     assert failure(() => json.loads[dict[str, int]]("{\"a\": 1, \"a\": 2}")?) != "loaded"
     assert json.loads[Box](json.dumps(box()))? == box()
 
+test "a dict with text or int keys reads from an object, never from [key, value] pairs"():
+    for text in ["[]", "[[\"a\", \"b\"]]"]:
+        assert failure(() => json.loads[dict[str, str]](text)?) != "loaded"
+    assert failure(() => json.loads[dict[int, str]]("[[1, \"b\"]]")?) != "loaded"
+    assert json.loads[dict[str, str]]("{}")? == dict[str, str]()
+    # Keys that can't be an object's are written as pairs, and read from them.
+    pairs = {(1, 2): "x"}
+    assert json.dumps(pairs) == "[[[1, 2], \"x\"]]"
+    assert json.loads[dict[(int, int), str]](json.dumps(pairs))? == pairs
+
 test "text cut short anywhere fails, and the next read starts fresh"():
     whole = json.dumps(box())
     for end in range(len(whole)):

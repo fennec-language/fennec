@@ -25,6 +25,7 @@ use super::ast::{
     REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
     Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
+use super::ast::{EXCHANGE_WAYS, ExchangeStep, ExchangeWay, Exchanging};
 use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, FileWay, Filing};
 use super::ast::{GEN_WAYS, GenStep, GenWay, Generating};
 use super::ast::{GENERIC_STEPS, GENERIC_TYS, GenericStep, GenericTy, Genericking};
@@ -118,6 +119,11 @@ const FAILING_GENERATORS: bool = true;
 /// dropped, from a local and a struct's field. On since popping a present `str?` out of a
 /// `list[str?]` stopped crashing native code (#2282, fixed by #2292).
 const POPPED_OPTIONALS: bool = true;
+
+/// Whether random programs swap a list's items at places counting from either end, directly and
+/// through a `ref` parameter, and update a Table's rows at live and removed `Id`s (`Exchanged`).
+/// Map row 15: nothing called `swap` or `Table.update` before.
+const EXCHANGED: bool = true;
 
 /// Whether a statement saves a box of the program's own values and loads it back (`Saved`):
 /// unions, an enum, a `where` rule, two `Table`s with `Id`s into them and optionals, through JSON,
@@ -860,6 +866,7 @@ impl Writer<'_> {
             27 if FAILING_GENERATORS && self.choice(4) == 0 => self.failing_generators(body),
             27 if WHERE_RULES && self.choice(4) == 0 => self.where_rules(body),
             27 if POPPED_OPTIONALS && self.choice(4) == 0 => self.popped_optionals(body),
+            27 if EXCHANGED && self.choice(4) == 0 => self.exchanged(body),
             27 if SAVED_VALUES && self.choice(4) == 0 => self.saved_values(body),
             27 if STORED_ROWS && self.choice(4) == 0 => self.stored_rows(body),
             27 if LOCKED_CREWS && !self.threadless && self.choice(4) == 0 => self.locked_crews(body),
@@ -1683,6 +1690,24 @@ impl Writer<'_> {
         body.push(Stmt::Ruled(Ruling { id, steps }));
     }
 
+    /// An `Exchanged` statement: one type, in a local or a field, then 3 to 14 steps, each with
+    /// places from -4 to 3, a value from 0 to 2 and a row from 0 to 2.
+    fn exchanged(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let ty = POP_TYS.get(self.choice(POP_TYS.len())).copied().unwrap_or(PopTy::Short);
+        let in_field = self.choice(2) == 0;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(12) {
+            let way =
+                EXCHANGE_WAYS.get(self.choice(EXCHANGE_WAYS.len())).copied().unwrap_or(ExchangeWay::Swap);
+            let mut place = || i64::try_from(self.choice(8)).unwrap_or(0) - 4;
+            let (first, second) = (place(), place());
+            steps.push(ExchangeStep { way, first, second, which: self.choice(3), row: self.choice(3) });
+        }
+        body.push(Stmt::Exchanged(Exchanging { id, ty, in_field, steps }));
+    }
+
     /// A `Popped` statement: one type, in a local or a field, then 3 to 12 steps, each with a
     /// value from 0 to 2.
     fn popped_optionals(&mut self, body: &mut Vec<Stmt>) {
@@ -1901,7 +1926,7 @@ impl Writer<'_> {
         }
         let held = match self.choice(5) {
             0 => FloatHeld::Gauge,
-            1 => FloatHeld::Gauge32,
+            1 => FloatHeld::F32Gauge,
             2 => FloatHeld::Level,
             3 => FloatHeld::Level32,
             _ => FloatHeld::Marked,

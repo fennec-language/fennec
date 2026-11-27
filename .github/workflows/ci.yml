@@ -649,6 +649,12 @@ jobs:
           tool: zizmor@1.31.1
       - name: zizmor
         run: zizmor --offline --min-severity low .github/workflows
+      # A pipe that is a command of its own takes its last command's exit without `pipefail`:
+      # `fennec-fuzz run | tee` hid every failure the nightly runs found from 10-31 to 11-26.
+      - name: Every pipe in a workflow runs with pipefail
+        run: .github/scripts/check-pipefail.sh
+      - name: Finding the pipes with no pipefail, on a throwaway repository
+        run: .github/scripts/test-check-pipefail.sh
       - name: The landing hook and helper, on a throwaway repository
         run: .github/scripts/test-landing.sh
       - name: Opening a pull request, on a throwaway repository
@@ -974,7 +980,7 @@ jobs:
           # What a program should print, its lines sorted: its `.out`, or for one that prints too
           # much to keep, the hash of that in its `.sorted.sha256`.
           wanted() {
-            if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
+            if [ -f "${1%.fen}.out" ]; then sha256sum < <(LC_ALL=C sort "${1%.fen}.out"); else cat "${1%.fen}.sorted.sha256"; fi
           }
           for program in crates/fennec/tests/fixtures/workers/*.fen examples/parallel_loops.fen examples/parallel_put_back.fen; do
             # A fixture with no pinned output is driven by its own test, which connects to it or stops it.
@@ -982,7 +988,13 @@ jobs:
             wanted "$program" > wanted.txt
             ./target/release/fennec build "$program" -o checked > /dev/null
             for threads in 1 4 8; do
-              if [ "$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)" != "$(cat wanted.txt)" ]; then
+              # Its exit is read, not lost in a pipe: past the time limit or ended by a signal, as a
+              # segfault is, it fails here, whatever it printed first.
+              status=0
+              FENNEC_THREADS=$threads timeout 120 ./checked > printed.txt 2> said.txt || status=$?
+              if [ "$status" -ge 124 ]; then
+                echo "::error::$program at $threads threads ended with $status, past the time limit or by a signal"; cat said.txt; failed=1
+              elif [ "$(sha256sum < <(LC_ALL=C sort printed.txt))" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
               fi
             done
@@ -1025,12 +1037,15 @@ jobs:
           for example in $examples; do
             ./target/debug/fennec build --release "examples/$example.fen" -o "empty/$example"
           done
-          ./target/debug/fennec notices empty/hello | grep -q 'Rich Felker'
+          ./target/debug/fennec notices empty/hello > notices.txt
+          grep -q 'Rich Felker' notices.txt
           printf 'FROM scratch\nCOPY . /\n' > empty/Dockerfile
           docker build -q -t fennec-empty empty
           for example in $examples; do
             # `parallel` prints in the order its tasks finish.
-            docker run --rm fennec-empty "/$example" | sort > printed.txt
+            # Its exit is the step's: piped, a program that crashed after printing would pass.
+            docker run --rm fennec-empty "/$example" > printed.txt
+            sort -o printed.txt printed.txt
             if ! sort "examples/$example.out" | cmp -s printed.txt -; then
               echo "::error::$example printed something different in an empty container"
               exit 1
@@ -1123,7 +1138,7 @@ jobs:
           programs=$(grep -lE 'parallel\(' examples/*.fen | xargs grep -L Net)
           # As in the job above: a program's sorted `.out`, or the hash of it.
           wanted() {
-            if [ -f "${1%.fen}.out" ]; then LC_ALL=C sort "${1%.fen}.out" | sha256sum; else cat "${1%.fen}.sorted.sha256"; fi
+            if [ -f "${1%.fen}.out" ]; then sha256sum < <(LC_ALL=C sort "${1%.fen}.out"); else cat "${1%.fen}.sorted.sha256"; fi
           }
           for program in $programs crates/fennec/tests/fixtures/workers/*.fen; do
             # As above: a fixture with no pinned output is driven by its own test.
@@ -1134,14 +1149,20 @@ jobs:
             fi
             nm checked | grep -q "$SYMBOL" || { echo "::error::$program built without the sanitizer"; failed=1; }
             for threads in 1 4 8 stress; do
+              # Its exit is read, not lost in a pipe: past the time limit or ended by a signal, as a
+              # segfault is, it fails here, whatever it printed first.
+              status=0
               if [ "$threads" = stress ]; then
-                got=$(FENNEC_PARALLEL_STRESS=1 FENNEC_THREADS=4 timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)
+                FENNEC_PARALLEL_STRESS=1 FENNEC_THREADS=4 timeout 120 ./checked > printed.txt 2> said.txt || status=$?
               else
-                got=$(FENNEC_THREADS=$threads timeout 120 ./checked 2> said.txt | LC_ALL=C sort | sha256sum)
+                FENNEC_THREADS=$threads timeout 120 ./checked > printed.txt 2> said.txt || status=$?
               fi
+              got=$(sha256sum < <(LC_ALL=C sort printed.txt))
               runs=$((runs + 1))
               if grep -q "$REPORT" said.txt; then
                 echo "::error::$program at $threads threads: $REPORT reported"; cat said.txt; failed=1
+              elif [ "$status" -ge 124 ]; then
+                echo "::error::$program at $threads threads ended with $status, past the time limit or by a signal"; cat said.txt; failed=1
               elif [ "$got" != "$(cat wanted.txt)" ]; then
                 echo "::error::$program at $threads threads printed something different"; cat said.txt; failed=1
               fi

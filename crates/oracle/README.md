@@ -298,3 +298,9 @@ the check that covers it instead: an algorithm the runtime writes in Rust to a p
 like regex, DEFLATE, the Unicode tables and the hashes, which is checked against that standard's own
 answers. The report ends with how much of the useful set it runs, and names every other example it
 skips as a gap to build.
+
+`runs.txt` lists the examples it runs, each held to its `.out` file by `tests/examples.rs`, and
+`gaps.txt` those it could model but doesn't yet, each with what stops it. Every example is in
+exactly one of the four lists, so a new one comes with a line saying which. One the oracle runs is
+held from the day it comes, and one it can't is a named gap, so the share it checks can't go down
+without a word. The nightly report gives that share each morning, beside the random programs'.

@@ -97,10 +97,12 @@ The rebuild is what shows a release is its tag's source and nothing else, since 
 |---|---|
 | Arm Linux (`aarch64-unknown-linux-gnu`) | the signer's rebuild, from a Mac or an Arm Linux machine |
 | x86-64 Linux (`x86_64-unknown-linux-gnu`) | the signer's rebuild from an x86-64 Linux machine; from a Mac, CI's `Built twice, the same` check only |
-| Arm Mac (`aarch64-apple-darwin`) | CI's `Built twice, the same` check only, until the release's Xcode is pinned and the signer has that Xcode |
+| Arm Mac (`aarch64-apple-darwin`) | the signer's rebuild, from an Arm Mac with the Xcode the release pins; without it, CI's `Built twice, the same` check only |
 | Intel Mac (`x86_64-apple-darwin`) | CI's `Built twice, the same` check only |
 | Windows (`x86_64-pc-windows-gnullvm`) | CI's `Built twice, the same` check only |
 
 CI's check builds each archive twice on two of GitHub's machines, so it shows a build doesn't depend on where it ran, but not that GitHub built from the tag.
+
+Each Mac archive is built with one Xcode, named by its build number in `.github/scripts/release-env.sh`: 27.2 (27B52) for the Arm Mac, the signing Mac's own, and 26.3 (17C529) for the Intel Mac. Xcode's linker lays out a program differently from one version to the next, and GitHub's default Xcode moves between runs, so a build without its pinned Xcode stops rather than use another. **When the signing Mac's Xcode updates, the pin is moved first, in a pull request, and the rebuild has to match before the next signing,** so the two never drift apart unseen.
 
 `fennec self update` installs a launcher release. It reads `latest`, the newest launcher's version, then `v<version>/fennec-launcher-v<version>.manifest`, its `.sig` and the archive for its platform, from `https://dl.fennec-lang.dev/launcher` or `FENNEC_LAUNCHER_DIST`. The archive's one top folder, `fennec-launcher-v<version>-<platform>`, holds the launcher's three programs: `fennec`, `fennec-setup` and `fennec-fetch`. It replaces only the launcher installed as `~/.fennec/bin/fennec`, only with a newer version, and only one two of the keys signed. Until there are keys, it refuses before fetching anything.

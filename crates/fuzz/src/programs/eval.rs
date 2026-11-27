@@ -23,6 +23,7 @@ use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
     SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
+use super::ast::{ExchangeStep, ExchangeWay, Exchanging};
 use super::ast::{FILE_PIECES, FileWay, Filing};
 use super::ast::{GenStep, GenWay, Generating};
 use super::ast::{GenericStep, Genericking};
@@ -313,6 +314,9 @@ enum Resolved {
 enum Stop {
     /// A failure the language says stops the program.
     Failed,
+    /// A deadlock, which stops the program where it waits, after what it printed: nothing on the
+    /// way out runs, as a `with` source's `except:` would for a crash (language.md, deadlocks).
+    Deadlocked,
     /// Something the language doesn't promise an outcome for.
     Unsure,
     Break,
@@ -335,7 +339,7 @@ pub(crate) fn run_saying(program: &Program) -> Option<(String, bool, Option<Stri
             machine.out.push_str("done\n");
             Some((machine.out, true, None))
         }
-        Err(Stop::Failed) => Some((machine.out, false, machine.said)),
+        Err(Stop::Failed | Stop::Deadlocked) => Some((machine.out, false, machine.said)),
         // A `break` or `continue` outside a loop never gets written.
         Err(Stop::Unsure | Stop::Break | Stop::Continue) => None,
     }
@@ -2076,6 +2080,7 @@ impl Machine {
             Stmt::LockedTogether(locking) => self.locked_together(locking)?,
             Stmt::Arrayed(arraying) => self.arrayed(arraying)?,
             Stmt::Popped(popping) => self.popped(popping),
+            Stmt::Exchanged(exchanging) => self.exchanged(exchanging),
             Stmt::Sized(sizing) => self.sized(sizing)?,
             Stmt::Generated(generating) => self.generated(generating),
             Stmt::Ruled(ruling) => self.ruled(ruling)?,
@@ -2249,9 +2254,10 @@ impl Machine {
                 self.scopes.push(vec![(name.clone(), Value::Tally(start))]);
                 let ran = self.block(body);
                 self.scopes.pop();
-                // The block's end, however it comes, is the source's: a crash runs its `else:`.
+                // The block's end, however it comes, is the source's: a crash runs its `else:`. A
+                // deadlock stops the program where it waits, so the block never ends.
                 let ending = if ran == Err(Stop::Failed) { "undone" } else { "closed" };
-                if ran != Err(Stop::Unsure) {
+                if ran != Err(Stop::Unsure) && ran != Err(Stop::Deadlocked) {
                     let _ = writeln!(self.out, "{ending} {start}");
                 }
                 ran?;
@@ -3267,7 +3273,7 @@ impl Machine {
         }
         self.said =
             Some("a deadlock: every task is waiting for another, and nothing can wake them".to_owned());
-        Err(Stop::Failed)
+        Err(Stop::Deadlocked)
     }
 
     /// What `interfaced{id}` prints: each generic call runs the method of the type it's given,
@@ -3500,6 +3506,65 @@ impl Machine {
         let _ = writeln!(self.out, "[{}]", listed.join(", "));
         let _ = writeln!(self.out, "{{\"k\": {}}}", shown(&by_name));
         Ok(())
+    }
+
+    /// What `exchanged{id}` prints: the list's items swapped at places counting from either end
+    /// where it's long enough, the Table's rows updated where their `Id` is live, then the list, the
+    /// struct holding one, and each row, or what `else` gives for a removed one.
+    fn exchanged(&mut self, exchanging: &Exchanging) {
+        let id = exchanging.id;
+        let values = exchanging.ty.values(id);
+        let alone = |at: usize| values.get(at).map_or(String::new(), |(_, shown, _)| shown.clone());
+        let inside = |at: &usize| values.get(*at).map_or(String::new(), |(_, _, shown)| shown.clone());
+        let shown = |list: &[usize]| format!("[{}]", list.iter().map(inside).collect::<Vec<_>>().join(", "));
+        let mut list: Vec<usize> = vec![0, 1, 2];
+        let mut rows: Vec<Option<usize>> = vec![Some(0), Some(1), Some(2)];
+        let mut lines = Vec::new();
+        let swap = |list: &mut Vec<usize>, step: ExchangeStep| {
+            let len = i64::try_from(list.len()).unwrap_or(i64::MAX);
+            if len < step.needs() {
+                return;
+            }
+            let at = |place: i64| usize::try_from(if place < 0 { len + place } else { place }).unwrap_or(0);
+            list.swap(at(step.first), at(step.second));
+        };
+        for &step in &exchanging.steps {
+            let ExchangeStep { way, which, row, .. } = step;
+            match way {
+                ExchangeWay::Swap | ExchangeWay::SwapByRef => swap(&mut list, step),
+                ExchangeWay::SwapSame => swap(&mut list, ExchangeStep { second: step.first, ..step }),
+                ExchangeWay::Pushed => list.push(which),
+                ExchangeWay::Dropped => {
+                    let _ = list.pop();
+                }
+                ExchangeWay::Shown => lines.push(shown(&list)),
+                ExchangeWay::Updated | ExchangeWay::UpdatedThenRead => {
+                    let live = rows.get_mut(row).filter(|slot| slot.is_some());
+                    let took = live.map(|slot| *slot = Some(which)).is_some();
+                    if way == ExchangeWay::Updated {
+                        lines.push(if took { "True" } else { "False" }.to_owned());
+                    } else if took {
+                        lines.push(alone(which));
+                    }
+                }
+                ExchangeWay::RowRemoved => {
+                    if let Some(slot) = rows.get_mut(row) {
+                        *slot = None;
+                    }
+                }
+                ExchangeWay::RowAdded => rows.push(Some(which)),
+            }
+        }
+        for line in lines {
+            let _ = writeln!(self.out, "{line}");
+        }
+        let (held, empty) = (shown(&list), "[]".to_owned());
+        let (local, field) = if exchanging.in_field { (empty, held) } else { (held, empty) };
+        let _ = writeln!(self.out, "{local}");
+        let _ = writeln!(self.out, "Shelf{id}(items={field})");
+        for slot in rows {
+            let _ = writeln!(self.out, "{}", alone(slot.unwrap_or(3)));
+        }
     }
 
     /// What `popped{id}` prints: each value its text, alone and inside a list, and a missing one

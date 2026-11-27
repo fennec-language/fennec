@@ -930,9 +930,10 @@ def write_response(
     else:
         head += f"content-length: {len(response.body)}\r\nconnection: close\r\n\r\n"
     # The head and the body in one write, so a small response goes in one packet: written apart,
-    # the body waits for the client to acknowledge the head, which it may hold back for 40 ms.
+    # the body waits for the client to acknowledge the head, which it may hold back for 40 ms. The
+    # runtime joins them as it writes, so no block is made for the head's bytes or the two joined.
     if len(response.body) > 0 and not head_only:
-        connection.write(head.encode() + response.body)?
+        connection._write_parts(head, response.body)?
     else:
         connection.write(head)?
 

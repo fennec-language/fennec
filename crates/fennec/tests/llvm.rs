@@ -18995,6 +18995,60 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `list[str]` given by `ref` to a function that only adds to it stays a list when the function
+/// giving it keeps none of its own lists as strings: one made by `split`, one it was given and
+/// hands on, and a field. Each such function counts for what it gives, even with nothing of its
+/// own left kept after the first round (#422).
+#[test]
+fn a_list_given_from_a_function_keeping_none_stays_a_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Sheet:
+    cells: list[str]
+
+def put(ref out: list[str], piece: str):
+    out.append(piece)
+
+def put_on(ref out: list[str], piece: str):
+    out.append(piece)
+
+def put_in(ref out: list[str], piece: str):
+    out.append(piece)
+
+# Its list is made by `split`, so nothing here is kept as a string.
+def split_and_put(line: str) -> list[str]:
+    mut cells = line.split(",")
+    put(ref cells, "c")
+    return cells
+
+# It only hands on the list it was given.
+def handed_on(ref out: list[str]):
+    put_on(ref out, "c")
+    put_on(ref out, "d")
+
+# It gives a field.
+def put_in_sheet(ref sheet: Sheet):
+    put_in(ref sheet.cells, "c")
+
+def main(stdout: Stdout):
+    stdout.print(split_and_put("a,b"))
+    mut given = ["a", "b"]
+    handed_on(ref given)
+    stdout.print(given)
+    mut sheet = Sheet(cells=["a"])
+    put_in_sheet(ref sheet)
+    stdout.print(sheet.cells)
+"#;
+    for (name, how) in
+        [("pieces_given", &["--llvm"][..]), ("pieces_given_release", &["--llvm", "--release"][..])]
+    {
+        let (ours, wanted) = both_built(name, source, how)?;
+        assert_eq!(ours, wanted);
+    }
+    Ok(())
+}
+
 /// `for at, item in enumerate(list)` makes no pairs when the list stays as it is, and still does
 /// when the pairs are kept, looked at whole, or the list grows while it's gone through.
 #[test]

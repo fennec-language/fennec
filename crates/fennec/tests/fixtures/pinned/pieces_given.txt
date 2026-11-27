@@ -1,0 +1,7 @@
+source 443b6963770abece4e1ec350535651604fad30f78aff10d5de66e93ffe8e13fa
+code 0
+stdout 48
+["a", "b", "c"]
+["a", "b", "c", "d"]
+["a", "c"]
+stderr 0

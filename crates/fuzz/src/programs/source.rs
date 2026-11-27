@@ -415,7 +415,7 @@ struct Gauge:
     at: float
     n: int
 
-struct Gauge32:
+struct F32Gauge:
     at: f32
 
 enum Level:
@@ -3926,7 +3926,7 @@ impl Writer {
             Stmt::FloatKeys { held, names: (keyed, seen), values, probe, asked, pair: (left, right) } => {
                 let ty = match held {
                     FloatHeld::Gauge => "Gauge",
-                    FloatHeld::Gauge32 => "Gauge32",
+                    FloatHeld::F32Gauge => "F32Gauge",
                     FloatHeld::Level => "Level",
                     FloatHeld::Level32 => "Level32",
                     FloatHeld::Marked => "Marked",
@@ -4224,7 +4224,7 @@ fn float_held(held: FloatHeld, value: usize, right: bool) -> String {
     let enum_named = |name: &str| if right { String::new() } else { name.to_owned() };
     match held {
         FloatHeld::Gauge | FloatHeld::Marked => format!("Gauge(at={float}, n=1)"),
-        FloatHeld::Gauge32 => format!("Gauge32(at=f32({float}))"),
+        FloatHeld::F32Gauge => format!("F32Gauge(at=f32({float}))"),
         FloatHeld::Level if float == "Off" => format!("{}.Off", enum_named("Level")),
         FloatHeld::Level => format!("{}.At(value={float})", enum_named("Level")),
         FloatHeld::Level32 if float == "Off" => format!("{}.Off", enum_named("Level32")),

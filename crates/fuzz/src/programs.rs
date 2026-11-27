@@ -531,7 +531,7 @@ mod tests {
             "print(ran_fine(() => capped(",
             "print(either(() => paired(capped(",
             "dict[Gauge, int]()",
-            "dict[Gauge32, int]()",
+            "dict[F32Gauge, int]()",
             "dict[Level, int]()",
             "dict[Level32, int]()",
             ": set[Marked] = {",
@@ -1091,7 +1091,7 @@ mod tests {
     /// exit code 1 after what it printed, saying so.
     #[test]
     fn the_deadlock_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
-        use super::ast::{Program, STUCK_WAYS, Sticking, Stmt, StuckWay};
+        use super::ast::{Expr, Program, STUCK_WAYS, Sticking, Stmt, StuckWay};
         let run = |body: Vec<Stmt>| {
             let program = Program { body, threadless: false };
             let source = source::source(&program);
@@ -1124,6 +1124,17 @@ mod tests {
             assert_eq!(
                 said.as_deref(),
                 Some("a deadlock: every task is waiting for another, and nothing can wake them")
+            );
+            // Inside a `with` block, the deadlock stops the program where it waits: the block
+            // never ends, so its source neither closes nor runs its `except:` (seed 45818761612,
+            // input 200, which the nightly hid).
+            let stuck = Stmt::Stuck(Sticking { id: 1, way: *way, n });
+            let (printed, _) = run(vec![Stmt::With("held".to_owned(), Expr::Int(1), vec![stuck])]);
+            assert!(
+                printed.contains("open 1\n")
+                    && !printed.contains("undone 1")
+                    && !printed.contains("closed 1"),
+                "{way:?}: {printed}"
             );
         }
     }
@@ -1255,6 +1266,26 @@ mod tests {
                 assert!(stopped, "{way:?}: {:?}\n{source}", oracle.ended);
             }
         }
+    }
+
+    /// A `Ruled` statement's `Gauge{id}` at every id a program gives, 32 among them, is a type no
+    /// other part of a program names: `Gauge32` was the `f32` struct every program has, so a
+    /// program with a 32nd statement ruled was refused (seed 45818761612, input 189). It's loaded
+    /// as `fennec build` loads it, whose names are checked once for the whole file.
+    #[test]
+    fn a_ruled_statement_names_no_type_a_program_has_already() {
+        use super::ast::{Program, RuleStep, RuleWay, Ruling, Stmt};
+        let folder = std::env::temp_dir().join(format!("fennec-fuzz-ruled-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap_or_else(|err| unreachable!("{err}"));
+        let path = folder.join("program.fen");
+        for id in [1, 32, 64] {
+            let steps = vec![RuleStep { way: RuleWay::Raised, value: 2, breaks: false }];
+            let program = Program { body: vec![Stmt::Ruled(Ruling { id, steps })], threadless: true };
+            std::fs::write(&path, source::source(&program)).unwrap_or_else(|err| unreachable!("{err}"));
+            let loaded = fennec_kit::load(&path, "program.fen", fennec_kit::Entry::Main);
+            assert!(loaded.is_ok(), "id {id}: {}", loaded.err().unwrap_or_default());
+        }
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     /// Every way of a `Popped` step, twice over, for each type, in a local and in a field, checks,

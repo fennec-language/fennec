@@ -2272,8 +2272,8 @@ impl Leave {
 pub(crate) enum FloatHeld {
     /// `Gauge(at=value, n=1)`, a struct's `float` field.
     Gauge,
-    /// `Gauge32(at=f32(value))`, a struct's `f32` field.
-    Gauge32,
+    /// `F32Gauge(at=f32(value))`, a struct's `f32` field, named so no `Gauge{id}` is it.
+    F32Gauge,
     /// `Level.At(value=value)`, an enum case's `float`, or `Level.Off`.
     Level,
     /// `Level32.At(value=f32(value))`, or `Level32.Off`.

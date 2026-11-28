@@ -2,12 +2,12 @@ source a4fafd994ace98fa7bd6351d3d07f146b2c5fc7aeec3a21d564aea87d9f0a8e8
 code 1
 stdout 6
 first
-stderr 277
+stderr 289
 error: `main` failed: "twelve" isn't an int
   InvalidValue(message="\"twelve\" isn't an int")
  --> <dir>/main_gives_back_an_error.fen:2:12
   |
-2 |     return int(text)?
-  |            ^^^^^^^^^^
+2 |     return int.parse(text)?
+  |            ^^^^^^^^^^^^^^^^
   = in `number`
   = called from `main` at <dir>/main_gives_back_an_error.fen:6:18

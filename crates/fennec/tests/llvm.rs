@@ -37200,7 +37200,7 @@ fn a_main_giving_back_an_error_fails_as_pinned() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_message_as_pinned(
+    same_as_pinned(
         "main_gives_back_an_error",
         r#"def number(text: str) -> int fails InvalidValue:
     return int.parse(text)?

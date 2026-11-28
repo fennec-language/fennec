@@ -48,7 +48,11 @@ trap '.github/scripts/gate-lock.sh release $$' EXIT
 [ -f "$body" ] || stop "there's no file $body for the pull request's text"
 branch=$(git symbolic-ref --short HEAD) || stop "nothing's checked out as a branch"
 [ "$branch" != main ] || stop "this is main: open a pull request from a branch of your own"
-[ -z "$(git status --porcelain --untracked-files=no)" ] || stop "commit everything first"
+# The gate builds and tests the working tree, and only what's committed is pushed: a file left
+# out, as a module's source never added, would pass here and fail CI, so none may be.
+unclean=$(git status --porcelain)
+[ -z "$unclean" ] || stop "commit everything first, or add it to .gitignore: the gate tests what's here, and only commits are pushed:
+$unclean"
 if [ -n "$regate" ]; then
   number=$("$gh" pr list --head "$branch" --state open --json number --jq '.[0].number // empty') \
     || stop "couldn't ask GitHub for $branch's pull request"
@@ -69,7 +73,14 @@ if git grep --quiet -E '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'; then
 fi
 said=$(mktemp)
 trap 'rm -f "$said" "$said.md" "$said.was"; .github/scripts/gate-lock.sh release $$' EXIT
+gated_head=$(git rev-parse HEAD)
 "$gate" | tee "$said" || stop "the gate failed, so nothing's pushed"
+# What passed has to be what's pushed: a gate that changed a file, as a test rewriting what it
+# expects does, or committed, tested something else.
+unclean=$(git status --porcelain)
+[ -z "$unclean" ] || stop "the gate changed what it tested, so nothing's pushed:
+$unclean"
+[ "$(git rev-parse HEAD)" = "$gated_head" ] || stop "the gate moved $branch from $gated_head, so nothing's pushed"
 gated="at \`$(git rev-parse --short=12 HEAD)\`, $(date -u '+%Y-%m-%d %H:%M UTC')"
 if [ "$gate" = .github/scripts/gate.sh ]; then
   # Every step it ran, as its summary lists them: it passes only when each one did, or failed only

@@ -5,7 +5,7 @@ set -u
 # What `open-pr.sh`, and the gate and `gh` standing in for the real ones here, read from the
 # environment, cleared so each case is the plain one it says unless it sets one itself: run by a
 # gate that `REGATE=1 open-pr.sh` started, every case inherited `REGATE=1` and was a regate.
-unset REGATE OPEN_PR EDIT_FAILS EDIT_IGNORED GATE_FAILS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+unset REGATE OPEN_PR EDIT_FAILS EDIT_IGNORED GATE_FAILS GATE_WRITES GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"
 trap '/bin/rm -rf "$work"' EXIT
@@ -25,7 +25,8 @@ check() {
 
 # Both are written as they'll run, so what's in them expands when they do.
 # shellcheck disable=SC2016
-printf '#!/usr/bin/env bash\n[ -z "${GATE_FAILS:-}" ] || { echo "FAILED: tests"; exit 1; }\necho gate passed\n' > "$GATE"
+# GATE_WRITES names a file the gate writes a line to, as a test that rewrites what it expects does.
+printf '#!/usr/bin/env bash\n[ -z "${GATE_FAILS:-}" ] || { echo "FAILED: tests"; exit 1; }\n[ -z "${GATE_WRITES:-}" ] || echo rewritten >> "$GATE_WRITES"\necho gate passed\n' > "$GATE"
 # A `gh` that keeps one pull request's text in "$OPENED.body": `pr list` names OPEN_PR, if set, as
 # the one open, `pr view` gives its text, and `pr create` and `pr edit` write it, unless EDIT_FAILS
 # has the edit fail or EDIT_IGNORED has it say it worked and change nothing.
@@ -110,6 +111,23 @@ echo uncommitted >> own
 .github/scripts/open-pr.sh "Uncommitted" "$work/body.md" > /dev/null 2> "$work/said"
 check "changes not committed stop it, and push nothing" "1 " "$? $(pushed clean)"
 git checkout --quiet -- own
+
+git checkout --quiet clean
+echo "a module never added" > untracked.rs
+.github/scripts/open-pr.sh "Untracked" "$work/body.md" > /dev/null 2> "$work/said"
+check "a file not committed nor ignored stops it, and pushes nothing" "1 " "$? $(pushed clean)"
+check "and names the file" yes "$(grep -q 'untracked.rs' "$work/said" && echo yes)"
+/bin/rm -f untracked.rs
+
+git checkout --quiet clean
+GATE_WRITES=own .github/scripts/open-pr.sh "Rewritten" "$work/body.md" > /dev/null 2> "$work/said"
+check "a gate that changes a file it tested stops it, and pushes nothing" "1 " "$? $(pushed clean)"
+check "and says the gate changed what it tested" yes "$(grep -q 'the gate changed what it tested' "$work/said" && echo yes)"
+git checkout --quiet -- own
+git checkout --quiet clean
+GATE_WRITES=made.txt .github/scripts/open-pr.sh "Made" "$work/body.md" > /dev/null 2> "$work/said"
+check "a gate that leaves a file behind stops it, and pushes nothing" "1 " "$? $(pushed clean)"
+/bin/rm -f made.txt
 
 git checkout --quiet clean
 # Another gate's process, running in this worktree, holds its lock.

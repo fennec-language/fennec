@@ -14,6 +14,9 @@
 # `.github/known-failures.txt` names, the failures main has, each with the change that broke it.
 # It ends with a line for every step: whether it ran, and what it found.
 set -u
+# Each of these has tests rewrite what they expect from what they get, and pass: set by a shell
+# that pinned outputs before, they'd hold the gate to whatever this commit does.
+unset FENNEC_PIN_OUTPUTS FENNEC_UPDATE_UNCHECKED
 root="$(git rev-parse --show-toplevel)" || exit 1
 cd "$root" || exit 1
 # One gate a worktree: a second one here builds and tests in the same target folder as the first,

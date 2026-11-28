@@ -2682,6 +2682,50 @@ fn prints_built(name: &str, source: &str, wanted: &str, checking_too: bool) -> s
     Ok(())
 }
 
+/// `FENNEC_PROOF_CANARY=bounds` plants a false proof, that every index is inside its list, so a
+/// build checking proofs stops at an index past a list's end saying the proof broke: the false
+/// proof the nightly's proof checking must go red at. Checking proofs without it, the index fails
+/// as it should.
+#[test]
+fn a_planted_false_proof_stops_a_build_checking_proofs() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("planted_false_proof")?;
+    let (program, output) = (dir.join("past_the_end.fen"), dir.join("past_the_end"));
+    std::fs::write(
+        &program,
+        "def item(numbers: list[int], at: int) -> int:
+    return numbers[at]
+
+def main(stdout: Stdout):
+    numbers = [10, 20, 30]
+    stdout.print(item(numbers, 0))
+    stdout.print(item(numbers, len(numbers)))
+",
+    )?;
+    for (canary, said) in [
+        (false, "error: index 3 is out of range for length 3"),
+        (true, "error: proof broken: index inside its list"),
+    ] {
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", "--llvm"]).arg(&program).arg("-o").arg(&output);
+        command.env("FENNEC_HOME", &dir).env("FENNEC_CHECK_PROOFS", "1");
+        if canary {
+            command.env("FENNEC_PROOF_CANARY", "bounds");
+        }
+        let built = command.output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&output).output_within()?;
+        let err = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "10\n", "canary {canary}: {err}");
+        assert_eq!(ran.status.code(), Some(1), "canary {canary}: {err}");
+        assert_eq!(err.lines().next(), Some(said), "canary {canary}: {err}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A value stored into another keeps what it held when a name it came from changes after: in a
 /// tuple, a dict, a list by `insert`, a closure, a struct, an optional and a comprehension.
 #[test]

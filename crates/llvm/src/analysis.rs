@@ -4376,7 +4376,11 @@ impl Analysis {
 
     /// Whether `list[index]` can't be out of range. A copy standing for the list a loop goes
     /// through has its length, since the loop changes only the item it's on.
+    /// A build planting a false proof for a test claims every index is (`plant_false_proof`).
     pub(crate) fn inside(&self, list: LocalId, index: &Operand) -> bool {
+        if crate::emit::false_proof() {
+            return true;
+        }
         let Operand::Local(index) = index else { return false };
         let Some(limit) = self.below.get(&index.0) else { return false };
         let Some(&measured) = self.length_of.get(&limit.0) else { return false };

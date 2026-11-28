@@ -47,6 +47,9 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # How much each step did, a line each from `floor.sh`, for the night's report.
+    env:
+      FLOORS_SEEN: ${{ github.workspace }}/floors-seen.txt
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,18 +70,32 @@ jobs:
       - name: Fuzz programs built through LLVM
         id: fuzz
         if: always()
-        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed "$GITHUB_RUN_ID" --seconds 1200 --found found | tee fuzz.txt
+        run: |
+          status=0
+          FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed "$GITHUB_RUN_ID" --seconds 1200 --found found | tee fuzz.txt || status=$?
+          .github/scripts/floor.sh --fuzz proofs-llvm fuzz.txt || status=1
+          exit "$status"
       - name: Fuzz random programs for an hour, against what they should print
         id: programs
         if: always()
-        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 3600 --stuck 180 --found found | tee programs.txt
+        # A program that launches tasks with no threads runtime to build it with fails, rather than
+        # passing as a program run.
+        env:
+          FENNEC_EXPECT_LLVM: "1"
+        run: |
+          status=0
+          FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 3600 --stuck 180 --found found | tee programs.txt || status=$?
+          .github/scripts/floor.sh --fuzz proofs-programs programs.txt || status=1
+          exit "$status"
       # The builds are held to the oracle only on the random programs it runs, and it refuses the
       # rest without a word: the report says how many of the night's first 200 it ran, and why it
       # refused the others.
       - name: Count the random programs the oracle runs
         id: oracle_share
         if: always()
-        run: ./target/release/fennec-fuzz oracle --seed "$GITHUB_RUN_ID" --inputs 200 | tee oracle-share.txt
+        run: |
+          ./target/release/fennec-fuzz oracle --seed "$GITHUB_RUN_ID" --inputs 200 | tee oracle-share.txt
+          .github/scripts/floor.sh proofs/oracle-share "$(sed -n 's/.*the oracle ran \([0-9][0-9]*\) of .*/\1/p' oracle-share.txt)"
       # The oracle's tests hold every example to one of its lists, so the share can't drop without
       # a line in a PR. The report gives the share each morning, and names the gaps still to build.
       - name: Count the examples the oracle runs
@@ -97,7 +114,11 @@ jobs:
         env:
           FENNEC_AUDIT: "1"
           FENNEC_NO_DAEMON: "1"
-        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 900 --stuck 180 --found found | tee audited.txt
+        run: |
+          status=0
+          FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 900 --stuck 180 --found found | tee audited.txt || status=$?
+          .github/scripts/floor.sh --fuzz proofs-audited audited.txt || status=1
+          exit "$status"
       # The same for tasks and a server's rounds that crash, stop, deadlock, take locks and serve
       # HTTP, each recorded and replayed: the shapes where a task's blocks are handed over, which the
       # random programs above rarely reach. A line of the audit's breaks the target's rule that a
@@ -108,7 +129,11 @@ jobs:
         env:
           FENNEC_AUDIT: "1"
           FENNEC_NO_DAEMON: "1"
-        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run replay --seed "$GITHUB_RUN_ID" --seconds 900 --found found | tee audited-replay.txt
+        run: |
+          status=0
+          FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run replay --seed "$GITHUB_RUN_ID" --seconds 900 --found found | tee audited-replay.txt || status=$?
+          .github/scripts/floor.sh --fuzz proofs-audited-replay audited-replay.txt || status=1
+          exit "$status"
       - name: Run every program four ways, which must print the same
         id: determinism
         if: always()
@@ -125,7 +150,11 @@ jobs:
       - name: Check formatting takes time in proportion to the program
         id: timing
         if: always()
-        run: cargo test --release --locked -p fennec-fmt --test fmt -- --ignored --exact examples::formats_a_big_program_in_time_in_proportion
+        # An exact filter that a rename leaves matching nothing runs no test and passes, so it's
+        # held to the one test it names.
+        run: |
+          cargo test --release --locked -p fennec-fmt --test fmt -- --ignored --exact examples::formats_a_big_program_in_time_in_proportion | tee timing.txt
+          .github/scripts/floor.sh --tests proofs/timing timing.txt
       - name: Run every test
         id: tests
         if: always()
@@ -177,7 +206,17 @@ jobs:
             echo "## Fuzzing"
             # A step skipped leaves no file, and a grep that finds nothing exits 1: neither stops
             # the report, which `pipefail` would otherwise.
-            { grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck" fuzz.txt programs.txt audited.txt audited-replay.txt 2>/dev/null || true; } | sed 's/^/- /'
+            # Each line named by its step, as two of them fuzz the same target.
+            { grep -HE "inputs, [0-9]+ failures|broke a rule|panicked|crashed|got stuck|used too much memory" fuzz.txt programs.txt audited.txt audited-replay.txt 2>/dev/null || true; } \
+              | sed -e 's/^fuzz\.txt:/LLVM, 20 minutes: /' -e 's/^programs\.txt:/random programs, an hour: /' \
+                -e 's/^audited\.txt:/random programs under the heap audit: /' -e 's/^audited-replay\.txt:/replayed tasks under the heap audit: /' \
+              | sed 's/^/- /'
+            echo
+            echo "## How much each step did"
+            echo
+            echo "Each step's count beside its floor, from \`.github/floors.txt\`. The night's other jobs, TSan, Miri and the soaks, are counted in the morning report."
+            echo
+            { sed 's/^floor: /- /' "$FLOORS_SEEN" 2>/dev/null || echo "- no step said how much it did"; }
             echo
             echo "## What the oracle checks"
             { cat oracle-share.txt oracle-examples.txt 2>/dev/null || true; } | sed 's/^/- /'
@@ -388,6 +427,17 @@ jobs:
       - name: Show what didn't pass on the run's summary page
         if: always()
         run: '[ -f miri.md ] && cat miri.md >> "$GITHUB_STEP_SUMMARY" || true'
+      # Each test's outcome, and all Miri said of each that didn't pass, for a repro.
+      - name: Keep what Miri said
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: miri-${{ matrix.shard }}
+          retention-days: 7
+          path: |
+            miri.md
+            miri.txt
+          if-no-files-found: ignore
       - name: File an issue
         if: failure()
         env:

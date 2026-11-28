@@ -101,5 +101,6 @@ for kernel in bench/kernels/*.fen; do
   check "$kernel" bench/kernels ""
 done
 said "- $builds builds ran with every proof checked, $stripped with facts stripped$([ "$strip" = yes ] || echo " (\`FENNEC_STRIP_FACTS\` isn't built yet)")."
-[ -n "${NIGHTLY_ONLY:-}" ] || [ "$builds" -ge 100 ] || broke "only $builds builds ran"
+# Held to the least the night builds, which `NIGHTLY_ONLY` lifts for a try on part of it.
+"$(dirname "$0")/floor.sh" proofs/builds "$builds" || broke "only $builds builds ran"
 exit "$broken"

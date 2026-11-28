@@ -172,4 +172,7 @@ while read -r name _; do
   [ -n "$name" ] && [ "${name#\#}" = "$name" ] && said "- \`$name\` is named in determinism-varies.txt: $(named "$name")."
 done < "$varies"
 said "- $checked programs ran four ways each$([ "$different" = 0 ] && echo ", all the same")."
+# A build that failed, or a random program that wouldn't build, is passed over above, so this is
+# what says the step still checked as many as a night does.
+"$(dirname "$0")/floor.sh" proofs/determinism "$checked" || exit 1
 exit "$different"

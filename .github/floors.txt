@@ -1,0 +1,87 @@
+# The least work each nightly step does, read by `.github/scripts/floor.sh`: a step that does
+# less fails, so one that ran nothing, or a sliver of its usual, can't go green. The morning report
+# gives each step's count beside its floor.
+#
+# `key floor unit`, a line each. `--fuzz PREFIX` reads every key `PREFIX/<target>`. Each floor is
+# about a quarter of the least that step did on the nights measured, which are named beside it, so
+# a slow runner passes and a step that's stopped working doesn't. A step no night has measured yet
+# has a floor of 1, marked provisional: it fails only on nothing at all.
+#
+# To raise a floor, read the step's count from two or more nights' logs or morning reports, and
+# set it to about a quarter of the least, naming the nights here. A provisional floor is raised
+# that way once two nights have run. To lower a floor, the pull request says why the step now
+# does less on purpose. A lower floor needs that reason, and the reason has to stand.
+
+# Proofs, the main job (proofs.yml). Nights: 11-24, 11-25, 11-26.
+proofs/builds                       127     builds          # 510, 516, 516
+audit/programs                      100     programs        # 220, 223, 223, here and in CI's audit (the floor audit.sh had)
+proofs/determinism                  72      programs        # 289, 292, 297
+proofs/oracle-share                 150     programs        # 200, 200, 199 of 200: a share, held near whole
+proofs/timing                       1       tests           # 1
+proofs-llvm/llvm                    105     inputs          # 581, 421, 601
+proofs-programs/programs            79      inputs          # 324, 370, 317
+proofs-audited/programs             20      inputs          # 83, 95, 82
+proofs-audited-replay/replay        1       inputs          # provisional: new with #2611
+
+# Proofs, the ThreadSanitizer job: half an hour of random programs and every program with threads.
+tsan/runs                           60      runs            # 213, 231, 231 (the floor tsan-programs.sh had)
+tsan-programs/programs              29      inputs          # 157, 155, 119
+
+# Proofs, each Miri shard: tests that ran to their end and passed, not only those listed.
+miri/passed                         11      tests           # per shard, 47 to 59 a shard
+
+# Proofs, each soak: minutes it ran and was read.
+soak/minutes                        15      minutes         # 60 a night
+
+# Fuzzing (fuzz.yml), each job's targets. Nights: 11-24, 11-25, 11-26, the least of the three.
+fuzz-checked/lexer                  600000  inputs          # 2.4M
+fuzz-checked/parser                 450000  inputs          # 1.8M
+fuzz-checked/formatter              207500  inputs          # 0.83M
+fuzz-checked/checker                5500    inputs          # 22k
+fuzz-checked/lengths                350     inputs          # 1.4k
+fuzz-checked/ranges                 350     inputs          # 1.4k
+fuzz-checked/regex                  157500  inputs          # 0.63M
+fuzz-checked/runtime                187500  inputs          # 0.75M
+fuzz-checked/parked                 192500  inputs          # 0.77M
+fuzz-AddressSanitizer/lexer         1       inputs          # provisional: 0 a night until #2655
+fuzz-AddressSanitizer/parser        1       inputs          # provisional
+fuzz-AddressSanitizer/formatter     1       inputs          # provisional
+fuzz-AddressSanitizer/checker       1       inputs          # provisional
+fuzz-AddressSanitizer/lengths       1       inputs          # provisional
+fuzz-AddressSanitizer/ranges        1       inputs          # provisional
+fuzz-AddressSanitizer/regex         1       inputs          # provisional
+fuzz-AddressSanitizer/runtime       1       inputs          # provisional
+fuzz-AddressSanitizer/parked        1       inputs          # provisional
+fuzz-LLVM/llvm                      31      inputs          # 125
+fuzz-LLVM/json                      5000    inputs          # 20k
+fuzz-LLVM/toml                      5000    inputs          # 20k
+fuzz-LLVM/utf8                      5000    inputs          # 20k
+fuzz-LLVM/edits                     16      inputs          # 67
+fuzz-Readers/json-rules             5250    inputs          # 21k
+fuzz-Readers/toml-rules             5250    inputs          # 21k
+fuzz-Readers/pack                   5250    inputs          # 21k
+fuzz-Readers/csv                    5250    inputs          # 21k
+fuzz-Readers/url                    4000    inputs          # 16k
+fuzz-Readers/http-server            4250    inputs          # 17k
+fuzz-Readers/http-sessions          92      inputs          # 368
+fuzz-Readers/http-splits            275     inputs          # 1.1k
+fuzz-Readers/http-audited           1       inputs          # provisional: new with #2620
+fuzz-Readers/http-client            5250    inputs          # 21k
+fuzz-Readers/http-client-scripts    153     inputs          # 612
+fuzz-Readers/http-client-splits     325     inputs          # 1.3k
+fuzz-Readers/postgres               5250    inputs          # 21k
+fuzz-Readers/router                 5250    inputs          # 21k
+fuzz-Readers/html                   4250    inputs          # 17k
+fuzz-Programs/programs              5       inputs          # 21
+fuzz-Replay/replay                  33      inputs          # 132
+fuzz-Replay/killed-writes           133     inputs          # 534
+fuzz-Replay/fault-writes            67      inputs          # 269
+
+# CI's sanitizer jobs (ci.yml), on every run. Nights: CI's scheduled runs of 11-25 to 11-27.
+ci-asan/builds                      53      builds          # 214 a half (the floor was 20)
+ci-asan-llvm/llvm                   23      inputs          # 93 to 140 of 150
+ci-asan-programs/programs           3       inputs          # 14
+ci-workers/runs                     51      runs            # 204 (the floor was 40)
+ci-tsan/runs                        60      runs            # 231 (the floor tsan-programs.sh had)
+ci-tsan-programs/programs           4       inputs          # 17 to 20
+ci-server-tsan                      1       tests           # provisional: not counted before

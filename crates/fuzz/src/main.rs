@@ -174,6 +174,8 @@ fn worker(name: &str, seed: &str, (first, end): (&str, &str), progress: &Path) -
             progress.note(number);
             (target.run)(&mutate::input(&corpus, target.tokens, seed, number))?;
         }
+        // Past the last, so the supervisor counts every one as done.
+        progress.note(end);
         Ok(())
     }))
 }

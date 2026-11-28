@@ -656,6 +656,8 @@ jobs:
         run: .github/scripts/check-pipefail.sh
       - name: Finding the pipes with no pipefail, on a throwaway repository
         run: .github/scripts/test-check-pipefail.sh
+      - name: Floors hold each nightly step to the least it does
+        run: .github/scripts/test-floor.sh
       - name: The landing hook and helper, on a throwaway repository
         run: .github/scripts/test-landing.sh
       - name: Opening a pull request, on a throwaway repository
@@ -873,11 +875,16 @@ jobs:
             done
           done
           echo "$built builds ran under AddressSanitizer"
-          [ "$built" -ge 20 ] || { echo "::error::only $built builds ran"; failed=1; }
+          .github/scripts/floor.sh ci-asan/builds "$built" || failed=1
           exit "$failed"
       - name: Fuzz programs built through LLVM
         if: matrix.half == 1
-        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed 1 --inputs 150 --seconds 300 --found found
+        run: |
+          set -o pipefail
+          status=0
+          FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run llvm --seed 1 --inputs 150 --seconds 300 --found found | tee fuzz.txt || status=$?
+          .github/scripts/floor.sh --fuzz ci-asan-llvm fuzz.txt || status=1
+          exit "$status"
       # Random programs, trees of enums holding strings and lists among them, built checking
       # proofs, each compared with the reference evaluator.
       - name: Fuzz random programs
@@ -887,8 +894,12 @@ jobs:
           # As the workers' job has it, since a task's stack isn't the thread's.
           ASAN_OPTIONS: detect_leaks=0:exitcode=86:detect_stack_use_after_return=0
         run: |
+          set -o pipefail
           [ -f target/release/libfennec_runtime_threads.a ] || { echo "::error::no threads runtime"; exit 1; }
-          FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed 1 --seconds 300 --stuck 60 --found found
+          status=0
+          FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed 1 --seconds 300 --stuck 60 --found found | tee fuzz.txt || status=$?
+          .github/scripts/floor.sh --fuzz ci-asan-programs fuzz.txt || status=1
+          exit "$status"
       - name: Keep what fuzzing found
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1180,7 +1191,7 @@ jobs:
             done
           done
           echo "$runs runs under $REPORT"
-          [ "$runs" -ge 40 ] || { echo "::error::only $runs runs"; failed=1; }
+          .github/scripts/floor.sh ci-workers/runs "$runs" || failed=1
           exit "$failed"
 
   # Every program that uses threads, launches tasks, or shares state, and the real programs, built
@@ -1206,6 +1217,8 @@ jobs:
       - name: Build fennec and the fuzzer, and the runtime libraries with ThreadSanitizer
         run: .github/scripts/tsan-runtime.sh
       - name: Run the programs that use threads, and random programs
+        env:
+          FLOOR_PREFIX: ci-tsan
         run: .github/scripts/tsan-programs.sh target/release/fennec 300
       - name: Keep what fuzzing found
         if: failure()
@@ -1317,10 +1330,13 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Run the servers' and the pool's tests
         run: |
+          set -o pipefail
           env TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 \
             RUSTFLAGS="-Zsanitizer=thread --cfg crossbeam_sanitize_thread" \
             cargo "+$NIGHTLY" test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
-            -p fennec-rt --features threads --lib -- embed::serve embed::parallel
+            -p fennec-rt --features threads --lib -- embed::serve embed::parallel | tee server-tsan.txt
+          # The filters name modules, so a rename leaving them matching nothing would run no test.
+          .github/scripts/floor.sh --tests ci-server-tsan server-tsan.txt
 
   # One status for branch protection to require, so adding jobs never means changing settings.
   # A job skipped because the change is only documentation counts as passed, and so do the two a

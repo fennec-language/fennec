@@ -121,8 +121,11 @@ impl Checker {
             (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
                 a.iter().zip(b).all(|(a, b)| self.fits(a, b))
             }
+            // A generic type's arguments are exactly what's wanted, not only something that fits:
+            // a `shared` value or a `Sender` made with one is written and read through the other,
+            // so a `Sender[int]` given where a `Sender[int?]` goes could be sent a `None`.
             (Type::Generic(n1, a), Type::Generic(n2, b)) if n1 == n2 && a.len() == b.len() => {
-                a.iter().zip(b).all(|(a, b)| self.fits(a, b))
+                a.iter().zip(b).all(|(a, b)| self.fits(a, b) && self.holds_the_same(a, b))
             }
             // A function named as a value, like `handle` in `server.serve(handle)`, fits a function
             // type that takes and gives back what its signature does.
@@ -157,7 +160,9 @@ impl Checker {
         match (&expected, &actual) {
             (Type::Unknown | Type::Var(_), _) | (_, Type::Unknown | Type::Var(_)) => true,
             _ if expected == actual => true,
-            (Type::Arrow(..), Type::Function(_)) | (Type::Function(_), Type::Arrow(..)) => {
+            // A named function is one value, so it's the same as each function type it fits.
+            (Type::Arrow(..), Type::Function(_)) => self.fits(&expected, &actual),
+            (Type::Function(_), Type::Arrow(..)) => {
                 self.fits(&expected, &actual) && self.fits(&actual, &expected)
             }
             (Type::List(a), Type::List(b))

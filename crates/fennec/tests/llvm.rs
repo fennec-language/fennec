@@ -6463,6 +6463,51 @@ fn a_ref_argument_that_holds_less_is_refused_before_the_ir() -> std::io::Result<
     Ok(())
 }
 
+/// A `shared list[int]` given where a `shared list[int?]` goes, and a channel's `Sender[int]`
+/// where a `Sender[int?]` goes, are refused by the checker, saying a generic type's arguments are
+/// the same on both sides. Before, they checked, and the build stopped later: the first with an
+/// internal error asking to be reported, the second with "`main` isn't lowered yet".
+#[test]
+fn a_shared_value_or_a_channels_end_given_a_wider_type_is_refused_before_the_ir() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("handles-exact")?;
+    let programs = [
+        (
+            "shared_wider",
+            "def add_missing(numbers: shared list[int?]):\n    lock numbers as ref held:\n        held.append(None)\n    \
+             return\n\ndef main(stdout: Stdout):\n    shared numbers = [1, 2]\n    add_missing(numbers)\n    \
+             lock numbers as held:\n        stdout.print(held[2] + 1)\n    return\n",
+        ),
+        (
+            "sender_wider",
+            "from std.concurrent import Sender, channel\n\ndef send_missing(out: Sender[int?]) -> str:\n    \
+             out.send(None) except why:\n        return f\"{why}\"\n    return \"sent\"\n\n\
+             def main(stdout: Stdout):\n    with channel[int](4) as numbers:\n        \
+             said = send_missing(numbers.sender())\n        got = numbers.receive() else 0\n        \
+             stdout.print(said, got + 1)\n    return\n",
+        ),
+    ];
+    for (name, source) in programs {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let built = fennec(
+            &["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join(name).to_string_lossy()],
+            &dir,
+        )?;
+        let said = String::from_utf8_lossy(&built.stderr).into_owned();
+        assert!(!built.status.success(), "{name} built");
+        assert!(
+            said.contains("a generic type's arguments have to be the same on both sides"),
+            "{name}: {said}"
+        );
+        assert!(!said.contains("internal error") && !said.contains("isn't lowered yet"), "{name}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// `ref unit = world.units[actor]` is the item where it is: a change through it is a change there,
 /// read back through the list and through the name, its index worked out once at the `ref`, and
 /// passed on as `ref`. It's declared again each time round a loop.

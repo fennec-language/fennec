@@ -1,9 +1,9 @@
 source e9781300a57e3f2adf18a7ce55b1bc564837fea46b488ce16db90db9415fd2d3
 code 1
 stdout 0
-stderr 188
+stderr 180
 error: this Id finds nothing in this Table: its item was taken out, or it's from another Table
  --> <dir>/other_table_store.fen:8:5
   |
 8 |     ours[kit] = "den"
-  |     ^^^^^^^^^^^^^^^^^
+  |     ^^^^^^^^^

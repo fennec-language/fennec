@@ -1418,11 +1418,18 @@ done:
             return self.assign(dest, &length);
         }
         let (first, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+        let in_place = self.bytes_in_place(&text, args.first().ok_or("no argument")?);
         if name == "intrinsics.text_byte" {
-            let found = self.header_byte(&text, &length, &first);
+            let found = match &in_place {
+                Some(bytes) => self.loaded_byte(bytes, &length, &first),
+                None => self.shifted_byte(&text, &length, &first),
+            };
             return self.assign(dest, &found);
         }
-        let bytes = self.header_bytes(&text);
+        let bytes = match in_place {
+            Some(bytes) => bytes,
+            None => self.header_bytes(&text),
+        };
         let (last, _) = self.operand(args.get(2).ok_or("no argument")?)?;
         let (ordered, within, size, short, ok, quick) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -1461,9 +1468,53 @@ done:
         self.assign(dest, &result)
     }
 
-    /// `text_byte(text, at)`: the byte at `at`, or -1 past the end. An inline text's byte is
-    /// shifted out of the header's words, so nothing is stored to read it; a block's is loaded.
-    fn header_byte(&mut self, text: &str, length: &str, at: &str) -> String {
+    /// Where the bytes are of `text`, just read from `operand`, if it's a local nothing in the
+    /// function writes, as a parameter is: its block's, or for an inline text, its header's own,
+    /// read where the local is. Its slot holds what was just read from it, stored once as the
+    /// function starts, so a loop over its bytes loads one byte each time round.
+    ///
+    /// A local that's written is left to [`Self::shifted_byte`] and [`Self::header_bytes`]: reading
+    /// its slot by a byte's address keeps all of it in memory, stored at every write, which costs
+    /// more than it saves where a loop writes it each time round, as `self._source` read anew does.
+    fn bytes_in_place(&mut self, text: &str, operand: &fennec_ir::Operand) -> Option<String> {
+        let fennec_ir::Operand::Local(local) = operand else { return None };
+        if self.known.written(*local) {
+            return None;
+        }
+        let place = self.slot(*local);
+        let in_block = self.header_in_block(text);
+        let first = self.header_word(text, 0);
+        let (block, held, bytes) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        self.line(&format!("{held} = getelementptr i8, ptr {block}, i64 {}", crate::emit::TEXT_START));
+        self.line(&format!("{bytes} = select i1 {in_block}, ptr {held}, ptr {place}"));
+        Some(bytes)
+    }
+
+    /// `text_byte(text, at)`: the byte at `at`, or -1 past the end, loaded from `bytes`, where
+    /// the text's bytes are (see [`Self::bytes_in_place`]).
+    fn loaded_byte(&mut self, bytes: &str, length: &str, at: &str) -> String {
+        let inside = self.temp();
+        self.line(&format!("{inside} = icmp ult i64 {at}, {length}"));
+        let (read, joined) = (self.label("byte_read"), self.label("byte_done"));
+        let before = self.current.clone();
+        self.line(&format!("br i1 {inside}, label %{read}, label %{joined}, !prof !8"));
+        self.start_block(&read);
+        let (at_byte, byte, wide) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{at_byte} = getelementptr inbounds i8, ptr {bytes}, i64 {at}"));
+        self.line(&format!("{byte} = load i8, ptr {at_byte}"));
+        self.line(&format!("{wide} = zext i8 {byte} to i64"));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let found = self.temp();
+        self.line(&format!("{found} = phi i64 [ {wide}, %{read} ], [ -1, %{before} ]"));
+        found
+    }
+
+    /// `text_byte(text, at)`: the byte at `at`, or -1 past the end, for a text with nowhere it can
+    /// be read a byte at a time without storing it. An inline text's byte is shifted out of the
+    /// header's words, so nothing is stored to read it; a block's is loaded.
+    fn shifted_byte(&mut self, text: &str, length: &str, at: &str) -> String {
         let inside = self.temp();
         self.line(&format!("{inside} = icmp ult i64 {at}, {length}"));
         let (read, in_block, inline, joined) = (

@@ -11778,6 +11778,36 @@ fn json_matches_a_fields_name_by_its_bytes_whatever_its_size_and_wherever_the_te
     prints_in_both_builds("json_names_by_bytes", NAMES_BY_BYTES, NAMES_BY_BYTES_PRINTED)
 }
 
+/// `text_byte` reads an inline text's bytes in each of its header's three words, loaded where a
+/// parameter is or shifted out of a local that's written: a number after 0 to 21 spaces is read
+/// wherever it starts, to the text's 23rd byte, and a quoted text ending in each word is read
+/// whole.
+#[test]
+fn json_reads_an_inline_texts_bytes_in_each_of_its_headers_words() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "json_inline_bytes",
+        r#"from std import json
+
+def main(stdout: Stdout):
+    mut read = 0
+    for spaces in range(22):
+        text = " " * spaces + "7"
+        number = json.loads[int](text) except ParseError(): 1000
+        read += number
+    stdout.print(read)
+    letters = "abcdefghijklmnopqrstu"
+    for size in [1, 7, 8, 15, 16, 21]:
+        quoted = "\"" + letters[0:size] + "\""
+        unquoted = json.loads[str](quoted) except ParseError(): "no"
+        stdout.print(unquoted)
+"#,
+        "154\na\nabcdefg\nabcdefgh\nabcdefghijklmno\nabcdefghijklmnop\nabcdefghijklmnopqrstu\n",
+    )
+}
+
 /// The program of [`json_matches_a_fields_name_by_its_bytes_whatever_its_size_and_wherever_the_text_ends`].
 const NAMES_BY_BYTES: &str = r#"from std import json
 

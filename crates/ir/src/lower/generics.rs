@@ -269,6 +269,27 @@ impl Context<'_> {
                 }
                 self.unify_returns(returns, &signature.returns, subst);
             }
+            // A function given where a union's one function member goes, as `handle` for
+            // `Router | (Request) -> Response fails E`, says what that member's types stand for, as
+            // the checker has it. Another member given, as a `Router`, says nothing of them, and so
+            // the function member's failure is nothing.
+            (Type::Union(members), other) if !members.contains(other) => {
+                let mut arrows = members.iter().filter(|member| matches!(member, Type::Arrow(..)));
+                let (Some(arrow), None) = (arrows.next(), arrows.next()) else { return };
+                if matches!(other, Type::Function(_) | Type::Arrow(..)) {
+                    self.unify(arrow, other, subst);
+                }
+            }
+            (Type::Union(members), _) => {
+                for member in members {
+                    if let Type::Arrow(_, returns) = member
+                        && let Type::Result(_, error) = &**returns
+                        && let Type::Param(name) = &**error
+                    {
+                        subst.entry(name.clone()).or_insert_with(Type::nothing_failed);
+                    }
+                }
+            }
             (Type::Generic(name, args), Type::Named(copy)) => {
                 let Some(instance) = self.type_instance(copy).filter(|instance| instance.base == *name)
                 else {

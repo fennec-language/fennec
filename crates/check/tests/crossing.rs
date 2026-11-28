@@ -168,6 +168,23 @@ fn a_servers_handler_takes_what_it_captures_and_answers_across() {
     crosses(source, &["Greeting", "Request", "Response", "Server"], &["Startup"]).unwrap();
 }
 
+/// A closure given to `Server.serve`, a generic method, takes what it captures across: the server
+/// runs it on each connection's task. What crosses is worked out through the copy of `serve` the
+/// call makes, `E` nothing for a closure that can't fail, and that copy's handler, which fails with
+/// nothing, is the closure. A struct the closure captures crosses; one the program keeps to itself
+/// doesn't.
+#[test]
+fn a_closure_given_to_a_generic_serve_takes_what_it_captures_across() {
+    let source = "from std.net import NetError, Request, Response\n\n\
+        struct Banner:\n    text: str\n\n\
+        struct Tally:\n    count: int\n\n\
+        def main(net: Net, stdout: Stdout) fails NetError:\n    banner = Banner(text=\"hello\")\n    tally = Tally(count=0)\n    \
+        with net.listen(0)? as server:\n        \
+        server.serve((request) => Response(status=200, body=f\"{banner.text} {request.path}\".encode()))\n    \
+        stdout.print(tally.count)\n";
+    crosses(source, &["Banner", "Request", "Response"], &["Tally"]).unwrap();
+}
+
 /// What a `parallel` loop's body can fail with crosses: the runtime hands the failure from the
 /// worker that met it back to the caller. So does what a task fails with, and a function that runs
 /// on another task takes what it fails with across.

@@ -21955,6 +21955,83 @@ def main(net: Net, stdout: Stdout):
     Ok(())
 }
 
+/// A handler that fails, given to `serve` with no `Log`, has its request answered 500 and its
+/// failure written to standard error as one line, as the runtime writes a crash's report. The same
+/// connection then serves its next request, and the server takes the next connection. The path,
+/// decoded, holds a line break and a terminal's escape, written escaped, and a path as long as a
+/// client likes makes a line of at most about a thousand characters, ending in `…`. Nothing of
+/// the failure is in the answer.
+#[test]
+fn a_failed_handler_is_answered_500_and_reported_on_standard_error() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"from std.net import Request, Response
+
+error Refused:
+    Said(words: str)
+
+def respond(request: Request) -> Response fails Refused:
+    if request.path.startswith("/fail"):
+        fail .Said(words="the secret")
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(respond, timeout=10s)
+"#;
+    let dir = folder("http_server_failed")?;
+    let program = dir.join("serve.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("serve"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let reported = dir.join("stderr");
+    let mut server = Running(
+        Command::new(&executable)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::fs::File::create(&reported)?)
+            .spawn()?,
+    );
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    let exchange = |asked: &[u8]| -> std::io::Result<String> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        stream.write_all(asked)?;
+        let mut heard = String::new();
+        stream.read_to_string(&mut heard)?;
+        Ok(heard)
+    };
+    let kept = exchange(
+        b"GET /fail%0d%0aINFO%20forged%1b[31m HTTP/1.1\r\nHost: x\r\n\r\n\
+          GET /den HTTP/1.1\r\nConnection: close\r\n\r\n",
+    );
+    let long =
+        exchange(format!("GET /fail{} HTTP/1.1\r\nConnection: close\r\n\r\n", "a".repeat(3000)).as_bytes());
+    let after = exchange(b"GET /burrow HTTP/1.1\r\nConnection: close\r\n\r\n");
+    drop(server);
+    let said = std::fs::read_to_string(&reported)?;
+    std::fs::remove_dir_all(&dir)?;
+    let failed = "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 39\r\n";
+    assert_eq!(
+        kept?,
+        format!(
+            "{failed}\r\nthe server couldn't answer this request\
+             HTTP/1.1 200 OK\r\ncontent-length: 10\r\nconnection: close\r\n\r\nhello /den"
+        )
+    );
+    assert_eq!(long?, format!("{failed}connection: close\r\n\r\nthe server couldn't answer this request"));
+    assert_eq!(after?, "HTTP/1.1 200 OK\r\ncontent-length: 13\r\nconnection: close\r\n\r\nhello /burrow");
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 2, "{said}");
+    assert_eq!(lines[0], r#"GET /fail\r\nINFO forged\u{1b}[31m failed: Refused.Said(words="the secret")"#);
+    assert!(lines[1].starts_with("GET /failaaaa") && lines[1].ends_with('…'), "{said}");
+    assert!(lines[1].chars().count() <= 1_001, "{said}");
+    Ok(())
+}
+
 /// The server's answers reach a client that's still sending when it's refused, and a blank line
 /// between requests is passed over, as HTTP/1.1 says a server should (RFC 9112, 2.2), rather than
 /// closing. A refused request's answer, here a 413 while the body is still coming, isn't lost to a
@@ -23026,6 +23103,63 @@ fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::
             assert!(said.contains(" live 0"), "{how}: {said}");
             assert!(!said.contains("heap audit"), "{how}: {said}");
         }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// `serve` answers a request its handler failed on with a 500 that says only that the server
+/// couldn't answer it, and carries on: the next request is answered as before, and `serve` returns
+/// once the server is closed. The failure is an error in the server's log, on one line: the
+/// request's path, decoded, has a line break in it, which the log writes escaped, so a client
+/// can't forge an entry. Built for a heap audit and run under it on 1, 4 and 16 threads, it ends
+/// with what it should have printed, nothing live and nothing said.
+#[test]
+fn a_server_answers_a_failed_handler_with_a_500_and_logs_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("server-failed-handler")?;
+    let shape = "http_server_answers_a_failure_500";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(format!("{shape}.fen")),
+        &program,
+    )?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let wanted = [
+        "200 hello /den",
+        "500 the server couldn't answer this request",
+        r#"ERROR GET /fail\r\nINFO forged failed: Refused.Said(words="den")"#,
+        "serve returned",
+        "stopped",
+    ];
+    for threads in ["1", "4", "16"] {
+        let how = format!("on {threads} threads");
+        let ended = Command::new(&executable)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "{how}: {printed}{said}");
+        let mut lines: Vec<&str> = printed.lines().collect();
+        lines.sort_unstable();
+        assert_eq!(lines, wanted, "{how}: {said}");
+        assert!(said.contains(" live 0"), "{how}: {said}");
+        assert!(!said.contains("heap audit"), "{how}: {said}");
     }
     std::fs::remove_dir_all(&dir)
 }

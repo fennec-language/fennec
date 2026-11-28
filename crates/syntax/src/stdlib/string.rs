@@ -21,6 +21,8 @@ pub(crate) const MODULE: Module = Module {
         // How std's other modules quote text from outside in an error.
         "quoted_input",
         "cut_input",
+        // How std.log writes text from outside on one line.
+        "escaped",
     ],
     source: include_str!("string.fen"),
     gives: &[],
